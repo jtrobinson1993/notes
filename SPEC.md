@@ -9,7 +9,7 @@ Self-hosted, end-to-end encrypted note-taking app for a small private group
 |---|---|
 | Language | TypeScript everywhere |
 | Server | Node 22 LTS + Fastify, SQLite (better-sqlite3), single process |
-| Frontend | Vue 3 (latest) + Vite, Pinia for state, Pinia Colada for query/cache |
+| Frontend | Vue 3 (latest) + Vite, Pinia for state, Pinia Colada for query/cache, Reka UI as the component library |
 | Mobile | PWA (installable, offline shell) — no native apps |
 | Auth | Passkeys only (WebAuthn, `@simplewebauthn`). No passwords, no SSO. Multiple passkeys per account encouraged |
 | Account recovery | Mandatory recovery code generated at signup (random ≥128-bit, shown once). No other recovery path |
