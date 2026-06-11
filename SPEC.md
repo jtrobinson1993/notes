@@ -41,7 +41,7 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 - Encrypted local cache (IndexedDB stores ciphertext only): instant load on open, background sync via Pinia Colada, offline reading. Master key held in memory for the session with configurable auto-lock
 - PWA: installable, responsive, dark mode
 
-## Later (revisit after v1)
+## v2 (revisit after v1)
 
 - Sharing notes between users (crypto supports it from day one)
 - Format-as-you-type Markdown editing (live inline rendering instead of separate write/preview tabs)
@@ -51,6 +51,21 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 - Offline *editing* + sync conflict handling (read-only offline cache ships in v1)
 - Import/export (Markdown files, zip)
 - Automated encrypted backups
+
+## v3 — E2EE text chat
+
+DMs and group channels, reusing the sharing primitive: per-conversation
+symmetric key wrapped to each participant's X25519 public key, re-keyed on
+membership change. Messages are ciphertext blobs relayed/stored by the server;
+delivery via WebSockets; unread state and notifications. Static conversation
+keys (no per-message forward secrecy) — accepted tradeoff for a self-hosted
+friends server; do not hand-roll Double Ratchet/MLS. Multi-device works via the
+existing master-key model.
+
+## v4 — Voice chat
+
+E2EE voice channels (WebRTC; SFU with insertable streams if needed at our
+scale, else P2P mesh for small calls). No plans for video.
 
 ## Open questions
 
