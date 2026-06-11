@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .claude/
+recovery
 *.log
 .DS_Store
 data/
