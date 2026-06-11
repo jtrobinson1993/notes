@@ -54,13 +54,19 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 
 ## v3 — E2EE text chat
 
-DMs and group channels, reusing the sharing primitive: per-conversation
-symmetric key wrapped to each participant's X25519 public key, re-keyed on
-membership change. Messages are ciphertext blobs relayed/stored by the server;
-delivery via WebSockets; unread state and notifications. Static conversation
-keys (no per-message forward secrecy) — accepted tradeoff for a self-hosted
-friends server; do not hand-roll Double Ratchet/MLS. Multi-device works via the
-existing master-key model.
+Base requirements: **group chat** (multi-member channels) and **friend lists**
+(add/accept friends among the server's users; DMs and group invites flow from
+the friend list), plus 1:1 DMs.
+
+Crypto reuses the sharing primitive: per-conversation symmetric key wrapped to
+each participant's X25519 public key, re-keyed on membership change (removed
+members can't read anything sent after they leave). Messages are ciphertext
+blobs relayed/stored by the server; delivery via WebSockets; unread state and
+notifications. Static conversation keys (no per-message forward secrecy) —
+accepted tradeoff for a trusted self-hosted server; do not hand-roll Double
+Ratchet/MLS. Optional hardening if wanted later: epoch keys (rotate the
+conversation key periodically) for coarse forward secrecy. Multi-device works
+via the existing master-key model.
 
 ## v4 — Voice chat
 
