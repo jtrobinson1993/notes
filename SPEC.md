@@ -60,6 +60,114 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 - Automated encrypted backups: periodic SQLite snapshots into DATA_DIR/backups
   (the DB is ciphertext-only by construction); BACKUP_INTERVAL_HOURS / BACKUP_KEEP
 
+## v2.1 — Obsidian-style live editor (planned, under review)
+
+Supersedes the shipped v2 "format-as-you-type" editor (which styles Markdown
+but leaves the markers visible). Goal: a true live-preview editor — you never
+see `**`/`#`/`` ` `` while typing; formatting is applied visually and via
+shortcuts, while the underlying document stays Markdown(-ish) text so sync,
+E2EE, history, and export are unchanged. Also absorbs the formatting items
+previously listed under v3.1 chat polish (spoilers, code blocks) for notes;
+chat will reuse this editor when v3 lands.
+
+### Behavior
+
+- **Marker concealment (Obsidian "live preview"):** `**bold**` renders bold
+  with the asterisks hidden. Markers reveal themselves only when the cursor or
+  selection is inside that span, so the raw syntax is always reachable for
+  editing. Same for headings, lists, quotes, links (show text, hide URL until
+  cursor enters), inline code, strikethrough, highlight, spoilers.
+- **Keyboard shortcuts** (Cmd on macOS / Ctrl on Windows-Linux), toggling on
+  selection or at the caret:
+  | Shortcut | Action |
+  |---|---|
+  | Cmd/Ctrl+B | bold |
+  | Cmd/Ctrl+I | italic |
+  | Cmd/Ctrl+U | underline |
+  | Cmd/Ctrl+E | inline code |
+  | Cmd/Ctrl+Shift+H | highlight |
+  | Cmd/Ctrl+Shift+X | strikethrough |
+  | Cmd/Ctrl+K | link (wrap selection, prompt for URL) |
+  | Cmd/Ctrl+Shift+1..6 | heading level (proposed) |
+- **Color formatting:** apply text color (and/or highlight color) to a
+  selection with low friction. Proposed: a small palette popover on the
+  selection toolbar + last-used color repeat shortcut. (Open questions below —
+  palette vs free choice, and the persistence syntax.)
+- **Spoilers:** `||hidden text||` (Discord syntax). Rendered blurred/blacked
+  out in the editor and preview; click to reveal.
+- **Code blocks:** ``` fences become real embedded code editors — syntax
+  highlighting ("colors n stuff") for the fenced language while editing, not
+  just in preview; language picker on the block; copy button. Editing only —
+  no execution.
+- **Mobile/PWA:** no Cmd key on phones, so a compact formatting toolbar
+  appears above the keyboard / on text selection with the same actions.
+
+### Syntax & persistence decisions
+
+The document stays plain text under encryption. Standard Markdown covers
+bold/italic/code/strikethrough. The rest needs extended syntax:
+
+- highlight: `==text==` (common Markdown extension)
+- spoiler: `||text||` (Discord convention)
+- underline: no Markdown syntax exists — proposal: `<u>text</u>` inline HTML
+- color: no Markdown syntax exists — proposal: `<span style="color:#rrggbb">`
+  (HTML, portable-ish) **or** a custom compact syntax like `{red|text}`
+  (cleaner to type/parse, but proprietary). Needs a decision — see questions.
+
+Export keeps writing plain Markdown files; extended syntax goes out as-is
+(HTML renders in most Markdown apps; custom syntax wouldn't — a point in
+HTML's favor).
+
+### Implementation sketch
+
+CodeMirror 6 stays (good call for this — it's what Obsidian itself builds on).
+Phases:
+
+1. Live-preview decoration plugin: replace/hide marker ranges via the Lezer
+   markdown syntax tree, with cursor-proximity reveal. The hard, fiddly core.
+2. Formatting commands + keymap (toggle wrap/unwrap on selection), selection
+   toolbar (desktop popover, mobile bar).
+3. Extended syntax: Lezer markdown extensions for `==`, `||`, color spans +
+   decorations + commands.
+4. Embedded code-block highlighting via @codemirror/language-data (lazy-loads
+   per-language parsers, keeps bundle small) + language picker + copy button.
+5. Remove or demote the preview tab (see questions); MarkdownView (used by
+   History/read-only) learns the same extended syntax.
+
+### Open questions — answer before build
+
+1. **Color scope:** fixed palette (say 8 colors that adapt to dark mode) or
+   arbitrary color picker? Text color only, or background highlight colors
+   too? A palette keeps notes legible in both themes; arbitrary hex can look
+   broken in dark mode.
+2. **Color/underline syntax:** inline HTML (`<span style>`, `<u>`) — portable
+   to other Markdown tools incl. Obsidian, uglier when revealed — or custom
+   syntax (`{red|text}`) — cleaner but only this app understands it. Which do
+   you want? (This decides what your exported .md files look like forever.)
+3. **Preview tab:** once live preview exists, keep the separate Preview tab,
+   or drop it entirely? (Obsidian keeps a "reading view" — useful for
+   clicking links without entering edit mode.)
+4. **Reveal behavior:** markers reveal when the cursor is on the span
+   (Obsidian default), or never reveal raw syntax at all (more WYSIWYG, but
+   harder to fix malformed markup)?
+5. **Source mode escape hatch:** keep a toggle to see/edit the raw Markdown
+   (Obsidian has one)? Recommended yes — debugging malformed syntax without
+   it is painful.
+6. **Scope of live rendering:** inline formatting only, or also block-level —
+   checkboxes (clickable?), tables (rendered grid vs raw pipes?), images
+   (inline embeds already work in preview — render them in the editor too?).
+   Tables-as-grids is a large chunk on its own.
+7. **Code block languages:** lazy-load all (~stays small per note) or
+   preselect a set you actually use? Any languages you definitely need
+   (ts/js, python, bash, sql, json, yaml…)?
+8. **Spoiler reveal:** click-to-reveal per spoiler, or a per-note "show all
+   spoilers" toggle, or both?
+9. **Heading shortcuts:** is Cmd/Ctrl+Shift+1..6 acceptable, or prefer
+   Obsidian-style `#` autocompletion only?
+10. **Migration:** existing notes are already Markdown so they just render —
+    but if we pick custom color syntax, are you OK that *new* notes may look
+    odd if you ever switch apps? (Ties back to Q2.)
+
 ## v3 — E2EE text chat
 
 Base requirements: **group chat** (multi-member channels) and **friend lists**
@@ -83,7 +191,8 @@ via the existing master-key model.
 
 - Custom emojis (uploaded per server, stored as plain assets — shared UI
   chrome, not E2EE)
-- Chat formatting: code blocks, spoilers, and similar Markdown-style markup
+- Chat formatting: reuses the v2.1 live editor (code blocks, spoilers,
+  colors, etc.) in the message composer
 - Link previews — generated by the **sender's** client and embedded inside the
   encrypted message (Signal-style), so URLs are never leaked to the server
 - etc. (reactions, replies as natural follow-ons)
