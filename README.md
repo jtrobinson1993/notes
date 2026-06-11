@@ -102,8 +102,31 @@ npm run build
 npm start            # http://localhost:3000, data in ./data/
 ```
 
-Or run the Docker setup from the install section above. Useful checks:
-`npm run typecheck` (server + web).
+Useful checks: `npm run typecheck` (server + web).
+
+**Docker on macOS (Colima):** Docker containers need a Linux kernel, so on a
+Mac they run inside a lightweight VM — Colima provides it without Docker
+Desktop. One-time setup:
+
+```sh
+brew install colima docker docker-compose
+colima start                 # boots the VM; rerun after a reboot
+                             # (or: brew services start colima)
+```
+
+Then the normal Docker flow works, same as on a Linux server:
+
+```sh
+docker build -t notes .
+docker run -d --name notes --restart unless-stopped \
+  -p 3000:3000 -v notes-data:/data notes
+```
+
+Open <http://localhost:3000>. Keep the published port and `APP_ORIGIN` in
+agreement (the default origin is `http://localhost:3000`) or passkeys will
+refuse to register. Data persists in the `notes-data` volume across rebuilds;
+`docker rm -f notes` + the `docker run` again swaps in a new build. Colima is
+macOS-only — on the Linux server Docker runs natively (see DEPLOY.md).
 
 Stack: TypeScript everywhere — Fastify + better-sqlite3 + @simplewebauthn
 (server); Vue 3 + Pinia + Pinia Colada + Reka UI + Tailwind, built with Vite
