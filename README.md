@@ -1,7 +1,9 @@
 # Notes
 
 Self-hosted, end-to-end encrypted note-taking for a small private group.
-Passkey-only sign-in, invite-only registration, Markdown notes with tags,
+Passkey-only sign-in, invite-only registration, Markdown notes with tags and
+format-as-you-type editing, note sharing between users, encrypted attachments,
+version history, offline editing with conflict handling, import/export, and an
 installable PWA with an encrypted offline cache. The server only ever stores
 ciphertext — it cannot read your notes. See [SPEC.md](SPEC.md) for design details.
 
@@ -52,6 +54,8 @@ existing passkeys.
 | `PORT` | `3000` | Listen port |
 | `DATA_DIR` | `/data` (in Docker) | Where the SQLite database lives |
 | `APP_NAME` | `Notes` | Display name |
+| `BACKUP_INTERVAL_HOURS` | `24` | Periodic SQLite backup interval (0 disables) |
+| `BACKUP_KEEP` | `14` | Number of backups to retain |
 
 All state lives in `DATA_DIR` — back up that one directory (it only contains
 encrypted notes and public keys).

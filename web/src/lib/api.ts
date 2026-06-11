@@ -2,8 +2,14 @@ import type {
   CredentialInfo,
   InviteInfo,
   LoginVerifyResponse,
+  MemberInfo,
   MetaResponse,
+  NoteVersionInfo,
   NotesSyncResponse,
+  SealedKey,
+  ShareAccess,
+  ShareInfo,
+  SharedNoteRecord,
   UserInfo,
   UserKeys,
   WrappedKey,
@@ -81,7 +87,41 @@ export const api = {
   userDelete: (id: string) => req<{ ok: true }>('DELETE', `/api/users/${encodeURIComponent(id)}`),
 
   notes: (since: number) => req<NotesSyncResponse>('GET', `/api/notes?since=${since}`),
-  notePut: (id: string, data: { ciphertext: string; iv: string; wrappedKey: WrappedKey; createdAt: number }) =>
-    req<{ id: string; updatedAt: number }>('PUT', `/api/notes/${encodeURIComponent(id)}`, data),
+  notePut: (
+    id: string,
+    data: { ciphertext: string; iv: string; wrappedKey?: WrappedKey; createdAt: number; baseUpdatedAt?: number },
+  ) => req<{ id: string; updatedAt: number }>('PUT', `/api/notes/${encodeURIComponent(id)}`, data),
   noteDelete: (id: string) => req<{ id: string; updatedAt: number }>('DELETE', `/api/notes/${encodeURIComponent(id)}`),
+
+  members: () => req<MemberInfo[]>('GET', '/api/members'),
+  sharedNotes: () => req<SharedNoteRecord[]>('GET', '/api/shared'),
+  noteShares: (id: string) => req<ShareInfo[]>('GET', `/api/notes/${encodeURIComponent(id)}/shares`),
+  shareNote: (id: string, recipientId: string, sealedKey: SealedKey, access: ShareAccess) =>
+    req<{ ok: true }>('POST', `/api/notes/${encodeURIComponent(id)}/shares`, { recipientId, sealedKey, access }),
+  unshareNote: (id: string, recipientId: string) =>
+    req<{ ok: true }>('DELETE', `/api/notes/${encodeURIComponent(id)}/shares/${encodeURIComponent(recipientId)}`),
+
+  noteVersions: (id: string) => req<NoteVersionInfo[]>('GET', `/api/notes/${encodeURIComponent(id)}/versions`),
+  noteVersion: (id: string, vid: number) =>
+    req<{ id: number; ciphertext: string; iv: string; wrappedKey: WrappedKey; createdAt: number }>(
+      'GET',
+      `/api/notes/${encodeURIComponent(id)}/versions/${vid}`,
+    ),
+
+  attachmentUpload: async (data: Uint8Array): Promise<{ id: string; size: number }> => {
+    const res = await fetch('/api/attachments', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: data as unknown as BodyInit,
+    });
+    if (!res.ok) throw new ApiError(res.status, ((await res.json()) as { error?: string }).error ?? res.statusText);
+    return (await res.json()) as { id: string; size: number };
+  },
+  attachmentDownload: async (id: string): Promise<Uint8Array> => {
+    const res = await fetch(`/api/attachments/${encodeURIComponent(id)}`, { credentials: 'same-origin' });
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    return new Uint8Array(await res.arrayBuffer());
+  },
+  attachmentDelete: (id: string) => req<{ ok: true }>('DELETE', `/api/attachments/${encodeURIComponent(id)}`),
 };

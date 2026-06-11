@@ -103,7 +103,10 @@ function excerpt(body: string): string {
               :class="{ 'bg-zinc-100 dark:bg-zinc-900': selectedId === note.id }"
               @click="selectedId = note.id"
             >
-              <p class="truncate text-sm font-medium">{{ note.payload.title || 'Untitled' }}</p>
+              <p class="truncate text-sm font-medium">
+                {{ note.payload.title || 'Untitled' }}
+                <span v-if="note.shared" class="text-xs font-normal text-violet-500">· from {{ note.shared.ownerUsername }}</span>
+              </p>
               <p class="truncate text-xs text-zinc-500 dark:text-zinc-400">
                 {{ excerpt(note.payload.body) || 'Empty note' }}
               </p>

@@ -41,16 +41,24 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 - Encrypted local cache (IndexedDB stores ciphertext only): instant load on open, background sync via Pinia Colada, offline reading. Master key held in memory for the session with configurable auto-lock
 - PWA: installable, responsive, dark mode
 
-## v2 (revisit after v1)
+## v2 — shipped
 
-- Sharing notes between users (crypto supports it from day one)
-- Format-as-you-type Markdown editing (live inline rendering instead of separate write/preview tabs)
+- Sharing notes between users: note key sealed to the recipient's X25519 key
+  (ephemeral-static DH + HKDF + AES-256-GCM); read or write access; revocable
+- Format-as-you-type Markdown editing (CodeMirror 6 live inline styling;
+  preview tab retained)
 - Client-side full-text search over note bodies
-- Encrypted file/image attachments
-- Note version history
-- Offline *editing* + sync conflict handling (read-only offline cache ships in v1)
-- Import/export (Markdown files, zip)
-- Automated encrypted backups
+- Encrypted file/image attachments — per-attachment key stored *inside* the
+  encrypted note payload; images embed in preview via `attachment:` URLs
+- Note version history (server snapshots ciphertext on update, coalesced to
+  one per 10 min, max 50; restore from the History dialog)
+- Offline *editing*: outbox queue in IndexedDB, flushed before sync;
+  edit conflicts (multi-device or shared notes) are detected server-side via
+  baseUpdatedAt and preserved as "(conflict copy)" notes
+- Import/export: zip of Markdown files with frontmatter (client-side, plaintext
+  never touches the server)
+- Automated encrypted backups: periodic SQLite snapshots into DATA_DIR/backups
+  (the DB is ciphertext-only by construction); BACKUP_INTERVAL_HOURS / BACKUP_KEEP
 
 ## v3 — E2EE text chat
 

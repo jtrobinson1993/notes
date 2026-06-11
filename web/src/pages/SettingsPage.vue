@@ -5,9 +5,12 @@ import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
 import { api } from '../lib/api';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
+import { exportNotesZip, parseImportFiles } from '../lib/transfer';
+import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
 
 const session = useSessionStore();
+const notes = useNotesStore();
 const queryCache = useQueryCache();
 const isAdmin = session.user?.role === 'admin';
 
@@ -79,6 +82,54 @@ function confirmDeleteUser(id: string, username: string) {
 
 function fmtDate(ts: number | null): string {
   return ts ? new Date(ts).toLocaleDateString() : '—';
+}
+
+const transferBusy = ref(false);
+const transferMsg = ref('');
+const importInput = ref<HTMLInputElement>();
+
+async function exportAll() {
+  transferBusy.value = true;
+  transferMsg.value = '';
+  try {
+    if (!notes.loaded) {
+      await notes.loadFromCache();
+      await notes.sync();
+    }
+    const own = notes.sorted.filter((n) => !n.shared);
+    const blob = exportNotesZip(own);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `notes-export-${new Date().toISOString().slice(0, 10)}.zip`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    transferMsg.value = `Exported ${own.length} notes.`;
+  } catch (e) {
+    transferMsg.value = e instanceof Error ? e.message : 'export failed';
+  } finally {
+    transferBusy.value = false;
+  }
+}
+
+async function importFiles(event: Event) {
+  const files = (event.target as HTMLInputElement).files;
+  if (!files?.length) return;
+  transferBusy.value = true;
+  transferMsg.value = '';
+  try {
+    if (!notes.loaded) {
+      await notes.loadFromCache();
+      await notes.sync();
+    }
+    const imported = await parseImportFiles(files);
+    for (const n of imported) await notes.create(n);
+    transferMsg.value = `Imported ${imported.length} notes.`;
+  } catch (e) {
+    transferMsg.value = e instanceof Error ? e.message : 'import failed';
+  } finally {
+    transferBusy.value = false;
+    (event.target as HTMLInputElement).value = '';
+  }
 }
 </script>
 
@@ -160,6 +211,32 @@ function fmtDate(ts: number | null): string {
           Generate new recovery code
         </button>
         <RecoveryCodeCard v-if="newRecoveryCode" :code="newRecoveryCode" />
+      </section>
+
+      <section class="space-y-3">
+        <h2 class="text-lg font-semibold">Import & export</h2>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400">
+          Export decrypts your notes locally into a zip of Markdown files. Import accepts .md/.txt
+          files or a zip of them.
+        </p>
+        <div class="flex gap-2" :class="{ 'opacity-50': !session.unlocked }">
+          <button
+            :disabled="!session.unlocked || transferBusy"
+            class="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            @click="exportAll"
+          >
+            Export all notes (.zip)
+          </button>
+          <button
+            :disabled="!session.unlocked || transferBusy"
+            class="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            @click="importInput?.click()"
+          >
+            Import notes…
+          </button>
+          <input ref="importInput" type="file" multiple accept=".md,.txt,.markdown,.zip" class="hidden" @change="importFiles" />
+        </div>
+        <p v-if="transferMsg" class="text-sm text-zinc-500 dark:text-zinc-400">{{ transferMsg }}</p>
       </section>
 
       <template v-if="isAdmin">

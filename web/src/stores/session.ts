@@ -47,6 +47,22 @@ export const useSessionStore = defineStore('session', () => {
 
   function lock(): void {
     setMk(null);
+    keyPair = null;
+  }
+
+  let keyPair: { privateKey: Uint8Array; publicKey: Uint8Array } | null = null;
+
+  /** Unwrap my X25519 keypair with the master key (cached until lock). */
+  async function getKeyPair(): Promise<{ privateKey: Uint8Array; publicKey: Uint8Array }> {
+    if (keyPair) return keyPair;
+    if (!mk.value) throw new Error('locked');
+    const me = await api.me();
+    if (!me.wrappedPrivateKey || !me.user.publicKey) throw new Error('keys not set up');
+    keyPair = {
+      privateKey: await unwrapKey(mk.value, me.wrappedPrivateKey, INFO_PRIVATE_KEY),
+      publicKey: ub64(me.user.publicKey),
+    };
+    return keyPair;
   }
 
   function startLockTimer(): void {
@@ -212,7 +228,7 @@ export const useSessionStore = defineStore('session', () => {
   return {
     ready, needsSetup, appName, user, hasKeys, mk, autoLockMinutes,
     loggedIn, unlocked,
-    init, touch, lock, setAutoLock, setMk,
+    init, touch, lock, setAutoLock, setMk, getKeyPair,
     loginWithPasskey, register, setupKeys, recover, rotateRecoveryCode, addPasskey, unwrapWithPrf, logout,
   };
 });

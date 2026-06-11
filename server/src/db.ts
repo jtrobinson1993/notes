@@ -103,6 +103,29 @@ CREATE TABLE IF NOT EXISTS notes (
   deleted INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_notes_user_updated ON notes(user_id, updated_at);
+CREATE TABLE IF NOT EXISTS note_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  ciphertext TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  wrapped_key TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_versions_note ON note_versions(note_id, created_at);
+CREATE TABLE IF NOT EXISTS note_shares (
+  note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sealed_key TEXT NOT NULL,
+  access TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (note_id, recipient_id)
+);
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS challenges (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
@@ -232,6 +255,107 @@ export function openDb(dataDir: string) {
         return db.prepare('SELECT * FROM notes WHERE user_id = ? AND updated_at > ?').all(userId, since) as NoteRow[];
       }
       return db.prepare('SELECT * FROM notes WHERE user_id = ? AND deleted = 0').all(userId) as NoteRow[];
+    },
+
+    /** Snapshot the previous content of a note before an update. Coalesces
+     * rapid autosaves into one version per 10-minute window; keeps last 50. */
+    snapshotVersion(n: NoteRow): void {
+      const last = db
+        .prepare('SELECT created_at FROM note_versions WHERE note_id = ? ORDER BY created_at DESC LIMIT 1')
+        .get(n.id) as { created_at: number } | undefined;
+      if (last && n.updated_at - last.created_at < 10 * 60_000) return;
+      db.prepare(
+        'INSERT INTO note_versions (note_id, ciphertext, iv, wrapped_key, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(n.id, n.ciphertext, n.iv, n.wrapped_key, n.updated_at);
+      db.prepare(
+        `DELETE FROM note_versions WHERE note_id = ? AND id NOT IN (
+           SELECT id FROM note_versions WHERE note_id = ? ORDER BY created_at DESC LIMIT 50)`,
+      ).run(n.id, n.id);
+    },
+    listVersions(noteId: string): { id: number; created_at: number }[] {
+      return db
+        .prepare('SELECT id, created_at FROM note_versions WHERE note_id = ? ORDER BY created_at DESC')
+        .all(noteId) as { id: number; created_at: number }[];
+    },
+    getVersion(noteId: string, versionId: number) {
+      return db
+        .prepare('SELECT * FROM note_versions WHERE note_id = ? AND id = ?')
+        .get(noteId, versionId) as
+        | { id: number; note_id: string; ciphertext: string; iv: string; wrapped_key: string; created_at: number }
+        | undefined;
+    },
+
+    upsertShare(s: { noteId: string; recipientId: string; sealedKey: string; access: string }): void {
+      db.prepare(
+        `INSERT INTO note_shares (note_id, recipient_id, sealed_key, access, created_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(note_id, recipient_id) DO UPDATE SET sealed_key = excluded.sealed_key, access = excluded.access`,
+      ).run(s.noteId, s.recipientId, s.sealedKey, s.access, now());
+    },
+    getShare(noteId: string, recipientId: string) {
+      return db.prepare('SELECT * FROM note_shares WHERE note_id = ? AND recipient_id = ?').get(noteId, recipientId) as
+        | { note_id: string; recipient_id: string; sealed_key: string; access: string; created_at: number }
+        | undefined;
+    },
+    listShares(noteId: string) {
+      return db
+        .prepare(
+          `SELECT s.*, u.username AS recipient_username FROM note_shares s
+           JOIN users u ON u.id = s.recipient_id WHERE s.note_id = ?`,
+        )
+        .all(noteId) as {
+        note_id: string;
+        recipient_id: string;
+        recipient_username: string;
+        sealed_key: string;
+        access: string;
+        created_at: number;
+      }[];
+    },
+    deleteShare(noteId: string, recipientId: string): void {
+      db.prepare('DELETE FROM note_shares WHERE note_id = ? AND recipient_id = ?').run(noteId, recipientId);
+    },
+    listSharedWith(recipientId: string) {
+      return db
+        .prepare(
+          `SELECT n.id, n.ciphertext, n.iv, n.created_at, n.updated_at, s.sealed_key, s.access, u.username AS owner_username
+           FROM note_shares s
+           JOIN notes n ON n.id = s.note_id AND n.deleted = 0
+           JOIN users u ON u.id = n.user_id
+           WHERE s.recipient_id = ?`,
+        )
+        .all(recipientId) as {
+        id: string;
+        ciphertext: string;
+        iv: string;
+        created_at: number;
+        updated_at: number;
+        sealed_key: string;
+        access: string;
+        owner_username: string;
+      }[];
+    },
+
+    createAttachment(a: { id: string; userId: string; size: number }): void {
+      db.prepare('INSERT INTO attachments (id, user_id, size, created_at) VALUES (?, ?, ?, ?)').run(
+        a.id, a.userId, a.size, now(),
+      );
+    },
+    getAttachment(id: string) {
+      return db.prepare('SELECT * FROM attachments WHERE id = ?').get(id) as
+        | { id: string; user_id: string; size: number; created_at: number }
+        | undefined;
+    },
+    deleteAttachment(id: string): void {
+      db.prepare('DELETE FROM attachments WHERE id = ?').run(id);
+    },
+
+    listMembers(): { id: string; username: string; public_key: string | null }[] {
+      return db.prepare('SELECT id, username, public_key FROM users ORDER BY username').all() as {
+        id: string;
+        username: string;
+        public_key: string | null;
+      }[];
     },
 
     putChallenge(c: { id: string; type: string; data: unknown }): void {
