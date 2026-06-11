@@ -1,0 +1,15 @@
+services:
+  notes:
+    build: .
+    container_name: notes
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      # Must exactly match the URL you open the app at (passkeys are bound to it).
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+    volumes:
+      - notes-data:/data
+
+volumes:
+  notes-data:

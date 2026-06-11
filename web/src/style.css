@@ -1,0 +1,33 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  @apply bg-zinc-50 text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100;
+}
+
+/* Minimal typography for rendered Markdown */
+.md-preview {
+  @apply text-[15px] leading-relaxed;
+}
+.md-preview h1 { @apply mt-6 mb-3 text-2xl font-bold; }
+.md-preview h2 { @apply mt-5 mb-2 text-xl font-semibold; }
+.md-preview h3 { @apply mt-4 mb-2 text-lg font-semibold; }
+.md-preview p { @apply my-2; }
+.md-preview ul { @apply my-2 list-disc pl-6; }
+.md-preview ol { @apply my-2 list-decimal pl-6; }
+.md-preview li { @apply my-0.5; }
+.md-preview a { @apply text-blue-600 underline dark:text-blue-400; }
+.md-preview blockquote { @apply my-2 border-l-4 border-zinc-300 pl-3 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400; }
+.md-preview code { @apply rounded bg-zinc-200 px-1 py-0.5 font-mono text-[13px] dark:bg-zinc-800; }
+.md-preview pre { @apply my-3 overflow-x-auto rounded-lg bg-zinc-200 p-3 dark:bg-zinc-800; }
+.md-preview pre code { @apply bg-transparent p-0; }
+.md-preview hr { @apply my-4 border-zinc-300 dark:border-zinc-700; }
+.md-preview table { @apply my-3 w-full border-collapse text-sm; }
+.md-preview th, .md-preview td { @apply border border-zinc-300 px-2 py-1 dark:border-zinc-700; }
