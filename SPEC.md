@@ -44,6 +44,7 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 ## Later (revisit after v1)
 
 - Sharing notes between users (crypto supports it from day one)
+- Format-as-you-type Markdown editing (live inline rendering instead of separate write/preview tabs)
 - Client-side full-text search over note bodies
 - Encrypted file/image attachments
 - Note version history
