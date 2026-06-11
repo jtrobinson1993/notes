@@ -38,6 +38,7 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 - Login with passkey; add/remove additional passkeys; recover with recovery code (re-registers a passkey)
 - Notes: create / edit / delete, Markdown editor with preview, autosave
 - Tags (no folders in v1); client-side search over decrypted titles
+- Encrypted local cache (IndexedDB stores ciphertext only): instant load on open, background sync via Pinia Colada, offline reading. Master key held in memory for the session with configurable auto-lock
 - PWA: installable, responsive, dark mode
 
 ## Later (revisit after v1)
@@ -46,7 +47,7 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 - Client-side full-text search over note bodies
 - Encrypted file/image attachments
 - Note version history
-- Offline editing + sync conflict handling
+- Offline *editing* + sync conflict handling (read-only offline cache ships in v1)
 - Import/export (Markdown files, zip)
 - Automated encrypted backups
 
