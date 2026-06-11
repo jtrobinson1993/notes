@@ -68,6 +68,24 @@ Ratchet/MLS. Optional hardening if wanted later: epoch keys (rotate the
 conversation key periodically) for coarse forward secrecy. Multi-device works
 via the existing master-key model.
 
+## v3.1 — Multiple servers (Discord-style)
+
+Multi-server **client**, not federation: each server remains an independent
+instance; the app connects to several and aggregates them in one UI. The user
+adds a server by entering its HTTPS URL (hostname strongly recommended; bare
+IPs need a valid TLS cert) and joining via that server's invite. Per server:
+separate account, passkeys, master key, friends, and groups.
+
+Because passkeys are origin-bound, auth against a remote server happens in a
+popup/redirect on that server's origin (passkey ceremony + PRF unwrap there),
+which hands a session token and the unwrapped MK back to the client via
+postMessage. This handoff is the security-critical piece of v3.1.
+
+Explicitly out of scope: groups spanning two servers. Technically possible
+(the crypto doesn't care where members live) but requires real federation —
+cross-server identity, key distribution, and message relay. Not doing it is
+what keeps servers simple and isolated.
+
 ## v4 — Voice chat
 
 E2EE voice channels (WebRTC; SFU with insertable streams if needed at our
