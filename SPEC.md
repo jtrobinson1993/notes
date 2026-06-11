@@ -25,9 +25,9 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 - **Master key (MK):** random 256-bit, generated client-side at signup. Never leaves the client unwrapped.
 - **Key wrapping:**
   - Passkey: WebAuthn **PRF extension** output → HKDF-SHA-256 → wraps MK (AES-256-GCM). One wrapped copy per registered passkey. Passkeys without PRF support are rejected at registration with a clear message.
-  - Recovery code: random 128-bit (displayed as word groups) → HKDF → second wrapped copy of MK. High entropy, so no slow KDF needed.
+  - Recovery code: random 160-bit (displayed as base32 in groups of 4) → HKDF → second wrapped copy of MK, plus a separately-derived auth key whose hash the server stores for recovery login. High entropy, so no slow KDF needed.
 - **Notes:** per-note random key, AES-256-GCM; note key wrapped by MK. Titles and bodies both encrypted.
-- **Per-user keypair (for future sharing):** X25519, created at signup; private key wrapped by MK, public key stored server-side. Sharing a note later = wrap its note key to the recipient's public key (sealed-box style). WebCrypto X25519 where available, `@noble/curves` fallback.
+- **Per-user keypair (for sharing):** X25519 via `@noble/curves` (portable across all browsers), created at signup; private key wrapped by MK, public key stored server-side. Sharing a note = sealing its note key to the recipient's public key (ephemeral-static DH + HKDF + AES-256-GCM).
 - Server stores: ciphertext blobs, wrapped keys, WebAuthn public keys. It can never read notes.
 
 ## v1 features

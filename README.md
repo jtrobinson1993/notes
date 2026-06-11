@@ -76,15 +76,34 @@ encrypted notes and public keys).
 - Passkeys must support the PRF extension (recent Chrome/Edge/Firefox/Safari
   with platform authenticators, 1Password, Bitwarden, etc.).
 
-## Development
+## Running locally
+
+**Dev mode** (hot reload, two terminals):
 
 ```sh
 npm install
-npm run build -w shared
-npm run dev:server   # API on :3000
-npm run dev:web      # Vite on :5173 (proxies /api), set APP_ORIGIN=http://localhost:5173 for the server
-npm run typecheck
+npm run build -w shared                              # build shared types once
+
+# terminal 1 — API on :3000 (tsx watch, SQLite in server/data/)
+APP_ORIGIN=http://localhost:5173 npm run dev:server
+
+# terminal 2 — web app on :5173, proxies /api to :3000
+npm run dev:web
 ```
+
+Open <http://localhost:5173>. The first account created becomes the admin.
+`APP_ORIGIN` must match the URL in the browser or passkey ceremonies fail —
+that's why the API server needs it set to the Vite origin in dev.
+
+**Production-style** (single server, serves the built SPA):
+
+```sh
+npm run build
+npm start            # http://localhost:3000, data in ./data/
+```
+
+Or run the Docker setup from the install section above. Useful checks:
+`npm run typecheck` (server + web).
 
 Stack: TypeScript everywhere — Fastify + better-sqlite3 + @simplewebauthn
 (server); Vue 3 + Pinia + Pinia Colada + Reka UI + Tailwind, built with Vite
