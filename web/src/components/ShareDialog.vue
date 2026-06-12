@@ -6,7 +6,6 @@ import {
   DialogPortal,
   DialogRoot,
   DialogTitle,
-  DialogTrigger,
 } from 'reka-ui';
 import { useMutation, useQuery, useQueryCache } from '@pinia/colada';
 import type { ShareAccess } from '@notes/shared';
@@ -19,7 +18,7 @@ const props = defineProps<{ noteId: string }>();
 const session = useSessionStore();
 const notes = useNotesStore();
 const queryCache = useQueryCache();
-const open = ref(false);
+const open = defineModel<boolean>('open', { default: false });
 const error = ref('');
 
 const { data: members } = useQuery({
@@ -54,11 +53,6 @@ const toggleShare = useMutation({
 
 <template>
   <DialogRoot v-model:open="open">
-    <DialogTrigger
-      class="rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-    >
-      Share
-    </DialogTrigger>
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-20 bg-black/40" />
       <DialogContent

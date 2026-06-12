@@ -1,9 +1,22 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+  PopoverContent,
+  PopoverPortal,
+  PopoverRoot,
+  PopoverTrigger,
+} from 'reka-ui';
 import type { AttachmentRef } from '@notes/shared';
 import { api } from '../lib/api';
 import { decryptBlob, encryptBlob } from '../lib/crypto';
+import { clearTagColor, setTagColor, tagColor, tagTextColor } from '../lib/tagColors';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
+import ColorPalette from './ColorPalette.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import MarkdownView from './MarkdownView.vue';
 import ShareDialog from './ShareDialog.vue';
@@ -15,11 +28,28 @@ const emit = defineEmits<{ deleted: [] }>();
 const notes = useNotesStore();
 const title = ref(props.note.payload.title);
 const body = ref(props.note.payload.body);
-const tagsInput = ref(props.note.payload.tags.join(', '));
+const tags = ref<string[]>([...props.note.payload.tags]);
+const tagInput = ref('');
+const colorTagOpen = ref<string | null>(null);
+
+function pickTagColor(tag: string, css: string) {
+  setTagColor(tag, css);
+  colorTagOpen.value = null;
+}
+
+function resetTagColor(tag: string) {
+  clearTagColor(tag);
+  colorTagOpen.value = null;
+}
 const attachments = ref<AttachmentRef[]>(props.note.payload.attachments ?? []);
-const saveState = ref<'saved' | 'saving' | 'error'>('saved');
+const saveState = ref<'saved' | 'unsaved' | 'saving' | 'error'>('saved');
 const fileInput = ref<HTMLInputElement>();
+const shareOpen = ref(false);
+const historyOpen = ref(false);
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+// Bumped on every edit (and note switch) so a save that finishes after the
+// user has typed again doesn't overwrite the 'unsaved' indicator.
+let editGen = 0;
 
 type Mode = 'live' | 'source' | 'reading';
 const MODE_KEY = 'notes:editor-mode';
@@ -69,33 +99,36 @@ watch(
   () => props.note.id,
   () => {
     if (saveTimer) clearTimeout(saveTimer);
+    editGen++;
     title.value = props.note.payload.title;
     body.value = props.note.payload.body;
-    tagsInput.value = props.note.payload.tags.join(', ');
+    tags.value = [...props.note.payload.tags];
     attachments.value = props.note.payload.attachments ?? [];
     saveState.value = 'saved';
   },
 );
 
-watch([title, body, tagsInput], () => {
+watch([title, body, tags], () => {
   if (readonly.value) return;
-  saveState.value = 'saving';
+  editGen++;
+  saveState.value = 'unsaved';
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(save, 800);
 });
 
 async function save() {
-  const tags = [...new Set(tagsInput.value.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean))];
+  const gen = editGen;
+  saveState.value = 'saving';
   try {
     await notes.save(props.note.id, {
       title: title.value,
       body: body.value,
-      tags,
+      tags: tags.value,
       attachments: attachments.value.length ? attachments.value : undefined,
     });
-    saveState.value = notes.pendingCount > 0 ? 'error' : 'saved';
+    if (gen === editGen) saveState.value = notes.pendingCount > 0 ? 'error' : 'saved';
   } catch {
-    saveState.value = 'error';
+    if (gen === editGen) saveState.value = 'error';
   }
 }
 
@@ -139,6 +172,20 @@ async function remove() {
   emit('deleted');
 }
 
+function addTag() {
+  const tag = tagInput.value.trim().toLowerCase();
+  if (tag && !tags.value.includes(tag)) tags.value = [...tags.value, tag];
+  tagInput.value = '';
+}
+
+function removeTag(tag: string) {
+  tags.value = tags.value.filter((t) => t !== tag);
+}
+
+function popLastTag() {
+  if (!tagInput.value && tags.value.length) tags.value = tags.value.slice(0, -1);
+}
+
 function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -158,34 +205,109 @@ function fmtSize(bytes: number): string {
       <span v-if="note.shared" class="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700 dark:bg-violet-950 dark:text-violet-300">
         {{ note.shared.ownerUsername }} · {{ note.shared.access === 'read' ? 'read-only' : 'can edit' }}
       </span>
+      <div class="flex shrink-0 gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
+        <button
+          v-for="m in modes"
+          :key="m.value"
+          :title="m.title"
+          class="rounded-md px-3 py-1 text-sm text-zinc-500"
+          :class="mode === m.value ? 'bg-white text-zinc-900 shadow dark:bg-zinc-700 dark:text-zinc-100' : ''"
+          @click="mode = m.value"
+        >
+          {{ m.label }}
+        </button>
+      </div>
       <span class="shrink-0 px-1 text-xs text-zinc-400">
-        {{ saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Queued (offline)' : 'Saved' }}
+        {{ saveState === 'unsaved' ? 'Unsaved' : saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Failed to save' : 'Saved' }}
       </span>
-      <ShareDialog v-if="isOwner" :note-id="note.id" />
-      <HistoryDialog v-if="isOwner" :note-id="note.id" />
-      <button
-        v-if="!readonly"
-        class="shrink-0 rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-        @click="fileInput?.click()"
-      >
-        Attach
-      </button>
+      <DropdownMenuRoot v-if="isOwner || !readonly">
+        <DropdownMenuTrigger
+          class="shrink-0 rounded-lg px-2.5 py-1 text-lg leading-none text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          aria-label="Note actions"
+        >
+          ⋮
+        </DropdownMenuTrigger>
+        <DropdownMenuPortal>
+          <DropdownMenuContent
+            align="end"
+            :side-offset="4"
+            class="z-30 min-w-44 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <DropdownMenuItem
+              v-if="isOwner"
+              class="rounded-md px-3 py-1.5 text-sm text-zinc-700 outline-none data-highlighted:bg-zinc-100 dark:text-zinc-200 dark:data-highlighted:bg-zinc-800"
+              @select="shareOpen = true"
+            >
+              Share
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              v-if="isOwner"
+              class="rounded-md px-3 py-1.5 text-sm text-zinc-700 outline-none data-highlighted:bg-zinc-100 dark:text-zinc-200 dark:data-highlighted:bg-zinc-800"
+              @select="historyOpen = true"
+            >
+              History
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              v-if="!readonly"
+              class="rounded-md px-3 py-1.5 text-sm text-zinc-700 outline-none data-highlighted:bg-zinc-100 dark:text-zinc-200 dark:data-highlighted:bg-zinc-800"
+              @select="fileInput?.click()"
+            >
+              Attach
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              v-if="isOwner"
+              class="rounded-md px-3 py-1.5 text-sm text-red-500 outline-none data-highlighted:bg-red-50 dark:data-highlighted:bg-red-950"
+              @select="remove"
+            >
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenuPortal>
+      </DropdownMenuRoot>
       <input ref="fileInput" type="file" multiple class="hidden" @change="attach" />
-      <button
-        v-if="isOwner"
-        class="shrink-0 rounded-lg px-2 py-1 text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-950"
-        @click="remove"
-      >
-        Delete
-      </button>
+      <ShareDialog v-if="isOwner" v-model:open="shareOpen" :note-id="note.id" />
+      <HistoryDialog v-if="isOwner" v-model:open="historyOpen" :note-id="note.id" />
     </div>
 
-    <input
-      v-model="tagsInput"
-      placeholder="tags, comma, separated"
-      :readonly="readonly"
-      class="mb-2 w-full bg-transparent text-sm text-zinc-500 outline-none placeholder:text-zinc-400 dark:text-zinc-400"
-    />
+    <div class="mb-2 flex flex-wrap items-center gap-1.5">
+      <span
+        v-for="tag in tags"
+        :key="tag"
+        class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs"
+        :style="{ background: tagColor(tag), color: tagTextColor(tagColor(tag)) }"
+      >
+        <PopoverRoot :open="colorTagOpen === tag" @update:open="colorTagOpen = $event ? tag : null">
+          <PopoverTrigger title="Tag color">#{{ tag }}</PopoverTrigger>
+          <PopoverPortal>
+            <PopoverContent
+              side="bottom"
+              align="start"
+              :side-offset="6"
+              class="z-30 w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+            >
+              <ColorPalette removable remove-label="Reset color" @pick="pickTagColor(tag, $event)" @remove="resetTagColor(tag)" />
+            </PopoverContent>
+          </PopoverPortal>
+        </PopoverRoot>
+        <button
+          v-if="!readonly"
+          class="-mr-0.5 rounded-full px-0.5 leading-none opacity-70 hover:opacity-100"
+          :title="`Remove #${tag}`"
+          @click="removeTag(tag)"
+        >
+          ✕
+        </button>
+      </span>
+      <input
+        v-if="!readonly"
+        v-model="tagInput"
+        placeholder="Add tag…"
+        class="min-w-24 grow bg-transparent text-sm text-zinc-500 outline-none placeholder:text-zinc-400 dark:text-zinc-400"
+        @keydown.enter.prevent="addTag"
+        @keydown.backspace="popLastTag"
+        @blur="addTag"
+      />
+    </div>
 
     <div v-if="attachments.length" class="mb-2 flex flex-wrap gap-1.5">
       <span
@@ -200,19 +322,6 @@ function fmtSize(bytes: number): string {
           ✕
         </button>
       </span>
-    </div>
-
-    <div class="mb-2 flex w-fit gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
-      <button
-        v-for="m in modes"
-        :key="m.value"
-        :title="m.title"
-        class="rounded-md px-3 py-1 text-sm text-zinc-500"
-        :class="mode === m.value ? 'bg-white text-zinc-900 shadow dark:bg-zinc-700 dark:text-zinc-100' : ''"
-        @click="mode = m.value"
-      >
-        {{ m.label }}
-      </button>
     </div>
 
     <div v-if="mode === 'reading'" class="min-h-0 grow overflow-y-auto">

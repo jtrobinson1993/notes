@@ -35,6 +35,16 @@ body {
   @apply bg-zinc-50 text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100;
 }
 
+/* Tailwind v4 preflight sets cursor: default on buttons; restore pointer for
+   everything clickable (incl. reka-ui triggers/menu items, which render with
+   role attributes rather than <button>). */
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']),
+[role='menuitem']:not([data-disabled]),
+select:not(:disabled) {
+  cursor: pointer;
+}
+
 /* Minimal typography for rendered Markdown */
 .md-preview {
   @apply text-[15px] leading-relaxed;
@@ -57,26 +67,51 @@ body {
 .md-preview mark { @apply rounded bg-yellow-200 px-0.5 dark:bg-yellow-500/40 dark:text-inherit; }
 .md-preview u { text-underline-offset: 2px; }
 
-/* Spoilers: blurred until revealed (reading mode + live editor) */
+/* Spoilers: solid overlay until revealed — black in light mode, light grey
+   in dark mode (reading mode + live editor) */
 .spoiler,
 .cm-live-spoiler {
-  filter: blur(5px);
   cursor: pointer;
   border-radius: 2px;
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  transition: filter 120ms ease;
+  background: light-dark(#000, #d4d4d8);
+}
+.spoiler:not(.spoiler-revealed),
+.spoiler:not(.spoiler-revealed) *,
+.cm-live-spoiler:not(.cm-spoiler-revealed),
+.cm-live-spoiler:not(.cm-spoiler-revealed) * {
+  color: transparent !important;
+}
+.spoiler:not(.spoiler-revealed) *,
+.cm-live-spoiler:not(.cm-spoiler-revealed) * {
+  background: transparent;
 }
 .spoiler-revealed,
 .cm-spoiler-revealed {
-  filter: none;
   cursor: text;
   background: color-mix(in srgb, currentColor 7%, transparent);
 }
-.spoiler img {
-  filter: blur(24px);
+
+/* Spoilered images: cover with the overlay and a centered SPOILER label */
+.spoiler:not(.spoiler-revealed):has(img),
+.spoiler-image:not(.spoiler-image-revealed) {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
 }
-.spoiler-revealed img {
-  filter: none;
+.spoiler:not(.spoiler-revealed):has(img)::after,
+.spoiler-image:not(.spoiler-image-revealed)::after {
+  content: 'SPOILER';
+  position: absolute;
+  inset: 0.25rem 0; /* match the image's my-1 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem; /* match the image's rounded-lg */
+  background: light-dark(#000, #d4d4d8);
+  color: light-dark(#fafafa, #18181b);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.15em;
 }
 
 /* Live-preview editor styling */
@@ -132,8 +167,7 @@ body {
 .md-preview img {
   @apply my-1 max-h-96 max-w-full rounded-lg;
 }
-.spoiler-image img { filter: blur(24px); cursor: pointer; }
-.spoiler-image-revealed img { filter: none; cursor: default; }
+.spoiler-image-revealed img { cursor: default; }
 
 .embed-placeholder {
   @apply my-2 max-w-xl;
@@ -143,4 +177,7 @@ body {
 }
 .embed-iframe {
   @apply aspect-video w-full rounded-lg border-0;
+}
+.image-placeholder-btn {
+  @apply my-1 inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-zinc-100 px-3 py-2 text-xs text-zinc-600 hover:bg-zinc-200 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800;
 }

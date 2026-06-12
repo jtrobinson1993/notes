@@ -126,6 +126,13 @@ CREATE TABLE IF NOT EXISTS attachments (
   size INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS user_settings (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  data TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, key)
+);
 CREATE TABLE IF NOT EXISTS challenges (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
@@ -356,6 +363,20 @@ export function openDb(dataDir: string) {
         username: string;
         public_key: string | null;
       }[];
+    },
+
+    getUserSetting(userId: string, key: string) {
+      return db.prepare('SELECT data, updated_at FROM user_settings WHERE user_id = ? AND key = ?').get(userId, key) as
+        | { data: string; updated_at: number }
+        | undefined;
+    },
+    putUserSetting(userId: string, key: string, data: string): number {
+      const ts = now();
+      db.prepare(
+        `INSERT INTO user_settings (user_id, key, data, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_id, key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+      ).run(userId, key, data, ts);
+      return ts;
     },
 
     putChallenge(c: { id: string; type: string; data: unknown }): void {

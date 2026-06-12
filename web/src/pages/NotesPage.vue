@@ -3,6 +3,8 @@ import { computed, ref, watch } from 'vue';
 import { useQuery } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import NoteEditor from '../components/NoteEditor.vue';
+import { loadTagColors, tagColor, tagTextColor } from '../lib/tagColors';
+import { toPlainText } from '../lib/transfer';
 import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
 
@@ -13,6 +15,15 @@ const search = ref('');
 const activeTag = ref<string | null>(null);
 const selectedId = ref<string | null>(null);
 
+// Open the most recently edited note once notes are ready (or a fresh note if
+// there are none). Desktop only: on mobile the list is the landing view.
+let autoOpened = false;
+async function autoOpen() {
+  if (autoOpened || selectedId.value || !matchMedia('(min-width: 640px)').matches) return;
+  autoOpened = true;
+  selectedId.value = notes.sorted[0]?.id ?? (await notes.create());
+}
+
 // Instant load from the encrypted IndexedDB cache, then background sync
 // (Pinia Colada refetches on focus/reconnect).
 useQuery({
@@ -21,6 +32,8 @@ useQuery({
     if (!session.unlocked) return null;
     if (!notes.loaded) await notes.loadFromCache();
     await notes.sync();
+    void loadTagColors();
+    await autoOpen();
     return notes.sorted.length;
   },
   refetchOnWindowFocus: true,
@@ -34,6 +47,8 @@ watch(
     if (unlocked) {
       await notes.loadFromCache();
       await notes.sync();
+      void loadTagColors();
+      await autoOpen();
     }
   },
   { immediate: true },
@@ -55,7 +70,8 @@ async function newNote() {
 }
 
 function excerpt(body: string): string {
-  return body.replace(/[#*`>\-\[\]]/g, '').slice(0, 80);
+  // strip markup from just enough of the body for an 80-char preview
+  return toPlainText(body.slice(0, 500)).replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 </script>
 
@@ -107,9 +123,17 @@ function excerpt(body: string): string {
                 {{ note.payload.title || 'Untitled' }}
                 <span v-if="note.shared" class="text-xs font-normal text-violet-500">· from {{ note.shared.ownerUsername }}</span>
               </p>
-              <p class="truncate text-xs text-zinc-500 dark:text-zinc-400">
-                {{ excerpt(note.payload.body) || 'Empty note' }}
-              </p>
+              <div class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
+                <span
+                  v-for="tag in note.payload.tags"
+                  :key="tag"
+                  class="shrink-0 rounded-full px-1.5 py-px text-[10px] leading-tight"
+                  :style="{ background: tagColor(tag), color: tagTextColor(tagColor(tag)) }"
+                >
+                  #{{ tag }}
+                </span>
+                <span class="truncate">{{ excerpt(note.payload.body) || 'Empty note' }}</span>
+              </div>
             </button>
           </li>
           <li v-if="notes.loaded && filtered.length === 0" class="p-4 text-center text-sm text-zinc-400">

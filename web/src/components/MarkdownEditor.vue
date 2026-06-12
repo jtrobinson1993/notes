@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui';
+import ColorPalette from './ColorPalette.vue';
 import { EditorView, keymap, placeholder } from '@codemirror/view';
 import { EditorState, Compartment } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
@@ -26,7 +27,7 @@ import {
   toggleStrike,
   toggleUnderline,
 } from '../lib/editor/commands';
-import { customCss, getLastColor, PRESET_COLORS, presetCss } from '../lib/editor/palette';
+import { getLastColor, PRESET_COLORS, presetCss } from '../lib/editor/palette';
 
 const props = defineProps<{
   modelValue: string;
@@ -90,12 +91,11 @@ const toolbarVisible = ref(false);
 const toolbarPos = ref({ left: 0, top: 0 });
 const paletteOpen = ref(false);
 const focused = ref(false);
-const customLight = ref('#dc2626');
-const customDark = ref('#f87171');
 
 function updateToolbar() {
-  if (!view || props.readonly || isCoarse) {
+  if (!view || props.readonly || isCoarse || (props.mode ?? 'live') !== 'live') {
     toolbarVisible.value = false;
+    paletteOpen.value = false;
     return;
   }
   const range = view.state.selection.main;
@@ -130,13 +130,8 @@ function run(cmd: Cmd) {
   paletteOpen.value = false;
 }
 
-function pickPreset(varName: string) {
-  if (view) applyColor(view, `var(${varName})`);
-  paletteOpen.value = false;
-}
-
-function pickCustom() {
-  if (view) applyColor(view, customCss(customLight.value, customDark.value));
+function pickColor(css: string) {
+  if (view) applyColor(view, css);
   paletteOpen.value = false;
 }
 
@@ -202,7 +197,10 @@ watch(
 
 watch(
   () => props.mode,
-  (mode) => view?.dispatch({ effects: modeCompartment.reconfigure(modeExtensions(mode ?? 'live')) }),
+  (mode) => {
+    view?.dispatch({ effects: modeCompartment.reconfigure(modeExtensions(mode ?? 'live')) });
+    updateToolbar();
+  },
 );
 
 onBeforeUnmount(() => view?.destroy());
@@ -268,26 +266,7 @@ onBeforeUnmount(() => view?.destroy());
                 @close-auto-focus.prevent
                 @mousedown.prevent
               >
-                <div class="mb-2 grid grid-cols-4 gap-1.5">
-                  <button
-                    v-for="p in PRESET_COLORS"
-                    :key="p.name"
-                    :title="p.name"
-                    class="h-7 w-7 rounded-full border border-zinc-300 hover:scale-110 dark:border-zinc-600"
-                    :style="{ background: presetCss(p) }"
-                    @click="pickPreset(p.varName)"
-                  />
-                </div>
-                <div class="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
-                  <label class="flex items-center gap-1">☀<input v-model="customLight" type="color" class="h-6 w-7 cursor-pointer" /></label>
-                  <label class="flex items-center gap-1">☾<input v-model="customDark" type="color" class="h-6 w-7 cursor-pointer" /></label>
-                  <button class="grow rounded border border-zinc-300 px-1 py-0.5 hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-700" @click="pickCustom">
-                    Apply
-                  </button>
-                </div>
-                <button class="mt-1.5 w-full rounded border border-zinc-300 px-1 py-0.5 text-xs text-zinc-500 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-400 dark:hover:bg-zinc-700" @click="removeColor">
-                  Remove color
-                </button>
+                <ColorPalette removable @pick="pickColor" @remove="removeColor" />
               </PopoverContent>
             </PopoverPortal>
           </PopoverRoot>
@@ -297,7 +276,7 @@ onBeforeUnmount(() => view?.destroy());
 
     <!-- mobile formatting bar -->
     <div
-      v-if="isCoarse && !readonly && focused"
+      v-if="isCoarse && !readonly && focused && (mode ?? 'live') === 'live'"
       class="absolute inset-x-0 bottom-0 z-20 flex items-center gap-1 overflow-x-auto border-t border-zinc-200 bg-white/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95"
       @mousedown.prevent
       @touchstart.stop
@@ -318,7 +297,7 @@ onBeforeUnmount(() => view?.destroy());
         :title="p.name"
         class="h-6 w-6 shrink-0 rounded-full border border-zinc-300 dark:border-zinc-600"
         :style="{ background: presetCss(p) }"
-        @click="pickPreset(p.varName)"
+        @click="pickColor(presetCss(p))"
       />
     </div>
   </div>

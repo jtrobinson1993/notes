@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryCache } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
 import { api } from '../lib/api';
+import { clickToLoadEmbeds, clickToLoadImages, setClickToLoadEmbeds, setClickToLoadImages } from '../lib/privacy';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
 import { exportNotesZip, parseImportFiles, type ExportFormat } from '../lib/transfer';
 import { useNotesStore } from '../stores/notes';
@@ -137,7 +138,17 @@ async function importFiles(event: Event) {
 <template>
   <AppLayout>
     <div class="mx-auto max-w-2xl space-y-8 overflow-y-auto p-6">
-      <h1 class="text-2xl font-bold">Settings</h1>
+      <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold">Settings</h1>
+        <RouterLink
+          to="/"
+          title="Back to notes"
+          aria-label="Close settings"
+          class="rounded-lg px-2 py-1 text-lg leading-none text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        >
+          ✕
+        </RouterLink>
+      </div>
 
       <section class="space-y-3">
         <h2 class="text-lg font-semibold">Appearance & security</h2>
@@ -157,6 +168,36 @@ async function importFiles(event: Event) {
             <option value="15">15 minutes</option>
             <option value="60">1 hour</option>
             <option value="0">Never</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="space-y-3">
+        <h2 class="text-lg font-semibold">Privacy</h2>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400">
+          Loading remote media reveals your IP address to whoever hosts it. Click to load keeps
+          requests from leaving until you ask.
+        </p>
+        <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <span class="text-sm">Remote images</span>
+          <select
+            :value="String(clickToLoadImages)"
+            class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            @change="setClickToLoadImages(($event.target as HTMLSelectElement).value === 'true')"
+          >
+            <option value="true">Click to load</option>
+            <option value="false">Load automatically</option>
+          </select>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <span class="text-sm">Video embeds (YouTube/Vimeo)</span>
+          <select
+            :value="String(clickToLoadEmbeds)"
+            class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            @change="setClickToLoadEmbeds(($event.target as HTMLSelectElement).value === 'true')"
+          >
+            <option value="true">Click to load</option>
+            <option value="false">Load automatically</option>
           </select>
         </div>
       </section>
@@ -224,10 +265,11 @@ async function importFiles(event: Event) {
           <select
             v-model="exportFormat"
             :disabled="!session.unlocked || transferBusy"
-            title="As written keeps extended syntax (colors, spoilers); standard Markdown strips non-standard bits; plain text strips all markup"
+            title="As written keeps extended syntax (colors, spoilers); Obsidian keeps what Obsidian renders and unwraps spoilers; standard Markdown strips non-standard bits; plain text strips all markup"
             class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           >
             <option value="as-is">As written</option>
+            <option value="obsidian">Obsidian</option>
             <option value="standard">Standard Markdown</option>
             <option value="plain">Plain text</option>
           </select>

@@ -110,9 +110,10 @@ chat will reuse this editor when v3 lands.
   (resolved via CSS custom properties / `light-dark()`, see syntax below);
   last-used color repeats from the toolbar. Highlight (background) colors
   use the same palette.
-- **Spoilers:** `||hidden text||` (Discord syntax). Rendered blurred/blacked
-  out in live preview and reading modes; click-to-reveal per spoiler. Images
-  can be marked as spoilers when inserted (blurred until clicked).
+- **Spoilers:** `||hidden text||` (Discord syntax). Rendered as a solid
+  overlay (black in light mode, light grey in dark mode) in live preview and
+  reading modes; click-to-reveal per spoiler, Cmd/Ctrl+click to re-conceal.
+  Spoilered images show the overlay with a centered "SPOILER" label.
 - **Images & video embeds:** image attachments render inline in live
   preview and reading modes (raw syntax in source mode); the 32 MiB
   attachment limit stays. YouTube/Vimeo URLs render as **click-to-load**
@@ -159,6 +160,8 @@ Export gains an **“Export as”** choice:
 
 - **As-is** (default): extended syntax goes out untouched (HTML renders in
   most Markdown apps).
+- **Obsidian**: keeps what Obsidian renders (`==highlight==`, `<u>`, color
+  spans) and unwraps only `||spoilers||`.
 - **Standard Markdown**: non-compliant constructs stripped — HTML tags
   removed keeping inner text, `==`/`||` markers unwrapped.
 - **Plain text**: all markup stripped.
@@ -217,6 +220,48 @@ Phases:
    so palettes are swappable per theme.
 5. **Highlight:** same palette as text color.
 
+### Decisions (round 3 — UX & rendering safety, shipped)
+
+1. **Note header UI:** Live/Source/Reading toggle sits top-right; Share /
+   History / Attach / Delete live in a kebab (⋮) menu; the save indicator
+   stays outside it with four states — *Unsaved* (debounce pending),
+   *Saving…* (request in flight), *Saved*, *Failed to save*.
+2. **Toolbar scope:** the selection/formatting toolbar (desktop popover and
+   mobile bar) appears in live preview mode only.
+3. **Color apply UX (revises the earlier cursor-exits-span decision):**
+   wrapping a selection keeps the text selected so the toolbar stays up and
+   a second pick *replaces* the color. Re-coloring swaps the enclosing
+   span's open tag in place; coloring a selection that covers colored
+   fragments strips their tags first and wraps once — color spans never
+   stack. Empty-selection picks still drop the caret inside an empty span.
+4. **Tags are pills, not comma text:** Enter (or blur) commits a tag; ✕
+   removes; Backspace in the empty input pops the last tag. Each tag is
+   color-coded (stable preset hashed from the name until customized);
+   clicking a pill opens the same ColorPalette component the text-color
+   toolbar uses (presets + custom light/dark pair). Pill text auto-picks
+   black or white by WCAG relative luminance, resolved against the active
+   theme. Tag colors sync server-side as an **encrypted settings blob**
+   (`user_settings` table, `GET/PUT /api/settings/:key`, value wrapped by
+   the master key — tag names never reach the server in plaintext), with
+   localStorage as the instant-load/offline cache.
+5. **Notes list:** opening the notes page auto-selects the most recently
+   edited note (or creates one if the account is empty; desktop widths
+   only). List previews are plain text (markup stripped via the export
+   pipeline) prefixed by the note's tag pills.
+6. **Rendering safety (v3 chat prep):** reading mode renders from marked's
+   token stream straight to VNodes (`MdTokens`) — **no `v-html`, DOMPurify
+   removed**. Raw HTML in a note renders as literal text, except the two
+   inline pairs the editor writes (`<u>`, `<span style="color:…">` with
+   regex-validated values), which are paired and built as real elements.
+   Link/image URLs are scheme-validated in the renderer. Chat (v3) reuses
+   this renderer; there is no HTML parse step to configure.
+7. **Remote media privacy:** remote images join video embeds as
+   click-to-load placeholders, each with a Settings → Privacy toggle
+   (default: click to load) — no request leaves the client until the reader
+   opts in. Attachment images are unaffected (local decrypts). CSP headers
+   remain future hardening (defense-in-depth; `img-src` stays permissive —
+   images can't execute script, and click-to-load handles tracking).
+
 ## v2.2 — Editor & media follow-ons (planned)
 
 - Block-level live rendering: tables as editable grids, clickable
@@ -249,6 +294,12 @@ accepted tradeoff for a trusted self-hosted server; do not hand-roll Double
 Ratchet/MLS. Optional hardening if wanted later: epoch keys (rotate the
 conversation key periodically) for coarse forward secrecy. Multi-device works
 via the existing master-key model.
+
+Message rendering reuses the token-based markdown renderer from v2.1 round 3
+(no `v-html`, raw HTML inert by construction), so hostile senders get no
+script-injection surface; remote images/embeds stay click-to-load per the
+reader's privacy settings. Add CSP headers (script-src 'self', frame-src
+limited to the embed hosts) as defense-in-depth when chat lands.
 
 ## v3.1 — Chat polish
 

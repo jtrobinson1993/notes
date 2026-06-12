@@ -85,29 +85,48 @@ export function applyColor(view: EditorView, css: string): boolean {
   if (!COLOR_VALUE_RE.test(css)) return false;
   setLastColor(css);
   const range = view.state.selection.main;
-  const node = findEnclosing(view.state, 'ColorSpan', range.from, range.to);
-  if (node) {
-    const openTag = markerChildren(node)[0];
+  const open = `<span style="color:${css}">`;
+  const enclosing = findEnclosing(view.state, 'ColorSpan', range.from, range.to);
+  if (enclosing) {
+    // recolor in place: swap the open tag's style (selection maps through)
+    const openTag = markerChildren(enclosing)[0];
     if (openTag) {
       view.dispatch({
-        changes: { from: openTag.from, to: openTag.to, insert: `<span style="color:${css}">` },
+        changes: { from: openTag.from, to: openTag.to, insert: open },
         userEvent: 'input.format',
       });
     }
-  } else {
-    const open = `<span style="color:${css}">`;
-    // selection: cursor lands inside an empty span (typed text is colored)
-    // but after the closing tag when wrapping existing text, so the span
-    // conceals immediately and typing continues uncolored
-    const cursor = range.empty
-      ? range.from + open.length
-      : range.to + open.length + '</span>'.length;
+  } else if (range.empty) {
+    // cursor lands inside the empty span so typed text is colored
     view.dispatch({
       changes: [
         { from: range.from, insert: open },
         { from: range.to, insert: '</span>' },
       ],
-      selection: { anchor: cursor },
+      selection: { anchor: range.from + open.length },
+      userEvent: 'input.format',
+    });
+  } else {
+    // strip any color spans inside the selection, then wrap it once; keep
+    // the text selected so picking another color replaces instead of stacking
+    const stripped: { from: number; to: number; insert: string }[] = [];
+    syntaxTree(view.state).iterate({
+      from: range.from,
+      to: range.to,
+      enter: (n) => {
+        if (n.name === 'ColorSpan' && n.from >= range.from && n.to <= range.to) {
+          for (const m of markerChildren(n.node)) stripped.push({ from: m.from, to: m.to, insert: '' });
+        }
+      },
+    });
+    const changes = view.state.changes([
+      ...stripped,
+      { from: range.from, insert: open },
+      { from: range.to, insert: '</span>' },
+    ]);
+    view.dispatch({
+      changes,
+      selection: { anchor: changes.mapPos(range.from, 1), head: changes.mapPos(range.to, -1) },
       userEvent: 'input.format',
     });
   }

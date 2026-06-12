@@ -11,6 +11,7 @@ import { authRoutes } from './routes/auth.js';
 import { adminRoutes } from './routes/admin.js';
 import { noteRoutes } from './routes/notes.js';
 import { attachmentRoutes } from './routes/attachments.js';
+import { settingsRoutes } from './routes/settings.js';
 
 export async function buildApp(db: DB, config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
@@ -23,6 +24,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   adminRoutes(app, db, config);
   noteRoutes(app, db);
   attachmentRoutes(app, db, config);
+  settingsRoutes(app, db);
 
   // Serve the built SPA. Default: web/dist relative to the repo layout
   // (works both from source and inside the Docker image).

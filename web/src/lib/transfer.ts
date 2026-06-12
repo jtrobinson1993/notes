@@ -16,10 +16,15 @@ function filenameFor(note: DecryptedNote, used: Set<string>): string {
   return name;
 }
 
-// "Export as" formats: as-is keeps the extended syntax; standard strips
-// non-standard constructs (HTML tags removed keeping inner text, ==/||
-// unwrapped); plain strips all markup.
-export type ExportFormat = 'as-is' | 'standard' | 'plain';
+// "Export as" formats: as-is keeps the extended syntax; obsidian keeps what
+// Obsidian renders (==highlight==, <u>, color spans) and unwraps only
+// ||spoilers||; standard strips non-standard constructs (HTML tags removed
+// keeping inner text, ==/|| unwrapped); plain strips all markup.
+export type ExportFormat = 'as-is' | 'obsidian' | 'standard' | 'plain';
+
+function toObsidian(body: string): string {
+  return body.replace(/\|\|([^|\n]+(?:\|[^|\n]+)*)\|\|/g, '$1');
+}
 
 function toStandardMarkdown(body: string): string {
   return body
@@ -28,7 +33,7 @@ function toStandardMarkdown(body: string): string {
     .replace(/\|\|([^|\n]+(?:\|[^|\n]+)*)\|\|/g, '$1');
 }
 
-function toPlainText(body: string): string {
+export function toPlainText(body: string): string {
   return toStandardMarkdown(body)
     .replace(/^```[^\n]*$/gm, '')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
@@ -44,6 +49,7 @@ function toPlainText(body: string): string {
 }
 
 export function convertBody(body: string, format: ExportFormat): string {
+  if (format === 'obsidian') return toObsidian(body);
   if (format === 'standard') return toStandardMarkdown(body);
   if (format === 'plain') return toPlainText(body);
   return body;

@@ -108,6 +108,11 @@ export const api = {
       `/api/notes/${encodeURIComponent(id)}/versions/${vid}`,
     ),
 
+  settingGet: (key: string) =>
+    req<{ data: string; updatedAt: number } | null>('GET', `/api/settings/${encodeURIComponent(key)}`),
+  settingPut: (key: string, data: string) =>
+    req<{ updatedAt: number }>('PUT', `/api/settings/${encodeURIComponent(key)}`, { data }),
+
   attachmentUpload: async (data: Uint8Array): Promise<{ id: string; size: number }> => {
     const res = await fetch('/api/attachments', {
       method: 'POST',

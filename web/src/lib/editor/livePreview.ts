@@ -287,15 +287,21 @@ const livePreviewPlugin = ViewPlugin.fromClass(
   },
 );
 
-// Clicking a concealed spoiler reveals it instead of placing the cursor.
+// Clicking a concealed spoiler reveals it instead of placing the cursor;
+// cmd/ctrl+clicking a revealed one conceals it again.
 const spoilerClickHandler = EditorView.domEventHandlers({
   mousedown(event, view) {
     const target = (event.target as HTMLElement).closest('.cm-live-spoiler');
-    if (!target || target.classList.contains('cm-spoiler-revealed')) return false;
+    if (!target) return false;
+    const revealed = target.classList.contains('cm-spoiler-revealed');
+    if (revealed && !(event.metaKey || event.ctrlKey)) return false;
     const pos = view.posAtDOM(target);
     let node: SyntaxNode | null = syntaxTree(view.state).resolveInner(pos + 1, 1);
     while (node && node.name !== 'Spoiler') node = node.parent;
     if (!node) return false;
+    // revealed only because the cursor is inside: toggling the state field
+    // would pin it open instead of concealing — let the cursor leaving hide it
+    if (revealed && !isRevealed(view.state, node.from, node.to)) return false;
     view.dispatch({ effects: toggleSpoiler.of({ from: node.from, to: node.to }) });
     return true;
   },

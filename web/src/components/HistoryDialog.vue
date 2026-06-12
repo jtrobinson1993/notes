@@ -6,7 +6,6 @@ import {
   DialogPortal,
   DialogRoot,
   DialogTitle,
-  DialogTrigger,
 } from 'reka-ui';
 import { useQuery } from '@pinia/colada';
 import type { NotePayload } from '@notes/shared';
@@ -20,7 +19,7 @@ const props = defineProps<{ noteId: string }>();
 
 const session = useSessionStore();
 const notes = useNotesStore();
-const open = ref(false);
+const open = defineModel<boolean>('open', { default: false });
 const preview = ref<{ versionId: number; createdAt: number; payload: NotePayload } | null>(null);
 const error = ref('');
 
@@ -55,11 +54,6 @@ async function restore() {
 
 <template>
   <DialogRoot v-model:open="open" @update:open="preview = null">
-    <DialogTrigger
-      class="rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-    >
-      History
-    </DialogTrigger>
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-20 bg-black/40" />
       <DialogContent

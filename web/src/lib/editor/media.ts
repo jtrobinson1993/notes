@@ -1,5 +1,6 @@
 import { Facet } from '@codemirror/state';
 import { WidgetType } from '@codemirror/view';
+import { clickToLoadEmbeds, clickToLoadImages } from '../privacy';
 
 // Resolves an attachment id to a decrypted object URL (null = not found).
 export type AttachmentResolver = (id: string) => Promise<string | null>;
@@ -30,9 +31,9 @@ export function embedSrc(embed: VideoEmbed): string {
     : `https://player.vimeo.com/video/${embed.id}`;
 }
 
-const YT_LOGO =
+export const YT_LOGO =
   '<svg viewBox="0 0 28 20" width="28" height="20"><path fill="#f00" d="M27.4 3.1A3.5 3.5 0 0 0 25 .7C22.8 0 14 0 14 0S5.2 0 3 .7A3.5 3.5 0 0 0 .6 3.1 36.6 36.6 0 0 0 0 10c0 2.3.2 4.6.6 6.9A3.5 3.5 0 0 0 3 19.3c2.2.7 11 .7 11 .7s8.8 0 11-.7a3.5 3.5 0 0 0 2.4-2.4c.4-2.3.6-4.6.6-6.9 0-2.3-.2-4.6-.6-6.9z"/><path fill="#fff" d="M11.2 14.3 18.5 10l-7.3-4.3z"/></svg>';
-const VIMEO_LOGO =
+export const VIMEO_LOGO =
   '<svg viewBox="0 0 28 24" width="24" height="21"><path fill="#1ab7ea" d="M27.9 5.6c-.1 2.7-2 6.4-5.6 11.1-3.7 4.9-6.9 7.3-9.5 7.3-1.6 0-2.9-1.5-4-4.4L6.6 11.7C5.8 8.8 5 7.3 4.1 7.3c-.2 0-.9.4-2 1.2L.8 6.9 4.7 3.4C6.4 1.9 7.7 1.1 8.6 1c2.1-.2 3.3 1.2 3.8 4.2.5 3.3.9 5.3 1.1 6.1.6 2.8 1.3 4.2 2 4.2.6 0 1.5-.9 2.6-2.7 1.1-1.8 1.8-3.2 1.9-4.1.2-1.6-.5-2.3-1.9-2.3-.7 0-1.4.2-2.1.5C17.4 2.3 20.1.1 24.1.2c3 .1 4.3 1.9 3.8 5.4z"/></svg>';
 
 // Click-to-load video embed: shows a neutral placeholder with the platform
@@ -55,6 +56,19 @@ export class EmbedWidget extends WidgetType {
 export function buildEmbedPlaceholder(embed: VideoEmbed): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'embed-placeholder';
+  const load = () => {
+    const iframe = document.createElement('iframe');
+    iframe.src = embedSrc(embed);
+    iframe.className = 'embed-iframe';
+    iframe.allow = 'accelerometer; encrypted-media; fullscreen; picture-in-picture';
+    iframe.allowFullscreen = true;
+    wrap.replaceChildren(iframe);
+    wrap.classList.add('embed-loaded');
+  };
+  if (!clickToLoadEmbeds.value) {
+    load();
+    return wrap;
+  }
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'embed-placeholder-btn';
@@ -63,16 +77,34 @@ export function buildEmbedPlaceholder(embed: VideoEmbed): HTMLElement {
   } video</span>`;
   btn.addEventListener('click', (e) => {
     e.preventDefault();
-    const iframe = document.createElement('iframe');
-    iframe.src = embedSrc(embed);
-    iframe.className = 'embed-iframe';
-    iframe.allow = 'accelerometer; encrypted-media; fullscreen; picture-in-picture';
-    iframe.allowFullscreen = true;
-    wrap.replaceChildren(iframe);
-    wrap.classList.add('embed-loaded');
+    load();
   });
   wrap.append(btn);
   return wrap;
+}
+
+// Click-to-load placeholder for a remote image; swaps itself for the real
+// <img> (no request until clicked).
+export function buildImagePlaceholder(src: string, alt: string, onLoad?: (img: HTMLImageElement) => void): HTMLElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'image-placeholder-btn';
+  let host = '';
+  try {
+    host = new URL(src).hostname;
+  } catch {
+    /* leave generic label */
+  }
+  btn.textContent = `🖼 Load image${host ? ` from ${host}` : ''}`;
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const img = document.createElement('img');
+    img.alt = alt;
+    img.src = src;
+    btn.replaceWith(img);
+    onLoad?.(img);
+  });
+  return btn;
 }
 
 // Inline image rendered in place of ![alt](src). attachment: sources are
@@ -98,6 +130,19 @@ export class ImageWidget extends WidgetType {
     const img = document.createElement('img');
     img.alt = this.alt;
     img.className = 'cm-image';
+    const applySpoiler = () => {
+      if (!this.spoiler) return;
+      wrap.classList.add('spoiler-image');
+      wrap.addEventListener(
+        'click',
+        (e) => {
+          // click reveals; cmd/ctrl+click re-spoilers
+          if (!wrap.classList.contains('spoiler-image-revealed')) wrap.classList.add('spoiler-image-revealed');
+          else if (e.metaKey || e.ctrlKey) wrap.classList.remove('spoiler-image-revealed');
+        },
+        true,
+      );
+    };
     if (this.src.startsWith('attachment:')) {
       const id = this.src.slice('attachment:'.length);
       if (this.resolver) {
@@ -106,14 +151,20 @@ export class ImageWidget extends WidgetType {
           else img.alt = `[missing attachment ${this.alt}]`;
         });
       }
-    } else if (/^https?:/.test(this.src)) {
-      img.src = this.src;
+      wrap.append(img);
+      applySpoiler();
+    } else if (/^https?:/.test(this.src) && clickToLoadImages.value) {
+      wrap.append(
+        buildImagePlaceholder(this.src, this.alt, (loaded) => {
+          loaded.className = 'cm-image';
+          applySpoiler();
+        }),
+      );
+    } else {
+      if (/^https?:/.test(this.src)) img.src = this.src;
+      wrap.append(img);
+      applySpoiler();
     }
-    if (this.spoiler) {
-      wrap.classList.add('spoiler-image');
-      wrap.addEventListener('click', () => wrap.classList.toggle('spoiler-image-revealed'), true);
-    }
-    wrap.append(img);
     return wrap;
   }
 }
