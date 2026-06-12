@@ -60,7 +60,7 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 - Automated encrypted backups: periodic SQLite snapshots into DATA_DIR/backups
   (the DB is ciphertext-only by construction); BACKUP_INTERVAL_HOURS / BACKUP_KEEP
 
-## v2.1 — Obsidian-style live editor (planned, requirements settled)
+## v2.1 — Obsidian-style live editor (shipped)
 
 Supersedes the shipped v2 "format-as-you-type" editor (which styles Markdown
 but leaves the markers visible). Goal: a true live-preview editor — you never

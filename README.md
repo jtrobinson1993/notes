@@ -2,7 +2,9 @@
 
 Self-hosted, end-to-end encrypted note-taking for a small private group.
 Passkey-only sign-in, invite-only registration, Markdown notes with tags and
-format-as-you-type editing, note sharing between users, encrypted attachments,
+an Obsidian-style live-preview editor (concealed markup, formatting shortcuts,
+colors, spoilers, syntax-highlighted code blocks, click-to-load video embeds),
+note sharing between users, encrypted attachments,
 version history, offline editing with conflict handling, import/export, and an
 installable PWA with an encrypted offline cache. The server only ever stores
 ciphertext — it cannot read your notes. See [SPEC.md](SPEC.md) for design details.

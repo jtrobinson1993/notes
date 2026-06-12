@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { TabsContent, TabsList, TabsRoot, TabsTrigger } from 'reka-ui';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { AttachmentRef } from '@notes/shared';
 import { api } from '../lib/api';
 import { decryptBlob, encryptBlob } from '../lib/crypto';
@@ -18,13 +17,53 @@ const title = ref(props.note.payload.title);
 const body = ref(props.note.payload.body);
 const tagsInput = ref(props.note.payload.tags.join(', '));
 const attachments = ref<AttachmentRef[]>(props.note.payload.attachments ?? []);
-const tab = ref('write');
 const saveState = ref<'saved' | 'saving' | 'error'>('saved');
 const fileInput = ref<HTMLInputElement>();
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+type Mode = 'live' | 'source' | 'reading';
+const MODE_KEY = 'notes:editor-mode';
+const stored = localStorage.getItem(MODE_KEY);
+const mode = ref<Mode>(stored === 'source' || stored === 'reading' ? stored : 'live');
+watch(mode, (m) => localStorage.setItem(MODE_KEY, m));
+const modes: { value: Mode; label: string; title: string }[] = [
+  { value: 'live', label: 'Live', title: 'Live preview — formatting applied as you type' },
+  { value: 'source', label: 'Source', title: 'Raw Markdown source' },
+  { value: 'reading', label: 'Reading', title: 'Rendered, read-only view' },
+];
+
 const readonly = computed(() => props.note.shared?.access === 'read');
 const isOwner = computed(() => !props.note.shared);
+
+// Resolve attachment ids to decrypted object URLs for inline rendering in
+// the live editor; cached so a widget rebuild doesn't redownload.
+const urlCache = new Map<string, Promise<string | null>>();
+const objectUrls: string[] = [];
+
+function resolveAttachment(id: string): Promise<string | null> {
+  let cached = urlCache.get(id);
+  if (!cached) {
+    cached = (async () => {
+      const ref = attachments.value.find((a) => a.id === id);
+      if (!ref) return null;
+      try {
+        const ct = await api.attachmentDownload(ref.id);
+        const data = await decryptBlob(ct, ref.key, ref.iv);
+        const url = URL.createObjectURL(new Blob([data as BlobPart], { type: ref.type }));
+        objectUrls.push(url);
+        return url;
+      } catch {
+        return null;
+      }
+    })();
+    urlCache.set(id, cached);
+  }
+  return cached;
+}
+
+onBeforeUnmount(() => {
+  for (const url of objectUrls) URL.revokeObjectURL(url);
+});
 
 watch(
   () => props.note.id,
@@ -163,23 +202,29 @@ function fmtSize(bytes: number): string {
       </span>
     </div>
 
-    <TabsRoot v-model="tab" class="flex min-h-0 grow flex-col">
-      <TabsList class="mb-2 flex w-fit gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
-        <TabsTrigger
-          v-for="t in ['write', 'preview']"
-          :key="t"
-          :value="t"
-          class="rounded-md px-3 py-1 text-sm capitalize text-zinc-500 data-[state=active]:bg-white data-[state=active]:text-zinc-900 data-[state=active]:shadow dark:data-[state=active]:bg-zinc-700 dark:data-[state=active]:text-zinc-100"
-        >
-          {{ t }}
-        </TabsTrigger>
-      </TabsList>
-      <TabsContent value="write" class="min-h-0 grow">
-        <MarkdownEditor v-model="body" :readonly="readonly" />
-      </TabsContent>
-      <TabsContent value="preview" class="min-h-0 grow overflow-y-auto">
-        <MarkdownView :source="body" :attachments="attachments" />
-      </TabsContent>
-    </TabsRoot>
+    <div class="mb-2 flex w-fit gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
+      <button
+        v-for="m in modes"
+        :key="m.value"
+        :title="m.title"
+        class="rounded-md px-3 py-1 text-sm text-zinc-500"
+        :class="mode === m.value ? 'bg-white text-zinc-900 shadow dark:bg-zinc-700 dark:text-zinc-100' : ''"
+        @click="mode = m.value"
+      >
+        {{ m.label }}
+      </button>
+    </div>
+
+    <div v-if="mode === 'reading'" class="min-h-0 grow overflow-y-auto">
+      <MarkdownView :source="body" :attachments="attachments" />
+    </div>
+    <div v-else class="min-h-0 grow">
+      <MarkdownEditor
+        v-model="body"
+        :readonly="readonly"
+        :mode="mode"
+        :resolve-attachment="resolveAttachment"
+      />
+    </div>
   </div>
 </template>

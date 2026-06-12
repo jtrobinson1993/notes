@@ -16,7 +16,40 @@ function filenameFor(note: DecryptedNote, used: Set<string>): string {
   return name;
 }
 
-export function exportNotesZip(notes: DecryptedNote[]): Blob {
+// "Export as" formats: as-is keeps the extended syntax; standard strips
+// non-standard constructs (HTML tags removed keeping inner text, ==/||
+// unwrapped); plain strips all markup.
+export type ExportFormat = 'as-is' | 'standard' | 'plain';
+
+function toStandardMarkdown(body: string): string {
+  return body
+    .replace(/<\/?(?:u|span)(?:\s[^<>]*)?>/gi, '')
+    .replace(/==([^=\n]+(?:=[^=\n]+)*)==/g, '$1')
+    .replace(/\|\|([^|\n]+(?:\|[^|\n]+)*)\|\|/g, '$1');
+}
+
+function toPlainText(body: string): string {
+  return toStandardMarkdown(body)
+    .replace(/^```[^\n]*$/gm, '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')
+    .replace(/(\*|_)(.+?)\1/g, '$2')
+    .replace(/~~(.+?)~~/g, '$1')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/^ {0,3}([-*_]){3,}\s*$/gm, '')
+    .replace(/<[^<>]+>/g, '');
+}
+
+export function convertBody(body: string, format: ExportFormat): string {
+  if (format === 'standard') return toStandardMarkdown(body);
+  if (format === 'plain') return toPlainText(body);
+  return body;
+}
+
+export function exportNotesZip(notes: DecryptedNote[], format: ExportFormat = 'as-is'): Blob {
   const used = new Set<string>();
   const files: Record<string, Uint8Array> = {};
   for (const note of notes) {
@@ -29,7 +62,7 @@ export function exportNotesZip(notes: DecryptedNote[]): Blob {
       '---',
       '',
     ].join('\n');
-    files[filenameFor(note, used)] = strToU8(fm + note.payload.body);
+    files[filenameFor(note, used)] = strToU8(fm + convertBody(note.payload.body, format));
   }
   return new Blob([zipSync(files) as BlobPart], { type: 'application/zip' });
 }

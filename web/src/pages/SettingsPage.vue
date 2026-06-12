@@ -5,7 +5,7 @@ import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
 import { api } from '../lib/api';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
-import { exportNotesZip, parseImportFiles } from '../lib/transfer';
+import { exportNotesZip, parseImportFiles, type ExportFormat } from '../lib/transfer';
 import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
 
@@ -87,6 +87,7 @@ function fmtDate(ts: number | null): string {
 const transferBusy = ref(false);
 const transferMsg = ref('');
 const importInput = ref<HTMLInputElement>();
+const exportFormat = ref<ExportFormat>('as-is');
 
 async function exportAll() {
   transferBusy.value = true;
@@ -97,7 +98,7 @@ async function exportAll() {
       await notes.sync();
     }
     const own = notes.sorted.filter((n) => !n.shared);
-    const blob = exportNotesZip(own);
+    const blob = exportNotesZip(own, exportFormat.value);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `notes-export-${new Date().toISOString().slice(0, 10)}.zip`;
@@ -220,6 +221,16 @@ async function importFiles(event: Event) {
           files or a zip of them.
         </p>
         <div class="flex gap-2" :class="{ 'opacity-50': !session.unlocked }">
+          <select
+            v-model="exportFormat"
+            :disabled="!session.unlocked || transferBusy"
+            title="As written keeps extended syntax (colors, spoilers); standard Markdown strips non-standard bits; plain text strips all markup"
+            class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <option value="as-is">As written</option>
+            <option value="standard">Standard Markdown</option>
+            <option value="plain">Plain text</option>
+          </select>
           <button
             :disabled="!session.unlocked || transferBusy"
             class="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
