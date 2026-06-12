@@ -1,5 +1,5 @@
 import { syntaxTree } from '@codemirror/language';
-import { RangeSet, StateEffect, StateField, type EditorState, type Extension, type Range } from '@codemirror/state';
+import { EditorState, RangeSet, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
 import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import { colorFromOpenTag } from './syntax';
@@ -156,6 +156,12 @@ function buildDecorations(view: EditorView): BuiltDecorations {
           return;
         }
 
+        // \_ \* etc: show only the literal character (Obsidian behavior)
+        if (name === 'Escape') {
+          conceal(node.from, node.from + 1);
+          return;
+        }
+
         if (name in inlineMarks) {
           ranges.push(inlineMarks[name]!.range(node.from, node.to));
           return;
@@ -292,6 +298,58 @@ const spoilerClickHandler = EditorView.domEventHandlers({
   },
 });
 
+// With closing markers concealed, "after the word" and "before the closing
+// marker" look identical, so typed whitespace can land inside the span —
+// which always breaks the emphasis syntax (a space can't precede a closing
+// delimiter) and dumps raw markers back on screen. Whitespace there is never
+// intended: relocate it to after the marker(s). Letters still go inside,
+// extending the formatted text.
+const BREAKOUT_CONTAINERS = new Set(['StrongEmphasis', 'Emphasis', 'Strikethrough', 'Highlight', 'Spoiler']);
+
+const whitespaceBreakout = EditorState.transactionFilter.of((tr) => {
+  if (!tr.docChanged || !tr.isUserEvent('input.type')) return tr;
+  let pos: number | null = null;
+  let text = '';
+  let changeCount = 0;
+  tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    changeCount++;
+    if (fromA === toA) {
+      pos = fromA;
+      text = inserted.toString();
+    }
+  });
+  if (changeCount !== 1 || pos === null || !/^[ \t]+$/.test(text)) return tr;
+
+  const tree = syntaxTree(tr.startState);
+  let p: number = pos;
+  for (;;) {
+    let moved = false;
+    for (
+      let c: SyntaxNode | null = tree.resolveInner(p, -1);
+      c;
+      c = c.parent
+    ) {
+      if (!BREAKOUT_CONTAINERS.has(c.name)) continue;
+      let lastMark: SyntaxNode | null = null;
+      for (let ch = c.firstChild; ch; ch = ch.nextSibling) {
+        if (/(Mark|Tag)$/.test(ch.name)) lastMark = ch;
+      }
+      if (lastMark && lastMark.from === p && lastMark.to === c.to) {
+        p = c.to;
+        moved = true;
+        break;
+      }
+    }
+    if (!moved) break;
+  }
+  if (p === pos) return tr;
+  return {
+    changes: { from: p, insert: text },
+    selection: { anchor: p + text.length },
+    userEvent: 'input.type',
+  };
+});
+
 export function livePreview(): Extension {
-  return [revealedSpoilers, livePreviewPlugin, spoilerClickHandler];
+  return [revealedSpoilers, livePreviewPlugin, spoilerClickHandler, whitespaceBreakout];
 }

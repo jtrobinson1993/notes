@@ -77,7 +77,11 @@ chat will reuse this editor when v3 lands.
   felt janky in practice). Hidden markers are atomic for cursor movement.
   Raw syntax is edited in **source mode**, the escape hatch. Same for
   headings, lists, quotes, links (URL hidden), inline code, strikethrough,
-  highlight, spoilers.
+  highlight, spoilers. Typed whitespace just before a hidden closing marker
+  relocates to after it (a space there always breaks the syntax; letters
+  still extend the span). Literal markers follow CommonMark: intra-word
+  underscores never italicize, and backslash escapes (`\_`) render as the
+  bare character with the backslash concealed.
 - **Keyboard shortcuts** (Cmd on macOS / Ctrl on Windows-Linux), toggling on
   selection or at the caret:
   | Shortcut | Action |
