@@ -198,7 +198,8 @@ Phases:
    v2.2.
 7. **Code languages:** lazy-load all via @codemirror/language-data.
 8. **Spoilers:** click-to-reveal per spoiler; images insertable as spoilers.
-9. **Headings:** typed `# ` syntax only; no shortcut for now.
+9. **Headings:** originally typed `# ` only; Mod+Shift+1..6/0 shortcuts
+   added when live mode went fully WYSIWYG (see 4).
 10. **Portability:** acceptable; mitigated by “Export as” standard
     Markdown / plain text.
 11. **Video** (new requirement): YouTube/Vimeo embeds in v2.1
