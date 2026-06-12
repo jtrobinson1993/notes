@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui';
 import { EditorView, keymap, placeholder } from '@codemirror/view';
 import { EditorState, Compartment } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
@@ -114,11 +115,11 @@ function updateToolbar() {
     toolbarVisible.value = false;
     return;
   }
-  // anchored to the top of the clicked/selected line; CSS translateY(-100%)
-  // lifts the toolbar fully above the text
+  // invisible anchor element tracking the selection; the Reka popover
+  // positions itself against it with collision-aware flipping
   toolbarPos.value = {
-    left: Math.max(4, coords.left - hostRect.left),
-    top: coords.top - hostRect.top - 6,
+    left: Math.max(0, coords.left - hostRect.left),
+    top: coords.top - hostRect.top,
   };
   toolbarVisible.value = true;
 }
@@ -211,66 +212,88 @@ onBeforeUnmount(() => view?.destroy());
   <div class="relative h-full min-h-0">
     <div ref="host" class="h-full min-h-0" :class="{ 'pb-10': isCoarse && !readonly }" />
 
-    <!-- desktop selection toolbar -->
-    <div
-      v-if="toolbarVisible"
-      class="absolute z-20 flex -translate-y-full items-center gap-0.5 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
-      :style="{ left: `${toolbarPos.left}px`, top: `${toolbarPos.top}px` }"
-      @mousedown.prevent
-    >
-      <button
-        v-for="b in buttons"
-        :key="b.title"
-        :title="b.title"
-        class="flex h-7 w-7 items-center justify-center rounded text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
-        :class="b.cls"
-        @click="run(b.cmd)"
-      >
-        {{ b.label }}
-      </button>
-      <span class="mx-0.5 h-5 w-px bg-zinc-200 dark:bg-zinc-700" />
-      <button
-        title="Repeat last color"
-        class="h-7 w-7 rounded p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700"
-        @click="repeatLastColor"
-      >
-        <span class="block h-full w-full rounded-full border border-zinc-300 dark:border-zinc-600" :style="{ background: getLastColor() }" />
-      </button>
-      <button
-        title="Text color"
-        class="flex h-7 w-7 items-center justify-center rounded text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
-        @click="paletteOpen = !paletteOpen"
-      >
-        A<span class="-ml-0.5 text-[10px]">▾</span>
-      </button>
-
-      <!-- color palette popover -->
-      <div
-        v-if="paletteOpen"
-        class="absolute bottom-full left-0 z-30 mb-1 w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
-      >
-        <div class="mb-2 grid grid-cols-4 gap-1.5">
+    <!-- desktop selection toolbar (Reka popover: collision-aware placement) -->
+    <PopoverRoot :open="toolbarVisible">
+      <PopoverAnchor
+        class="pointer-events-none absolute h-px w-px"
+        :style="{ left: `${toolbarPos.left}px`, top: `${toolbarPos.top}px` }"
+      />
+      <PopoverPortal>
+        <PopoverContent
+          side="top"
+          align="start"
+          :side-offset="6"
+          :collision-padding="8"
+          class="z-20 flex items-center gap-0.5 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+          @open-auto-focus.prevent
+          @close-auto-focus.prevent
+          @interact-outside.prevent
+          @mousedown.prevent
+        >
           <button
-            v-for="p in PRESET_COLORS"
-            :key="p.name"
-            :title="p.name"
-            class="h-7 w-7 rounded-full border border-zinc-300 hover:scale-110 dark:border-zinc-600"
-            :style="{ background: presetCss(p) }"
-            @click="pickPreset(p.varName)"
-          />
-        </div>
-        <div class="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
-          <label class="flex items-center gap-1">☀<input v-model="customLight" type="color" class="h-6 w-7 cursor-pointer" /></label>
-          <label class="flex items-center gap-1">☾<input v-model="customDark" type="color" class="h-6 w-7 cursor-pointer" /></label>
-          <button class="grow rounded border border-zinc-300 px-1 py-0.5 hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-700" @click="pickCustom">
-            Apply
+            v-for="b in buttons"
+            :key="b.title"
+            :title="b.title"
+            class="flex h-7 w-7 items-center justify-center rounded text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
+            :class="b.cls"
+            @click="run(b.cmd)"
+          >
+            {{ b.label }}
           </button>
-        </div>
-        <button class="mt-1.5 w-full rounded border border-zinc-300 px-1 py-0.5 text-xs text-zinc-500 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-400 dark:hover:bg-zinc-700" @click="removeColor">
-          Remove color
-        </button>
-      </div>
-    </div>
+          <span class="mx-0.5 h-5 w-px bg-zinc-200 dark:bg-zinc-700" />
+          <button
+            title="Repeat last color"
+            class="h-7 w-7 rounded p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+            @click="repeatLastColor"
+          >
+            <span class="block h-full w-full rounded-full border border-zinc-300 dark:border-zinc-600" :style="{ background: getLastColor() }" />
+          </button>
+
+          <!-- color palette: nested popover, flips/shifts when space runs out -->
+          <PopoverRoot v-model:open="paletteOpen">
+            <PopoverTrigger
+              title="Text color"
+              class="flex h-7 w-7 items-center justify-center rounded text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
+            >
+              A<span class="-ml-0.5 text-[10px]">▾</span>
+            </PopoverTrigger>
+            <PopoverPortal>
+              <PopoverContent
+                side="top"
+                align="start"
+                :side-offset="6"
+                :collision-padding="8"
+                class="z-30 w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+                @open-auto-focus.prevent
+                @close-auto-focus.prevent
+                @mousedown.prevent
+              >
+                <div class="mb-2 grid grid-cols-4 gap-1.5">
+                  <button
+                    v-for="p in PRESET_COLORS"
+                    :key="p.name"
+                    :title="p.name"
+                    class="h-7 w-7 rounded-full border border-zinc-300 hover:scale-110 dark:border-zinc-600"
+                    :style="{ background: presetCss(p) }"
+                    @click="pickPreset(p.varName)"
+                  />
+                </div>
+                <div class="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                  <label class="flex items-center gap-1">☀<input v-model="customLight" type="color" class="h-6 w-7 cursor-pointer" /></label>
+                  <label class="flex items-center gap-1">☾<input v-model="customDark" type="color" class="h-6 w-7 cursor-pointer" /></label>
+                  <button class="grow rounded border border-zinc-300 px-1 py-0.5 hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-700" @click="pickCustom">
+                    Apply
+                  </button>
+                </div>
+                <button class="mt-1.5 w-full rounded border border-zinc-300 px-1 py-0.5 text-xs text-zinc-500 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-400 dark:hover:bg-zinc-700" @click="removeColor">
+                  Remove color
+                </button>
+              </PopoverContent>
+            </PopoverPortal>
+          </PopoverRoot>
+        </PopoverContent>
+      </PopoverPortal>
+    </PopoverRoot>
 
     <!-- mobile formatting bar -->
     <div
