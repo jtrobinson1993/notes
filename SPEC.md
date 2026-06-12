@@ -96,17 +96,20 @@ chat will reuse this editor when v3 lands.
   and **reading** (rendered, non-editable; replaces the v2 Preview tab).
 - **Color formatting:** palette popover on the selection toolbar with 8
   preset colors plus a custom picker. Every color — preset or custom — has a
-  light-theme and a dark-theme value so notes stay legible in both themes;
-  last-used color repeats from the toolbar.
+  light-theme and a dark-theme value so notes stay legible in both themes
+  (resolved via CSS custom properties / `light-dark()`, see syntax below);
+  last-used color repeats from the toolbar. Highlight (background) colors
+  use the same palette.
 - **Spoilers:** `||hidden text||` (Discord syntax). Rendered blurred/blacked
   out in live preview and reading modes; click-to-reveal per spoiler. Images
   can be marked as spoilers when inserted (blurred until clicked).
-- **Images & video:** image attachments render inline in live preview and
-  reading modes (raw syntax in source mode). YouTube/Vimeo URLs render as
-  playable embeds; video files can be uploaded as encrypted attachments and
-  play inline. Per-user upload quota across all attachments: **1 GB** to
-  start, enforced server-side from ciphertext sizes (admin-configurable in
-  v2.2).
+- **Images & video embeds:** image attachments render inline in live
+  preview and reading modes (raw syntax in source mode); the 32 MiB
+  attachment limit stays. YouTube/Vimeo URLs render as **click-to-load**
+  embeds: a neutral placeholder with the platform's logo, and no request
+  leaves the client until the reader clicks (protects reader IPs from
+  Google/Vimeo). No video uploads and no per-user storage quota in v2.1 —
+  both deferred to v2.2.
 - **Code blocks:** ``` fences become real embedded code editors — syntax
   highlighting ("colors n stuff") for the fenced language while editing, not
   just in preview; language picker on the block; copy button. Editing only —
@@ -119,17 +122,21 @@ chat will reuse this editor when v3 lands.
 The document stays plain text under encryption. Standard Markdown covers
 bold/italic/code/strikethrough. The rest needs extended syntax:
 
-- highlight: `==text==` (common Markdown extension)
+- highlight: `==text==` (common Markdown extension) for the default color;
+  colored highlights are spans with `background-color` using the same
+  palette mechanism as text color
 - spoiler: `||text||` (Discord convention)
 - underline: `<u>text</u>` inline HTML (decided)
-- color: inline HTML (decided):
-  `<span style="color:#rrggbb" data-color-dark="#rrggbb">text</span>` — the
-  `style` attribute carries the light-theme color so standard Markdown
-  renderers still show a color; this app switches to `data-color-dark` when
-  the dark theme is active. The 8 presets are just named light/dark hex
-  pairs. (Round-2 question: confirm this over the symmetric
-  `data-light-color`/`data-dark-color` form, which shows no color at all in
-  other apps.)
+- color: inline HTML spans resolved by CSS (decided):
+  - presets: `<span style="color:var(--note-red)">text</span>` — the app
+    defines the eight `--note-*` custom properties per theme, so colors
+    flip automatically with the user's color scheme
+  - custom picks: `<span style="color:light-dark(#l,#d)">text</span>` —
+    the CSS `light-dark()` function resolves inline by color scheme, no
+    variable definitions needed (supported by every browser this app
+    already requires)
+  - other Markdown apps ignore the unknown var/function and render plain
+    uncolored text — harmless degradation
 
 Export gains an **“Export as”** choice:
 
@@ -154,9 +161,8 @@ Phases:
    per-language parsers, keeps bundle small) + language picker + copy button.
 5. Mode toggle (live preview / source / reading); MarkdownView (used by
    History and reading mode) learns the same extended syntax.
-6. Media: YouTube/Vimeo embeds, video attachments + inline playback,
-   per-user quota enforcement, image/video spoilers, “Export as”
-   converters.
+6. Media: click-to-load YouTube/Vimeo embeds (logo placeholder), image
+   spoilers, “Export as” converters.
 
 ### Decisions (review round 1)
 
@@ -174,31 +180,25 @@ Phases:
 9. **Headings:** typed `# ` syntax only; no shortcut for now.
 10. **Portability:** acceptable; mitigated by “Export as” standard
     Markdown / plain text.
-11. **Video** (new requirement): YouTube/Vimeo embeds + uploaded encrypted
-    video; 1 GB per-user upload quota (admin-configurable in v2.2).
+11. **Video** (new requirement): YouTube/Vimeo embeds in v2.1
+    (click-to-load); video uploads and storage quotas deferred to v2.2.
 
-### Open questions — round 2
+### Decisions (review round 2)
 
-1. **Per-file video size cap?** The current attachment limit is 32 MiB.
-   Decryption needs the whole file in memory (AES-GCM is all-or-nothing),
-   so huge files are rough on phones. Proposal: raise the per-file cap to
-   256 MiB for v2.1; chunked/streaming encryption only if that ever hurts.
-2. **Embed privacy:** a YouTube/Vimeo iframe contacts Google/Vimeo with the
-   reader's IP the moment the note opens. Acceptable, or click-to-load (a
-   neutral placeholder until clicked — no third-party request before that)?
-3. **Quota semantics:** the 1 GB counts *all* attachments (images, files,
-   video), including already-uploaded ones, and further uploads are simply
-   rejected once exceeded — correct? Show usage in Settings?
-4. **Color syntax detail:** confirm `style` (light) + `data-color-dark`
-   over symmetric data attributes — see the syntax section above.
-5. **Highlight colors:** the palette settles *text* color; should highlight
-   (background) get the same palette, or stay single-color `==…==`?
+1. **File cap:** attachment limit stays 32 MiB.
+2. **Embeds:** click-to-load with a YouTube/Vimeo logo placeholder.
+3. **Video uploads & quotas:** none in v2.1 (single-user reality for now);
+   moved to v2.2.
+4. **Color mechanism:** CSS custom properties for presets
+   (`color:var(--note-*)`) + `light-dark()` for custom picks.
+5. **Highlight:** same palette as text color.
 
 ## v2.2 — Editor & media follow-ons (planned)
 
 - Block-level live rendering: tables as editable grids, clickable
   checkboxes / form-style elements
-- Admin-configurable per-user upload quota (replaces the fixed 1 GB)
+- Video uploads as encrypted attachments with inline playback, plus
+  per-user storage quotas (admin-configurable; quota UI in Settings)
 - Media optimization on upload, client-side before encryption (the server
   never sees plaintext): downscale video (e.g. 4K → 720p), resize images,
   lossy/lossless compression, WebP conversion. In-browser video transcoding
