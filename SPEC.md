@@ -140,33 +140,44 @@ Phases:
    arbitrary color picker? Text color only, or background highlight colors
    too? A palette keeps notes legible in both themes; arbitrary hex can look
    broken in dark mode.
+   - A: 8 color options and a choose color option (can choose color for both themes - perhaps just data-light-color="selectionHex" data-dark-color="selectionHex"?)
 2. **Color/underline syntax:** inline HTML (`<span style>`, `<u>`) — portable
    to other Markdown tools incl. Obsidian, uglier when revealed — or custom
    syntax (`{red|text}`) — cleaner but only this app understands it. Which do
    you want? (This decides what your exported .md files look like forever.)
+   - A: html
 3. **Preview tab:** once live preview exists, keep the separate Preview tab,
    or drop it entirely? (Obsidian keeps a "reading view" — useful for
    clicking links without entering edit mode.)
+   - A: 3 toggle options - live preview, code, reading
 4. **Reveal behavior:** markers reveal when the cursor is on the span
    (Obsidian default), or never reveal raw syntax at all (more WYSIWYG, but
    harder to fix malformed markup)?
+   - A: Copy obsidian behavior
 5. **Source mode escape hatch:** keep a toggle to see/edit the raw Markdown
    (Obsidian has one)? Recommended yes — debugging malformed syntax without
    it is painful.
+   - A: Yes, see above
 6. **Scope of live rendering:** inline formatting only, or also block-level —
    checkboxes (clickable?), tables (rendered grid vs raw pipes?), images
    (inline embeds already work in preview — render them in the editor too?).
    Tables-as-grids is a large chunk on its own.
+   - A: leave tables and form elements out for now, add a v2.2 with those as features. Images should show in live preview and reading modes, not in code
 7. **Code block languages:** lazy-load all (~stays small per note) or
    preselect a set you actually use? Any languages you definitely need
    (ts/js, python, bash, sql, json, yaml…)?
+   - A: lazy load
 8. **Spoiler reveal:** click-to-reveal per spoiler, or a per-note "show all
    spoilers" toggle, or both?
+   - A: click to reveal per spoiler. Need to have spoiler option when adding an image as well.
 9. **Heading shortcuts:** is Cmd/Ctrl+Shift+1..6 acceptable, or prefer
    Obsidian-style `#` autocompletion only?
+   - A: let's do obsidian style for now.
 10. **Migration:** existing notes are already Markdown so they just render —
     but if we pick custom color syntax, are you OK that *new* notes may look
     odd if you ever switch apps? (Ties back to Q2.)
+    - A: yes, but let's make an "export as" option that let's you choose plain text or standard markdown, with everything non-compliant stripped out (i.e. html tags, non standard markdown)
+11. We should have video embeds as well - hosted on youtube or vimeo, but also option to upload videos under a limit. Each user should have a total uploads limit of 1GB to start. in v2.2, make the limit configurable by admin. v2.2, images and videos should be able to be optimized on upload (i.e., reduce 4k video to 720p, reduce image dimensions, apply lossless or lossy optimization, convert to webp)
 
 ## v3 — E2EE text chat
 
