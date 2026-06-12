@@ -1,6 +1,7 @@
+import { cursorCharLeft, cursorCharRight, selectCharLeft, selectCharRight } from '@codemirror/commands';
 import { syntaxTree } from '@codemirror/language';
-import { EditorState, RangeSet, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
-import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
+import { EditorState, Prec, RangeSet, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
+import { Decoration, type DecorationSet, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType, type Command } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import { colorFromOpenTag } from './syntax';
 import { attachmentResolver, EmbedWidget, ImageWidget, parseVideoUrl } from './media';
@@ -287,6 +288,50 @@ const livePreviewPlugin = ViewPlugin.fromClass(
   },
 );
 
+// Concealed markers are atomic, but the positions on either side of one
+// render at the same visual spot — a plain arrow step across a marker looks
+// like the caret didn't move (one "dead" press at every span edge). Repeat
+// the motion until the caret moves somewhere visible.
+
+function coveredByConcealed(view: EditorView, a: number, b: number): boolean {
+  if (a === b) return false;
+  const atoms = view.plugin(livePreviewPlugin)?.atomics;
+  if (!atoms) return false;
+  const [lo, hi] = a < b ? [a, b] : [b, a];
+  let pos = lo;
+  const iter = atoms.iter(lo);
+  while (iter.value && iter.from < hi) {
+    if (iter.from <= pos && iter.to > pos) pos = iter.to;
+    iter.next();
+  }
+  return pos >= hi;
+}
+
+function visibleStep(cmd: Command, extend: boolean): Command {
+  return (view) => {
+    let prev = view.state.selection.main;
+    if (!cmd(view)) return false;
+    // collapsing a non-empty selection is the whole action — don't repeat
+    if (!extend && !prev.empty) return true;
+    for (let guard = 0; guard < 10; guard++) {
+      const cur = view.state.selection.main;
+      if (!coveredByConcealed(view, prev.head, cur.head)) break;
+      prev = cur;
+      if (!cmd(view) || view.state.selection.main.head === cur.head) break;
+    }
+    return true;
+  };
+}
+
+const concealedMotion = Prec.high(
+  keymap.of([
+    { key: 'ArrowLeft', run: visibleStep(cursorCharLeft, false) },
+    { key: 'ArrowRight', run: visibleStep(cursorCharRight, false) },
+    { key: 'Shift-ArrowLeft', run: visibleStep(selectCharLeft, true) },
+    { key: 'Shift-ArrowRight', run: visibleStep(selectCharRight, true) },
+  ]),
+);
+
 // Clicking a concealed spoiler reveals it instead of placing the cursor;
 // cmd/ctrl+clicking a revealed one conceals it again.
 const spoilerClickHandler = EditorView.domEventHandlers({
@@ -370,6 +415,68 @@ const whitespaceBreakout = EditorState.transactionFilter.of((tr) => {
   };
 });
 
+// Enter inside formatted inline text must not strand markers across lines
+// (inline spans/emphasis can't cross paragraphs — the markup un-renders).
+// Caret right before concealed closing markers: the newline relocates past
+// them. Right after opening markers: it moves before them. Mid-content: the
+// run splits into two valid runs (close everything, newline, reopen).
+const newlineBreakout = EditorState.transactionFilter.of((tr) => {
+  if (!tr.docChanged || !tr.isUserEvent('input')) return tr;
+  let pos: number | null = null;
+  let inserted = '';
+  let changeCount = 0;
+  tr.changes.iterChanges((fromA, toA, _fromB, _toB, ins) => {
+    changeCount++;
+    if (fromA === toA) {
+      pos = fromA;
+      inserted = ins.toString();
+    }
+  });
+  if (changeCount !== 1 || pos === null || !/^\n[ \t]*$/.test(inserted)) return tr;
+
+  const doc = tr.startState.doc;
+  const containers: { open: SyntaxNode; close: SyntaxNode }[] = [];
+  for (
+    let c: SyntaxNode | null = syntaxTree(tr.startState).resolveInner(pos, -1);
+    c;
+    c = c.parent
+  ) {
+    if (!BREAKOUT_CONTAINERS.has(c.name)) continue;
+    let open: SyntaxNode | null = null;
+    let close: SyntaxNode | null = null;
+    for (let ch = c.firstChild; ch; ch = ch.nextSibling) {
+      if (/(Mark|Tag)$/.test(ch.name)) {
+        if (!open) open = ch;
+        close = ch;
+      }
+    }
+    if (open && close && open !== close) containers.push({ open, close });
+  }
+  if (!containers.length) return tr;
+
+  let p: number = pos;
+  let i = 0;
+  // caret sits right before closing markers: step past them
+  while (i < containers.length && containers[i]!.close.from === p) p = containers[i++]!.close.to;
+  // caret sits right after opening markers: step before them
+  while (i < containers.length && containers[i]!.open.to === p) p = containers[i++]!.open.from;
+  const split = containers.slice(i);
+
+  if (p === pos && !split.length) return tr;
+  const closes = split.map((c) => doc.sliceString(c.close.from, c.close.to)).join('');
+  const opens = split
+    .map((c) => doc.sliceString(c.open.from, c.open.to))
+    .reverse()
+    .join('');
+  const insert = closes + inserted + opens;
+  return {
+    changes: { from: p, insert },
+    selection: { anchor: p + insert.length },
+    userEvent: 'input.type',
+    scrollIntoView: true,
+  };
+});
+
 export function livePreview(): Extension {
-  return [revealedSpoilers, livePreviewPlugin, spoilerClickHandler, whitespaceBreakout];
+  return [revealedSpoilers, livePreviewPlugin, spoilerClickHandler, whitespaceBreakout, newlineBreakout, concealedMotion];
 }
