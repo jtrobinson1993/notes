@@ -134,6 +134,11 @@ bold/italic/code/strikethrough. The rest needs extended syntax:
     side by side (e.g. `--brand-red: light-dark(#b91c1c, #f87171)`), and
     are reused everywhere the palette appears (text color, highlights,
     toolbar swatches)
+  - **theme-able by construction:** the `--brand-*` definitions live in a
+    theme token layer (scoped under a `data-theme` attribute on the root).
+    A theme is just a block that redefines those properties — swap the
+    theme and every existing note, swatch, and highlight re-colors
+    instantly, since notes store only variable references, never hexes
   - custom picks: `<span style="color:light-dark(#l,#d)">text</span>` —
     same `light-dark()` function inline, no variable needed (supported by
     every browser this app already requires)
@@ -193,13 +198,17 @@ Phases:
    moved to v2.2.
 4. **Color mechanism:** global `--brand-*` custom properties for presets,
    each defined once as a `light-dark()` pair and reused app-wide;
-   inline `light-dark()` for custom picks.
+   inline `light-dark()` for custom picks. Defined in a theme token layer
+   so palettes are swappable per theme.
 5. **Highlight:** same palette as text color.
 
 ## v2.2 — Editor & media follow-ons (planned)
 
 - Block-level live rendering: tables as editable grids, clickable
   checkboxes / form-style elements
+- User-selectable themes: ship a few alternative palettes (each redefines
+  the `--brand-*` / UI token layer); picker in Settings next to the
+  light/dark/system toggle
 - Video uploads as encrypted attachments with inline playback, plus
   per-user storage quotas (admin-configurable; quota UI in Settings)
 - Media optimization on upload, client-side before encryption (the server
