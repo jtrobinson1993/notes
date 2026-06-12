@@ -128,13 +128,15 @@ bold/italic/code/strikethrough. The rest needs extended syntax:
 - spoiler: `||text||` (Discord convention)
 - underline: `<u>text</u>` inline HTML (decided)
 - color: inline HTML spans resolved by CSS (decided):
-  - presets: `<span style="color:var(--note-red)">text</span>` — the app
-    defines the eight `--note-*` custom properties per theme, so colors
-    flip automatically with the user's color scheme
+  - presets: `<span style="color:var(--brand-red)">text</span>` — the eight
+    `--brand-*` palette colors are defined once in a global stylesheet,
+    each as a `light-dark()` pair so a color's light and dark values sit
+    side by side (e.g. `--brand-red: light-dark(#b91c1c, #f87171)`), and
+    are reused everywhere the palette appears (text color, highlights,
+    toolbar swatches)
   - custom picks: `<span style="color:light-dark(#l,#d)">text</span>` —
-    the CSS `light-dark()` function resolves inline by color scheme, no
-    variable definitions needed (supported by every browser this app
-    already requires)
+    same `light-dark()` function inline, no variable needed (supported by
+    every browser this app already requires)
   - other Markdown apps ignore the unknown var/function and render plain
     uncolored text — harmless degradation
 
@@ -189,8 +191,9 @@ Phases:
 2. **Embeds:** click-to-load with a YouTube/Vimeo logo placeholder.
 3. **Video uploads & quotas:** none in v2.1 (single-user reality for now);
    moved to v2.2.
-4. **Color mechanism:** CSS custom properties for presets
-   (`color:var(--note-*)`) + `light-dark()` for custom picks.
+4. **Color mechanism:** global `--brand-*` custom properties for presets,
+   each defined once as a `light-dark()` pair and reused app-wide;
+   inline `light-dark()` for custom picks.
 5. **Highlight:** same palette as text color.
 
 ## v2.2 — Editor & media follow-ons (planned)
