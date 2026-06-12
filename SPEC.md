@@ -60,7 +60,7 @@ boring, widely supported (Chrome + Firefox-based Zen + Safari).
 - Automated encrypted backups: periodic SQLite snapshots into DATA_DIR/backups
   (the DB is ciphertext-only by construction); BACKUP_INTERVAL_HOURS / BACKUP_KEEP
 
-## v2.1 — Obsidian-style live editor (planned, under review)
+## v2.1 — Obsidian-style live editor (planned, requirements settled)
 
 Supersedes the shipped v2 "format-as-you-type" editor (which styles Markdown
 but leaves the markers visible). Goal: a true live-preview editor — you never
@@ -88,13 +88,25 @@ chat will reuse this editor when v3 lands.
   | Cmd/Ctrl+Shift+H | highlight |
   | Cmd/Ctrl+Shift+X | strikethrough |
   | Cmd/Ctrl+K | link (wrap selection, prompt for URL) |
-  | Cmd/Ctrl+Shift+1..6 | heading level (proposed) |
-- **Color formatting:** apply text color (and/or highlight color) to a
-  selection with low friction. Proposed: a small palette popover on the
-  selection toolbar + last-used color repeat shortcut. (Open questions below —
-  palette vs free choice, and the persistence syntax.)
+
+  Headings have no shortcut: typed `# ` syntax only (Obsidian style — the
+  marker hides as soon as the heading renders).
+- **Editor modes**, toggleable per note: **live preview** (default),
+  **source** (raw Markdown — the escape hatch for fixing malformed syntax),
+  and **reading** (rendered, non-editable; replaces the v2 Preview tab).
+- **Color formatting:** palette popover on the selection toolbar with 8
+  preset colors plus a custom picker. Every color — preset or custom — has a
+  light-theme and a dark-theme value so notes stay legible in both themes;
+  last-used color repeats from the toolbar.
 - **Spoilers:** `||hidden text||` (Discord syntax). Rendered blurred/blacked
-  out in the editor and preview; click to reveal.
+  out in live preview and reading modes; click-to-reveal per spoiler. Images
+  can be marked as spoilers when inserted (blurred until clicked).
+- **Images & video:** image attachments render inline in live preview and
+  reading modes (raw syntax in source mode). YouTube/Vimeo URLs render as
+  playable embeds; video files can be uploaded as encrypted attachments and
+  play inline. Per-user upload quota across all attachments: **1 GB** to
+  start, enforced server-side from ciphertext sizes (admin-configurable in
+  v2.2).
 - **Code blocks:** ``` fences become real embedded code editors — syntax
   highlighting ("colors n stuff") for the fenced language while editing, not
   just in preview; language picker on the block; copy button. Editing only —
@@ -109,14 +121,23 @@ bold/italic/code/strikethrough. The rest needs extended syntax:
 
 - highlight: `==text==` (common Markdown extension)
 - spoiler: `||text||` (Discord convention)
-- underline: no Markdown syntax exists — proposal: `<u>text</u>` inline HTML
-- color: no Markdown syntax exists — proposal: `<span style="color:#rrggbb">`
-  (HTML, portable-ish) **or** a custom compact syntax like `{red|text}`
-  (cleaner to type/parse, but proprietary). Needs a decision — see questions.
+- underline: `<u>text</u>` inline HTML (decided)
+- color: inline HTML (decided):
+  `<span style="color:#rrggbb" data-color-dark="#rrggbb">text</span>` — the
+  `style` attribute carries the light-theme color so standard Markdown
+  renderers still show a color; this app switches to `data-color-dark` when
+  the dark theme is active. The 8 presets are just named light/dark hex
+  pairs. (Round-2 question: confirm this over the symmetric
+  `data-light-color`/`data-dark-color` form, which shows no color at all in
+  other apps.)
 
-Export keeps writing plain Markdown files; extended syntax goes out as-is
-(HTML renders in most Markdown apps; custom syntax wouldn't — a point in
-HTML's favor).
+Export gains an **“Export as”** choice:
+
+- **As-is** (default): extended syntax goes out untouched (HTML renders in
+  most Markdown apps).
+- **Standard Markdown**: non-compliant constructs stripped — HTML tags
+  removed keeping inner text, `==`/`||` markers unwrapped.
+- **Plain text**: all markup stripped.
 
 ### Implementation sketch
 
@@ -131,53 +152,57 @@ Phases:
    decorations + commands.
 4. Embedded code-block highlighting via @codemirror/language-data (lazy-loads
    per-language parsers, keeps bundle small) + language picker + copy button.
-5. Remove or demote the preview tab (see questions); MarkdownView (used by
-   History/read-only) learns the same extended syntax.
+5. Mode toggle (live preview / source / reading); MarkdownView (used by
+   History and reading mode) learns the same extended syntax.
+6. Media: YouTube/Vimeo embeds, video attachments + inline playback,
+   per-user quota enforcement, image/video spoilers, “Export as”
+   converters.
 
-### Open questions — answer before build
+### Decisions (review round 1)
 
-1. **Color scope:** fixed palette (say 8 colors that adapt to dark mode) or
-   arbitrary color picker? Text color only, or background highlight colors
-   too? A palette keeps notes legible in both themes; arbitrary hex can look
-   broken in dark mode.
-   - A: 8 color options and a choose color option (can choose color for both themes - perhaps just data-light-color="selectionHex" data-dark-color="selectionHex"?)
-2. **Color/underline syntax:** inline HTML (`<span style>`, `<u>`) — portable
-   to other Markdown tools incl. Obsidian, uglier when revealed — or custom
-   syntax (`{red|text}`) — cleaner but only this app understands it. Which do
-   you want? (This decides what your exported .md files look like forever.)
-   - A: html
-3. **Preview tab:** once live preview exists, keep the separate Preview tab,
-   or drop it entirely? (Obsidian keeps a "reading view" — useful for
-   clicking links without entering edit mode.)
-   - A: 3 toggle options - live preview, code, reading
-4. **Reveal behavior:** markers reveal when the cursor is on the span
-   (Obsidian default), or never reveal raw syntax at all (more WYSIWYG, but
-   harder to fix malformed markup)?
-   - A: Copy obsidian behavior
-5. **Source mode escape hatch:** keep a toggle to see/edit the raw Markdown
-   (Obsidian has one)? Recommended yes — debugging malformed syntax without
-   it is painful.
-   - A: Yes, see above
-6. **Scope of live rendering:** inline formatting only, or also block-level —
-   checkboxes (clickable?), tables (rendered grid vs raw pipes?), images
-   (inline embeds already work in preview — render them in the editor too?).
-   Tables-as-grids is a large chunk on its own.
-   - A: leave tables and form elements out for now, add a v2.2 with those as features. Images should show in live preview and reading modes, not in code
-7. **Code block languages:** lazy-load all (~stays small per note) or
-   preselect a set you actually use? Any languages you definitely need
-   (ts/js, python, bash, sql, json, yaml…)?
-   - A: lazy load
-8. **Spoiler reveal:** click-to-reveal per spoiler, or a per-note "show all
-   spoilers" toggle, or both?
-   - A: click to reveal per spoiler. Need to have spoiler option when adding an image as well.
-9. **Heading shortcuts:** is Cmd/Ctrl+Shift+1..6 acceptable, or prefer
-   Obsidian-style `#` autocompletion only?
-   - A: let's do obsidian style for now.
-10. **Migration:** existing notes are already Markdown so they just render —
-    but if we pick custom color syntax, are you OK that *new* notes may look
-    odd if you ever switch apps? (Ties back to Q2.)
-    - A: yes, but let's make an "export as" option that let's you choose plain text or standard markdown, with everything non-compliant stripped out (i.e. html tags, non standard markdown)
-11. We should have video embeds as well - hosted on youtube or vimeo, but also option to upload videos under a limit. Each user should have a total uploads limit of 1GB to start. in v2.2, make the limit configurable by admin. v2.2, images and videos should be able to be optimized on upload (i.e., reduce 4k video to 720p, reduce image dimensions, apply lossless or lossy optimization, convert to webp)
+1. **Colors:** 8 presets + custom picker; every color stores a light-theme
+   and a dark-theme value.
+2. **Persistence:** inline HTML for underline and color.
+3. **Modes:** live preview / source / reading toggle (Preview tab replaced).
+4. **Marker reveal:** Obsidian behavior (cursor in span reveals syntax).
+5. **Source mode:** yes — covered by the mode toggle.
+6. **Block rendering:** images render in live preview and reading modes
+   (raw syntax in source); tables and interactive checkboxes deferred to
+   v2.2.
+7. **Code languages:** lazy-load all via @codemirror/language-data.
+8. **Spoilers:** click-to-reveal per spoiler; images insertable as spoilers.
+9. **Headings:** typed `# ` syntax only; no shortcut for now.
+10. **Portability:** acceptable; mitigated by “Export as” standard
+    Markdown / plain text.
+11. **Video** (new requirement): YouTube/Vimeo embeds + uploaded encrypted
+    video; 1 GB per-user upload quota (admin-configurable in v2.2).
+
+### Open questions — round 2
+
+1. **Per-file video size cap?** The current attachment limit is 32 MiB.
+   Decryption needs the whole file in memory (AES-GCM is all-or-nothing),
+   so huge files are rough on phones. Proposal: raise the per-file cap to
+   256 MiB for v2.1; chunked/streaming encryption only if that ever hurts.
+2. **Embed privacy:** a YouTube/Vimeo iframe contacts Google/Vimeo with the
+   reader's IP the moment the note opens. Acceptable, or click-to-load (a
+   neutral placeholder until clicked — no third-party request before that)?
+3. **Quota semantics:** the 1 GB counts *all* attachments (images, files,
+   video), including already-uploaded ones, and further uploads are simply
+   rejected once exceeded — correct? Show usage in Settings?
+4. **Color syntax detail:** confirm `style` (light) + `data-color-dark`
+   over symmetric data attributes — see the syntax section above.
+5. **Highlight colors:** the palette settles *text* color; should highlight
+   (background) get the same palette, or stay single-color `==…==`?
+
+## v2.2 — Editor & media follow-ons (planned)
+
+- Block-level live rendering: tables as editable grids, clickable
+  checkboxes / form-style elements
+- Admin-configurable per-user upload quota (replaces the fixed 1 GB)
+- Media optimization on upload, client-side before encryption (the server
+  never sees plaintext): downscale video (e.g. 4K → 720p), resize images,
+  lossy/lossless compression, WebP conversion. In-browser video transcoding
+  implies ffmpeg.wasm — heavy but feasible; evaluate when we get here.
 
 ## v3 — E2EE text chat
 
