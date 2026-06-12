@@ -72,20 +72,19 @@ chat will reuse this editor when v3 lands.
 
 ### Behavior
 
-- **Marker concealment:** `**bold**` renders bold with the asterisks
-  hidden. Markers reveal when the selection is **strictly inside** the span
-  (clicking at a span's edge keeps it rendered — boundary-touch reveal felt
-  janky); line-level markup (`#`, `>`, bullets, `---`, code fences) reveals
-  when the cursor is on the line/block. Concealed markers are atomic for
-  cursor movement, so the caret skips over invisible syntax; revealed
-  markers are ordinary visible characters. Raw syntax can also be edited
-  wholesale in **source mode**. Applies to
-  headings, lists, quotes, links (URL hidden), inline code, strikethrough,
-  highlight, spoilers. Typed whitespace just before a hidden closing marker
-  relocates to after it (a space there always breaks the syntax; letters
-  still extend the span). Literal markers follow CommonMark: intra-word
-  underscores never italicize, and backslash escapes (`\_`) render as the
-  bare character with the backslash concealed.
+- **WYSIWYG concealment (final, third revision):** markers are *always*
+  hidden in live mode — no reveal states at all (both boundary-touch and
+  strict-inside reveal were tried and felt janky). Formatting is applied
+  and removed via shortcuts and the selection toolbar; **source mode** is
+  where raw markdown/markup is edited directly. Typed markdown still
+  auto-renders (`# `, `- `, `**x**` convert as you type — the document is
+  markdown underneath); it just never un-renders at the cursor. Concealed
+  markers are atomic for cursor movement. Applies to headings, lists,
+  quotes, links (URL hidden), inline code, strikethrough, highlight,
+  spoilers, code fences. Typed whitespace just before a hidden closing
+  marker relocates past it (continue-outside intent). Literal markers
+  follow CommonMark: intra-word underscores never italicize, and backslash
+  escapes (`\_`) render as the bare character.
 - **Keyboard shortcuts** (Cmd on macOS / Ctrl on Windows-Linux), toggling on
   selection or at the caret:
   | Shortcut | Action |
@@ -97,9 +96,11 @@ chat will reuse this editor when v3 lands.
   | Cmd/Ctrl+Shift+H | highlight |
   | Cmd/Ctrl+Shift+X | strikethrough |
   | Cmd/Ctrl+K | link (wrap selection, prompt for URL) |
+  | Cmd/Ctrl+Shift+1..6 | heading level (same level toggles off) |
+  | Cmd/Ctrl+Shift+0 | clear heading |
 
-  Headings have no shortcut: typed `# ` syntax only (Obsidian style — the
-  marker hides as soon as the heading renders).
+  Typed `# ` also creates headings (auto-render), but with markers always
+  concealed the shortcuts are the primary way to change levels.
 - **Editor modes**, toggleable per note: **live preview** (default),
   **source** (raw Markdown — the escape hatch for fixing malformed syntax),
   and **reading** (rendered, non-editable; replaces the v2 Preview tab).
@@ -186,10 +187,11 @@ Phases:
    and a dark-theme value.
 2. **Persistence:** inline HTML for underline and color.
 3. **Modes:** live preview / source / reading toggle (Preview tab replaced).
-4. **Marker reveal:** revised twice after use. Final: strict-inside reveal
-   (Obsidian-style, but boundary touches don't reveal), line-touch reveal
-   for block-level marks, atomic concealed markers. The selection toolbar
-   shows on selection or when the caret is inside formatted text.
+4. **Marker reveal:** revised three times after use; final answer: never.
+   Live mode is pure WYSIWYG (shortcuts + toolbar apply formatting, atomic
+   concealed markers); source mode is the only raw-syntax view. The
+   selection toolbar shows on selection or when the caret is inside
+   formatted text.
 5. **Source mode:** yes — covered by the mode toggle.
 6. **Block rendering:** images render in live preview and reading modes
    (raw syntax in source); tables and interactive checkboxes deferred to

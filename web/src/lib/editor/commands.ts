@@ -149,6 +149,29 @@ export function cursorInFormat(state: EditorState): boolean {
   return false;
 }
 
+// With markers always concealed, heading levels need a command: set the
+// line's heading level (same level again toggles back to paragraph).
+export function setHeading(level: number): Command {
+  return (view) => {
+    const tr = view.state.changeByRange((range) => {
+      const line = view.state.doc.lineAt(range.head);
+      const m = /^(#{1,6})\s+/.exec(line.text);
+      const current = m ? m[1]!.length : 0;
+      const target = current === level ? 0 : level;
+      const prefix = target ? '#'.repeat(target) + ' ' : '';
+      const removeLen = m ? m[0].length : 0;
+      const delta = prefix.length - removeLen;
+      return {
+        changes: { from: line.from, to: line.from + removeLen, insert: prefix },
+        range: EditorSelection.cursor(Math.max(line.from + prefix.length, range.head + delta)),
+      };
+    });
+    view.dispatch(tr, { userEvent: 'input.format' });
+    view.focus();
+    return true;
+  };
+}
+
 // Line-boundary deletes that ignore atomic concealed markers: the stock
 // deleteLineBoundaryBackward stops at the atomic boundary, which strands a
 // hidden opening tag (e.g. a color <span …>) whose mate was just deleted.
@@ -190,4 +213,10 @@ export const formattingKeymap: KeyBinding[] = [
   { key: 'Mod-k', run: insertLink, preventDefault: true },
   { key: 'Mod-Backspace', run: deleteToLineStart, preventDefault: true },
   { key: 'Mod-Delete', run: deleteToLineEnd, preventDefault: true },
+  ...[1, 2, 3, 4, 5, 6].map((level) => ({
+    key: `Mod-Shift-${level}`,
+    run: setHeading(level),
+    preventDefault: true,
+  })),
+  { key: 'Mod-Shift-0', run: setHeading(0), preventDefault: true },
 ];

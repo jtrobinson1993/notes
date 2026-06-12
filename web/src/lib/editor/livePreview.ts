@@ -5,14 +5,13 @@ import type { SyntaxNode } from '@lezer/common';
 import { colorFromOpenTag } from './syntax';
 import { attachmentResolver, EmbedWidget, ImageWidget, parseVideoUrl } from './media';
 
-// Obsidian-style live preview, tuned. Markers conceal by default and the
-// concealed ranges are atomic, so the cursor skips over invisible syntax
-// instead of getting stuck inside it. Reveal rules:
-//  - inline spans (bold, italic, links, …) reveal when the selection is
-//    *strictly inside* the span — merely touching the boundary (clicking
-//    right after a word) keeps it rendered
-//  - line-level markup (# > - ---) reveals when the cursor is on the line
-//  - revealed markers are ordinary visible characters (not atomic)
+// WYSIWYG live preview: markers are always concealed — formatting is
+// applied/removed via shortcuts and the selection toolbar, and raw markup is
+// edited in source mode. Typed markdown still auto-renders (the document is
+// markdown underneath); it just never un-renders at the cursor. Concealed
+// ranges are atomic so the cursor skips over invisible syntax. Spoiler
+// *content* still un-blurs while the cursor is inside (editing it blind
+// would be worse).
 
 // ---- spoiler reveal state ------------------------------------------------
 
@@ -113,19 +112,6 @@ function selTouches(state: EditorState, from: number, to: number): boolean {
   return state.selection.ranges.some((r) => r.from <= to && r.to >= from);
 }
 
-// Strictly inside: a caret on the outer boundary does not count, so clicking
-// at the edge of a rendered span doesn't pop it open.
-function selInside(state: EditorState, from: number, to: number): boolean {
-  return state.selection.ranges.some((r) =>
-    r.empty ? r.head > from && r.head < to : r.from < to && r.to > from,
-  );
-}
-
-function lineTouched(state: EditorState, pos: number): boolean {
-  const line = state.doc.lineAt(pos);
-  return selTouches(state, line.from, line.to);
-}
-
 interface BuiltDecorations {
   decorations: DecorationSet;
   // hidden/replaced ranges; atomic for cursor movement
@@ -163,21 +149,19 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         }
 
         if (name === 'HeaderMark') {
-          // hide "# " including the following space; reveal on the line
-          if (!lineTouched(state, node.from))
-            conceal(node.from, Math.min(node.to + 1, state.doc.lineAt(node.from).to));
+          // hide "# " including the following space
+          conceal(node.from, Math.min(node.to + 1, state.doc.lineAt(node.from).to));
           return;
         }
 
         if (name in HIDDEN_MARKS) {
-          const parent = node.node.parent;
-          if (!parent || !selInside(state, parent.from, parent.to)) conceal(node.from, node.to);
+          conceal(node.from, node.to);
           return;
         }
 
-        // \_ \* etc: show only the literal character (Obsidian behavior)
+        // \_ \* etc: show only the literal character
         if (name === 'Escape') {
-          if (!selInside(state, node.from, node.to)) conceal(node.from, node.from + 1);
+          conceal(node.from, node.from + 1);
           return;
         }
 
@@ -207,14 +191,11 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         }
 
         if (name === 'URL') {
-          const parent = node.node.parent;
-          if (parent?.name === 'Link' && !selInside(state, parent.from, parent.to))
-            conceal(node.from, node.to);
+          if (node.node.parent?.name === 'Link') conceal(node.from, node.to);
           return;
         }
 
         if (name === 'Image') {
-          if (selInside(state, node.from, node.to)) return;
           const text = state.doc.sliceString(node.from, node.to);
           const m = /^!\[([^\]]*)\]\(([^)\s]+)[^)]*\)$/.exec(text);
           if (!m) return;
@@ -228,7 +209,6 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         }
 
         if (name === 'Autolink') {
-          if (selInside(state, node.from, node.to)) return;
           const url = state.doc.sliceString(node.from, node.to).replace(/^<|>$/g, '');
           const embed = parseVideoUrl(url);
           if (embed) {
@@ -246,14 +226,12 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         }
 
         if (name === 'QuoteMark') {
-          if (lineTouched(state, node.from)) return;
           const end = state.doc.sliceString(node.to, node.to + 1) === ' ' ? node.to + 1 : node.to;
           conceal(node.from, end);
           return;
         }
 
         if (name === 'ListMark') {
-          if (lineTouched(state, node.from)) return;
           const text = state.doc.sliceString(node.from, node.to);
           if (/^[-*+]$/.test(text) && node.node.parent?.parent?.name !== 'Task')
             conceal(node.from, node.to, Decoration.replace({ widget: bulletWidget }));
@@ -261,8 +239,7 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         }
 
         if (name === 'HorizontalRule') {
-          if (!lineTouched(state, node.from))
-            conceal(node.from, node.to, Decoration.replace({ widget: hrWidget }));
+          conceal(node.from, node.to, Decoration.replace({ widget: hrWidget }));
           return;
         }
 

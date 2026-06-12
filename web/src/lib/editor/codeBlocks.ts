@@ -128,21 +128,19 @@ function buildDecorations(view: EditorView): BuiltDecorations {
           ranges.push(deco.range(line.from));
         }
 
-        // conceal ```lang and the closing ```; reveal while editing inside
-        const touched = state.selection.ranges.some((r) => r.from <= block.to && r.to >= block.from);
-        if (!touched) {
-          const openEnd = info ? info.to : (block.getChild('CodeMark')?.to ?? firstLine.to);
-          const openTo = Math.min(openEnd, firstLine.to);
-          if (openTo > firstLine.from) {
-            ranges.push(hide.range(firstLine.from, openTo));
-            hidden.push(hide.range(firstLine.from, openTo));
-          }
-          const closeMarks = block.getChildren('CodeMark');
-          const closing = closeMarks[closeMarks.length - 1];
-          if (closeMarks.length > 1 && closing) {
-            ranges.push(hide.range(closing.from, closing.to));
-            hidden.push(hide.range(closing.from, closing.to));
-          }
+        // conceal ```lang and the closing ``` (language changes go through
+        // the picker; raw fences are edited in source mode)
+        const openEnd = info ? info.to : (block.getChild('CodeMark')?.to ?? firstLine.to);
+        const openTo = Math.min(openEnd, firstLine.to);
+        if (openTo > firstLine.from) {
+          ranges.push(hide.range(firstLine.from, openTo));
+          hidden.push(hide.range(firstLine.from, openTo));
+        }
+        const closeMarks = block.getChildren('CodeMark');
+        const closing = closeMarks[closeMarks.length - 1];
+        if (closeMarks.length > 1 && closing) {
+          ranges.push(hide.range(closing.from, closing.to));
+          hidden.push(hide.range(closing.from, closing.to));
         }
         return false;
       },
