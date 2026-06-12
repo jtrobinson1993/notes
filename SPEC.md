@@ -72,11 +72,12 @@ chat will reuse this editor when v3 lands.
 
 ### Behavior
 
-- **Marker concealment (Obsidian "live preview"):** `**bold**` renders bold
-  with the asterisks hidden. Markers reveal themselves only when the cursor or
-  selection is inside that span, so the raw syntax is always reachable for
-  editing. Same for headings, lists, quotes, links (show text, hide URL until
-  cursor enters), inline code, strikethrough, highlight, spoilers.
+- **Marker concealment:** `**bold**` renders bold with the asterisks hidden
+  — always, even with the cursor inside the span (revealing them on click
+  felt janky in practice). Hidden markers are atomic for cursor movement.
+  Raw syntax is edited in **source mode**, the escape hatch. Same for
+  headings, lists, quotes, links (URL hidden), inline code, strikethrough,
+  highlight, spoilers.
 - **Keyboard shortcuts** (Cmd on macOS / Ctrl on Windows-Linux), toggling on
   selection or at the caret:
   | Shortcut | Action |
@@ -177,7 +178,10 @@ Phases:
    and a dark-theme value.
 2. **Persistence:** inline HTML for underline and color.
 3. **Modes:** live preview / source / reading toggle (Preview tab replaced).
-4. **Marker reveal:** Obsidian behavior (cursor in span reveals syntax).
+4. **Marker reveal:** none — revised after use (revealing on cursor entry
+   felt janky): markers stay hidden in live preview; source mode is the only
+   raw-syntax view. The selection toolbar shows on selection or when the
+   caret is inside formatted text.
 5. **Source mode:** yes — covered by the mode toggle.
 6. **Block rendering:** images render in live preview and reading modes
    (raw syntax in source); tables and interactive checkboxes deferred to

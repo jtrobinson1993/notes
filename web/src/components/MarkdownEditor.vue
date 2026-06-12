@@ -14,6 +14,7 @@ import { attachmentResolver, type AttachmentResolver } from '../lib/editor/media
 import {
   applyColor,
   clearColor,
+  cursorInFormat,
   formattingKeymap,
   insertLink,
   toggleBold,
@@ -92,25 +93,32 @@ const customLight = ref('#dc2626');
 const customDark = ref('#f87171');
 
 function updateToolbar() {
-  if (!view || props.readonly) {
+  if (!view || props.readonly || isCoarse) {
     toolbarVisible.value = false;
     return;
   }
   const range = view.state.selection.main;
-  if (range.empty || isCoarse) {
+  // show on selection, or when the caret is inside already-formatted text
+  if (range.empty && !cursorInFormat(view.state)) {
     toolbarVisible.value = false;
     paletteOpen.value = false;
     return;
   }
   const coords = view.coordsAtPos(Math.min(range.head, range.anchor));
   const hostRect = host.value?.getBoundingClientRect();
-  if (!coords || !hostRect) {
+  if (!coords) {
     toolbarVisible.value = false;
     return;
   }
+  if (!hostRect) {
+    toolbarVisible.value = false;
+    return;
+  }
+  // anchored to the top of the clicked/selected line; CSS translateY(-100%)
+  // lifts the toolbar fully above the text
   toolbarPos.value = {
     left: Math.max(4, coords.left - hostRect.left),
-    top: Math.max(4, coords.top - hostRect.top - 40),
+    top: coords.top - hostRect.top - 6,
   };
   toolbarVisible.value = true;
 }
@@ -206,7 +214,7 @@ onBeforeUnmount(() => view?.destroy());
     <!-- desktop selection toolbar -->
     <div
       v-if="toolbarVisible"
-      class="absolute z-20 flex items-center gap-0.5 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+      class="absolute z-20 flex -translate-y-full items-center gap-0.5 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
       :style="{ left: `${toolbarPos.left}px`, top: `${toolbarPos.top}px` }"
       @mousedown.prevent
     >
@@ -239,7 +247,7 @@ onBeforeUnmount(() => view?.destroy());
       <!-- color palette popover -->
       <div
         v-if="paletteOpen"
-        class="absolute top-full left-0 z-30 mt-1 w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+        class="absolute bottom-full left-0 z-30 mb-1 w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
       >
         <div class="mb-2 grid grid-cols-4 gap-1.5">
           <button

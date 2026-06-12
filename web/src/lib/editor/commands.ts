@@ -117,6 +117,32 @@ export function clearColor(view: EditorView): boolean {
   return true;
 }
 
+// Formatted-span detection for the selection toolbar: show it whenever the
+// caret sits inside already-formatted text (or there is a selection).
+const FORMAT_NODES = new Set([
+  'StrongEmphasis',
+  'Emphasis',
+  'InlineCode',
+  'Strikethrough',
+  'Highlight',
+  'Spoiler',
+  'Underline',
+  'ColorSpan',
+  'Link',
+]);
+
+export function cursorInFormat(state: EditorState): boolean {
+  const head = state.selection.main.head;
+  for (
+    let node: SyntaxNode | null = syntaxTree(state).resolveInner(head, -1);
+    node;
+    node = node.parent
+  ) {
+    if (FORMAT_NODES.has(node.name)) return true;
+  }
+  return false;
+}
+
 export const formattingKeymap: KeyBinding[] = [
   { key: 'Mod-b', run: toggleBold, preventDefault: true },
   { key: 'Mod-i', run: toggleItalic, preventDefault: true },

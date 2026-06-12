@@ -5,9 +5,10 @@ import type { SyntaxNode } from '@lezer/common';
 import { colorFromOpenTag } from './syntax';
 import { attachmentResolver, EmbedWidget, ImageWidget, parseVideoUrl } from './media';
 
-// Obsidian-style live preview: formatting markers are hidden via replace
-// decorations and content is styled via mark decorations; the raw syntax
-// reveals itself whenever the selection touches the node.
+// WYSIWYG live preview: formatting markers are always hidden (raw syntax
+// lives in source mode only); content is styled via mark decorations. Hidden
+// ranges are atomic so the cursor steps over them instead of getting stuck
+// inside invisible syntax.
 
 // ---- spoiler reveal state ------------------------------------------------
 
@@ -92,8 +93,8 @@ const inlineMarks: Record<string, Decoration> = {
 
 const quoteLine = Decoration.line({ class: 'cm-live-quote' });
 
-// Marker node -> container whose selection state controls reveal.
-const MARK_PARENTS: Record<string, true> = {
+// Marker nodes that are always concealed.
+const HIDDEN_MARKS: Record<string, true> = {
   EmphasisMark: true,
   CodeMark: true,
   StrikethroughMark: true,
@@ -108,15 +109,24 @@ function selTouches(state: EditorState, from: number, to: number): boolean {
   return state.selection.ranges.some((r) => r.from <= to && r.to >= from);
 }
 
-function lineTouched(state: EditorState, pos: number): boolean {
-  const line = state.doc.lineAt(pos);
-  return selTouches(state, line.from, line.to);
+interface BuiltDecorations {
+  decorations: DecorationSet;
+  // hidden/replaced ranges; atomic for cursor movement
+  atomics: RangeSet<Decoration>;
 }
 
-function buildDecorations(view: EditorView): DecorationSet {
+function buildDecorations(view: EditorView): BuiltDecorations {
   const ranges: Range<Decoration>[] = [];
+  const hidden: Range<Decoration>[] = [];
   const state = view.state;
   const resolver = state.facet(attachmentResolver);
+
+  const conceal = (from: number, to: number, deco: Decoration = hide) => {
+    if (to > from) {
+      ranges.push(deco.range(from, to));
+      hidden.push(hide.range(from, to));
+    }
+  };
 
   for (const { from, to } of view.visibleRanges) {
     syntaxTree(state).iterate({
@@ -136,17 +146,13 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
 
         if (name === 'HeaderMark') {
-          if (!lineTouched(state, node.from)) {
-            // hide "# " including the following space
-            const end = Math.min(node.to + 1, state.doc.lineAt(node.from).to);
-            ranges.push(hide.range(node.from, end));
-          }
+          // hide "# " including the following space
+          conceal(node.from, Math.min(node.to + 1, state.doc.lineAt(node.from).to));
           return;
         }
 
-        if (name in MARK_PARENTS) {
-          const parent = node.node.parent;
-          if (parent && !selTouches(state, parent.from, parent.to)) ranges.push(hide.range(node.from, node.to));
+        if (name in HIDDEN_MARKS) {
+          conceal(node.from, node.to);
           return;
         }
 
@@ -156,6 +162,8 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
 
         if (name === 'Spoiler') {
+          // content reveals while the cursor is inside (so it stays editable)
+          // or after a click; the || markers stay hidden regardless
           const revealed = isRevealed(state, node.from, node.to) || selTouches(state, node.from, node.to);
           ranges.push(
             Decoration.mark({ class: revealed ? 'cm-live-spoiler cm-spoiler-revealed' : 'cm-live-spoiler' }).range(
@@ -174,30 +182,28 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
 
         if (name === 'URL') {
-          const parent = node.node.parent;
-          if (parent?.name === 'Link' && !selTouches(state, parent.from, parent.to))
-            ranges.push(hide.range(node.from, node.to));
+          if (node.node.parent?.name === 'Link') conceal(node.from, node.to);
           return;
         }
 
         if (name === 'Image') {
-          if (selTouches(state, node.from, node.to)) return;
           const text = state.doc.sliceString(node.from, node.to);
           const m = /^!\[([^\]]*)\]\(([^)\s]+)[^)]*\)$/.exec(text);
           if (!m) return;
           const spoiler = hasAncestor(node.node, 'Spoiler');
-          ranges.push(
-            Decoration.replace({ widget: new ImageWidget(m[2]!, m[1] ?? '', spoiler, resolver) }).range(node.from, node.to),
+          conceal(
+            node.from,
+            node.to,
+            Decoration.replace({ widget: new ImageWidget(m[2]!, m[1] ?? '', spoiler, resolver) }),
           );
           return false;
         }
 
         if (name === 'Autolink') {
-          if (selTouches(state, node.from, node.to)) return;
           const url = state.doc.sliceString(node.from, node.to).replace(/^<|>$/g, '');
           const embed = parseVideoUrl(url);
           if (embed) {
-            ranges.push(Decoration.replace({ widget: new EmbedWidget(embed), block: false }).range(node.from, node.to));
+            conceal(node.from, node.to, Decoration.replace({ widget: new EmbedWidget(embed) }));
             return false;
           }
           return;
@@ -211,23 +217,20 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
 
         if (name === 'QuoteMark') {
-          if (!lineTouched(state, node.from)) {
-            const end = state.doc.sliceString(node.to, node.to + 1) === ' ' ? node.to + 1 : node.to;
-            ranges.push(hide.range(node.from, end));
-          }
+          const end = state.doc.sliceString(node.to, node.to + 1) === ' ' ? node.to + 1 : node.to;
+          conceal(node.from, end);
           return;
         }
 
         if (name === 'ListMark') {
           const text = state.doc.sliceString(node.from, node.to);
-          if (/^[-*+]$/.test(text) && !lineTouched(state, node.from) && node.node.parent?.parent?.name !== 'Task')
-            ranges.push(Decoration.replace({ widget: bulletWidget }).range(node.from, node.to));
+          if (/^[-*+]$/.test(text) && node.node.parent?.parent?.name !== 'Task')
+            conceal(node.from, node.to, Decoration.replace({ widget: bulletWidget }));
           return;
         }
 
         if (name === 'HorizontalRule') {
-          if (!lineTouched(state, node.from))
-            ranges.push(Decoration.replace({ widget: hrWidget }).range(node.from, node.to));
+          conceal(node.from, node.to, Decoration.replace({ widget: hrWidget }));
           return;
         }
 
@@ -236,10 +239,11 @@ function buildDecorations(view: EditorView): DecorationSet {
     });
   }
 
-  return RangeSet.of(
-    ranges.sort((a, b) => a.from - b.from || a.to - b.to),
-    false,
-  );
+  const sort = (rs: Range<Decoration>[]) => rs.sort((a, b) => a.from - b.from || a.to - b.to);
+  return {
+    decorations: RangeSet.of(sort(ranges), false),
+    atomics: RangeSet.of(sort(hidden), false),
+  };
 }
 
 function hasAncestor(node: SyntaxNode, name: string): boolean {
@@ -250,9 +254,10 @@ function hasAncestor(node: SyntaxNode, name: string): boolean {
 const livePreviewPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
+    atomics: RangeSet<Decoration>;
 
     constructor(view: EditorView) {
-      this.decorations = buildDecorations(view);
+      ({ decorations: this.decorations, atomics: this.atomics } = buildDecorations(view));
     }
 
     update(update: ViewUpdate) {
@@ -263,10 +268,14 @@ const livePreviewPlugin = ViewPlugin.fromClass(
         update.transactions.some((tr) => tr.effects.some((e) => e.is(toggleSpoiler))) ||
         syntaxTree(update.startState) !== syntaxTree(update.state)
       )
-        this.decorations = buildDecorations(update.view);
+        ({ decorations: this.decorations, atomics: this.atomics } = buildDecorations(update.view));
     }
   },
-  { decorations: (v) => v.decorations },
+  {
+    decorations: (v) => v.decorations,
+    provide: (plugin) =>
+      EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomics ?? RangeSet.empty),
+  },
 );
 
 // Clicking a concealed spoiler reveals it instead of placing the cursor.

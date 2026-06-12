@@ -96,8 +96,14 @@ const codeLineFirst = Decoration.line({ class: 'cm-live-codeblock cm-live-codebl
 const codeLineLast = Decoration.line({ class: 'cm-live-codeblock cm-live-codeblock-last' });
 const hide = Decoration.replace({});
 
-function buildDecorations(view: EditorView): DecorationSet {
+interface BuiltDecorations {
+  decorations: DecorationSet;
+  atomics: RangeSet<Decoration>;
+}
+
+function buildDecorations(view: EditorView): BuiltDecorations {
   const ranges: Range<Decoration>[] = [];
+  const hidden: Range<Decoration>[] = [];
   const state = view.state;
 
   for (const { from, to } of view.visibleRanges) {
@@ -107,7 +113,6 @@ function buildDecorations(view: EditorView): DecorationSet {
       enter(node) {
         if (node.name !== 'FencedCode') return;
         const block = node.node;
-        const touched = state.selection.ranges.some((r) => r.from <= block.to && r.to >= block.from);
         const firstLine = state.doc.lineAt(block.from);
         const lastLine = state.doc.lineAt(block.to);
 
@@ -123,39 +128,47 @@ function buildDecorations(view: EditorView): DecorationSet {
           ranges.push(deco.range(line.from));
         }
 
-        if (!touched) {
-          // conceal ```lang and the closing ```
-          const openEnd = info ? info.to : (block.getChild('CodeMark')?.to ?? firstLine.to);
-          ranges.push(hide.range(firstLine.from, Math.min(openEnd, firstLine.to)));
-          const closeMarks = block.getChildren('CodeMark');
-          const closing = closeMarks[closeMarks.length - 1];
-          if (closeMarks.length > 1 && closing) ranges.push(hide.range(closing.from, closing.to));
+        // conceal ```lang and the closing ``` (raw fences live in source mode)
+        const openEnd = info ? info.to : (block.getChild('CodeMark')?.to ?? firstLine.to);
+        const openTo = Math.min(openEnd, firstLine.to);
+        if (openTo > firstLine.from) {
+          ranges.push(hide.range(firstLine.from, openTo));
+          hidden.push(hide.range(firstLine.from, openTo));
+        }
+        const closeMarks = block.getChildren('CodeMark');
+        const closing = closeMarks[closeMarks.length - 1];
+        if (closeMarks.length > 1 && closing) {
+          ranges.push(hide.range(closing.from, closing.to));
+          hidden.push(hide.range(closing.from, closing.to));
         }
         return false;
       },
     });
   }
 
-  return RangeSet.of(
-    ranges.sort((a, b) => a.from - b.from || a.to - b.to),
-    false,
-  );
+  const sort = (rs: Range<Decoration>[]) => rs.sort((a, b) => a.from - b.from || a.to - b.to);
+  return { decorations: RangeSet.of(sort(ranges), false), atomics: RangeSet.of(sort(hidden), false) };
 }
 
 const codeBlocksPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
+    atomics: RangeSet<Decoration>;
 
     constructor(view: EditorView) {
-      this.decorations = buildDecorations(view);
+      ({ decorations: this.decorations, atomics: this.atomics } = buildDecorations(view));
     }
 
     update(update: ViewUpdate) {
       if (update.docChanged || update.selectionSet || update.viewportChanged)
-        this.decorations = buildDecorations(update.view);
+        ({ decorations: this.decorations, atomics: this.atomics } = buildDecorations(update.view));
     }
   },
-  { decorations: (v) => v.decorations },
+  {
+    decorations: (v) => v.decorations,
+    provide: (plugin) =>
+      EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomics ?? RangeSet.empty),
+  },
 );
 
 export function codeBlocks(): Extension {
