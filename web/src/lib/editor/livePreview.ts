@@ -330,7 +330,18 @@ const spoilerClickHandler = EditorView.domEventHandlers({
 // delimiter) and dumps raw markers back on screen. Whitespace there is never
 // intended: relocate it to after the marker(s). Letters still go inside,
 // extending the formatted text.
-const BREAKOUT_CONTAINERS = new Set(['StrongEmphasis', 'Emphasis', 'Strikethrough', 'Highlight', 'Spoiler']);
+// Includes ColorSpan/Underline even though a space before their closing tag
+// is syntactically harmless: a trailing space means "continue outside" there
+// just the same.
+const BREAKOUT_CONTAINERS = new Set([
+  'StrongEmphasis',
+  'Emphasis',
+  'Strikethrough',
+  'Highlight',
+  'Spoiler',
+  'ColorSpan',
+  'Underline',
+]);
 
 const whitespaceBreakout = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged || !tr.isUserEvent('input.type')) return tr;

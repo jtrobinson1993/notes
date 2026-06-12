@@ -96,12 +96,18 @@ export function applyColor(view: EditorView, css: string): boolean {
     }
   } else {
     const open = `<span style="color:${css}">`;
+    // selection: cursor lands inside an empty span (typed text is colored)
+    // but after the closing tag when wrapping existing text, so the span
+    // conceals immediately and typing continues uncolored
+    const cursor = range.empty
+      ? range.from + open.length
+      : range.to + open.length + '</span>'.length;
     view.dispatch({
       changes: [
         { from: range.from, insert: open },
         { from: range.to, insert: '</span>' },
       ],
-      selection: { anchor: range.from + open.length, head: range.to + open.length },
+      selection: { anchor: cursor },
       userEvent: 'input.format',
     });
   }
