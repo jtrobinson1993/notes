@@ -72,10 +72,14 @@ chat will reuse this editor when v3 lands.
 
 ### Behavior
 
-- **Marker concealment:** `**bold**` renders bold with the asterisks hidden
-  — always, even with the cursor inside the span (revealing them on click
-  felt janky in practice). Hidden markers are atomic for cursor movement.
-  Raw syntax is edited in **source mode**, the escape hatch. Same for
+- **Marker concealment:** `**bold**` renders bold with the asterisks
+  hidden. Markers reveal when the selection is **strictly inside** the span
+  (clicking at a span's edge keeps it rendered — boundary-touch reveal felt
+  janky); line-level markup (`#`, `>`, bullets, `---`, code fences) reveals
+  when the cursor is on the line/block. Concealed markers are atomic for
+  cursor movement, so the caret skips over invisible syntax; revealed
+  markers are ordinary visible characters. Raw syntax can also be edited
+  wholesale in **source mode**. Applies to
   headings, lists, quotes, links (URL hidden), inline code, strikethrough,
   highlight, spoilers. Typed whitespace just before a hidden closing marker
   relocates to after it (a space there always breaks the syntax; letters
@@ -182,10 +186,10 @@ Phases:
    and a dark-theme value.
 2. **Persistence:** inline HTML for underline and color.
 3. **Modes:** live preview / source / reading toggle (Preview tab replaced).
-4. **Marker reveal:** none — revised after use (revealing on cursor entry
-   felt janky): markers stay hidden in live preview; source mode is the only
-   raw-syntax view. The selection toolbar shows on selection or when the
-   caret is inside formatted text.
+4. **Marker reveal:** revised twice after use. Final: strict-inside reveal
+   (Obsidian-style, but boundary touches don't reveal), line-touch reveal
+   for block-level marks, atomic concealed markers. The selection toolbar
+   shows on selection or when the caret is inside formatted text.
 5. **Source mode:** yes — covered by the mode toggle.
 6. **Block rendering:** images render in live preview and reading modes
    (raw syntax in source); tables and interactive checkboxes deferred to
