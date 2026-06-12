@@ -1,5 +1,5 @@
 import { syntaxTree } from '@codemirror/language';
-import type { EditorState } from '@codemirror/state';
+import { EditorSelection, type EditorState } from '@codemirror/state';
 import type { Command, KeyBinding } from '@codemirror/view';
 import { EditorView } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
@@ -143,6 +143,37 @@ export function cursorInFormat(state: EditorState): boolean {
   return false;
 }
 
+// Line-boundary deletes that ignore atomic concealed markers: the stock
+// deleteLineBoundaryBackward stops at the atomic boundary, which strands a
+// hidden opening tag (e.g. a color <span …>) whose mate was just deleted.
+const deleteToLineStart: Command = (view) => {
+  const tr = view.state.changeByRange((range) => {
+    const line = view.state.doc.lineAt(range.head);
+    if (range.head === line.from) return { range };
+    return {
+      changes: { from: line.from, to: range.head },
+      range: EditorSelection.cursor(line.from),
+    };
+  });
+  if (tr.changes.empty) return false;
+  view.dispatch(tr, { scrollIntoView: true, userEvent: 'delete' });
+  return true;
+};
+
+const deleteToLineEnd: Command = (view) => {
+  const tr = view.state.changeByRange((range) => {
+    const line = view.state.doc.lineAt(range.head);
+    if (range.head === line.to) return { range };
+    return {
+      changes: { from: range.head, to: line.to },
+      range: EditorSelection.cursor(range.head),
+    };
+  });
+  if (tr.changes.empty) return false;
+  view.dispatch(tr, { scrollIntoView: true, userEvent: 'delete' });
+  return true;
+};
+
 export const formattingKeymap: KeyBinding[] = [
   { key: 'Mod-b', run: toggleBold, preventDefault: true },
   { key: 'Mod-i', run: toggleItalic, preventDefault: true },
@@ -151,4 +182,6 @@ export const formattingKeymap: KeyBinding[] = [
   { key: 'Mod-Shift-h', run: toggleHighlight, preventDefault: true },
   { key: 'Mod-Shift-x', run: toggleStrike, preventDefault: true },
   { key: 'Mod-k', run: insertLink, preventDefault: true },
+  { key: 'Mod-Backspace', run: deleteToLineStart, preventDefault: true },
+  { key: 'Mod-Delete', run: deleteToLineEnd, preventDefault: true },
 ];
