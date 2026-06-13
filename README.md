@@ -7,7 +7,7 @@ colors, spoilers, syntax-highlighted code blocks, click-to-load video embeds),
 note sharing between users, encrypted attachments,
 version history, offline editing with conflict handling, import/export, and an
 installable PWA with an encrypted offline cache. The server only ever stores
-ciphertext — it cannot read your notes. See [SPEC.md](SPEC.md) for design details.
+ciphertext — it cannot read your notes. See [the spec](spec/README.md) for design details.
 
 ## Install (Docker)
 
