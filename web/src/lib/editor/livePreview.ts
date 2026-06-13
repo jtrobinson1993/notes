@@ -51,9 +51,9 @@ class BulletWidget extends WidgetType {
     return true;
   }
   toDOM(): HTMLElement {
+    // the dot itself is a ::before pseudo-element (see .cm-live-bullet css)
     const el = document.createElement('span');
     el.className = 'cm-live-bullet';
-    el.textContent = '•';
     return el;
   }
 }
