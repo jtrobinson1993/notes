@@ -150,6 +150,11 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         }
 
         if (name === 'HeaderMark') {
+          // keep the marker visible while the heading is empty ("##" alone):
+          // concealing it would blank the line, and text typed after the
+          // hidden marker would produce "##text", which isn't a heading
+          const heading = node.node.parent;
+          if (heading?.name.startsWith('ATXHeading') && heading.to <= node.to) return;
           // hide "# " including the following space
           conceal(node.from, Math.min(node.to + 1, state.doc.lineAt(node.from).to));
           return;
@@ -249,7 +254,11 @@ function buildDecorations(view: EditorView): BuiltDecorations {
     });
   }
 
-  const sort = (rs: Range<Decoration>[]) => rs.sort((a, b) => a.from - b.from || a.to - b.to);
+  // RangeSet.of needs ranges ordered by from, then startSide — same-position
+  // pairs with mismatched sides (e.g. a style mark and a concealment over an
+  // identical range) throw otherwise, which kills the whole plugin
+  const sort = (rs: Range<Decoration>[]) =>
+    rs.sort((a, b) => a.from - b.from || a.value.startSide - b.value.startSide || a.to - b.to);
   return {
     decorations: RangeSet.of(sort(ranges), false),
     atomics: RangeSet.of(sort(hidden), false),

@@ -132,7 +132,7 @@ select:not(:disabled) {
 .cm-live-quote {
   @apply border-l-4 border-zinc-300 pl-3 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400;
 }
-.cm-live-bullet { @apply text-zinc-400; }
+.cm-live-bullet { @apply text-zinc-400 ml-4 mr-2; }
 .cm-live-bullet::before {
   content: '';
   display: inline-block;
