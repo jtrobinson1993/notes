@@ -1,12 +1,19 @@
 import type {
+  ChatMessage,
+  Conversation,
   CredentialInfo,
+  Friend,
+  FriendInvite,
+  FriendRequest,
   InviteInfo,
   LoginVerifyResponse,
   MemberInfo,
   MetaResponse,
   NoteVersionInfo,
   NotesSyncResponse,
+  ProfileInfo,
   SealedKey,
+  SealedMemberKey,
   ShareAccess,
   ShareInfo,
   SharedNoteRecord,
@@ -129,4 +136,41 @@ export const api = {
     return new Uint8Array(await res.arrayBuffer());
   },
   attachmentDelete: (id: string) => req<{ ok: true }>('DELETE', `/api/attachments/${encodeURIComponent(id)}`),
+
+  // ---- v3 chat: friends ----
+  friendInviteCreate: () => req<FriendInvite>('POST', '/api/friend-invites'),
+  friendInvites: () => req<FriendInvite[]>('GET', '/api/friend-invites'),
+  friendInviteDelete: (id: string) =>
+    req<{ ok: true }>('DELETE', `/api/friend-invites/${encodeURIComponent(id)}`),
+  friendRedeem: (token: string) => req<{ ok: true }>('POST', '/api/friends/redeem', { token }),
+  friendRequests: () => req<FriendRequest[]>('GET', '/api/friends/requests'),
+  friendRequestAccept: (id: string) =>
+    req<Friend>('POST', `/api/friends/requests/${encodeURIComponent(id)}/accept`),
+  friendRequestDecline: (id: string) =>
+    req<{ ok: true }>('POST', `/api/friends/requests/${encodeURIComponent(id)}/decline`),
+  friends: () => req<Friend[]>('GET', '/api/friends'),
+  unfriend: (userId: string) => req<{ ok: true }>('DELETE', `/api/friends/${encodeURIComponent(userId)}`),
+
+  // ---- v3 chat: profile ----
+  profileGet: () => req<ProfileInfo>('GET', '/api/profile'),
+  profileSet: (displayName: string) => req<ProfileInfo>('PUT', '/api/profile', { displayName }),
+
+  // ---- v3 chat: conversations + messages ----
+  conversations: () => req<Conversation[]>('GET', '/api/conversations'),
+  conversationCreateDm: (friendId: string, members: SealedMemberKey[]) =>
+    req<Conversation>('POST', '/api/conversations/dm', { friendId, members }),
+  conversationMessages: (id: string, opts?: { before?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (opts?.before !== undefined) q.set('before', String(opts.before));
+    if (opts?.limit !== undefined) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return req<ChatMessage[]>(
+      'GET',
+      `/api/conversations/${encodeURIComponent(id)}/messages${qs ? `?${qs}` : ''}`,
+    );
+  },
+  messageSend: (id: string, body: { ciphertext: string; iv: string; epoch: number }) =>
+    req<ChatMessage>('POST', `/api/conversations/${encodeURIComponent(id)}/messages`, body),
+  conversationRead: (id: string, seq: number) =>
+    req<{ ok: true }>('POST', `/api/conversations/${encodeURIComponent(id)}/read`, { seq }),
 };

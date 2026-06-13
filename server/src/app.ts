@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
+import fastifyWebsocket from '@fastify/websocket';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,12 +13,17 @@ import { adminRoutes } from './routes/admin.js';
 import { noteRoutes } from './routes/notes.js';
 import { attachmentRoutes } from './routes/attachments.js';
 import { settingsRoutes } from './routes/settings.js';
+import { chatRoutes } from './routes/chat.js';
+import { createRealtime, WS_MAX_PAYLOAD } from './realtime.js';
 
 export async function buildApp(db: DB, config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
 
   await app.register(fastifyCookie);
+  await app.register(fastifyWebsocket, { options: { maxPayload: WS_MAX_PAYLOAD } });
   registerSessionHooks(app, db, config);
+
+  const realtime = createRealtime(db, config);
 
   app.get('/api/health', async () => ({ ok: true }));
   authRoutes(app, db, config);
@@ -25,6 +31,8 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   noteRoutes(app, db);
   attachmentRoutes(app, db, config);
   settingsRoutes(app, db);
+  chatRoutes(app, db, realtime);
+  realtime.register(app);
 
   // Serve the built SPA. Default: web/dist relative to the repo layout
   // (works both from source and inside the Docker image).

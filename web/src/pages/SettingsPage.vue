@@ -18,10 +18,41 @@ const isAdmin = session.user?.role === 'admin';
 const theme = ref<Theme>(getTheme());
 const palette = ref<Palette>(getPalette());
 const autoLock = ref(String(session.autoLockMinutes));
+const displayName = ref('');
+const displayNameMsg = ref('');
+const displayNameOk = ref(false);
+const displayNameBusy = ref(false);
 const newPasskeyName = ref('');
 const passkeyError = ref('');
 const newRecoveryCode = ref('');
 const copiedInvite = ref('');
+
+useQuery({
+  key: ['profile'],
+  query: async () => {
+    const p = await api.profileGet();
+    displayName.value = p.displayName;
+    return p;
+  },
+});
+
+async function saveDisplayName() {
+  const name = displayName.value.trim();
+  if (!name) return;
+  displayNameBusy.value = true;
+  displayNameMsg.value = '';
+  try {
+    const p = await api.profileSet(name);
+    displayName.value = p.displayName;
+    displayNameOk.value = true;
+    displayNameMsg.value = 'Saved.';
+  } catch (e) {
+    displayNameOk.value = false;
+    displayNameMsg.value = e instanceof Error ? e.message : 'could not save';
+  } finally {
+    displayNameBusy.value = false;
+  }
+}
 
 const { data: credentials } = useQuery({ key: ['credentials'], query: () => api.credentials() });
 const { data: invites } = useQuery({ key: ['invites'], query: () => api.invites(), enabled: isAdmin });
@@ -154,6 +185,30 @@ async function importFiles(event: Event) {
           ✕
         </RouterLink>
       </div>
+
+      <section class="space-y-3">
+        <h2 class="text-lg font-semibold">Profile</h2>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400">
+          This is the name other users see in chats and friend requests. Your username is never shown to them.
+        </p>
+        <form class="flex gap-2" @submit.prevent="saveDisplayName">
+          <input
+            v-model="displayName"
+            placeholder="Display name"
+            class="grow rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <button
+            type="submit"
+            :disabled="displayNameBusy || !displayName.trim()"
+            class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            Save
+          </button>
+        </form>
+        <p v-if="displayNameMsg" class="text-sm" :class="displayNameOk ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'">
+          {{ displayNameMsg }}
+        </p>
+      </section>
 
       <section class="space-y-3">
         <h2 class="text-lg font-semibold">Appearance & security</h2>

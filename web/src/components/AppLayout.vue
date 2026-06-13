@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useSessionStore } from '../stores/session';
 import { useNotesStore } from '../stores/notes';
+import AppSidebar from './AppSidebar.vue';
 
 const session = useSessionStore();
 const notes = useNotesStore();
@@ -31,7 +32,9 @@ async function logout() {
 </script>
 
 <template>
-  <div class="flex h-full flex-col">
+  <div class="flex h-full">
+    <AppSidebar v-if="session.loggedIn" />
+    <div class="flex min-w-0 grow flex-col">
     <header class="flex items-center gap-3 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
       <RouterLink to="/" class="font-bold">{{ session.appName }}</RouterLink>
       <span v-if="notes.syncing" class="text-xs text-zinc-400">syncing…</span>
@@ -79,5 +82,6 @@ async function logout() {
       </div>
       <slot />
     </main>
+    </div>
   </div>
 </template>

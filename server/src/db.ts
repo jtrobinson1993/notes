@@ -12,6 +12,57 @@ export interface UserRow {
   wrapped_private_key: string | null;
   recovery_wrapped_mk: string | null;
   recovery_auth_hash: string | null;
+  display_name: string | null;
+  created_at: number;
+}
+
+export interface FriendInviteRow {
+  id: string;
+  token: string;
+  created_by: string;
+  created_at: number;
+  expires_at: number;
+}
+
+export interface FriendRequestRow {
+  id: string;
+  from_user: string;
+  to_user: string;
+  created_at: number;
+}
+
+export interface FriendRow {
+  user_id: string;
+  friend_id: string;
+  created_at: number;
+}
+
+export interface ConversationRow {
+  id: string;
+  kind: string;
+  created_by: string;
+  created_at: number;
+  dm_key: string | null;
+}
+
+export interface ConversationMemberRow {
+  conversation_id: string;
+  user_id: string;
+  sealed_key: string;
+  epoch: number;
+  last_read_seq: number;
+  joined_at: number;
+  role: string;
+}
+
+export interface MessageRow {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  seq: number;
+  epoch: number;
+  ciphertext: string;
+  iv: string;
   created_at: number;
 }
 
@@ -139,6 +190,55 @@ CREATE TABLE IF NOT EXISTS challenges (
   data TEXT NOT NULL,
   expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS friend_invites (
+  id TEXT PRIMARY KEY,
+  token TEXT NOT NULL UNIQUE,
+  created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS friend_requests (
+  id TEXT PRIMARY KEY,
+  from_user TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  to_user TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  UNIQUE(from_user, to_user)
+);
+CREATE TABLE IF NOT EXISTS friends (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  friend_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, friend_id)
+);
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  dm_key TEXT UNIQUE
+);
+CREATE TABLE IF NOT EXISTS conversation_members (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sealed_key TEXT NOT NULL,
+  epoch INTEGER NOT NULL DEFAULT 0,
+  last_read_seq INTEGER NOT NULL DEFAULT 0,
+  joined_at INTEGER NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member',
+  PRIMARY KEY (conversation_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  sender_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  epoch INTEGER NOT NULL,
+  ciphertext TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(conversation_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conversation_id, seq);
 `;
 
 export type DB = ReturnType<typeof openDb>;
@@ -149,6 +249,12 @@ export function openDb(dataDir: string) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+
+  // Idempotent migration: add users.display_name if missing.
+  const userCols = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
+  if (!userCols.some((c) => c.name === 'display_name')) {
+    db.exec('ALTER TABLE users ADD COLUMN display_name TEXT');
+  }
 
   return {
     raw: db as SqliteDatabase,
@@ -393,11 +499,228 @@ export function openDb(dataDir: string) {
       if (row.expires_at < now()) return undefined;
       return JSON.parse(row.data) as T;
     },
+    setDisplayName(userId: string, displayName: string): void {
+      db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(displayName, userId);
+    },
+
+    // ---- Friend invites ----
+    createFriendInvite(i: { id: string; token: string; createdBy: string; expiresAt: number }): void {
+      db.prepare(
+        'INSERT INTO friend_invites (id, token, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(i.id, i.token, i.createdBy, now(), i.expiresAt);
+    },
+    getFriendInviteByToken(token: string): FriendInviteRow | undefined {
+      const row = db.prepare('SELECT * FROM friend_invites WHERE token = ?').get(token) as FriendInviteRow | undefined;
+      if (row && row.expires_at < now()) {
+        db.prepare('DELETE FROM friend_invites WHERE id = ?').run(row.id);
+        return undefined;
+      }
+      return row;
+    },
+    getFriendInvite(id: string): FriendInviteRow | undefined {
+      const row = db.prepare('SELECT * FROM friend_invites WHERE id = ?').get(id) as FriendInviteRow | undefined;
+      if (row && row.expires_at < now()) {
+        db.prepare('DELETE FROM friend_invites WHERE id = ?').run(row.id);
+        return undefined;
+      }
+      return row;
+    },
+    listFriendInvites(userId: string): FriendInviteRow[] {
+      return db
+        .prepare('SELECT * FROM friend_invites WHERE created_by = ? AND expires_at >= ? ORDER BY created_at DESC')
+        .all(userId, now()) as FriendInviteRow[];
+    },
+    deleteFriendInvite(id: string): void {
+      db.prepare('DELETE FROM friend_invites WHERE id = ?').run(id);
+    },
+    purgeExpiredInvites(): void {
+      db.prepare('DELETE FROM friend_invites WHERE expires_at < ?').run(now());
+    },
+
+    // ---- Friend requests ----
+    createFriendRequest(r: { id: string; fromUser: string; toUser: string }): void {
+      db.prepare('INSERT INTO friend_requests (id, from_user, to_user, created_at) VALUES (?, ?, ?, ?)').run(
+        r.id, r.fromUser, r.toUser, now(),
+      );
+    },
+    getFriendRequest(id: string): FriendRequestRow | undefined {
+      return db.prepare('SELECT * FROM friend_requests WHERE id = ?').get(id) as FriendRequestRow | undefined;
+    },
+    /** Any pending request between two users, in either direction. */
+    getFriendRequestBetween(a: string, b: string): FriendRequestRow | undefined {
+      return db
+        .prepare(
+          'SELECT * FROM friend_requests WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)',
+        )
+        .get(a, b, b, a) as FriendRequestRow | undefined;
+    },
+    listFriendRequests(userId: string): FriendRequestRow[] {
+      return db
+        .prepare('SELECT * FROM friend_requests WHERE from_user = ? OR to_user = ? ORDER BY created_at DESC')
+        .all(userId, userId) as FriendRequestRow[];
+    },
+    deleteFriendRequest(id: string): void {
+      db.prepare('DELETE FROM friend_requests WHERE id = ?').run(id);
+    },
+
+    // ---- Friends ----
+    areFriends(userId: string, friendId: string): boolean {
+      return (
+        db.prepare('SELECT 1 FROM friends WHERE user_id = ? AND friend_id = ?').get(userId, friendId) !== undefined
+      );
+    },
+    addFriendPair(a: string, b: string): void {
+      const ts = now();
+      const ins = db.prepare(
+        'INSERT OR IGNORE INTO friends (user_id, friend_id, created_at) VALUES (?, ?, ?)',
+      );
+      const tx = db.transaction(() => {
+        ins.run(a, b, ts);
+        ins.run(b, a, ts);
+      });
+      tx();
+    },
+    listFriendIds(userId: string): string[] {
+      return (db.prepare('SELECT friend_id FROM friends WHERE user_id = ?').all(userId) as { friend_id: string }[]).map(
+        (r) => r.friend_id,
+      );
+    },
+    listFriendRows(userId: string): FriendRow[] {
+      return db
+        .prepare('SELECT * FROM friends WHERE user_id = ? ORDER BY created_at DESC')
+        .all(userId) as FriendRow[];
+    },
+    deleteFriendPair(a: string, b: string): void {
+      db.prepare('DELETE FROM friends WHERE (user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)').run(
+        a, b, b, a,
+      );
+    },
+
+    // ---- Conversations ----
+    createConversation(c: { id: string; kind: string; createdBy: string; dmKey: string | null }): void {
+      db.prepare('INSERT INTO conversations (id, kind, created_by, created_at, dm_key) VALUES (?, ?, ?, ?, ?)').run(
+        c.id, c.kind, c.createdBy, now(), c.dmKey,
+      );
+    },
+    getConversation(id: string): ConversationRow | undefined {
+      return db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as ConversationRow | undefined;
+    },
+    getConversationByDmKey(dmKey: string): ConversationRow | undefined {
+      return db.prepare('SELECT * FROM conversations WHERE dm_key = ?').get(dmKey) as ConversationRow | undefined;
+    },
+    listConversationsForUser(userId: string): ConversationRow[] {
+      return db
+        .prepare(
+          `SELECT c.* FROM conversations c
+           JOIN conversation_members m ON m.conversation_id = c.id
+           WHERE m.user_id = ?
+           ORDER BY c.created_at DESC`,
+        )
+        .all(userId) as ConversationRow[];
+    },
+
+    // ---- Conversation members ----
+    addConversationMember(m: {
+      conversationId: string;
+      userId: string;
+      sealedKey: string;
+      epoch: number;
+      role?: string;
+    }): void {
+      db.prepare(
+        `INSERT INTO conversation_members (conversation_id, user_id, sealed_key, epoch, last_read_seq, joined_at, role)
+         VALUES (?, ?, ?, ?, 0, ?, ?)`,
+      ).run(m.conversationId, m.userId, m.sealedKey, m.epoch, now(), m.role ?? 'member');
+    },
+    getConversationMember(conversationId: string, userId: string): ConversationMemberRow | undefined {
+      return db
+        .prepare('SELECT * FROM conversation_members WHERE conversation_id = ? AND user_id = ?')
+        .get(conversationId, userId) as ConversationMemberRow | undefined;
+    },
+    listConversationMembers(conversationId: string): ConversationMemberRow[] {
+      return db
+        .prepare('SELECT * FROM conversation_members WHERE conversation_id = ? ORDER BY joined_at')
+        .all(conversationId) as ConversationMemberRow[];
+    },
+    listConversationMemberIds(conversationId: string): string[] {
+      return (
+        db.prepare('SELECT user_id FROM conversation_members WHERE conversation_id = ?').all(conversationId) as {
+          user_id: string;
+        }[]
+      ).map((r) => r.user_id);
+    },
+    setLastReadSeq(conversationId: string, userId: string, seq: number): void {
+      db.prepare(
+        'UPDATE conversation_members SET last_read_seq = MAX(last_read_seq, ?) WHERE conversation_id = ? AND user_id = ?',
+      ).run(seq, conversationId, userId);
+    },
+
+    // ---- Messages ----
+    getMaxSeq(conversationId: string): number {
+      return (
+        db.prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM messages WHERE conversation_id = ?').get(conversationId) as {
+          s: number;
+        }
+      ).s;
+    },
+    /** Assign the next per-conversation seq and insert, atomically. */
+    insertMessage(m: {
+      id: string;
+      conversationId: string;
+      senderId: string;
+      epoch: number;
+      ciphertext: string;
+      iv: string;
+    }): MessageRow {
+      const tx = db.transaction((): MessageRow => {
+        const seq =
+          (db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM messages WHERE conversation_id = ?').get(
+            m.conversationId,
+          ) as { s: number }).s;
+        const createdAt = now();
+        db.prepare(
+          `INSERT INTO messages (id, conversation_id, sender_id, seq, epoch, ciphertext, iv, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(m.id, m.conversationId, m.senderId, seq, m.epoch, m.ciphertext, m.iv, createdAt);
+        return {
+          id: m.id,
+          conversation_id: m.conversationId,
+          sender_id: m.senderId,
+          seq,
+          epoch: m.epoch,
+          ciphertext: m.ciphertext,
+          iv: m.iv,
+          created_at: createdAt,
+        };
+      });
+      return tx();
+    },
+    /** Messages DESC by seq, optionally before an exclusive seq, for pagination. */
+    listMessages(conversationId: string, before: number | undefined, limit: number): MessageRow[] {
+      if (before !== undefined) {
+        return db
+          .prepare(
+            'SELECT * FROM messages WHERE conversation_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?',
+          )
+          .all(conversationId, before, limit) as MessageRow[];
+      }
+      return db
+        .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT ?')
+        .all(conversationId, limit) as MessageRow[];
+    },
+
     cleanup(): void {
       db.prepare('DELETE FROM challenges WHERE expires_at < ?').run(now());
       db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now());
+      db.prepare('DELETE FROM friend_invites WHERE expires_at < ?').run(now());
     },
   };
+}
+
+/** The display name shown to OTHER users. Never falls back to the username:
+ * usernames are login identifiers and must not be exposed to other users. */
+export function effectiveDisplayName(u: { id: string; display_name: string | null }): string {
+  return u.display_name && u.display_name.trim() ? u.display_name : `User-${u.id.slice(0, 6)}`;
 }
 
 export function toUserInfo(u: UserRow): UserInfo {

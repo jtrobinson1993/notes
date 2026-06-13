@@ -152,3 +152,110 @@ export interface SharedNoteRecord {
   createdAt: number;
   updatedAt: number;
 }
+
+// ---------------------------------------------------------------------------
+// v3 — E2EE chat (phase 1: friends + 1:1 DMs). The server only ever sees the
+// ciphertext/sealed forms; conversation keys and message content stay E2E.
+// ---------------------------------------------------------------------------
+
+/** A reusable, 24h friend invite code. Hard-purged from the server on expiry. */
+export interface FriendInvite {
+  id: string;
+  /** opaque random code shared out-of-band */
+  token: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
+/** A pending friend request, from the perspective of the current user. */
+export interface FriendRequest {
+  id: string;
+  /** the *other* party (sender if incoming, recipient if outgoing) */
+  userId: string;
+  displayName: string;
+  direction: 'incoming' | 'outgoing';
+  createdAt: number;
+}
+
+/** A confirmed friend. publicKey is needed to seal conversation keys to them. */
+export interface Friend {
+  userId: string;
+  displayName: string;
+  /** base64 X25519 public key */
+  publicKey: string | null;
+  online: boolean;
+}
+
+export type ConversationKind = 'dm' | 'group';
+
+export interface ConversationMember {
+  userId: string;
+  displayName: string;
+  /** base64 X25519 public key */
+  publicKey: string | null;
+}
+
+/** A conversation as returned to one of its members, including that member's
+ * own sealed copy of the current-epoch conversation key. */
+export interface Conversation {
+  id: string;
+  kind: ConversationKind;
+  members: ConversationMember[];
+  /** the conversation key sealed to ME (current epoch) — unseal with my X25519 key */
+  sealedKey: SealedKey;
+  epoch: number;
+  /** highest message seq in the conversation (0 when empty) */
+  lastSeq: number;
+  /** my last-read seq; unread count = lastSeq - lastReadSeq */
+  lastReadSeq: number;
+  createdAt: number;
+}
+
+/** One chat message. ciphertext/iv are opaque to the server. */
+export interface ChatMessage {
+  conversationId: string;
+  /** monotonic per-conversation sequence, assigned by the server */
+  seq: number;
+  senderId: string;
+  epoch: number;
+  /** base64 AES-256-GCM ciphertext of a JSON MessagePayload */
+  ciphertext: string;
+  /** base64 12-byte IV */
+  iv: string;
+  /** server-receipt time (metadata) */
+  createdAt: number;
+}
+
+/** What the client encrypts into a message blob (extensible in v3.1). */
+export interface MessagePayload {
+  /** markdown text */
+  text: string;
+  /** the sender's own clock (server time is separate metadata) */
+  sentAt: number;
+}
+
+/** One member's sealed key when creating a conversation client-side. */
+export interface SealedMemberKey {
+  userId: string;
+  sealedKey: SealedKey;
+}
+
+/** Public profile metadata (server-visible; usernames never exposed to others). */
+export interface ProfileInfo {
+  displayName: string;
+}
+
+// ---- WebSocket frame protocol (JSON frames over one authenticated socket) ----
+
+/** Server -> client. The read path: live delivery + receipts + friend events. */
+export type ServerFrame =
+  | { type: 'hello'; userId: string }
+  | { type: 'message'; message: ChatMessage }
+  | { type: 'read'; conversationId: string; userId: string; seq: number }
+  | { type: 'friend-request'; request: FriendRequest }
+  | { type: 'friend-accepted'; friend: Friend }
+  | { type: 'presence'; userId: string; online: boolean };
+
+/** Client -> server. Sends and read-markers go over REST; this stays minimal.
+ * Liveness uses protocol-level ping/pong (browser auto-pongs), not app frames. */
+export type ClientFrame = { type: 'ping' };

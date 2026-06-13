@@ -7,7 +7,10 @@ const config = loadConfig();
 const db = openDb(config.dataDir);
 const app = await buildApp(db, config);
 
-setInterval(() => db.cleanup(), 60 * 60 * 1000).unref();
+setInterval(() => {
+  db.cleanup();
+  db.purgeExpiredInvites();
+}, 60 * 60 * 1000).unref();
 startBackups(db, config.dataDir, app.log);
 
 try {
