@@ -262,44 +262,321 @@ Phases:
    remain future hardening (defense-in-depth; `img-src` stays permissive —
    images can't execute script, and click-to-load handles tracking).
 
-## v2.2 — Editor & media follow-ons (planned)
+## v2.2 — Editor & media follow-ons (shipped)
 
-- Block-level live rendering: tables as editable grids, clickable
-  checkboxes / form-style elements
-- User-selectable themes: ship a few alternative palettes (each redefines
-  the `--brand-*` / UI token layer); picker in Settings next to the
-  light/dark/system toggle
-- Video uploads as encrypted attachments with inline playback, plus
-  per-user storage quotas (admin-configurable; quota UI in Settings)
-- Media optimization on upload, client-side before encryption (the server
-  never sees plaintext): downscale video (e.g. 4K → 720p), resize images,
-  lossy/lossless compression, WebP conversion. In-browser video transcoding
-  implies ffmpeg.wasm — heavy but feasible; evaluate when we get here.
+Delivered:
+- Block-level live rendering: editable tables and clickable task checkboxes.
+- User-selectable color themes: brand (default), pastel, high contrast
+  (pure white/black backgrounds); picker in Settings next to the light/dark
+  control.
+- Client-side media optimization on upload, before encryption.
+- No video uploads, no storage quotas.
+
+### Decisions (round 4 — themes, media, block rendering, shipped)
+
+1. **Two independent theme axes:** light/dark/system (the `.dark` class +
+   `color-scheme`, every `dark:` variant) is one axis; the **color palette**
+   (brand / pastel / high-contrast) is a second, applied as a `data-theme`
+   attribute on the root element. Both are device-local (localStorage:
+   `notes:theme`, `notes:palette`), not synced, and applied pre-paint by a
+   small inline `<head>` script so dark / high-contrast never flash white.
+2. **Palettes swap the token layer, not components:** each `data-theme` block
+   redefines the `--brand-*` note colors **and the Tailwind v4 neutral ramp**
+   (`--color-zinc-*`). Because v4 compiles every neutral utility to
+   `var(--color-zinc-*)`, overriding those custom properties re-themes all
+   surfaces app-wide with zero component edits — the change lives entirely in
+   `style.css`. High contrast pins `zinc-50`/`zinc-950` to pure white/black
+   with a strong grey ramp and vivid note colors; pastel is **Catppuccin**
+   (Latte in light mode, Macchiato in dark — matching a catppuccin-macchiato
+   terminal). Notes store only `var()` references, so existing
+   notes restyle for free.
+3. **Media optimization runs on raw bytes before encryption** — the only place
+   it can, since the server only ever sees ciphertext. `optimizeImage` decodes
+   via `createImageBitmap`, downscales to ≤2560px on the long edge, and
+   re-encodes to WebP (q≈0.82) via `OffscreenCanvas` (HTMLCanvasElement
+   fallback for older Safari). Animated GIFs and SVGs are skipped; a result
+   that isn't smaller — or any failure — falls back to the original bytes, so
+   an upload is never blocked or broken. On by default with a Settings toggle
+   (`notes:optimize-images`, device-local). The stored AttachmentRef type/size
+   reflect the optimized bytes (e.g. `image/webp`).
+4. **Block-level live rendering:**
+   - *Task checkboxes:* in live preview the `[ ]`/`[x]` marker is a concealed,
+     atomic checkbox widget; clicking flips the single state char via a doc
+     change, and the redundant list bullet on task lines is suppressed.
+     Reading mode stays read-only: checkboxes render with their state but
+     disabled (the conventional rendered-markdown behavior), so live preview is
+     where you tick them. (A source-rewriting reading-mode toggle was
+     prototyped but dropped — its line-scan ordinal couldn't reliably match the
+     renderer's task order across ordered/blockquote/indented cases.)
+   - *Tables:* a GFM table renders in live preview as an editable grid of cell
+     inputs; committing a cell rewrites just that cell's source range (pipes
+     and newlines escaped so an edit can't corrupt the grid). Implemented as a
+     dedicated **StateField**, not the live-preview ViewPlugin, because a
+     ViewPlugin may not supply block- or line-spanning replace decorations; the
+     field provides both decorations and atomic ranges, and arrow-key motion
+     steps past the whole block. Reading-mode tables stay read-only.
+5. **Styling stays in Tailwind:** new widget DOM and token VNodes use literal
+   Tailwind v4 utility-class strings (v4 scans `.ts`/`.vue`), so block
+   rendering added no hand-written CSS; only the theme token blocks are raw
+   custom-property declarations.
+6. **App controls use theme colors:** the action accent (primary buttons,
+   links, focus rings, selected state) is themed like the neutrals — each
+   palette overrides the Tailwind `--color-blue-*` scale. The only blue in the
+   app is accent/action (no semantic "info" blue), so a global override is
+   safe. Brand keeps Tailwind's default blue; pastel uses Catppuccin blue
+   (Latte `#1e66f5` for button backgrounds / light-mode link text, Macchiato
+   `#8aadf4` for dark-mode link text); high contrast uses a vivid deep blue.
+   Button labels stay white, so accent backgrounds are chosen dark/saturated
+   enough to keep white text legible in both modes.
+7. **Base text inherits the body color; muted text is themed centrally:** base
+   app text (nav controls, the settings close button, …) carries no color
+   class — it inherits the `body` foreground (`zinc-900` / `zinc-100`), so it's
+   correct in every theme with nothing to re-declare per element. Genuinely
+   muted secondary text (timestamps, hints) keeps a muted shade; where high
+   contrast needs it readable in both modes, the muted ramp shades
+   (`zinc-400` / `zinc-500`) are `light-dark()` pairs (dark-on-white,
+   light-on-black) — fixed once in the token layer instead of adding a `dark:`
+   variant to every element.
 
 ## v3 — E2EE text chat
 
-Base requirements: **group chat** (multi-member channels) and **friend lists**
-(add/accept friends among the server's users; DMs and group invites flow from
-the friend list), plus 1:1 DMs.
+Base requirements: **group chat** (multi-member channels), **1:1 DMs**, and
+**friend lists** (add/accept friends among the server's users; DMs and group
+invites flow from the friend list). Friends are bootstrapped with **ephemeral
+invite codes**, not a permanent handle: a user generates a **randomly generated,
+opaque** code (never derived from the username, never user-chosen) and shares it.
+Anyone holding a live code can send that user a friend request, which the user
+still accepts or declines — so a leaked code can't silently add anyone.
 
-Each user gets a unique **friend ID** (short generated code) that they share
-with others to be added as a friend, so usernames never need to be shared.
+The code is **reusable within a 24-hour window** (hand it to several friends at
+once), then **hard-deleted from the server and unrecoverable** — a purge sweep
+removes the row, it is not merely flagged expired — so future adds need a fresh
+code and no expired code lingers in the database.
 
-Crypto reuses the sharing primitive: per-conversation symmetric key wrapped to
-each participant's X25519 public key, re-keyed on membership change (removed
-members can't read anything sent after they leave). Messages are ciphertext
-blobs relayed/stored by the server; delivery via WebSockets; unread state and
-notifications. Static conversation keys (no per-message forward secrecy) —
-accepted tradeoff for a trusted self-hosted server; do not hand-roll Double
-Ratchet/MLS. Optional hardening if wanted later: epoch keys (rotate the
-conversation key periodically) for coarse forward secrecy. Multi-device works
-via the existing master-key model.
+Ephemeral and opaque **by design**: there is no durable, shareable handle to
+correlate or leak. A vanity scheme like Discord's `CAM#1234` would bake identity
+into the code and let a curious host or hosting provider read identities straight
+out of the friend graph; a random code carries no information about the user, and
+because it self-destructs after 24h a leak is dead quickly rather than a
+permanent identifier. Codes have enough entropy to resist enumeration, and
+redemptions are rate-limited. (This is the chat-side answer to the curious-host /
+shared-hosting threat model — relevant if instances are run by someone other than
+their users.)
 
-Message rendering reuses the token-based markdown renderer from v2.1 round 3
-(no `v-html`, raw HTML inert by construction), so hostile senders get no
-script-injection surface; remote images/embeds stay click-to-load per the
-reader's privacy settings. Add CSP headers (script-src 'self', frame-src
-limited to the embed hosts) as defense-in-depth when chat lands.
+Each user also has an editable **display name** — the only name other users
+ever see (in friend lists, DMs, and group member lists). The **username stays a
+login credential and is never exposed to other users**: you add people by friend
+ID and recognise them by display name. Display name is editable from day one
+(phase 1); the richer profile (bio, avatar, decorations) is v3.2.
+
+A DM is just a two-member conversation — one unified conversation / member /
+message model, not a special case. Message rendering reuses the token-based
+markdown renderer from v2.1 (no `v-html`, raw HTML inert by construction), so
+hostile senders get no script-injection surface; remote images/embeds stay
+click-to-load per the reader's privacy settings.
+
+### App shell & sidebar
+
+The app gains a thin, Discord-style **left sidebar** shared across the whole app
+(notes and chat are two sections of one app, not separate apps). Collapsed by
+default it shows just an **icon** per item; an **expand / collapse button at the
+bottom of the sidebar** toggles it to show **icon + name**. There is no
+hover-to-open behaviour. Top to bottom:
+
+- **Top:** a **`+`** button — start a new chat (a DM with a friend, or a new
+  group).
+- One item per conversation (DMs and groups):
+  - *DM:* the other member's avatar — falling back to their display-name initial
+    — and, expanded, their **display name**.
+  - *Group:* a **custom icon and name** when set (Discord-server style). When
+    unset, the icon defaults to a montage of the **first character of each
+    member's display name**, and the expanded name defaults to the members'
+    **display names listed out** (e.g. "Alice, Bob, Carol").
+- The **Notes** item — directly **below the chats** (it scrolls with the list;
+  it is not pinned to the bottom of the rail) — switches to the existing notes
+  app.
+- **Bottom of the sidebar:** the **expand / collapse button**.
+
+```
+ collapsed      expanded
+ +----+         +----------------------+
+ |  + |         |  +    New chat        |
+ |----|         |----------------------|
+ | AB |         |  AB   Alice, Bob      |  group, default icon = member initials
+ | F  |         |  F    Foxy            |  DM, the friend's display name
+ | ## |         |  ##   Custom Group    |  group with a custom icon + name
+ | [] |         |  []   Notes           |  below the chats (not pinned)
+ |    |         |                       |
+ |----|         |----------------------|
+ | >> |         |  <<   Collapse        |  expand / collapse toggle (bottom)
+ +----+         +----------------------+
+```
+
+### What is E2E-encrypted vs server-visible
+
+Encrypted (the server only ever sees ciphertext): **message content** and the
+**conversation keys**. Server-visible **metadata**: live (unexpired) invite
+codes, display names, who is friends
+with whom, conversation membership, message sequence numbers and server-receipt
+timestamps, and per-user unread markers. (The sender's own timestamp lives
+*inside* the encrypted payload.) This is the accepted tradeoff for a trusted,
+self-hosted server.
+
+### Conversation keys & epochs
+
+Each conversation has a symmetric **conversation key** that encrypts its
+messages, distributed with the existing sealed-box primitive (`sealKey` → a
+recipient's X25519 public key; `unsealKey` with their private key, which every
+unlocked device recovers from the master key). The server stores one sealed copy
+of the key per member, exactly like `note_shares`.
+
+Membership changes mint a **new epoch**: a fresh conversation key, sealed to all
+current members and stored per-member; each message records which epoch
+encrypted it. Clients keep every epoch key ever sealed to them, so:
+
+- **Removing a member:** the remover's client mints the new epoch and seals it
+  only to the *remaining* members. The removed member keeps the earlier epoch
+  keys already sealed to them, so they can still read everything **up to** their
+  removal but nothing sent after. (Re-keying is client-side, so it requires the
+  acting member to be online.)
+- **Adding a member — the inviter decides history:** the invite carries a
+  *share-history* flag.
+  - *Share history:* the inviter also seals the **prior** epoch keys to the new
+    member, so they can decrypt the back-scroll.
+  - *Start fresh:* only the new epoch key is sealed to them, so they see only
+    messages from their join point onward.
+
+Within an epoch the key is static (no per-message forward secrecy); epochs give
+coarse forward/backward secrecy at membership boundaries. We deliberately do
+**not** hand-roll Double Ratchet / MLS. 1:1 DMs have fixed membership, so phase 1
+needs a single epoch and none of the re-keying machinery.
+
+### Delivery transport — how the WebSocket works
+
+Notes sync by polling today. Chat needs the server to push a message to you the
+instant it arrives, which is what a **WebSocket** is for. A primer, since it is
+new to this codebase:
+
+- **What it is:** a normal `https` request that asks to "upgrade" into a
+  persistent, two-way connection. A regular REST call is one round trip — client
+  asks, server answers, done. A WebSocket stays **open**, so either side can send
+  at any time; the server can deliver a new message immediately instead of the
+  client asking "anything new?" on a timer.
+- **Opening it:** the client connects to `wss://<host>/api/ws`. The upgrade
+  request carries the existing **session cookie**, so we authenticate it with the
+  same session check as the REST routes — no new auth. We will use
+  `@fastify/websocket` (one new server dependency).
+- **One socket, all conversations:** a single connection per client carries every
+  conversation. Each frame is a small JSON message tagged with a
+  `conversationId`, which the client routes to the right thread. The server keeps
+  an in-memory map of `userId → open sockets` (a user may have several — multiple
+  devices or tabs).
+- **The send path stays REST:** to send, the client `POST`s the ciphertext to a
+  REST route. The server persists it, assigns the next **sequence number** for
+  that conversation, returns that to the sender, then looks up which members are
+  currently connected and writes the frame to each of their sockets (including
+  the sender's *other* devices). REST-to-send keeps sending durable and easy to
+  retry; the WebSocket is purely the server→client delivery path.
+- **The socket is liveness; the database is truth:** sockets drop (sleep, network
+  blips). The client reconnects automatically, tells the server the highest
+  sequence number it already holds per conversation, and the server replays
+  anything newer (or the client backfills via a REST history endpoint). Because
+  ordering and durability come from the DB sequence numbers, a dropped socket
+  never loses a message — you just catch up on reconnect.
+- **Scope:** this assumes a single server process holding sockets in memory,
+  which is the self-hosted reality. Horizontal scaling across processes would
+  need an external pub/sub (e.g. Redis); explicitly out of scope.
+
+### Connection limits & operational hardening
+
+A single process handles far more sockets than this self-hosted scale needs
+(tens of thousands after tuning; a friends-group instance is dozens to a few
+hundred). The practical ceiling is the OS **file-descriptor** limit — one fd per
+socket — so the requirements are about determinism and not leaking resources,
+not raw capacity:
+
+- **Raise the fd limit deterministically:** set `ulimits: { nofile: 65536 }` for
+  the server in `docker-compose.yml`, so capacity is not left at a ~1024 default
+  that varies by Docker version.
+- **Heartbeat + idle timeout:** ping/pong on an interval and drop sockets that
+  stop answering. Mobile/backgrounded clients vanish without a clean close, and
+  half-open sockets otherwise leak file descriptors and memory.
+- **Per-user connection cap:** a small limit (a handful of devices/tabs) so one
+  account cannot exhaust descriptors; evict the oldest connection past the cap.
+- **Bounded frame size:** set the socket's `maxPayload` so a single message
+  cannot balloon memory (mirrors the REST body limits already in place).
+
+### Notifications
+
+Phase 1–2 are in-app only: unread badges and live delivery over the open
+WebSocket while the app is foregrounded. **Background / PWA push notifications**
+(the OS banner when the app is closed) are deferred to phase 3 / v3.1. They
+require the **Web Push** stack — a service worker, the Push API, and VAPID keys —
+and they leak *sender and timing* metadata to the browser's push service
+(Apple/Google/Mozilla) even though the body stays encrypted (the encrypted
+payload is delivered and decrypted locally by the service worker). This deferral
+explicitly covers PWA message notifications — they are part of the notification
+work, not a separate feature.
+
+### Security headers — CSP, and what a "hash" means
+
+When chat lands we add a **Content-Security-Policy** response header as
+defense-in-depth. CSP is the browser enforcing "only run scripts / load frames
+from this approved list"; even if a hostile message somehow injected a
+`<script>`, the browser refuses to run it. We will use roughly `script-src
+'self'` (only our own bundled JS files) and `frame-src` limited to the
+YouTube/Vimeo embed hosts.
+
+`script-src 'self'` blocks **inline** `<script>…</script>` in the HTML by design
+(inline scripts are the classic injection vector). But `index.html` has exactly
+one inline script — the pre-paint theme applier that sets the dark/high-contrast
+class before first paint to avoid a flash. To keep it working under CSP without
+re-opening the door to arbitrary inline scripts, we allow that **one specific**
+script by its **hash**:
+
+- Compute the SHA-256 of the script's exact text, base64-encode it, and add it to
+  the header: `script-src 'self' 'sha256-…'`.
+- On load the browser hashes the inline script it sees and runs it **only** if
+  the hash is on the list. Change one character and the hash no longer matches,
+  so it will not run — which is exactly what stops an injected script.
+- Because the script is static and built at deploy time, the hash is computed
+  once at build (Vite can emit it). The alternative — a per-response random
+  **nonce** — suits server-rendered pages; a hash is the natural fit for a static
+  file.
+
+Net: every inline script is blocked except our one known-good theme script,
+identified by its hash, so we keep the no-flash behaviour and gain XSS hardening
+for chat.
+
+### Phasing
+
+- **Phase 1** — friends (ephemeral invite codes + add/accept requests) and **1:1 DMs** over
+  the WebSocket, with persisted ciphertext history and unread markers. One epoch
+  per conversation; no membership churn, so none of the re-keying machinery yet.
+- **Phase 2** — **group channels:** membership add/remove, epoch re-keying, and
+  the inviter's share-history choice.
+- **Phase 3** — hardening: CSP headers (with the theme-script hash) and
+  background / PWA push notifications.
+
+### Data model sketch (phase 1)
+
+- `conversations` — id, kind (`dm` | `group`), created_at. (Group title and the
+  like are server-visible metadata, added in phase 2.)
+- `conversation_members` — conversation_id, user_id, the **sealed conversation
+  key(s)** for the epochs this member may read, joined_at, last_read_seq (the
+  unread marker), role.
+- `messages` — id, conversation_id, sender_id, **seq** (monotonic per
+  conversation), epoch, ciphertext + iv, server_received_at. Content is opaque to
+  the server.
+- `friends` / `friend_requests` — the friend graph. `users` gains a
+  **`display_name`** column (usernames are never sent to other users; the chat UI
+  exposes only display names). Friend bootstrap uses a **`friend_invites`** table
+  — a near-copy of the existing `invites` (opaque `token`, `created_by`,
+  `expires_at`) but **reusable** within its 24h window (no single `used_by`) and
+  **hard-deleted on expiry** by a purge sweep, so expired codes leave no trace.
+
+Multi-device needs no new work: the conversation key is sealed to the user's
+X25519 public key, so any device that can unlock the master key can unseal it.
 
 ## v3.1 — Chat polish
 
@@ -313,7 +590,9 @@ limited to the embed hosts) as defense-in-depth when chat lands.
 
 ## v3.2 — Editable user profiles
 
-Display name, description/bio, avatar, and an editable friend ID. Maybe
+Builds on the v3 display name with the richer profile: description/bio and
+avatar. (Friend bootstrap is already ephemeral 24h codes, so there is no
+permanent handle to regenerate or vanity-customise.) Maybe
 Discord-style decorations: animated avatars, profile backgrounds/borders.
 Profile data is visible to the server (it's shared UI metadata, not E2EE
 content).
