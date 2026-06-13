@@ -108,7 +108,7 @@ function excerpt(body: string): string {
             "
             @click="activeTag = activeTag === tag ? null : tag"
           >
-            #{{ tag }}
+            {{ tag }}
           </button>
         </div>
 
@@ -130,7 +130,7 @@ function excerpt(body: string): string {
                   class="shrink-0 rounded-full px-1.5 py-px text-[10px] leading-tight"
                   :style="{ background: tagColor(tag), color: tagTextColor(tagColor(tag)) }"
                 >
-                  #{{ tag }}
+                  {{ tag }}
                 </span>
                 <span class="truncate">{{ excerpt(note.payload.body) || 'Empty note' }}</span>
               </div>

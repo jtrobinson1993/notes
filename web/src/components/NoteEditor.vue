@@ -277,7 +277,7 @@ function fmtSize(bytes: number): string {
         :style="{ background: tagColor(tag), color: tagTextColor(tagColor(tag)) }"
       >
         <PopoverRoot :open="colorTagOpen === tag" @update:open="colorTagOpen = $event ? tag : null">
-          <PopoverTrigger title="Tag color">#{{ tag }}</PopoverTrigger>
+          <PopoverTrigger title="Tag color">{{ tag }}</PopoverTrigger>
           <PopoverPortal>
             <PopoverContent
               side="bottom"
@@ -292,7 +292,7 @@ function fmtSize(bytes: number): string {
         <button
           v-if="!readonly"
           class="-mr-0.5 rounded-full px-0.5 leading-none opacity-70 hover:opacity-100"
-          :title="`Remove #${tag}`"
+          :title="`Remove ${tag}`"
           @click="removeTag(tag)"
         >
           ✕
