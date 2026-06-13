@@ -14,7 +14,7 @@
 /* Theme token layer: the note color palette, defined once as light-dark()
    pairs and scoped under data-theme so future themes can swap the palette
    wholesale (notes store only var() references, never hexes). */
-:root[data-theme='default'] {
+:root[data-theme='brand'] {
   --brand-red: light-dark(#dc2626, #f87171);
   --brand-orange: light-dark(#ea580c, #fb923c);
   --brand-yellow: light-dark(#ca8a04, #facc15);
@@ -23,6 +23,70 @@
   --brand-blue: light-dark(#2563eb, #60a5fa);
   --brand-purple: light-dark(#9333ea, #c084fc);
   --brand-pink: light-dark(#db2777, #f472b6);
+}
+
+/* Pastel = Catppuccin: Latte in light mode, Macchiato in dark mode (matches a
+   catppuccin-macchiato terminal). --brand-* are the flavor accents; the zinc
+   ramp bridges Latte's light surfaces (50-300) to Macchiato's dark ones
+   (700-950), with overlay greys in the middle. */
+:root[data-theme='pastel'] {
+  --brand-red: light-dark(#d20f39, #ed8796);
+  --brand-orange: light-dark(#fe640b, #f5a97f);
+  --brand-yellow: light-dark(#df8e1d, #eed49f);
+  --brand-green: light-dark(#40a02b, #a6da95);
+  --brand-teal: light-dark(#179299, #8bd5ca);
+  --brand-blue: light-dark(#1e66f5, #8aadf4);
+  --brand-purple: light-dark(#8839ef, #c6a0f6);
+  --brand-pink: light-dark(#ea76cb, #f5bde6);
+
+  --color-zinc-50: #eff1f5;  /* Latte base — light page */
+  --color-zinc-100: #d9e0f7; /* Macchiato text, nudged whiter — dark body text / light card */
+  --color-zinc-200: #ccd0da; /* Latte surface0 */
+  --color-zinc-300: #b5bac9; /* Latte surface1/2 */
+  --color-zinc-400: #939ab7; /* Macchiato overlay2 — muted */
+  --color-zinc-500: #8087a2; /* Macchiato overlay1 — muted */
+  --color-zinc-600: #6e738d; /* Macchiato overlay0 */
+  --color-zinc-700: #5b6078; /* Macchiato surface2 — dark border */
+  --color-zinc-800: #494d64; /* Macchiato surface1 — dark hover/code */
+  --color-zinc-900: #363a4f; /* Macchiato surface0 — dark card / light text */
+  --color-zinc-950: #181926; /* Macchiato crust — dark page (darker than base) */
+
+  /* accent: buttons, links, focus rings (button text stays white) */
+  --color-blue-400: #8aadf4; /* Macchiato blue — dark-mode link text */
+  --color-blue-500: #5a7fd8; /* focus rings */
+  --color-blue-600: #1e66f5; /* Latte blue — button bg / light link text */
+  --color-blue-700: #1a54cc; /* button hover (darker) */
+}
+
+/* High contrast: pure white/black page backgrounds, a neutral grey ramp with
+   strong separation, and vivid, saturated note colors. */
+:root[data-theme='high-contrast'] {
+  --brand-red: light-dark(#d10000, #ff5a5a);
+  --brand-orange: light-dark(#c44400, #ff8c1a);
+  --brand-yellow: light-dark(#8a6500, #ffd000);
+  --brand-green: light-dark(#007a1e, #25e065);
+  --brand-teal: light-dark(#006d66, #1adfd0);
+  --brand-blue: light-dark(#0040d0, #5a9bff);
+  --brand-purple: light-dark(#6a00b8, #c061ff);
+  --brand-pink: light-dark(#c4006e, #ff5bb0);
+
+  --color-zinc-50: #ffffff;
+  --color-zinc-100: #f2f2f2;
+  --color-zinc-200: #d9d9d9;
+  --color-zinc-300: #b3b3b3;
+  --color-zinc-400: light-dark(#808080, #b0b0b0); /* muted text: dark on light, light on dark */
+  --color-zinc-500: light-dark(#595959, #a0a0a0); /* muted text: dark on light, light on dark */
+  --color-zinc-600: #404040;
+  --color-zinc-700: #2b2b2b;
+  --color-zinc-800: #1a1a1a;
+  --color-zinc-900: #0d0d0d;
+  --color-zinc-950: #000000;
+
+  /* accent: vivid, white-text-legible */
+  --color-blue-400: #5a9bff; /* dark-mode link text */
+  --color-blue-500: #1a5fff; /* focus rings */
+  --color-blue-600: #0040d0; /* button bg / light link text */
+  --color-blue-700: #0033a8; /* button hover (darker) */
 }
 
 html,

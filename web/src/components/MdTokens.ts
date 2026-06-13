@@ -99,13 +99,23 @@ const EmbedFrame = defineComponent({
   },
 });
 
-function renderBlocks(tokens: Token[], resolve: AttachmentResolver): VNodeChild[] {
-  return tokens.map((t) => renderToken(t, resolve));
+// Render context threaded through the token tree: the attachment resolver,
+// an optional reading-mode task-toggle callback, and a mutable running counter
+// that assigns each task-list item its document-order ordinal (so the callback
+// can map a clicked checkbox back to the Nth `- [ ]`/`- [x]` in the source).
+interface RenderCtx {
+  resolve: AttachmentResolver;
+  onToggleTask?: (index: number, checked: boolean) => void;
+  taskIndex: { n: number };
+}
+
+function renderBlocks(tokens: Token[], ctx: RenderCtx): VNodeChild[] {
+  return tokens.map((t) => renderToken(t, ctx));
 }
 
 // Inline tokens, pairing the raw-HTML <u>/<span color> tags our editor
 // writes; any other raw HTML becomes visible literal text.
-function renderInline(tokens: Token[] | undefined, resolve: AttachmentResolver): VNodeChild[] {
+function renderInline(tokens: Token[] | undefined, ctx: RenderCtx): VNodeChild[] {
   if (!tokens) return [];
   const out: VNodeChild[] = [];
   const stack: { tag: 'u' | 'span'; style?: string; children: VNodeChild[] }[] = [];
@@ -130,7 +140,7 @@ function renderInline(tokens: Token[] | undefined, resolve: AttachmentResolver):
       sink().push(decode((t as Tokens.HTML).text));
       continue;
     }
-    sink().push(renderToken(t, resolve));
+    sink().push(renderToken(t, ctx));
   }
   // unclosed tags: flatten children without the wrapper
   while (stack.length) {
@@ -140,45 +150,53 @@ function renderInline(tokens: Token[] | undefined, resolve: AttachmentResolver):
   return out;
 }
 
-function renderToken(t: Token, resolve: AttachmentResolver): VNodeChild {
+function renderToken(t: Token, ctx: RenderCtx): VNodeChild {
   switch (t.type) {
     case 'space':
       return null;
     case 'paragraph':
-      return h('p', renderInline((t as Tokens.Paragraph).tokens, resolve));
+      return h('p', renderInline((t as Tokens.Paragraph).tokens, ctx));
     case 'heading':
-      return h(`h${(t as Tokens.Heading).depth}`, renderInline((t as Tokens.Heading).tokens, resolve));
+      return h(`h${(t as Tokens.Heading).depth}`, renderInline((t as Tokens.Heading).tokens, ctx));
     case 'code': {
       const c = t as Tokens.Code;
       return h('pre', h('code', c.lang ? { class: `language-${c.lang}` } : {}, c.text));
     }
     case 'blockquote':
-      return h('blockquote', renderBlocks((t as Tokens.Blockquote).tokens, resolve));
+      return h('blockquote', renderBlocks((t as Tokens.Blockquote).tokens, ctx));
     case 'list': {
       const l = t as Tokens.List;
       const attrs = l.ordered && l.start !== '' && l.start !== 1 ? { start: l.start } : {};
       return h(
         l.ordered ? 'ol' : 'ul',
         attrs,
-        l.items.map((item) =>
-          h(
-            'li',
-            item.task
-              ? [
-                  h('input', { type: 'checkbox', checked: item.checked ?? false, disabled: true, class: 'mr-1.5' }),
-                  ...renderBlocks(item.tokens, resolve),
-                ]
-              : renderBlocks(item.tokens, resolve),
-          ),
-        ),
+        l.items.map((item) => {
+          if (!item.task) return h('li', renderBlocks(item.tokens, ctx));
+          // assign this task its document-order ordinal, then render an
+          // enabled checkbox wired to flip the matching source line (reading
+          // mode is interactive only when a toggle callback is supplied)
+          const index = ctx.taskIndex.n++;
+          const checked = item.checked ?? false;
+          const toggle = ctx.onToggleTask;
+          return h('li', [
+            h('input', {
+              type: 'checkbox',
+              checked,
+              disabled: !toggle,
+              class: toggle ? 'mr-1.5 cursor-pointer accent-blue-600' : 'mr-1.5',
+              onChange: toggle ? (e: Event) => toggle(index, (e.target as HTMLInputElement).checked) : undefined,
+            }),
+            ...renderBlocks(item.tokens, ctx),
+          ]);
+        }),
       );
     }
     case 'table': {
       const tbl = t as Tokens.Table;
       const cellStyle = (i: number) => (tbl.align[i] ? { textAlign: tbl.align[i]! } : undefined);
       return h('table', [
-        h('thead', h('tr', tbl.header.map((c, i) => h('th', { style: cellStyle(i) }, renderInline(c.tokens, resolve))))),
-        h('tbody', tbl.rows.map((row) => h('tr', row.map((c, i) => h('td', { style: cellStyle(i) }, renderInline(c.tokens, resolve)))))),
+        h('thead', h('tr', tbl.header.map((c, i) => h('th', { style: cellStyle(i) }, renderInline(c.tokens, ctx))))),
+        h('tbody', tbl.rows.map((row) => h('tr', row.map((c, i) => h('td', { style: cellStyle(i) }, renderInline(c.tokens, ctx)))))),
       ]);
     }
     case 'hr':
@@ -187,19 +205,19 @@ function renderToken(t: Token, resolve: AttachmentResolver): VNodeChild {
       // block-level raw HTML (e.g. a line starting with <u>): re-lex as
       // inline content so our recognized pairs still work; everything else
       // in it renders as literal text
-      return h('p', renderInline(marked.Lexer.lexInline((t as Tokens.HTML).text.trim(), marked.defaults), resolve));
+      return h('p', renderInline(marked.Lexer.lexInline((t as Tokens.HTML).text.trim(), marked.defaults), ctx));
     case 'text': {
       const tt = t as Tokens.Text;
-      return tt.tokens ? renderInline(tt.tokens, resolve) : decode(tt.text);
+      return tt.tokens ? renderInline(tt.tokens, ctx) : decode(tt.text);
     }
     case 'escape':
       return decode((t as Tokens.Escape).text);
     case 'strong':
-      return h('strong', renderInline((t as Tokens.Strong).tokens, resolve));
+      return h('strong', renderInline((t as Tokens.Strong).tokens, ctx));
     case 'em':
-      return h('em', renderInline((t as Tokens.Em).tokens, resolve));
+      return h('em', renderInline((t as Tokens.Em).tokens, ctx));
     case 'del':
-      return h('del', renderInline((t as Tokens.Del).tokens, resolve));
+      return h('del', renderInline((t as Tokens.Del).tokens, ctx));
     case 'codespan':
       return h('code', decode((t as Tokens.Codespan).text));
     case 'br':
@@ -208,21 +226,21 @@ function renderToken(t: Token, resolve: AttachmentResolver): VNodeChild {
       const l = t as Tokens.Link;
       const embed = l.text === l.href ? parseVideoUrl(l.href) : null;
       if (embed) return h(EmbedFrame, { embed });
-      if (!SAFE_HREF.test(l.href)) return renderInline(l.tokens, resolve);
-      return h('a', { href: l.href }, renderInline(l.tokens, resolve));
+      if (!SAFE_HREF.test(l.href)) return renderInline(l.tokens, ctx);
+      return h('a', { href: l.href }, renderInline(l.tokens, ctx));
     }
     case 'image': {
       const im = t as Tokens.Image;
       if (im.href.startsWith('attachment:')) {
-        return h(AttachmentImage, { id: im.href.slice('attachment:'.length), alt: im.text, resolve });
+        return h(AttachmentImage, { id: im.href.slice('attachment:'.length), alt: im.text, resolve: ctx.resolve });
       }
       if (/^https?:/i.test(im.href)) return h(RemoteImage, { src: im.href, alt: im.text });
       return im.text;
     }
     case 'highlight':
-      return h('mark', renderInline((t as Tokens.Generic).tokens as Token[], resolve));
+      return h('mark', renderInline((t as Tokens.Generic).tokens as Token[], ctx));
     case 'spoiler':
-      return h('span', { class: 'spoiler' }, renderInline((t as Tokens.Generic).tokens as Token[], resolve));
+      return h('span', { class: 'spoiler' }, renderInline((t as Tokens.Generic).tokens as Token[], ctx));
     default:
       return decode((t as { raw?: string }).raw ?? '');
   }
@@ -233,8 +251,17 @@ export default defineComponent({
   props: {
     tokens: { type: Array as PropType<Token[]>, required: true },
     resolve: { type: Function as PropType<AttachmentResolver>, required: true },
+    // reading-mode task toggle: index is the document-order ordinal of the
+    // task-list item, checked its new state. Omit to keep checkboxes disabled.
+    onToggleTask: { type: Function as PropType<(index: number, checked: boolean) => void>, default: undefined },
   },
   setup(props) {
-    return () => renderBlocks(props.tokens, props.resolve);
+    return () =>
+      renderBlocks(props.tokens, {
+        resolve: props.resolve,
+        onToggleTask: props.onToggleTask,
+        // fresh counter each render so ordinals stay stable across re-renders
+        taskIndex: { n: 0 },
+      });
   },
 });

@@ -7,6 +7,20 @@
     <link rel="icon" href="/icons/icon-192.png" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <title>Notes</title>
+    <script>
+      // Apply saved theme before first paint to avoid a flash (esp. dark /
+      // high-contrast). Mirrors lib/theme.ts; main.ts re-applies on boot.
+      (function () {
+        try {
+          var d = document.documentElement;
+          var m = localStorage.getItem('notes:theme');
+          var dark = m === 'dark' || (m !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+          d.classList.toggle('dark', dark);
+          var p = localStorage.getItem('notes:palette');
+          d.dataset.theme = p === 'pastel' || p === 'high-contrast' ? p : 'brand';
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

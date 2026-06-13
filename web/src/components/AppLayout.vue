@@ -39,7 +39,7 @@ async function logout() {
       <div class="grow" />
       <button
         v-if="session.unlocked"
-        class="rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        class="rounded-lg px-2 py-1 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
         title="Lock now"
         @click="session.lock()"
       >
@@ -47,12 +47,12 @@ async function logout() {
       </button>
       <RouterLink
         to="/settings"
-        class="rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        class="rounded-lg px-2 py-1 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
       >
         Settings
       </RouterLink>
       <button
-        class="rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        class="rounded-lg px-2 py-1 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
         @click="logout"
       >
         Sign out

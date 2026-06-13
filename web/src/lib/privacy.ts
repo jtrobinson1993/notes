@@ -13,6 +13,11 @@ function persisted(key: string, def: boolean): Ref<boolean> {
 export const clickToLoadImages = persisted('notes:click-load-images', true);
 export const clickToLoadEmbeds = persisted('notes:click-load-embeds', true);
 
+// Optimize images (resize + WebP + compress) on this device before they are
+// encrypted and uploaded. On by default; purely a local CPU/quality trade-off
+// since the server only ever sees ciphertext either way.
+export const optimizeImages = persisted('notes:optimize-images', true);
+
 export function setClickToLoadImages(v: boolean): void {
   clickToLoadImages.value = v;
   localStorage.setItem('notes:click-load-images', String(v));
@@ -21,4 +26,9 @@ export function setClickToLoadImages(v: boolean): void {
 export function setClickToLoadEmbeds(v: boolean): void {
   clickToLoadEmbeds.value = v;
   localStorage.setItem('notes:click-load-embeds', String(v));
+}
+
+export function setOptimizeImages(v: boolean): void {
+  optimizeImages.value = v;
+  localStorage.setItem('notes:optimize-images', String(v));
 }

@@ -14,6 +14,8 @@ import {
 import type { AttachmentRef } from '@notes/shared';
 import { api } from '../lib/api';
 import { decryptBlob, encryptBlob } from '../lib/crypto';
+import { optimizeImage } from '../lib/imageOptimize';
+import { optimizeImages } from '../lib/privacy';
 import { clearTagColor, setTagColor, tagColor, tagTextColor } from '../lib/tagColors';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import ColorPalette from './ColorPalette.vue';
@@ -46,6 +48,7 @@ const saveState = ref<'saved' | 'unsaved' | 'saving' | 'error'>('saved');
 const fileInput = ref<HTMLInputElement>();
 const shareOpen = ref(false);
 const historyOpen = ref(false);
+const attachError = ref('');
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 // Bumped on every edit (and note switch) so a save that finishes after the
 // user has typed again doesn't overwrite the 'unsaved' indicator.
@@ -132,20 +135,45 @@ async function save() {
   }
 }
 
+// Mirrors the server's MAX_ATTACHMENT_BYTES; the uploaded ciphertext adds a
+// 16-byte GCM tag, so we check against the limit minus that.
+const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+
 async function attach(event: Event) {
-  const files = (event.target as HTMLInputElement).files;
+  const input = event.target as HTMLInputElement;
+  const files = input.files;
   if (!files) return;
+  // Each file is independent: one failure (oversize, network, server reject)
+  // must not abort the batch or orphan files already uploaded this round.
+  const failed: string[] = [];
+  let added = 0;
   for (const file of files) {
-    const data = new Uint8Array(await file.arrayBuffer());
-    const { ciphertext, key, iv } = await encryptBlob(data);
-    const { id } = await api.attachmentUpload(ciphertext);
-    attachments.value.push({ id, name: file.name, type: file.type || 'application/octet-stream', size: file.size, key, iv });
-    if (file.type.startsWith('image/')) {
-      body.value += `${body.value.endsWith('\n') || !body.value ? '' : '\n\n'}![${file.name}](attachment:${id})\n`;
+    try {
+      let data: Uint8Array = new Uint8Array(await file.arrayBuffer());
+      let type = file.type || 'application/octet-stream';
+      if (optimizeImages.value) {
+        const optimized = await optimizeImage(data, type);
+        data = optimized.data;
+        type = optimized.type;
+      }
+      if (data.length + 16 > MAX_ATTACHMENT_BYTES) {
+        failed.push(`${file.name} — too large (${fmtSize(data.length)}, max ${fmtSize(MAX_ATTACHMENT_BYTES)})`);
+        continue;
+      }
+      const { ciphertext, key, iv } = await encryptBlob(data);
+      const { id } = await api.attachmentUpload(ciphertext);
+      attachments.value.push({ id, name: file.name, type, size: data.length, key, iv });
+      if (type.startsWith('image/')) {
+        body.value += `${body.value.endsWith('\n') || !body.value ? '' : '\n\n'}![${file.name}](attachment:${id})\n`;
+      }
+      added++;
+    } catch (e) {
+      failed.push(`${file.name} — ${e instanceof Error ? e.message : 'upload failed'}`);
     }
   }
-  (event.target as HTMLInputElement).value = '';
-  await save();
+  input.value = '';
+  attachError.value = failed.length ? `Couldn't attach: ${failed.join('; ')}` : '';
+  if (added) await save();
 }
 
 async function download(ref: AttachmentRef) {
@@ -323,6 +351,13 @@ function fmtSize(bytes: number): string {
         </button>
       </span>
     </div>
+
+    <p
+      v-if="attachError"
+      class="mb-2 rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600 dark:bg-red-950/40 dark:text-red-400"
+    >
+      {{ attachError }}
+    </p>
 
     <div v-if="mode === 'reading'" class="min-h-0 grow overflow-y-auto">
       <MarkdownView :source="body" :attachments="attachments" />

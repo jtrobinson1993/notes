@@ -4,8 +4,8 @@ import { useMutation, useQuery, useQueryCache } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
 import { api } from '../lib/api';
-import { clickToLoadEmbeds, clickToLoadImages, setClickToLoadEmbeds, setClickToLoadImages } from '../lib/privacy';
-import { getTheme, setTheme, type Theme } from '../lib/theme';
+import { clickToLoadEmbeds, clickToLoadImages, optimizeImages, setClickToLoadEmbeds, setClickToLoadImages, setOptimizeImages } from '../lib/privacy';
+import { getPalette, getTheme, setPalette, setTheme, type Palette, type Theme } from '../lib/theme';
 import { exportNotesZip, parseImportFiles, type ExportFormat } from '../lib/transfer';
 import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
@@ -16,6 +16,7 @@ const queryCache = useQueryCache();
 const isAdmin = session.user?.role === 'admin';
 
 const theme = ref<Theme>(getTheme());
+const palette = ref<Palette>(getPalette());
 const autoLock = ref(String(session.autoLockMinutes));
 const newPasskeyName = ref('');
 const passkeyError = ref('');
@@ -58,6 +59,10 @@ const deleteUser = useMutation({
 
 function applyTheme() {
   setTheme(theme.value);
+}
+
+function applyPalette() {
+  setPalette(palette.value);
 }
 
 function applyAutoLock() {
@@ -144,7 +149,7 @@ async function importFiles(event: Event) {
           to="/"
           title="Back to notes"
           aria-label="Close settings"
-          class="rounded-lg px-2 py-1 text-lg leading-none text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          class="rounded-lg px-2 py-1 text-lg leading-none hover:bg-zinc-100 dark:hover:bg-zinc-800"
         >
           ✕
         </RouterLink>
@@ -153,11 +158,19 @@ async function importFiles(event: Event) {
       <section class="space-y-3">
         <h2 class="text-lg font-semibold">Appearance & security</h2>
         <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          <span class="text-sm">Theme</span>
+          <span class="text-sm">Light / dark</span>
           <select v-model="theme" class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900" @change="applyTheme">
             <option value="system">System</option>
             <option value="light">Light</option>
             <option value="dark">Dark</option>
+          </select>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <span class="text-sm">Color theme</span>
+          <select v-model="palette" class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900" @change="applyPalette">
+            <option value="brand">Brand</option>
+            <option value="pastel">Pastel</option>
+            <option value="high-contrast">High contrast</option>
           </select>
         </div>
         <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
@@ -198,6 +211,18 @@ async function importFiles(event: Event) {
           >
             <option value="true">Click to load</option>
             <option value="false">Load automatically</option>
+          </select>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <span class="text-sm">Optimize images before upload</span>
+          <select
+            :value="String(optimizeImages)"
+            title="Resize large images and re-encode to WebP on this device before encryption, to save space. Applied to the original file; the server only ever sees ciphertext."
+            class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            @change="setOptimizeImages(($event.target as HTMLSelectElement).value === 'true')"
+          >
+            <option value="true">On</option>
+            <option value="false">Off</option>
           </select>
         </div>
       </section>

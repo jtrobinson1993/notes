@@ -69,6 +69,214 @@ class HrWidget extends WidgetType {
   }
 }
 
+// Clickable task-list checkbox replacing a `[ ]` / `[x]` TaskMarker in live
+// preview. `pos` is the offset of the inner state char (TaskMarker.from + 1);
+// toggling dispatches a single-char replace flipping ' '<->'x'.
+class TaskCheckboxWidget extends WidgetType {
+  constructor(
+    readonly checked: boolean,
+    readonly pos: number,
+  ) {
+    super();
+  }
+  override eq(other: TaskCheckboxWidget): boolean {
+    return other.checked === this.checked && other.pos === this.pos;
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = this.checked;
+    box.className = 'cm-task-checkbox mr-1 cursor-pointer align-middle accent-blue-600';
+    box.addEventListener('mousedown', (e) => {
+      // let the checkbox own the click; CM must not move the caret into the
+      // concealed marker (the range is atomic anyway)
+      e.preventDefault();
+      e.stopPropagation();
+      view.dispatch({
+        changes: { from: this.pos, to: this.pos + 1, insert: this.checked ? ' ' : 'x' },
+      });
+      view.focus();
+    });
+    return box;
+  }
+  override ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+// ---- editable table ------------------------------------------------------
+
+// A single editable cell with its absolute source range and current text.
+interface TableCellModel {
+  from: number;
+  to: number;
+  text: string;
+}
+type TableAlign = 'left' | 'center' | 'right' | null;
+interface TableModel {
+  header: TableCellModel[];
+  rows: TableCellModel[][];
+  align: TableAlign[];
+}
+
+// Parse a GFM table from its raw source (and absolute start offset) into a
+// grid of cells, each carrying the exact source range of its inner text so a
+// single-cell edit rewrites only that slice. We parse the pipes ourselves
+// rather than leaning on the sparse TableCell nodes so empty cells still get a
+// well-defined insertion range, and the delimiter row is skipped (never
+// edited). Cells are the text *between* pipes, trimmed; the stored range spans
+// the trimmed text (or the gap between surrounding spaces when empty).
+function parseTable(raw: string, base: number): TableModel | null {
+  const lines = raw.split('\n');
+  if (lines.length < 2) return null;
+
+  // split one table line into cell ranges (absolute), honouring a leading and
+  // trailing pipe but tolerating their absence; escaped \| stays in-cell
+  const splitRow = (line: string, lineStart: number): TableCellModel[] => {
+    const cells: TableCellModel[] = [];
+    let cellStart = 0;
+    let i = 0;
+    // skip a leading pipe
+    if (line[0] === '|') {
+      i = 1;
+      cellStart = 1;
+    }
+    const pushCell = (segStart: number, segEnd: number) => {
+      const seg = line.slice(segStart, segEnd);
+      const lead = seg.length - seg.trimStart().length;
+      const trimmed = seg.trim();
+      const from = lineStart + segStart + lead;
+      cells.push({ from, to: from + trimmed.length, text: trimmed });
+    };
+    for (; i < line.length; i++) {
+      if (line[i] === '\\') {
+        i++;
+        continue;
+      }
+      if (line[i] === '|') {
+        pushCell(cellStart, i);
+        cellStart = i + 1;
+      }
+    }
+    // trailing segment after the last pipe — drop it only if it's the empty
+    // tail produced by a trailing pipe
+    if (!(line[line.length - 1] === '|' && cellStart === line.length)) {
+      pushCell(cellStart, line.length);
+    }
+    return cells;
+  };
+
+  // line offsets within raw
+  const lineStarts: number[] = [];
+  let acc = 0;
+  for (const l of lines) {
+    lineStarts.push(acc);
+    acc += l.length + 1; // +1 for the consumed '\n'
+  }
+
+  const header = splitRow(lines[0]!, base + lineStarts[0]!);
+  const delim = lines[1] ?? '';
+  const align: TableAlign[] = splitRow(delim, base + lineStarts[1]!).map((c) => {
+    const t = c.text;
+    const l = t.startsWith(':');
+    const r = t.endsWith(':');
+    return l && r ? 'center' : r ? 'right' : l ? 'left' : null;
+  });
+  const rows: TableCellModel[][] = [];
+  for (let li = 2; li < lines.length; li++) {
+    if (!lines[li]!.trim()) continue;
+    rows.push(splitRow(lines[li]!, base + lineStarts[li]!));
+  }
+  return { header, rows, align };
+}
+
+const ALIGN_CLASS: Record<NonNullable<TableAlign>, string> = {
+  left: 'text-left',
+  center: 'text-center',
+  right: 'text-right',
+};
+
+// Live-preview editable table: replaces the whole table source with a real
+// <table> whose cells are text inputs. Committing a cell (Enter / blur)
+// rewrites just that cell's source range. eq() compares the raw source so the
+// widget only rebuilds when the table text actually changes (keeps focus
+// stable while typing elsewhere). The block is atomic; the caret leaves it via
+// the surrounding lines.
+class TableWidget extends WidgetType {
+  constructor(
+    readonly raw: string,
+    readonly base: number,
+  ) {
+    super();
+  }
+  override eq(other: TableWidget): boolean {
+    return other.raw === this.raw && other.base === this.base;
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const model = parseTable(this.raw, this.base);
+    const wrap = document.createElement('div');
+    wrap.className = 'cm-live-table my-1 overflow-x-auto';
+    const table = document.createElement('table');
+    table.className = 'border-collapse';
+    if (!model) {
+      wrap.append(table);
+      return wrap;
+    }
+
+    const commit = (cell: TableCellModel, value: string) => {
+      // a raw | or newline in a cell would break the table grammar; escape
+      // pipes and collapse newlines so the edit can't corrupt the structure
+      const next = value.trim().replace(/\\?\|/g, '\\|').replace(/\s*\n\s*/g, ' ');
+      if (next === cell.text) return;
+      view.dispatch({ changes: { from: cell.from, to: cell.to, insert: next } });
+    };
+
+    const makeCell = (tag: 'th' | 'td', cell: TableCellModel | undefined, colAlign: TableAlign) => {
+      const td = document.createElement(tag);
+      const alignCls = colAlign ? ` ${ALIGN_CLASS[colAlign]}` : '';
+      td.className = `border border-zinc-300 px-2 py-1 dark:border-zinc-700${alignCls}`;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = cell?.text ?? '';
+      input.className = `w-full min-w-16 bg-transparent outline-none${alignCls}`;
+      if (tag === 'th') input.className += ' font-semibold';
+      if (cell) {
+        input.addEventListener('blur', () => commit(cell, input.value));
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            input.blur();
+          }
+        });
+      } else {
+        input.disabled = true;
+      }
+      td.append(input);
+      return td;
+    };
+
+    const thead = document.createElement('thead');
+    const htr = document.createElement('tr');
+    model.header.forEach((c, i) => htr.append(makeCell('th', c, model.align[i] ?? null)));
+    thead.append(htr);
+    table.append(thead);
+
+    const tbody = document.createElement('tbody');
+    for (const row of model.rows) {
+      const tr = document.createElement('tr');
+      for (let i = 0; i < model.header.length; i++) tr.append(makeCell('td', row[i], model.align[i] ?? null));
+      tbody.append(tr);
+    }
+    table.append(tbody);
+    wrap.append(table);
+    return wrap;
+  }
+  override ignoreEvent(): boolean {
+    // let the cell inputs handle their own keyboard/mouse events
+    return true;
+  }
+}
+
 const bulletWidget = new BulletWidget();
 const hrWidget = new HrWidget();
 
@@ -237,11 +445,35 @@ function buildDecorations(view: EditorView): BuiltDecorations {
           return;
         }
 
+        if (name === 'TaskMarker') {
+          // `[ ]` / `[x]` -> real checkbox; the marker chars are concealed and
+          // atomic, the inner state char (from+1) is what we flip
+          const marker = state.doc.sliceString(node.from, node.to);
+          const checked = /x/i.test(marker);
+          conceal(node.from, node.to, Decoration.replace({ widget: new TaskCheckboxWidget(checked, node.from + 1) }));
+          return false;
+        }
+
         if (name === 'ListMark') {
           const text = state.doc.sliceString(node.from, node.to);
-          if (/^[-*+]$/.test(text) && node.node.parent?.parent?.name !== 'Task')
-            conceal(node.from, node.to, Decoration.replace({ widget: bulletWidget }));
+          if (!/^[-*+]$/.test(text)) return;
+          // task items render a checkbox instead of a bullet dot: hide the
+          // marker (and the following space) outright so we don't get both
+          const item = node.node.parent;
+          const isTask = item?.firstChild?.nextSibling?.name === 'Task';
+          if (isTask) {
+            const end = state.doc.sliceString(node.to, node.to + 1) === ' ' ? node.to + 1 : node.to;
+            conceal(node.from, end);
+            return;
+          }
+          conceal(node.from, node.to, Decoration.replace({ widget: bulletWidget }));
           return;
+        }
+
+        if (name === 'Table') {
+          // tables are rendered by a separate StateField (tableField): block /
+          // line-break-spanning decorations can't be provided from a ViewPlugin
+          return false;
         }
 
         if (name === 'HorizontalRule') {
@@ -297,6 +529,47 @@ const livePreviewPlugin = ViewPlugin.fromClass(
   },
 );
 
+// ---- editable tables (StateField) ----------------------------------------
+// Block widgets and replacements that span line breaks can't be provided by a
+// ViewPlugin (CM throws), so tables live in their own StateField. It rebuilds
+// only when the syntax tree changes — the table widget's eq() keeps focus
+// stable across unrelated edits.
+
+interface TableDecos {
+  decorations: DecorationSet;
+  atomics: RangeSet<Decoration>;
+}
+
+function buildTableDecorations(state: EditorState): TableDecos {
+  const decos: Range<Decoration>[] = [];
+  const atomics: Range<Decoration>[] = [];
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (node.name !== 'Table') return undefined;
+      const raw = state.doc.sliceString(node.from, node.to);
+      decos.push(
+        Decoration.replace({ widget: new TableWidget(raw, node.from), block: true }).range(node.from, node.to),
+      );
+      atomics.push(hide.range(node.from, node.to));
+      return false;
+    },
+  });
+  return { decorations: RangeSet.of(decos, false), atomics: RangeSet.of(atomics, false) };
+}
+
+const tableField = StateField.define<TableDecos>({
+  create: (state) => buildTableDecorations(state),
+  update(value, tr) {
+    if (syntaxTree(tr.startState) !== syntaxTree(tr.state) || tr.docChanged)
+      return buildTableDecorations(tr.state);
+    return value;
+  },
+  provide: (field) => [
+    EditorView.decorations.from(field, (v) => v.decorations),
+    EditorView.atomicRanges.of((view) => view.state.field(field).atomics),
+  ],
+});
+
 // Concealed markers are atomic, but the positions on either side of one
 // render at the same visual spot — a plain arrow step across a marker looks
 // like the caret didn't move (one "dead" press at every span edge). Repeat
@@ -304,14 +577,27 @@ const livePreviewPlugin = ViewPlugin.fromClass(
 
 function coveredByConcealed(view: EditorView, a: number, b: number): boolean {
   if (a === b) return false;
-  const atoms = view.plugin(livePreviewPlugin)?.atomics;
-  if (!atoms) return false;
   const [lo, hi] = a < b ? [a, b] : [b, a];
+  // consult both the inline-marker atomics (plugin) and the table atomics
+  // (field) so arrow motion steps cleanly past a whole table block too
+  const sets = [view.plugin(livePreviewPlugin)?.atomics, view.state.field(tableField, false)?.atomics].filter(
+    (s): s is RangeSet<Decoration> => !!s,
+  );
+  if (!sets.length) return false;
   let pos = lo;
-  const iter = atoms.iter(lo);
-  while (iter.value && iter.from < hi) {
-    if (iter.from <= pos && iter.to > pos) pos = iter.to;
-    iter.next();
+  for (let guard = 0; guard < 64; guard++) {
+    let advanced = false;
+    for (const set of sets) {
+      const iter = set.iter(pos);
+      while (iter.value && iter.from <= pos) {
+        if (iter.to > pos) {
+          pos = iter.to;
+          advanced = true;
+        }
+        iter.next();
+      }
+    }
+    if (!advanced) break;
   }
   return pos >= hi;
 }
@@ -487,5 +773,13 @@ const newlineBreakout = EditorState.transactionFilter.of((tr) => {
 });
 
 export function livePreview(): Extension {
-  return [revealedSpoilers, livePreviewPlugin, spoilerClickHandler, whitespaceBreakout, newlineBreakout, concealedMotion];
+  return [
+    revealedSpoilers,
+    livePreviewPlugin,
+    tableField,
+    spoilerClickHandler,
+    whitespaceBreakout,
+    newlineBreakout,
+    concealedMotion,
+  ];
 }
