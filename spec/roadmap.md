@@ -21,17 +21,101 @@
 ## v3.2 — Editable user profiles
 
 Builds on the v3 display name with the richer profile: description/bio and
-avatar. (Friend bootstrap is already ephemeral 24h codes, so there's no permanent
-handle to regenerate or vanity-customise.) Maybe Discord-style decorations
-(animated avatars, profile backgrounds/borders). Profile data is server-visible
-UI metadata, not E2EE content.
+avatar. (Friend bootstrap is already ephemeral 24h codes, so there's no
+permanent handle to regenerate or vanity-customise.) Maybe Discord-style
+decorations (animated avatars, profile backgrounds/borders).
 
-## v4 — Voice chat
+**Profile data is E2EE to contacts.** Encrypt the profile blob (bio, avatar,
+decorations) under a per-user profile key, wrapped to each contact who needs to
+render it. Reuse the chat key-distribution machinery rather than inventing a
+second mechanism — the same epoch re-keying applies: when a contact loses access
+(unfriended, or removed from the last shared group), rotate the profile key so
+they can't decrypt future updates.
 
-E2EE voice channels (WebRTC; SFU with insertable streams if needed at our scale,
-else P2P mesh for small calls). No plans for video.
+**Visibility setting — "Only allow friends to see my profile" (default on).**
+With it on, the profile key is only ever wrapped to accepted friends; group
+co-members who aren't friends see just the display name. Turning it off widens
+distribution to group co-members as well.
 
-## v5 — Multiple servers (Discord-style)
+## v3.3 — Cleanup
+
+Rolling backlog of polish + bug fixes — not a gated release; items ship
+opportunistically alongside other work.
+
+- The "write in markdown" composer placeholder isn't theme-colored like the
+  "add tag…" placeholder; match it.
+- Sidebar links shouldn't carry the current padding/background hover effect.
+  Instead, instantly show a tooltip to the right of the item with its label on
+  hover.
+- Replace the "New chat" `+` icon with a chat-bubble icon (or similar).
+- Replace the existing new-chat popover (`AppSidebar.vue`) with a centered
+  modal: a "New Chat" heading + short description prompting who to chat with, a
+  search box at the top, and an alphabetical friend list with a checkbox per
+  friend for selecting one or many. Cancel / Create chat buttons at the bottom,
+  an ✕ top-right, and a small blur on the content behind. Fixed width with
+  max-height 80% on desktop; full-screen on mobile. Built on the reusable modal
+  below.
+- Extract a reusable modal component for primary, blocking actions (where the
+  user shouldn't reach the rest of the app until they finish or cancel). Base it
+  on reka-ui `DialogRoot` + an overlay/blur, and refactor the existing
+  `HistoryDialog` and `ShareDialog` onto it.
+- Drop the "Load older messages" button. Instead auto-load older messages in
+  chunks as the user scrolls back, and show "end of message history" when
+  there's nothing left to load. Preserve scroll anchoring so the viewport
+  doesn't jump when older messages prepend.
+
+## v4 — Chat sidebar
+
+- Left-hand sidebar inside all chats (group or 1:1).
+- Collapsible; persist open/closed state. Collapse/open icon at the top.
+- An edit button at the bottom of the open sidebar makes channels editable /
+  reorderable / deletable.
+- Ability to create "channels" à la Discord, with a type (text or voice). Voice
+  channels are structural here; the voice functionality itself lands in v6.
+
+### Note folders (organization)
+
+- Organize notes into folders.
+- Pin a note or note folder into the chat sidebar.
+- Create a new note / note folder from the chat sidebar; it also appears in your
+  notes view.
+
+(Sharing folders with chat participants and the associated permissions are their
+own crypto-heavy feature — see **v5**.)
+
+## v5 — Note & folder sharing
+
+Per-object access control on top of E2EE — effectively the same
+key-distribution problem as chat membership, so reuse that machinery:
+
+- Share an entire folder of notes (not just individual notes).
+- Adding a note/folder to a chat sidebar does **not** automatically expose it to
+  everyone in the chat. On add, present a UX to optionally grant view permission
+  to other participants — individually or to all at once.
+- **Revocation:** removing a participant's access must rotate the note/folder key
+  (epoch re-key) so they can't read future updates. Prior plaintext they already
+  held is considered compromised — document that boundary.
+
+## v6 — Voice
+
+E2EE voice over WebRTC (SFU with insertable streams if needed at our scale, else
+P2P mesh for small calls). **Do deep research and walk through the options before
+planning or implementing anything officially.** Two surfaces:
+
+- **Voice channels** — joinable persistent rooms (the voice-type channels created
+  in v4).
+- **Direct voice calls** — 1:1 (and small-group) calls with ringtones and an
+  answer / ignore prompt on the callee's side.
+
+No plans for video (see v7).
+
+## v7 — Video streaming in voice channels?
+
+Far future — not intended for a long time.
+
+- What strain would this put on server-host hardware?
+
+## v8 — Multiple servers (Discord-style)
 
 Multi-server **client**, not federation: each server stays an independent
 instance; the app connects to several and aggregates them in one UI. Add a server
@@ -41,7 +125,7 @@ passkeys, master key, friends, groups.
 Because passkeys are origin-bound, auth against a remote server happens in a
 popup/redirect on that server's origin (passkey ceremony + PRF unwrap there),
 handing a session token and unwrapped MK back via `postMessage` — the
-security-critical piece of v5.
+security-critical piece of v8.
 
 Out of scope: groups spanning two servers (would require real federation —
 cross-server identity, key distribution, message relay).
