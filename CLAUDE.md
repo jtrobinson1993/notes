@@ -20,5 +20,8 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
 
 ## Git
 
-- Commit in small, logical units as you work; push to `origin/main` after every
-  completed feature.
+- **Branch per workitem.** Start each task on a new branch off `main`; never
+  commit or push directly to `main` (it's protected).
+- **Commit** in small, logical units as you work.
+- **Merge via PR.** When a feature looks complete, ask whether it's time to
+  merge; on confirmation, push the branch, open a PR, and merge it into `main`.
