@@ -81,8 +81,10 @@ Chat needs the server to push a message the instant it arrives.
   devices). REST-to-send keeps sending durable; the socket is purely the
   server→client delivery path.
 - **The socket is liveness; the DB is truth.** On reconnect the client backfills
-  via REST; ordering/durability come from DB seq numbers, so a dropped socket
-  never loses a message. Single server process holding sockets in memory (the
+  via REST — gated on the server's `hello` frame, so an accepted-then-closed
+  upgrade (Origin/cookie reject) can't drive a reconnect+re-decrypt storm.
+  Ordering/durability come from DB seq numbers, so a dropped socket never loses
+  a message. Single server process holding sockets in memory (the
   self-hosted reality); multi-process would need Redis pub/sub — out of scope.
 
 ### Connection limits & operational hardening

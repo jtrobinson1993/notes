@@ -33,7 +33,10 @@ export default defineConfig({
   ],
   server: {
     proxy: {
-      '/api': 'http://localhost:3000',
+      // ws:true so the chat WebSocket upgrade at /api/ws is proxied too — with
+      // the string shorthand only REST is forwarded, so the socket fails to
+      // connect and the client reconnect-churns (re-decrypting on each cycle).
+      '/api': { target: 'http://localhost:3000', ws: true },
     },
   },
 });
