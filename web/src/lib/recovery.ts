@@ -18,7 +18,11 @@ function toBase32(bytes: Uint8Array): string {
       bits -= 5;
     }
   }
+  // Defensive: codes are always 20 bytes (160 bits, a multiple of 5), so the
+  // public API never leaves a remainder here.
+  /* v8 ignore start */
   if (bits > 0) out += ALPHABET[(value << (5 - bits)) & 31];
+  /* v8 ignore stop */
   return out;
 }
 
@@ -28,7 +32,11 @@ function fromBase32(s: string): Uint8Array {
   const out: number[] = [];
   for (const ch of s) {
     const idx = ALPHABET.indexOf(ch);
+    // Defensive: parseRecoveryCode() pre-filters to the base32 alphabet, so a
+    // stray character never reaches here via the public API.
+    /* v8 ignore start */
     if (idx === -1) throw new Error('invalid recovery code');
+    /* v8 ignore stop */
     value = (value << 5) | idx;
     bits += 5;
     if (bits >= 8) {
