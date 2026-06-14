@@ -193,32 +193,26 @@ function onKeydown(e: KeyboardEvent) {
           No messages yet — say hello.
         </div>
 
+        <!-- All messages align the same way (inline-start: left in LTR, right
+             in RTL) — no special-casing the current user's own messages. -->
         <div
           v-for="group in groups"
           :key="group.key"
-          class="flex flex-col"
-          :class="group.mine ? 'items-end' : 'items-start'"
+          class="flex flex-col items-start"
         >
           <!-- Sender name + time: once per group. -->
-          <div
-            class="mb-0.5 flex items-baseline gap-2 px-1 text-xs"
-            :class="group.mine ? 'flex-row-reverse' : ''"
-          >
+          <div class="mb-0.5 flex items-baseline gap-2 px-1 text-xs">
             <span class="font-medium text-zinc-600 dark:text-zinc-300">{{ group.name }}</span>
             <time class="text-zinc-400 dark:text-zinc-500">{{ formatTime(group.startedAt) }}</time>
           </div>
-          <!-- Background + padding live on the GROUP, not on each message. -->
-          <div
-            class="max-w-[80%] overflow-hidden rounded-2xl px-2 py-1.5 text-sm"
-            :class="group.mine
-              ? 'bg-blue-600 text-white'
-              : 'bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'"
-          >
+          <!-- No background or padding: messages stack as tight lines (4 in a
+               row read like one 4-line message); only the per-message hover
+               highlight sets them apart. -->
+          <div class="max-w-[80%] text-sm">
             <div
               v-for="m in group.messages"
               :key="m.seq"
-              class="-mx-2 px-2 py-0.5 transition-colors"
-              :class="group.mine ? 'hover:bg-white/10' : 'hover:bg-black/5 dark:hover:bg-white/5'"
+              class="chat-message rounded px-1 transition-colors hover:bg-black/5 dark:hover:bg-white/10"
             >
               <MarkdownView v-if="m.text !== null" :source="m.text" />
               <span v-else class="italic opacity-70">message could not be decrypted</span>
