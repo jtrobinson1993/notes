@@ -51,11 +51,12 @@ function open(): void {
     return;
   }
   socket = ws;
-
-  ws.onopen = () => {
-    reconnectAttempts = 0;
-    for (const fn of connectListeners) fn();
-  };
+  // The raw socket opening isn't proof it's usable: the server accepts the
+  // upgrade, then closes it if the Origin/cookie don't check out (no `hello`
+  // is ever sent). Only a received `hello` confirms the connection — gate the
+  // backoff reset and the (crypto-heavy) backfill on it, so an open→close
+  // reject can't drive a tight reconnect+re-decrypt loop.
+  let confirmed = false;
 
   ws.onmessage = (ev) => {
     let frame: ServerFrame;
@@ -63,6 +64,11 @@ function open(): void {
       frame = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as ServerFrame;
     } catch {
       return;
+    }
+    if (!confirmed && frame.type === 'hello') {
+      confirmed = true;
+      reconnectAttempts = 0;
+      for (const fn of connectListeners) fn();
     }
     for (const fn of handlers) fn(frame);
   };
