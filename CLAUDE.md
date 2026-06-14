@@ -17,3 +17,8 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
   reality, **delete** a removed feature's section/file, or **add** a new
   `spec/<area>.md` for a new app surface — and update the `SPEC.md` table and
   `spec/README.md` index accordingly.
+
+## Git
+
+- Commit in small, logical units as you work; push to `origin/main` after every
+  completed feature.
