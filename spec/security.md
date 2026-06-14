@@ -53,3 +53,38 @@ friends); sender identity (sealed-sender). What's structurally visible to the
 routing/storing server and **not** worth hand-rolling around: the social graph /
 conversation membership, message timing and size, and the friend-code → account
 lookup. Hiding those needs mixnets / PIR / enclaves — out of scope.
+
+## Untrusted server vs. malicious host (the served-code limit)
+
+"The server can't read content" is precise about **data**. It's worth separating
+two adversaries — they have different ceilings:
+
+- **A curious / compromised / shady host reading what's stored** (DB, disk,
+  backups, RAM, the network) sees only ciphertext and **public** keys. It cannot
+  read notes or messages, and it cannot unwrap the master key: the
+  PRF / recovery-code / seal material that unwraps MK never reaches the server.
+  Device linking is the same — the relay stores the new device's *public* key and
+  the *sealed* MK; unsealing needs a private key the server never holds (see
+  [accounts-and-crypto.md](accounts-and-crypto.md)).
+
+- **A malicious host tampering _live_** can try to substitute keys mid-flow
+  (e.g. swap the device-linking public key to seal MK to itself). Such active
+  attacks are defended per-protocol by **human verification** — the device-link
+  **SAS** is compared on both screens, and a swapped key makes it mismatch.
+
+- **The residual limit — inherent to _all_ browser-delivered E2EE — is that the
+  host serves the client.** A malicious host can ship a tampered bundle that
+  exfiltrates MK at unlock, or *fakes* a verification step (shows a matching SAS
+  while sealing to an attacker key). No protocol detail defeats the host
+  controlling the code, and this is a **whole-app** property: a feature like
+  device linking adds no exposure a tampered client didn't already have the
+  moment you unlock.
+
+**Deployment consequence.** The model is **self-hosting**: you run the box, so
+"untrusted server" means untrusted *cloud / network*, not untrusted *you*. For
+**multi-tenant / hosting-for-others**, users must trust the served client; raise
+that bar with **code transparency** (the public repo — diff served assets against
+the published build), **Subresource Integrity / pinned reproducible builds**, and
+the **PWA cache** (an installed client resists per-session swapping until it
+updates). A **signed native / desktop client** is the strongest answer and is
+out of scope today.
