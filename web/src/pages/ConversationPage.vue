@@ -194,7 +194,7 @@ function onKeydown(e: KeyboardEvent) {
             <ChatAvatar v-if="row.isStart" :name="row.name" :seed="row.senderId" class="h-10 w-10 text-sm" />
             <time
               v-else
-              class="hidden justify-end pt-0.5 text-right text-[10px] leading-5 tabular-nums text-zinc-400 group-hover:flex dark:text-zinc-500"
+              class="hidden whitespace-nowrap pt-0.5 text-right text-[10px] leading-5 tabular-nums text-zinc-400 group-hover:block dark:text-zinc-500"
             >{{ formatTime(row.msg.createdAt) }}</time>
           </div>
           <!-- Content fills the rest of the width. -->
