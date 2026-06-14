@@ -191,7 +191,13 @@ function onKeydown(e: KeyboardEvent) {
           <!-- Left gutter: avatar at a group's first message; otherwise a
                hover-only timestamp for the consecutive message. -->
           <div class="w-10 shrink-0">
-            <ChatAvatar v-if="row.isStart" :name="row.name" :seed="row.senderId" class="h-10 w-10 text-sm" />
+            <!-- Center the avatar within a fixed-height box (~one header + line)
+                 anchored at the top: it reads centered on a single-line message,
+                 and the fixed height keeps it in that same spot when the message
+                 wraps to multiple lines. -->
+            <div v-if="row.isStart" class="flex h-11 items-center">
+              <ChatAvatar :name="row.name" :seed="row.senderId" class="h-10 w-10 text-sm" />
+            </div>
             <time
               v-else
               class="hidden whitespace-nowrap pt-0.5 text-right text-[10px] leading-5 tabular-nums text-zinc-400 group-hover:block dark:text-zinc-500"
