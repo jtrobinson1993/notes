@@ -4,13 +4,16 @@
 the server's users. A DM is just a two-member conversation — one unified
 conversation / member / message model, not a special case. Message rendering
 reuses the token-based renderer from v2.1 (no `v-html`, raw HTML inert by
-construction) — see [security.md](security.md). Consecutive messages from one
-sender (within ~5 min) are grouped: the sender's display name + a timestamp show
-once per group (own messages included). Messages have **no background** and stack
-as tight lines (4 in a row read like one 4-line message); only a per-message
-**hover highlight** distinguishes them. All messages share one alignment
-(inline-start — left in LTR, right in RTL); your own are not special-cased to the
-opposite side.
+construction) — see [security.md](security.md). Layout is a full-width list
+(Discord-style): one row per message with a left **avatar gutter**. Consecutive
+messages from one sender (within ~5 min) are grouped — the first row shows the
+**avatar** + display name + timestamp (own messages included); the rest leave the
+gutter empty, where each message's own timestamp appears **on hover**. Messages
+have **no background** and stack as tight lines (4 in a row read like one 4-line
+message); only a per-message **hover highlight** distinguishes them. Everyone's
+messages align the same way (inline-start — left in LTR, right in RTL); your own
+are not special-cased. The default avatar is a colored circle (deterministic per
+user) with the first letter of the display name — `ChatAvatar.vue`.
 
 Crypto reuses the sealing primitive from
 [accounts-and-crypto.md](accounts-and-crypto.md); the app shell / sidebar is in

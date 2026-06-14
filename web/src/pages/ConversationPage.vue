@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import MarkdownView from '../components/MarkdownView.vue';
+import ChatAvatar from '../components/ChatAvatar.vue';
 import type { Conversation } from '@notes/shared';
 import { useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
@@ -31,10 +32,6 @@ const title = computed(() => otherMember.value?.displayName || 'Conversation');
 
 const msgs = computed(() => chat.messages[convId.value] ?? []);
 
-function isMine(senderId: string): boolean {
-  return senderId === session.user?.id;
-}
-
 function memberName(senderId: string): string {
   return conversation.value?.members.find((m) => m.userId === senderId)?.displayName || 'Unknown';
 }
@@ -43,35 +40,25 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-// Consecutive messages from the same sender (within a 5-min gap) form one group:
-// the sender name + timestamp show once per group, and the group — not each
-// message — carries the background/padding.
+// One full-width row per message. `isStart` marks the first message of a group
+// (same sender within a 5-min gap): it shows the avatar + name + timestamp;
+// consecutive rows leave the avatar gutter empty (a hover-only timestamp fills
+// it instead).
 const GROUP_GAP_MS = 5 * 60_000;
-interface MessageGroup {
+interface MessageRow {
   key: string;
+  msg: ChatMessageView;
   senderId: string;
-  mine: boolean;
   name: string;
-  startedAt: number;
-  messages: ChatMessageView[];
+  isStart: boolean;
 }
-const groups = computed<MessageGroup[]>(() => {
-  const out: MessageGroup[] = [];
+const rows = computed<MessageRow[]>(() => {
+  const out: MessageRow[] = [];
+  let prev: ChatMessageView | undefined;
   for (const m of msgs.value) {
-    const prev = out[out.length - 1];
-    const last = prev?.messages[prev.messages.length - 1];
-    if (prev && last && prev.senderId === m.senderId && m.createdAt - last.createdAt <= GROUP_GAP_MS) {
-      prev.messages.push(m);
-    } else {
-      out.push({
-        key: String(m.seq),
-        senderId: m.senderId,
-        mine: isMine(m.senderId),
-        name: memberName(m.senderId),
-        startedAt: m.createdAt,
-        messages: [m],
-      });
-    }
+    const isStart = !prev || prev.senderId !== m.senderId || m.createdAt - prev.createdAt > GROUP_GAP_MS;
+    out.push({ key: String(m.seq), msg: m, senderId: m.senderId, name: memberName(m.senderId), isStart });
+    prev = m;
   }
   return out;
 });
@@ -175,8 +162,8 @@ function onKeydown(e: KeyboardEvent) {
         <p class="font-semibold">{{ title }}</p>
       </div>
 
-      <div ref="scroller" class="min-h-0 grow space-y-2 overflow-y-auto p-4" @scroll="onScroll">
-        <div v-if="msgs.length" class="flex justify-center">
+      <div ref="scroller" class="min-h-0 grow overflow-y-auto py-2" @scroll="onScroll">
+        <div v-if="msgs.length" class="flex justify-center py-2">
           <button
             :disabled="loadingOlder"
             class="rounded-lg px-3 py-1 text-xs text-zinc-500 hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800"
@@ -193,28 +180,31 @@ function onKeydown(e: KeyboardEvent) {
           No messages yet — say hello.
         </div>
 
-        <!-- All messages align the same way (inline-start: left in LTR, right
-             in RTL) — no special-casing the current user's own messages. -->
+        <!-- One full-width row per message; the avatar gutter sits on the left.
+             Messages align the same for everyone (no own-message special-case). -->
         <div
-          v-for="group in groups"
-          :key="group.key"
-          class="flex flex-col items-start"
+          v-for="row in rows"
+          :key="row.key"
+          class="group flex items-start gap-3 px-4 py-0.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+          :class="row.isStart ? 'mt-3' : ''"
         >
-          <!-- Sender name + time: once per group. -->
-          <div class="mb-0.5 flex items-baseline gap-2 px-1 text-xs">
-            <span class="font-medium text-zinc-600 dark:text-zinc-300">{{ group.name }}</span>
-            <time class="text-zinc-400 dark:text-zinc-500">{{ formatTime(group.startedAt) }}</time>
+          <!-- Left gutter: avatar at a group's first message; otherwise a
+               hover-only timestamp for the consecutive message. -->
+          <div class="w-10 shrink-0">
+            <ChatAvatar v-if="row.isStart" :name="row.name" :seed="row.senderId" class="h-10 w-10 text-sm" />
+            <time
+              v-else
+              class="hidden justify-end pt-0.5 text-right text-[10px] leading-5 tabular-nums text-zinc-400 group-hover:flex dark:text-zinc-500"
+            >{{ formatTime(row.msg.createdAt) }}</time>
           </div>
-          <!-- No background or padding: messages stack as tight lines (4 in a
-               row read like one 4-line message); only the per-message hover
-               highlight sets them apart. -->
-          <div class="max-w-[80%] text-sm">
-            <div
-              v-for="m in group.messages"
-              :key="m.seq"
-              class="chat-message rounded px-1 transition-colors hover:bg-black/5 dark:hover:bg-white/10"
-            >
-              <MarkdownView v-if="m.text !== null" :source="m.text" />
+          <!-- Content fills the rest of the width. -->
+          <div class="min-w-0 grow text-sm">
+            <div v-if="row.isStart" class="mb-0.5 flex items-baseline gap-2">
+              <span class="font-medium text-zinc-700 dark:text-zinc-200">{{ row.name }}</span>
+              <time class="text-xs text-zinc-400 dark:text-zinc-500">{{ formatTime(row.msg.createdAt) }}</time>
+            </div>
+            <div class="chat-message">
+              <MarkdownView v-if="row.msg.text !== null" :source="row.msg.text" />
               <span v-else class="italic opacity-70">message could not be decrypted</span>
             </div>
           </div>
