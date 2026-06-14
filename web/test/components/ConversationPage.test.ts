@@ -54,17 +54,15 @@ beforeEach(() => {
 });
 
 describe('ConversationPage message alignment', () => {
-  it('aligns my messages to the end and the other party’s to the start', async () => {
+  it('aligns all messages the same way — no mine-on-the-right', async () => {
     const chat = seedConversation();
     chat.messages = { c1: [msg({ seq: 1, senderId: 'friend', text: 'yours' }), msg({ seq: 2, senderId: 'me', text: 'mine' })] };
     const w = mount(ConversationPage, { global: { stubs } });
     await flush();
 
-    const rows = w.findAll('.flex.flex-col');
-    // The two message rows carry items-start (other) and items-end (mine).
-    const classes = rows.map((r) => r.attributes('class') ?? '');
-    expect(classes.some((c) => c.includes('items-start'))).toBe(true);
-    expect(classes.some((c) => c.includes('items-end'))).toBe(true);
+    // Both groups (mine + theirs) are start-aligned; none is end-aligned.
+    expect(w.findAll('.flex.flex-col.items-start')).toHaveLength(2);
+    expect(w.findAll('.flex.flex-col.items-end')).toHaveLength(0);
   });
 
   it('shows the undecryptable fallback for a message with text === null', async () => {
@@ -121,14 +119,18 @@ describe('ConversationPage grouping, headers, and message styling', () => {
     expect(w.findAll('time')).toHaveLength(2);
   });
 
-  it('gives each message a hover highlight but no static per-message background', async () => {
+  it('renders messages flat: no bubble background, no vertical spacing, hover highlight only', async () => {
     const chat = seedConversation();
     chat.messages = { c1: [msg({ seq: 1, senderId: 'friend', text: 'x' })] };
     const w = mount(ConversationPage, { global: { stubs } });
     await flush();
-    const row = w.find('.mdview').element.parentElement!;
+    const row = w.find('.mdview').element.parentElement!; // message row
+    const container = row.parentElement!; // the message group container (was the bubble)
+    expect(container.className).not.toMatch(/bg-/); // group has no background bubble
+    expect(row.className).toContain('chat-message'); // drives the tight-line CSS
     expect(row.className).toContain('hover:bg'); // highlighted on hover
-    expect(row.className).not.toMatch(/(^|\s)bg-/); // no background of its own
+    expect(row.className).not.toMatch(/(^|\s)bg-/); // no static background of its own
+    expect(row.className).not.toMatch(/\b(py|my)-/); // no vertical padding/margin → tight lines
   });
 });
 

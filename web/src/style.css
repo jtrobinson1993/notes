@@ -126,6 +126,12 @@ select:not(:disabled) {
 .md-preview pre { @apply my-3 overflow-x-auto rounded-lg bg-zinc-200 p-3 dark:bg-zinc-800; }
 .md-preview pre code { @apply bg-transparent p-0; }
 .md-preview hr { @apply my-4 border-zinc-300 dark:border-zinc-700; }
+
+/* Chat messages read as tight consecutive lines (4 messages should look like
+   one 4-line message), not spaced reading-view paragraphs. */
+.chat-message .md-preview p { @apply my-0; }
+.chat-message .md-preview > :first-child { @apply mt-0; }
+.chat-message .md-preview > :last-child { @apply mb-0; }
 .md-preview table { @apply my-3 w-full border-collapse text-sm; }
 .md-preview th, .md-preview td { @apply border border-zinc-300 px-2 py-1 dark:border-zinc-700; }
 .md-preview mark { @apply rounded bg-yellow-200 px-0.5 dark:bg-yellow-500/40 dark:text-inherit; }

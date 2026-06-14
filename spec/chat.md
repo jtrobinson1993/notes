@@ -6,8 +6,11 @@ conversation / member / message model, not a special case. Message rendering
 reuses the token-based renderer from v2.1 (no `v-html`, raw HTML inert by
 construction) — see [security.md](security.md). Consecutive messages from one
 sender (within ~5 min) are grouped: the sender's display name + a timestamp show
-once per group (own messages included); the background/padding is on the group,
-and individual messages highlight on hover.
+once per group (own messages included). Messages have **no background** and stack
+as tight lines (4 in a row read like one 4-line message); only a per-message
+**hover highlight** distinguishes them. All messages share one alignment
+(inline-start — left in LTR, right in RTL); your own are not special-cased to the
+opposite side.
 
 Crypto reuses the sealing primitive from
 [accounts-and-crypto.md](accounts-and-crypto.md); the app shell / sidebar is in
