@@ -11,6 +11,9 @@ import type { Conversation } from '@notes/shared';
 import { useChatStore } from '../stores/chat';
 import { useFriendsStore } from '../stores/friends';
 import { useSessionStore } from '../stores/session';
+import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
+import IconPanelLeftClose from '~icons/mynaui/panel-left-close';
+import IconPen from '~icons/mynaui/pen';
 
 const session = useSessionStore();
 const chat = useChatStore();
@@ -152,7 +155,9 @@ async function startDm(userId: string) {
         :class="expanded ? '' : 'justify-center'"
         title="Notes"
       >
-        <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-base dark:bg-zinc-800">📝</span>
+        <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-200 dark:bg-zinc-800">
+          <IconPen class="h-4 w-4" />
+        </span>
         <span v-if="expanded" class="truncate">Notes</span>
       </RouterLink>
     </div>
@@ -165,7 +170,8 @@ async function startDm(userId: string) {
         :title="expanded ? 'Collapse' : 'Expand'"
         @click="toggle"
       >
-        <span class="text-base leading-none">{{ expanded ? '⟨' : '⟩' }}</span>
+        <IconPanelLeftClose v-if="expanded" class="h-5 w-5 shrink-0" />
+        <IconPanelLeftOpen v-else class="h-5 w-5 shrink-0" />
         <span v-if="expanded" class="truncate">Collapse</span>
       </button>
     </div>

@@ -2,11 +2,15 @@ import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import Icons from 'unplugin-icons/vite';
 
 export default defineConfig({
   plugins: [
     vue(),
     tailwindcss(),
+    // Bundle Iconify icons (Myna set) as inline Vue SVG components at build
+    // time — no runtime CDN calls, only the icons actually imported ship.
+    Icons({ compiler: 'vue3' }),
     VitePWA({
       registerType: 'autoUpdate',
       workbox: {
