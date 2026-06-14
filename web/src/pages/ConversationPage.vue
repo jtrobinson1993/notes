@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import MarkdownView from '../components/MarkdownView.vue';
 import type { Conversation } from '@notes/shared';
-import { useChatStore } from '../stores/chat';
+import { useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 
 const route = useRoute();
@@ -38,6 +38,43 @@ function isMine(senderId: string): boolean {
 function memberName(senderId: string): string {
   return conversation.value?.members.find((m) => m.userId === senderId)?.displayName || 'Unknown';
 }
+
+function formatTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+// Consecutive messages from the same sender (within a 5-min gap) form one group:
+// the sender name + timestamp show once per group, and the group — not each
+// message — carries the background/padding.
+const GROUP_GAP_MS = 5 * 60_000;
+interface MessageGroup {
+  key: string;
+  senderId: string;
+  mine: boolean;
+  name: string;
+  startedAt: number;
+  messages: ChatMessageView[];
+}
+const groups = computed<MessageGroup[]>(() => {
+  const out: MessageGroup[] = [];
+  for (const m of msgs.value) {
+    const prev = out[out.length - 1];
+    const last = prev?.messages[prev.messages.length - 1];
+    if (prev && last && prev.senderId === m.senderId && m.createdAt - last.createdAt <= GROUP_GAP_MS) {
+      prev.messages.push(m);
+    } else {
+      out.push({
+        key: String(m.seq),
+        senderId: m.senderId,
+        mine: isMine(m.senderId),
+        name: memberName(m.senderId),
+        startedAt: m.createdAt,
+        messages: [m],
+      });
+    }
+  }
+  return out;
+});
 
 function atBottom(): boolean {
   const el = scroller.value;
@@ -157,20 +194,35 @@ function onKeydown(e: KeyboardEvent) {
         </div>
 
         <div
-          v-for="m in msgs"
-          :key="m.seq"
+          v-for="group in groups"
+          :key="group.key"
           class="flex flex-col"
-          :class="isMine(m.senderId) ? 'items-end' : 'items-start'"
+          :class="group.mine ? 'items-end' : 'items-start'"
         >
-          <span v-if="!isMine(m.senderId)" class="mb-0.5 px-1 text-xs text-zinc-400">{{ memberName(m.senderId) }}</span>
+          <!-- Sender name + time: once per group. -->
           <div
-            class="max-w-[80%] rounded-2xl px-3 py-2 text-sm"
-            :class="isMine(m.senderId)
+            class="mb-0.5 flex items-baseline gap-2 px-1 text-xs"
+            :class="group.mine ? 'flex-row-reverse' : ''"
+          >
+            <span class="font-medium text-zinc-600 dark:text-zinc-300">{{ group.name }}</span>
+            <time class="text-zinc-400 dark:text-zinc-500">{{ formatTime(group.startedAt) }}</time>
+          </div>
+          <!-- Background + padding live on the GROUP, not on each message. -->
+          <div
+            class="max-w-[80%] overflow-hidden rounded-2xl px-2 py-1.5 text-sm"
+            :class="group.mine
               ? 'bg-blue-600 text-white'
               : 'bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'"
           >
-            <MarkdownView v-if="m.text !== null" :source="m.text" />
-            <span v-else class="italic opacity-70">message could not be decrypted</span>
+            <div
+              v-for="m in group.messages"
+              :key="m.seq"
+              class="-mx-2 px-2 py-0.5 transition-colors"
+              :class="group.mine ? 'hover:bg-white/10' : 'hover:bg-black/5 dark:hover:bg-white/5'"
+            >
+              <MarkdownView v-if="m.text !== null" :source="m.text" />
+              <span v-else class="italic opacity-70">message could not be decrypted</span>
+            </div>
           </div>
         </div>
       </div>

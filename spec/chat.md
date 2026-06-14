@@ -4,7 +4,10 @@
 the server's users. A DM is just a two-member conversation — one unified
 conversation / member / message model, not a special case. Message rendering
 reuses the token-based renderer from v2.1 (no `v-html`, raw HTML inert by
-construction) — see [security.md](security.md).
+construction) — see [security.md](security.md). Consecutive messages from one
+sender (within ~5 min) are grouped: the sender's display name + a timestamp show
+once per group (own messages included); the background/padding is on the group,
+and individual messages highlight on hover.
 
 Crypto reuses the sealing primitive from
 [accounts-and-crypto.md](accounts-and-crypto.md); the app shell / sidebar is in
