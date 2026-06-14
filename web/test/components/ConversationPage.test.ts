@@ -110,6 +110,7 @@ describe('ConversationPage messages', () => {
     const gutterTimes = w.findAll('time').filter((t) => (t.attributes('class') ?? '').includes('group-hover'));
     expect(gutterTimes).toHaveLength(1); // only the consecutive message
     expect(gutterTimes[0]!.classes()).toContain('hidden'); // revealed on hover only
+    expect(gutterTimes[0]!.classes()).toContain('whitespace-nowrap'); // stays on one line (e.g. "11:01 PM")
   });
 
   it('renders full-width rows with a hover highlight and no per-message background', async () => {
