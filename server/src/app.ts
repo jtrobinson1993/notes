@@ -14,6 +14,7 @@ import { noteRoutes } from './routes/notes.js';
 import { attachmentRoutes } from './routes/attachments.js';
 import { settingsRoutes } from './routes/settings.js';
 import { chatRoutes } from './routes/chat.js';
+import { linkRoutes } from './routes/link.js';
 import { createRealtime, WS_MAX_PAYLOAD } from './realtime.js';
 
 export async function buildApp(db: DB, config: Config): Promise<FastifyInstance> {
@@ -32,6 +33,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   attachmentRoutes(app, db, config);
   settingsRoutes(app, db);
   chatRoutes(app, db, realtime);
+  linkRoutes(app, db, config);
   realtime.register(app);
 
   // Serve the built SPA. Default: web/dist relative to the repo layout
