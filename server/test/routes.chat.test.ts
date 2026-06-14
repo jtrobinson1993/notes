@@ -1,0 +1,368 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  authCookie,
+  makeApp,
+  makeFriends,
+  seedUser,
+  type TestApp,
+} from '../../test/helpers/server.js';
+
+const SEALED = { epk: 'AAAA', iv: 'BBBB', ct: 'CCCC' };
+
+let t: TestApp;
+beforeEach(async () => {
+  t = await makeApp();
+});
+afterEach(() => t.cleanup());
+
+function inject(opts: { method: any; url: string; cookie?: string; payload?: unknown }) {
+  return t.app.inject({
+    method: opts.method,
+    url: opts.url,
+    headers: opts.cookie ? { cookie: opts.cookie } : {},
+    payload: opts.payload as object | undefined,
+  });
+}
+
+// ----------------------------------------------------------------- auth seam
+
+describe('auth — every chat route rejects the unauthenticated', () => {
+  const routes: [string, string][] = [
+    ['POST', '/api/friend-invites'],
+    ['GET', '/api/friend-invites'],
+    ['DELETE', '/api/friend-invites/x'],
+    ['POST', '/api/friends/redeem'],
+    ['GET', '/api/friends/requests'],
+    ['POST', '/api/friends/requests/x/accept'],
+    ['POST', '/api/friends/requests/x/decline'],
+    ['GET', '/api/friends'],
+    ['DELETE', '/api/friends/x'],
+    ['GET', '/api/profile'],
+    ['PUT', '/api/profile'],
+    ['GET', '/api/conversations'],
+    ['POST', '/api/conversations/dm'],
+    ['GET', '/api/conversations/x/messages'],
+    ['POST', '/api/conversations/x/messages'],
+    ['POST', '/api/conversations/x/read'],
+  ];
+
+  it.each(routes)('%s %s → 401', async (method, url) => {
+    const res = await inject({ method, url, payload: {} });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('accepts a seeded session cookie (the auth seam works)', async () => {
+    const me = seedUser(t.db, { displayName: 'Me' });
+    const res = await inject({ method: 'GET', url: '/api/profile', cookie: authCookie(t.db, me) });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ displayName: 'Me' });
+  });
+
+  it('rejects a cross-origin mutating request (CSRF guard)', async () => {
+    const me = seedUser(t.db);
+    const res = await t.app.inject({
+      method: 'POST',
+      url: '/api/friend-invites',
+      headers: { cookie: authCookie(t.db, me), origin: 'https://evil.example' },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+// ------------------------------------------------------------------- friends
+
+describe('friends — redeem rules', () => {
+  it('redeem creates an incoming request; rejects own / duplicate / unknown', async () => {
+    const owner = seedUser(t.db, { displayName: 'Owner' });
+    const joiner = seedUser(t.db, { displayName: 'Joiner' });
+    const ownerCookie = authCookie(t.db, owner);
+    const joinerCookie = authCookie(t.db, joiner);
+
+    const made = await inject({ method: 'POST', url: '/api/friend-invites', cookie: ownerCookie });
+    const token = made.json().token as string;
+
+    // Owner cannot redeem their own invite.
+    const own = await inject({ method: 'POST', url: '/api/friends/redeem', cookie: ownerCookie, payload: { token } });
+    expect(own.statusCode).toBe(400);
+
+    // Unknown token → 404.
+    const unknown = await inject({ method: 'POST', url: '/api/friends/redeem', cookie: joinerCookie, payload: { token: 'nope' } });
+    expect(unknown.statusCode).toBe(404);
+
+    // Joiner redeems → request appears for owner.
+    const ok = await inject({ method: 'POST', url: '/api/friends/redeem', cookie: joinerCookie, payload: { token } });
+    expect(ok.statusCode).toBe(200);
+
+    // Duplicate request → 409.
+    const dup = await inject({ method: 'POST', url: '/api/friends/redeem', cookie: joinerCookie, payload: { token } });
+    expect(dup.statusCode).toBe(409);
+  });
+
+  it('rejects an expired invite (404)', async () => {
+    const owner = seedUser(t.db);
+    const joiner = seedUser(t.db);
+    t.db.createFriendInvite({ id: 'inv', token: 'expired', createdBy: owner, expiresAt: Date.now() - 1 });
+    const res = await inject({ method: 'POST', url: '/api/friends/redeem', cookie: authCookie(t.db, joiner), payload: { token: 'expired' } });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('friends — accept / decline authorization', () => {
+  async function pendingRequest(): Promise<{ owner: string; joiner: string; reqId: string }> {
+    const owner = seedUser(t.db, { displayName: 'Owner' });
+    const joiner = seedUser(t.db, { displayName: 'Joiner' });
+    const made = await inject({ method: 'POST', url: '/api/friend-invites', cookie: authCookie(t.db, owner) });
+    const token = made.json().token as string;
+    await inject({ method: 'POST', url: '/api/friends/redeem', cookie: authCookie(t.db, joiner), payload: { token } });
+    const reqId = t.db.listFriendRequests(owner)[0]!.id;
+    return { owner, joiner, reqId };
+  }
+
+  it('only the recipient (owner) can accept; friendship becomes two-way', async () => {
+    const { owner, joiner, reqId } = await pendingRequest();
+
+    // The sender cannot accept their own outgoing request.
+    const wrong = await inject({ method: 'POST', url: `/api/friends/requests/${reqId}/accept`, cookie: authCookie(t.db, joiner) });
+    expect(wrong.statusCode).toBe(404);
+
+    const ok = await inject({ method: 'POST', url: `/api/friends/requests/${reqId}/accept`, cookie: authCookie(t.db, owner) });
+    expect(ok.statusCode).toBe(200);
+    expect(t.db.areFriends(owner, joiner)).toBe(true);
+    expect(t.db.areFriends(joiner, owner)).toBe(true);
+  });
+
+  it('either party can decline', async () => {
+    const { joiner, reqId } = await pendingRequest();
+    const res = await inject({ method: 'POST', url: `/api/friends/requests/${reqId}/decline`, cookie: authCookie(t.db, joiner) });
+    expect(res.statusCode).toBe(200);
+    expect(t.db.getFriendRequest(reqId)).toBeUndefined();
+  });
+
+  it('a stranger cannot decline', async () => {
+    const { reqId } = await pendingRequest();
+    const stranger = seedUser(t.db);
+    const res = await inject({ method: 'POST', url: `/api/friends/requests/${reqId}/decline`, cookie: authCookie(t.db, stranger) });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('friend-invite deletion is scoped to the owner', () => {
+  it('a non-owner gets 404 and the invite survives', async () => {
+    const owner = seedUser(t.db);
+    const other = seedUser(t.db);
+    const made = await inject({ method: 'POST', url: '/api/friend-invites', cookie: authCookie(t.db, owner) });
+    const id = made.json().id as string;
+
+    const forbidden = await inject({ method: 'DELETE', url: `/api/friend-invites/${id}`, cookie: authCookie(t.db, other) });
+    expect(forbidden.statusCode).toBe(404);
+    expect(t.db.getFriendInvite(id)).toBeDefined();
+
+    const ok = await inject({ method: 'DELETE', url: `/api/friend-invites/${id}`, cookie: authCookie(t.db, owner) });
+    expect(ok.statusCode).toBe(200);
+    expect(t.db.getFriendInvite(id)).toBeUndefined();
+  });
+});
+
+// ------------------------------------------------------------------------ DM
+
+describe('DM conversations', () => {
+  function dmPayload(me: string, friend: string) {
+    return {
+      friendId: friend,
+      members: [
+        { userId: me, sealedKey: SEALED },
+        { userId: friend, sealedKey: SEALED },
+      ],
+    };
+  }
+
+  it('is idempotent on dm_key — a second create returns the same conversation', async () => {
+    const me = seedUser(t.db, { publicKey: 'pkme' });
+    const friend = seedUser(t.db, { publicKey: 'pkfr' });
+    makeFriends(t.db, me, friend);
+    const cookie = authCookie(t.db, me);
+
+    const first = await inject({ method: 'POST', url: '/api/conversations/dm', cookie, payload: dmPayload(me, friend) });
+    expect(first.statusCode).toBe(200);
+    const id = first.json().id as string;
+
+    const second = await inject({ method: 'POST', url: '/api/conversations/dm', cookie, payload: dmPayload(me, friend) });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().id).toBe(id);
+    expect(t.db.raw.prepare('SELECT COUNT(*) AS c FROM conversations').get()).toMatchObject({ c: 1 });
+  });
+
+  it('requires an existing friendship', async () => {
+    const me = seedUser(t.db);
+    const stranger = seedUser(t.db);
+    const res = await inject({ method: 'POST', url: '/api/conversations/dm', cookie: authCookie(t.db, me), payload: dmPayload(me, stranger) });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects member sets that are not exactly {me, friend}', async () => {
+    const me = seedUser(t.db);
+    const friend = seedUser(t.db);
+    const third = seedUser(t.db);
+    makeFriends(t.db, me, friend);
+    const cookie = authCookie(t.db, me);
+
+    const missing = await inject({
+      method: 'POST',
+      url: '/api/conversations/dm',
+      cookie,
+      payload: { friendId: friend, members: [{ userId: me, sealedKey: SEALED }] },
+    });
+    expect(missing.statusCode).toBe(400);
+
+    const extra = await inject({
+      method: 'POST',
+      url: '/api/conversations/dm',
+      cookie,
+      payload: {
+        friendId: friend,
+        members: [
+          { userId: me, sealedKey: SEALED },
+          { userId: friend, sealedKey: SEALED },
+          { userId: third, sealedKey: SEALED },
+        ],
+      },
+    });
+    expect(extra.statusCode).toBe(400);
+  });
+
+  it('returns my own sealed key copy in the conversation', async () => {
+    const me = seedUser(t.db);
+    const friend = seedUser(t.db);
+    makeFriends(t.db, me, friend);
+    const res = await inject({ method: 'POST', url: '/api/conversations/dm', cookie: authCookie(t.db, me), payload: dmPayload(me, friend) });
+    expect(res.json().sealedKey).toEqual(SEALED);
+    expect(res.json().members).toHaveLength(2);
+  });
+});
+
+// --------------------------------------------------------------- IDOR + revoke
+
+describe('IDOR — a non-member is forbidden, and unfriend revokes a member', () => {
+  async function makeDm(): Promise<{ me: string; friend: string; convId: string }> {
+    const me = seedUser(t.db);
+    const friend = seedUser(t.db);
+    makeFriends(t.db, me, friend);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/conversations/dm',
+      cookie: authCookie(t.db, me),
+      payload: {
+        friendId: friend,
+        members: [
+          { userId: me, sealedKey: SEALED },
+          { userId: friend, sealedKey: SEALED },
+        ],
+      },
+    });
+    return { me, friend, convId: res.json().id as string };
+  }
+
+  it('a non-member gets 403 on history / send / read', async () => {
+    const { convId } = await makeDm();
+    const outsider = authCookie(t.db, seedUser(t.db));
+    const history = await inject({ method: 'GET', url: `/api/conversations/${convId}/messages`, cookie: outsider });
+    expect(history.statusCode).toBe(403);
+    const send = await inject({ method: 'POST', url: `/api/conversations/${convId}/messages`, cookie: outsider, payload: { ciphertext: 'x', iv: 'i', epoch: 0 } });
+    expect(send.statusCode).toBe(403);
+    const read = await inject({ method: 'POST', url: `/api/conversations/${convId}/read`, cookie: outsider, payload: { seq: 1 } });
+    expect(read.statusCode).toBe(403);
+  });
+
+  it('unfriend revokes DM access and drops it from GET /conversations', async () => {
+    const { me, friend, convId } = await makeDm();
+    const meCookie = authCookie(t.db, me);
+
+    expect((await inject({ method: 'GET', url: '/api/conversations', cookie: meCookie })).json()).toHaveLength(1);
+
+    const del = await inject({ method: 'DELETE', url: `/api/friends/${friend}`, cookie: meCookie });
+    expect(del.statusCode).toBe(200);
+
+    const history = await inject({ method: 'GET', url: `/api/conversations/${convId}/messages`, cookie: meCookie });
+    expect(history.statusCode).toBe(403);
+    expect((await inject({ method: 'GET', url: '/api/conversations', cookie: meCookie })).json()).toHaveLength(0);
+  });
+});
+
+// ------------------------------------------------------------------- messages
+
+describe('messages — send / backfill / read', () => {
+  async function makeDm(): Promise<{ me: string; friend: string; convId: string }> {
+    const me = seedUser(t.db);
+    const friend = seedUser(t.db);
+    makeFriends(t.db, me, friend);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/conversations/dm',
+      cookie: authCookie(t.db, me),
+      payload: {
+        friendId: friend,
+        members: [
+          { userId: me, sealedKey: SEALED },
+          { userId: friend, sealedKey: SEALED },
+        ],
+      },
+    });
+    return { me, friend, convId: res.json().id as string };
+  }
+
+  it('send assigns the next seq', async () => {
+    const { me, convId } = await makeDm();
+    const cookie = authCookie(t.db, me);
+    const first = await inject({ method: 'POST', url: `/api/conversations/${convId}/messages`, cookie, payload: { ciphertext: 'a', iv: 'i', epoch: 0 } });
+    const second = await inject({ method: 'POST', url: `/api/conversations/${convId}/messages`, cookie, payload: { ciphertext: 'b', iv: 'i', epoch: 0 } });
+    expect(first.json().seq).toBe(1);
+    expect(second.json().seq).toBe(2);
+  });
+
+  it('rejects an invalid payload (400)', async () => {
+    const { me, convId } = await makeDm();
+    const res = await inject({ method: 'POST', url: `/api/conversations/${convId}/messages`, cookie: authCookie(t.db, me), payload: { ciphertext: '', iv: 'i', epoch: 0 } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('backfills DESC and paginates with before', async () => {
+    const { me, convId } = await makeDm();
+    const cookie = authCookie(t.db, me);
+    for (let i = 0; i < 5; i++) {
+      await inject({ method: 'POST', url: `/api/conversations/${convId}/messages`, cookie, payload: { ciphertext: `m${i}`, iv: 'i', epoch: 0 } });
+    }
+    const head = await inject({ method: 'GET', url: `/api/conversations/${convId}/messages?limit=2`, cookie });
+    expect(head.json().map((m: any) => m.seq)).toEqual([5, 4]);
+    const older = await inject({ method: 'GET', url: `/api/conversations/${convId}/messages?before=4&limit=2`, cookie });
+    expect(older.json().map((m: any) => m.seq)).toEqual([3, 2]);
+  });
+
+  it('read marker advances (never backward)', async () => {
+    const { me, convId } = await makeDm();
+    const cookie = authCookie(t.db, me);
+    for (let i = 0; i < 3; i++) {
+      await inject({ method: 'POST', url: `/api/conversations/${convId}/messages`, cookie, payload: { ciphertext: `m${i}`, iv: 'i', epoch: 0 } });
+    }
+    await inject({ method: 'POST', url: `/api/conversations/${convId}/read`, cookie, payload: { seq: 3 } });
+    expect(t.db.getConversationMember(convId, me)!.last_read_seq).toBe(3);
+    await inject({ method: 'POST', url: `/api/conversations/${convId}/read`, cookie, payload: { seq: 1 } });
+    expect(t.db.getConversationMember(convId, me)!.last_read_seq).toBe(3);
+  });
+});
+
+// ------------------------------------------------------------------- profile
+
+describe('profile', () => {
+  it('rejects a too-long display name', async () => {
+    const me = seedUser(t.db);
+    const res = await inject({ method: 'PUT', url: '/api/profile', cookie: authCookie(t.db, me), payload: { displayName: 'x'.repeat(51) } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('updates a valid display name', async () => {
+    const me = seedUser(t.db);
+    const res = await inject({ method: 'PUT', url: '/api/profile', cookie: authCookie(t.db, me), payload: { displayName: '  Alice  ' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ displayName: 'Alice' });
+  });
+});

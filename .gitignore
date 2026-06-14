@@ -1,9 +1,14 @@
 node_modules/
 dist/
-.claude/
+.claude/*
+!.claude/skills/
 recovery
 *.log
 .DS_Store
 data/
 .env
 dev-dist/
+coverage/
+playwright-report/
+test-results/
+.last-run.json
