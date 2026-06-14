@@ -1,6 +1,6 @@
 ---
 name: spec-and-tests
-description: Use whenever you change business logic or technical behavior in this repo (crypto/key handling, server routes/db, the realtime hub, Pinia stores, editor/lib logic, or the auth/chat/notes flows). Ensures the change is tested to the project's standards AND the matching spec/ file is updated — editing it, deleting a removed feature, or adding a new spec file for a new app surface.
+description: Use when changing business logic or technical behavior in this repo. Ensures the change is tested to the project's standards and the matching spec/ file is updated (edited, removed, or a new spec file added for a new app surface).
 ---
 
 # Keeping tests and specs in sync
