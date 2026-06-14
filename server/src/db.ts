@@ -66,6 +66,18 @@ export interface MessageRow {
   created_at: number;
 }
 
+export interface DeviceLinkRow {
+  id: string;
+  code: string;
+  secret_hash: string;
+  device_public_key: string;
+  user_id: string | null;
+  sealed_mk: string | null;
+  created_at: number;
+  expires_at: number;
+  completed: number;
+}
+
 export interface CredentialRow {
   id: string;
   user_id: string;
@@ -239,6 +251,17 @@ CREATE TABLE IF NOT EXISTS messages (
   UNIQUE(conversation_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conversation_id, seq);
+CREATE TABLE IF NOT EXISTS device_links (
+  id TEXT PRIMARY KEY,
+  code TEXT NOT NULL UNIQUE,
+  secret_hash TEXT NOT NULL,
+  device_public_key TEXT NOT NULL,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  sealed_mk TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  completed INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 export type DB = ReturnType<typeof openDb>;
@@ -709,10 +732,52 @@ export function openDb(dataDir: string) {
         .all(conversationId, limit) as MessageRow[];
     },
 
+    // ---- Device links (cross-device onboarding) ----
+    createDeviceLink(l: {
+      id: string;
+      code: string;
+      secretHash: string;
+      devicePublicKey: string;
+      expiresAt: number;
+    }): void {
+      db.prepare(
+        'INSERT INTO device_links (id, code, secret_hash, device_public_key, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(l.id, l.code, l.secretHash, l.devicePublicKey, now(), l.expiresAt);
+    },
+    getDeviceLinkByCode(code: string): DeviceLinkRow | undefined {
+      const row = db.prepare('SELECT * FROM device_links WHERE code = ?').get(code) as DeviceLinkRow | undefined;
+      if (row && row.expires_at < now()) {
+        db.prepare('DELETE FROM device_links WHERE id = ?').run(row.id);
+        return undefined;
+      }
+      return row;
+    },
+    /** Seal the link to a user, single-use: succeeds only while still unsealed. */
+    sealDeviceLink(id: string, userId: string, sealedMk: string): boolean {
+      const res = db
+        .prepare('UPDATE device_links SET user_id = ?, sealed_mk = ? WHERE id = ? AND user_id IS NULL AND completed = 0')
+        .run(userId, sealedMk, id);
+      return res.changes === 1;
+    },
+    /** Mark the link consumed, single-use: succeeds only once, while sealed. */
+    completeDeviceLink(id: string): boolean {
+      const res = db
+        .prepare('UPDATE device_links SET completed = 1 WHERE id = ? AND user_id IS NOT NULL AND completed = 0')
+        .run(id);
+      return res.changes === 1;
+    },
+    deleteDeviceLink(id: string): void {
+      db.prepare('DELETE FROM device_links WHERE id = ?').run(id);
+    },
+    purgeExpiredDeviceLinks(): void {
+      db.prepare('DELETE FROM device_links WHERE expires_at < ?').run(now());
+    },
+
     cleanup(): void {
       db.prepare('DELETE FROM challenges WHERE expires_at < ?').run(now());
       db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now());
       db.prepare('DELETE FROM friend_invites WHERE expires_at < ?').run(now());
+      db.prepare('DELETE FROM device_links WHERE expires_at < ?').run(now());
     },
   };
 }

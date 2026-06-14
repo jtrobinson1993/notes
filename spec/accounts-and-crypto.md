@@ -54,6 +54,66 @@ per-recipient. v3 chat reuses this verbatim for conversation keys.
   the cookie is the sha256 of a random token. Mutating `/api/*` requests are
   CSRF-checked against the `Origin` header.
 
+## Multi-device & device linking
+
+### How multi-device works today (shipped)
+
+Every device holds MK in memory after unlock, and every passkey has its own
+`wrapped_mk` (`credentials` table), so any registered passkey on any device
+unlocks MK independently. Two ways to onboard a new device today:
+
+- **Syncing passkey provider** (iCloud Keychain, Google Password Manager,
+  1Password, …): the passkey is already present on the new device — nothing to
+  do. The recommended path.
+- **Recovery code:** for **device-bound** authenticators (Windows Hello and
+  other platform passkeys that don't sync), the new device runs `recover()` —
+  the recovery code unwraps MK from `recovery_wrapped_mk`, the device registers
+  its own passkey, and the recovery code is rotated. This is the only
+  cross-device bridge for a non-syncing authenticator, and each use spends and
+  re-issues the code.
+
+### Device linking (proposed — not yet built)
+
+A smoother path: add a passkey to a new device *from an already-unlocked device*,
+without spending the recovery code.
+
+**Core invariant — MK only ever crosses the wire _sealed to a key held by the
+receiving device_; the server (and any network observer) sees ciphertext only,
+never plaintext MK.** MK living on the new device is not new — it is required
+(every device needs MK) and the recovery flow already does it. This is the same
+trust posture as the existing sealed-box sharing primitive, which it reuses:
+
+1. The **new** device generates an ephemeral X25519 keypair and shows its
+   *public* key (e.g. a QR code). The private key never leaves the device.
+2. The **logged-in** device runs `sealKey(newDevicePublicKey, MK)` and posts the
+   sealed blob to a short-lived, single-use relay endpoint.
+3. The new device fetches the blob, `unsealKey`s MK with its ephemeral private
+   key, registers its own passkey (its own `wrapped_mk`), and discards the
+   ephemeral key.
+
+A variant with the same invariant: the logged-in device wraps MK under a
+high-entropy one-time **link code** (effectively an ephemeral recovery code)
+that the new device enters to unwrap a short-TTL server blob — no new primitive.
+
+**The real risk is authenticating the _target_ device, not the transport.** An
+attacker who substitutes their own public key (or intercepts the link code) would
+receive MK. Required mitigations:
+
+- **Human-verified, out-of-band channel:** an in-person QR scan and/or a short
+  comparison string (SAS) shown on both screens that the user confirms matches.
+  The public key / link code must be bound to the user's real device by a human,
+  never trusted from the network alone.
+- **Single-use, short TTL** (seconds–minutes); the relay blob is deleted on
+  pickup and the ephemeral key discarded.
+- **Notify + audit:** linking raises a "new device linked" notice, and the new
+  passkey appears in the credential list for revocation.
+
+Done with channel authentication, linking has **no durable transferable secret**
+(unlike the written-down recovery code, which is itself an off-device,
+MK-equivalent secret), so it is equal-to-or-better than recovery codes — not a
+step down. Skipping either invariant — a plaintext relay, or an unauthenticated
+channel — **is** a compromise and is out of scope.
+
 ## Server-side identity tables
 
 - `users` — id, username, role, `public_key` (X25519), `wrapped_private_key`,
