@@ -32,9 +32,9 @@ async function logout() {
 </script>
 
 <template>
-  <div class="flex h-full">
+  <div class="flex h-full overflow-hidden">
     <AppSidebar v-if="session.loggedIn" />
-    <div class="flex min-w-0 grow flex-col">
+    <div class="flex min-h-0 min-w-0 grow flex-col">
     <header class="flex items-center gap-3 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
       <RouterLink to="/" class="font-bold">{{ session.appName }}</RouterLink>
       <span v-if="notes.syncing" class="text-xs text-zinc-400">syncing…</span>
@@ -62,7 +62,7 @@ async function logout() {
       </button>
     </header>
 
-    <main class="relative min-h-0 grow">
+    <main class="relative min-h-0 grow overflow-y-auto">
       <div
         v-if="!session.unlocked"
         class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-zinc-50/95 p-6 backdrop-blur dark:bg-zinc-950/95"
