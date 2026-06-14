@@ -83,4 +83,6 @@ name** (state persisted in localStorage). **No hover-to-open.** Top to bottom:
 
 Implemented in `AppSidebar.vue`, mounted as a left rail in `AppLayout.vue`
 (shown when logged in); the existing top header (Lock / Settings / Sign out)
-stays to its right.
+stays to its right. The sidebar and header are **fixed** — only the page content
+region (`<main>`) scrolls, so tall pages (e.g. Settings) never scroll the rail
+out of view.
