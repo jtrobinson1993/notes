@@ -180,7 +180,15 @@ export const useNotesStore = defineStore('notes', () => {
       for (const [id, note] of notes.value) {
         if (note.shared && !sharedIds.has(id)) notes.value.delete(id); // unshared/revoked
       }
-      for (const record of shared) await ingestShared(record);
+      for (const record of shared) {
+        const existing = notes.value.get(record.id);
+        // Skip re-decrypting a shared note we already hold at the same version.
+        // sync() runs on every focus/reconnect, and unsealing a shared note is
+        // an X25519 + AES operation — re-running it for unchanged notes is the
+        // bulk of sync's wasted crypto.
+        if (existing?.shared && existing.updatedAt === record.updatedAt) continue;
+        await ingestShared(record);
+      }
       await replaceCachedShared(shared);
       loaded.value = true;
     } catch (e) {
