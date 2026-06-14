@@ -78,6 +78,11 @@ describe('ConversationPage messages', () => {
     expect(w.findAll('.chat-avatar')).toHaveLength(1); // one avatar for the group
     expect(w.text()).toContain('Friend'); // name header
     expect(w.findAll('.mdview')).toHaveLength(2); // both messages render
+    // The avatar sits in a fixed-height, vertically-centered box so it reads
+    // centered on a single-line message and stays put when it wraps.
+    const avatarBox = w.find('.chat-avatar').element.parentElement!;
+    expect(avatarBox.className).toMatch(/\bitems-center\b/);
+    expect(avatarBox.className).toMatch(/\bh-\d/);
   });
 
   it('shows an avatar + my own name for my messages too', async () => {
