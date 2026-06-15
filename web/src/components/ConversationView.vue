@@ -3,7 +3,6 @@ import { computed, nextTick, ref, watch } from 'vue';
 import MarkdownView from './MarkdownView.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import ChatAvatar from './ChatAvatar.vue';
-import GifPicker from './GifPicker.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import ChatAttachment from './ChatAttachment.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
@@ -470,11 +469,12 @@ async function sendGif(gif: GifRef) {
               @submit="send"
             />
           </div>
-          <EmojiPicker @pick="insertEmoji" />
-          <GifPicker @pick="sendGif" />
+          <EmojiPicker gifs @pick="insertEmoji" @gif="sendGif" />
+          <!-- Enter sends; this submit stays for screen-reader/keyboard users. -->
           <button
             :disabled="(!text.trim() && !staged.length) || sending"
-            class="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            class="sr-only"
+            aria-label="Send message"
             @click="send"
           >
             Send

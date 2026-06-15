@@ -243,6 +243,10 @@ preview: code blocks, spoilers, colors, the selection toolbar), not a plain
   pane" to **auto-grow up to `max-height: 40vh`, then scroll**.
 - **`placeholder`** — composer shows `Message…`.
 
+There is **no visible Send button** — Enter sends. An `sr-only` submit button
+remains for screen-reader/keyboard users. The composer's only visible controls
+are attach (📎) and the emoji/GIF picker.
+
 Messages already render through the same token renderer (`MarkdownView`), so a
 sent message renders with identical formatting to the live preview — no
 `v-html`, raw HTML inert by construction (see [security.md](security.md)).
@@ -268,8 +272,10 @@ The chosen GIF is embedded in the **encrypted** `MessagePayload.gif`
 is 64 KiB). So **the server never learns which GIF was sent.** The recipient's
 client loads the animated media directly from KLIPY's CDN — a third-party
 metadata tradeoff (recipient IP/timing), documented in
-[security.md](security.md). `GifPicker.vue` is a debounced popover (trending on
-open); a purely-GIF message has empty `text`.
+[security.md](security.md). GIF search is a **tab in the emoji picker**
+(`EmojiPicker.vue`, debounced, trending on open) — picking emits a `gif` event
+that sends the message; a purely-GIF message has empty `text`. (There is no
+separate GIF button and no visible Send button — see the composer note above.)
 
 ### Encrypted attachments
 
