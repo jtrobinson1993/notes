@@ -45,7 +45,7 @@ watch(convId, () => {
         <div
           v-if="activeThread"
           :key="activeThread"
-          class="absolute inset-y-0 right-0 z-20 w-full border-l border-zinc-200 bg-white @3xl/chat:static @3xl/chat:z-auto @3xl/chat:w-88 @3xl/chat:shrink-0 dark:border-zinc-800 dark:bg-zinc-900"
+          class="h-full w-88 shrink-0 border-l border-zinc-200 dark:border-zinc-800 @max-3xl/chat:absolute @max-3xl/chat:inset-0 @max-3xl/chat:z-20 @max-3xl/chat:w-full @max-3xl/chat:bg-white @max-3xl/chat:dark:bg-zinc-900"
         >
           <ConversationView
             :conv-id="activeThread"
