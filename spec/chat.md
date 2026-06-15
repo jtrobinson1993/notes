@@ -305,6 +305,31 @@ carry `data-seq`).
 
 > **Reactions** and **threads** (the other two parts of this roadmap bullet)
 > are **not yet built** — unlike replies they need server state (a reactions
-> table + realtime fan-out; threads as sub-conversations) and a decision on
-> whether reaction emoji are stored plaintext (server-visible metadata) or
-> encrypted. Tracked as remaining v3.1 work.
+> table + realtime fan-out; threads as sub-conversations). Reactions will be
+> **encrypted per-conversation** (the server can't read which emoji). Tracked as
+> remaining v3.1 work.
+
+### Custom emoji — default 7TV set
+
+A few hundred of the most-used 7TV emotes are **self-hosted** (decision: commit
+the assets). `scripts/fetch-emojis.mjs` pulls them via 7TV's GQL
+(`filter.category = TOP`, i.e. most-used), downloads each as a small WebP
+(prefers crisp 2x, falls back to 1x for heavy/animated, skips >48 KB; filenames
+by emote id to avoid case-insensitive-FS collisions) into
+`web/public/emoji/7tv/`, and writes `web/src/lib/emoji/defaultEmoji.json` **in
+7TV popularity order** (the picker shows top emotes first; not alphabetized).
+Re-run the script to refresh. These are served at `/emoji/7tv/…` and excluded
+from the PWA precache (cached on demand via a `CacheFirst` runtime rule).
+
+Messages use Discord-style **`:shortcode:`** syntax. The token renderer
+(`MdTokens.emojiText`) replaces a `:name:` run with an inline `<img.chat-emoji>`
+when `resolveEmoji(name)` matches; unknown shortcodes stay literal, and code
+spans/blocks are never substituted (so `` `:KEKW:` `` stays text). The set is
+global UI chrome, so notes render them too. `EmojiPicker.vue` is a searchable
+popover; picking inserts `:name:` at the composer caret via the editor's
+exposed `insertText`.
+
+> Hosting note: whether to keep self-hosting or serve straight from 7TV's CDN is
+> an open follow-up (see [roadmap.md](roadmap.md) v3.3). **Unicode emoji search
+> (emojibase)** and **per-user custom encrypted emoji** are the remaining parts
+> of this roadmap bullet — not yet built.

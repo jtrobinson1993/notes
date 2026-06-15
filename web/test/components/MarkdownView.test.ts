@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
 import MarkdownView from '../../src/components/MarkdownView.vue';
+import { defaultEmoji } from '../../src/lib/emoji';
 
 function render(source: string) {
   return mount(MarkdownView, { props: { source } });
@@ -41,5 +42,30 @@ describe('MarkdownView — well-formed markdown still renders', () => {
     expect(w.find('strong').exists()).toBe(true);
     expect(w.find('mark').exists()).toBe(true);
     expect(w.find('.spoiler').exists()).toBe(true);
+  });
+});
+
+describe('MarkdownView — custom emoji shortcodes', () => {
+  const known = defaultEmoji[0]!;
+
+  it('renders a known :shortcode: as an inline emoji image', () => {
+    const w = render(`hi :${known.name}: there`);
+    const img = w.find('img.chat-emoji');
+    expect(img.exists()).toBe(true);
+    expect(img.attributes('src')).toBe(`/emoji/7tv/${known.file}`);
+    expect(w.text()).toContain('hi');
+    expect(w.text()).toContain('there');
+  });
+
+  it('leaves an unknown shortcode as literal text', () => {
+    const w = render('a :totally_unknown_emote: b');
+    expect(w.find('img.chat-emoji').exists()).toBe(false);
+    expect(w.text()).toContain(':totally_unknown_emote:');
+  });
+
+  it('does not turn a shortcode inside a code span into an emoji', () => {
+    const w = render(`\`:${known.name}:\``);
+    expect(w.find('img.chat-emoji').exists()).toBe(false);
+    expect(w.find('code').text()).toContain(`:${known.name}:`);
   });
 });

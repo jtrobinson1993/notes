@@ -58,6 +58,13 @@ opportunistically alongside other work.
 - **Link previews** (deferred from v3.1): decide between a native/extension
   client that can fetch client-side, or an explicitly-accepted SSRF-guarded
   server-side OG proxy (URL transits the trusted server). Until then, no preview.
+- **Default emoji hosting** (v3.1 ships self-hosted): investigate serving the
+  default 7TV set straight from 7TV's API + CDN instead of committing ~300
+  optimized WebP into the repo. Tradeoffs: removes the binaries + the periodic
+  `fetch-emojis.mjs` refresh and always-fresh "top" set, **vs.** a third-party
+  runtime dependency, a per-render IP leak to 7TV's CDN (mirroring the KLIPY-GIF
+  tradeoff), and offline/PWA breakage. If adopted, gate the CDN images the same
+  way as GIFs (host allowlist / click-to-load).
 - The "write in markdown" composer placeholder isn't theme-colored like the
   "add tag…" placeholder; match it.
 - Sidebar links shouldn't carry the current padding/background hover effect.

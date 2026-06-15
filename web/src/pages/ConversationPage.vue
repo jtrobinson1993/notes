@@ -6,6 +6,7 @@ import MarkdownView from '../components/MarkdownView.vue';
 import MarkdownEditor from '../components/MarkdownEditor.vue';
 import ChatAvatar from '../components/ChatAvatar.vue';
 import GifPicker from '../components/GifPicker.vue';
+import EmojiPicker from '../components/EmojiPicker.vue';
 import ChatAttachment from '../components/ChatAttachment.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
 import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
@@ -22,6 +23,7 @@ const loadingOlder = ref(false);
 const text = ref('');
 const sending = ref(false);
 const scroller = ref<HTMLElement>();
+const composer = ref<{ insertText: (s: string) => void }>();
 const fileInput = ref<HTMLInputElement>();
 const staged = ref<AttachmentRef[]>([]);
 const attaching = ref(false);
@@ -202,6 +204,10 @@ function removeStaged(id: string) {
   staged.value = staged.value.filter((a) => a.id !== id);
 }
 
+function insertEmoji(name: string) {
+  composer.value?.insertText(`:${name}:`);
+}
+
 async function sendGif(gif: GifRef) {
   if (sending.value) return;
   sending.value = true;
@@ -357,12 +363,14 @@ async function sendGif(gif: GifRef) {
                Shift+Enter inserts a newline. -->
           <div class="grow rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900">
             <MarkdownEditor
+              ref="composer"
               v-model="text"
               submit-on-enter
               placeholder="Message…"
               @submit="send"
             />
           </div>
+          <EmojiPicker @pick="insertEmoji" />
           <GifPicker @pick="sendGif" />
           <button
             :disabled="(!text.trim() && !staged.length) || sending"

@@ -220,6 +220,16 @@ watch(
   },
 );
 
+// Insert text at the current cursor (replacing any selection). Used by the chat
+// emoji/unicode pickers to drop a :shortcode: or character into the composer.
+function insertText(s: string): void {
+  if (!view) return;
+  const { from, to } = view.state.selection.main;
+  view.dispatch({ changes: { from, to, insert: s }, selection: { anchor: from + s.length } });
+  view.focus();
+}
+defineExpose({ insertText });
+
 onBeforeUnmount(() => view?.destroy());
 </script>
 
