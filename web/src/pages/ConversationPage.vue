@@ -5,7 +5,8 @@ import AppLayout from '../components/AppLayout.vue';
 import MarkdownView from '../components/MarkdownView.vue';
 import MarkdownEditor from '../components/MarkdownEditor.vue';
 import ChatAvatar from '../components/ChatAvatar.vue';
-import type { Conversation } from '@notes/shared';
+import GifPicker from '../components/GifPicker.vue';
+import type { Conversation, GifRef } from '@notes/shared';
 import { useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 
@@ -144,6 +145,17 @@ async function send() {
     sending.value = false;
   }
 }
+
+async function sendGif(gif: GifRef) {
+  if (sending.value) return;
+  sending.value = true;
+  try {
+    await chat.sendMessage(convId.value, '', { gif });
+    await scrollToBottom();
+  } finally {
+    sending.value = false;
+  }
+}
 </script>
 
 <template>
@@ -204,8 +216,18 @@ async function send() {
               <time class="text-xs text-zinc-400 dark:text-zinc-500">{{ formatTime(row.msg.createdAt) }}</time>
             </div>
             <div class="chat-message">
-              <MarkdownView v-if="row.msg.text !== null" :source="row.msg.text" />
-              <span v-else class="italic opacity-70">message could not be decrypted</span>
+              <span v-if="row.msg.text === null && !row.msg.gif" class="italic opacity-70">message could not be decrypted</span>
+              <template v-else>
+                <MarkdownView v-if="row.msg.text" :source="row.msg.text" />
+                <img
+                  v-if="row.msg.gif"
+                  :src="row.msg.gif.url"
+                  :alt="row.msg.gif.title || 'GIF'"
+                  :style="{ aspectRatio: `${row.msg.gif.width} / ${row.msg.gif.height}` }"
+                  class="mt-1 w-full max-w-[260px] rounded-lg bg-zinc-100 dark:bg-zinc-800"
+                  loading="lazy"
+                />
+              </template>
             </div>
           </div>
         </div>
@@ -224,6 +246,7 @@ async function send() {
               @submit="send"
             />
           </div>
+          <GifPicker @pick="sendGif" />
           <button
             :disabled="!text.trim() || sending"
             class="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"

@@ -246,3 +246,27 @@ preview: code blocks, spoilers, colors, the selection toolbar), not a plain
 Messages already render through the same token renderer (`MarkdownView`), so a
 sent message renders with identical formatting to the live preview — no
 `v-html`, raw HTML inert by construction (see [security.md](security.md)).
+
+### GIF search — KLIPY, proxied
+
+GIFs are searched through a **server-side proxy** (`routes/gifs.ts`:
+`GET /api/gifs/search?q=&pos=`, `GET /api/gifs/trending?pos=`, both
+`requireAuth`). The proxy:
+
+- keeps the **`KLIPY_API_KEY`** server-side (from `.env`; never shipped to the
+  browser). With no key set, the routes return **503** and the picker shows
+  "GIF search isn't configured".
+- **normalizes** KLIPY's `size × format` matrix to `{id, title, url, previewUrl,
+  width, height}` — animated **webp** preferred (far smaller than gif), gif
+  fallback; `md` for the embed URL, `xs` for the picker thumbnail. Items with no
+  usable media are dropped. `next` is the next page number or null.
+- passes an opaque per-user `customer_id` (`sha256('klipy:'+userId)`), and maps
+  upstream errors to **502**.
+
+The chosen GIF is embedded in the **encrypted** `MessagePayload.gif`
+(`GifRef`) — a small CDN URL + dimensions, never inline bytes (the WS frame cap
+is 64 KiB). So **the server never learns which GIF was sent.** The recipient's
+client loads the animated media directly from KLIPY's CDN — a third-party
+metadata tradeoff (recipient IP/timing), documented in
+[security.md](security.md). `GifPicker.vue` is a debounced popover (trending on
+open); a purely-GIF message has empty `text`.

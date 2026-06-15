@@ -14,7 +14,7 @@ export const TEST_ORIGIN = 'http://localhost:3000';
 // logging "web dist not found" once per app build.
 const FIXTURE_WEBDIST = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'webdist');
 
-export function makeConfig(dataDir: string): Config {
+export function makeConfig(dataDir: string, overrides: Partial<Config> = {}): Config {
   return {
     port: 0,
     host: '127.0.0.1',
@@ -23,6 +23,8 @@ export function makeConfig(dataDir: string): Config {
     rpId: 'localhost',
     appName: 'Notes',
     webDist: FIXTURE_WEBDIST,
+    klipyApiKey: null,
+    ...overrides,
   };
 }
 
@@ -59,9 +61,9 @@ export interface TestApp extends TestDb {
 
 /** Build the real Fastify app over a fresh temp DB. Logger is silenced so test
  * output stays readable. */
-export async function makeApp(): Promise<TestApp> {
+export async function makeApp(configOverrides: Partial<Config> = {}): Promise<TestApp> {
   const { db, dir, cleanup: cleanupDb } = makeDb();
-  const config = makeConfig(dir);
+  const config = makeConfig(dir, configOverrides);
   const app = await buildApp(db, config);
   // buildApp hardcodes logger:true; quiet it for tests.
   app.log.level = 'silent';

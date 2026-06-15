@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import type { ChatMessage, Conversation, Friend } from '@notes/shared';
 import { generateKeyPair, sealKey } from '../../src/lib/crypto';
 import { b64 } from '../../src/lib/b64';
-import { encryptMessage, generateConversationKey } from '../../src/lib/chatCrypto';
+import { decryptMessage, encryptMessage, generateConversationKey } from '../../src/lib/chatCrypto';
 
 // The api surface the chat store touches, hoisted so the mock factory can see it.
 const api = vi.hoisted(() => ({
@@ -114,6 +114,46 @@ describe('sendMessage', () => {
     const echo = await encryptMessage(serverKey, { text: 'hello', sentAt: 2 });
     await store.handleFrame({ type: 'message', message: msg({ seq: 1, senderId: 'me', ciphertext: echo.ciphertext, iv: echo.iv }) });
     expect(store.messages['c1']?.filter((m) => m.seq === 1)).toHaveLength(1);
+  });
+
+  it('embeds a GIF inside the encrypted payload and the optimistic view', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 0 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    const gif = { provider: 'klipy' as const, id: '42', url: 'https://cdn/x.webp', previewUrl: 'https://cdn/p.webp', width: 100, height: 80, title: 'Cat' };
+    api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
+    await store.sendMessage('c1', '', { gif });
+
+    // Optimistic view carries the GIF.
+    expect(store.messages['c1']?.find((m) => m.seq === 1)?.gif).toEqual(gif);
+
+    // The GIF is inside the encrypted blob (server never sees it in the clear).
+    const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
+    const payload = await decryptMessage(serverKey, sentArg.ciphertext, sentArg.iv);
+    expect(payload.gif).toEqual(gif);
+  });
+
+  it('drops a non-KLIPY gif url on inbound decrypt (anti-IP-harvest) but keeps a KLIPY one', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversations.mockResolvedValue([convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey))]);
+    const store = useChatStore();
+    await store.loadConversations();
+
+    const evil = { provider: 'klipy' as const, id: '1', url: 'https://evil.example/track.gif', previewUrl: 'https://evil.example/p.gif', width: 1, height: 1 };
+    const good = { provider: 'klipy' as const, id: '2', url: 'https://static.klipy.com/x.webp', previewUrl: 'https://static.klipy.com/p.webp', width: 10, height: 10 };
+    const e1 = await encryptMessage(serverKey, { text: '', sentAt: 1, gif: evil });
+    const e2 = await encryptMessage(serverKey, { text: '', sentAt: 2, gif: good });
+    await store.handleFrame({ type: 'message', message: msg({ seq: 1, ciphertext: e1.ciphertext, iv: e1.iv }) });
+    await store.handleFrame({ type: 'message', message: msg({ seq: 2, ciphertext: e2.ciphertext, iv: e2.iv }) });
+
+    expect(store.messages['c1']?.find((m) => m.seq === 1)?.gif).toBeNull();
+    expect(store.messages['c1']?.find((m) => m.seq === 2)?.gif).toEqual(good);
   });
 });
 

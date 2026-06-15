@@ -5,6 +5,7 @@ import type {
   Friend,
   FriendInvite,
   FriendRequest,
+  GifSearchResponse,
   InviteInfo,
   LoginVerifyResponse,
   MemberInfo,
@@ -173,4 +174,11 @@ export const api = {
     req<ChatMessage>('POST', `/api/conversations/${encodeURIComponent(id)}/messages`, body),
   conversationRead: (id: string, seq: number) =>
     req<{ ok: true }>('POST', `/api/conversations/${encodeURIComponent(id)}/read`, { seq }),
+  gifSearch: (q: string, pos?: string) => {
+    const params = new URLSearchParams({ q });
+    if (pos) params.set('pos', pos);
+    return req<GifSearchResponse>('GET', `/api/gifs/search?${params}`);
+  },
+  gifTrending: (pos?: string) =>
+    req<GifSearchResponse>('GET', `/api/gifs/trending${pos ? `?pos=${encodeURIComponent(pos)}` : ''}`),
 };

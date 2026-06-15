@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   Conversation,
   Friend,
+  GifRef,
   MessagePayload,
   SealedMemberKey,
   ServerFrame,
@@ -21,12 +22,32 @@ import { b64 } from '../lib/b64';
 import { useSessionStore } from './session';
 import { useFriendsStore } from './friends';
 
-/** Client-only view of a message: `text` is null when decryption failed. */
+/** Client-only view of a message: `text` is null when decryption failed.
+ *  `gif` is the decrypted embedded GIF, if any. */
 export interface ChatMessageView extends ChatMessage {
   text: string | null;
+  gif?: GifRef | null;
 }
 
 const HISTORY_LIMIT = 50;
+
+// A GIF's media URL is sender-controlled, so a hostile sender could embed an
+// arbitrary tracking URL the recipient's client would eager-load (IP leak),
+// bypassing the click-to-load model for remote media (see spec/security.md).
+// Only render GIFs whose media lives on KLIPY's CDN — bounding the third-party
+// leak to the one provider we already accept.
+function safeGif(gif: GifRef | undefined): GifRef | null {
+  if (!gif) return null;
+  try {
+    const u = new URL(gif.url);
+    const pu = new URL(gif.previewUrl);
+    const ok = (h: string) => h === 'klipy.com' || h.endsWith('.klipy.com');
+    if (u.protocol === 'https:' && pu.protocol === 'https:' && ok(u.hostname) && ok(pu.hostname)) return gif;
+  } catch {
+    /* malformed URL → drop */
+  }
+  return null;
+}
 
 export const useChatStore = defineStore('chat', () => {
   const session = useSessionStore();
@@ -47,7 +68,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!key) return { ...m, text: null };
     try {
       const payload = await decryptMessage(key, m.ciphertext, m.iv);
-      return { ...m, text: payload.text };
+      return { ...m, text: payload.text, gif: safeGif(payload.gif) };
     } catch {
       return { ...m, text: null };
     }
@@ -126,15 +147,16 @@ export const useChatStore = defineStore('chat', () => {
     mergeMessages(convId, views);
   }
 
-  async function sendMessage(convId: string, text: string): Promise<void> {
+  async function sendMessage(convId: string, text: string, opts?: { gif?: GifRef }): Promise<void> {
     const key = convKeys.get(convId);
     if (!key) throw new Error('no conversation key');
     const conv = conversations.value.find((c) => c.id === convId);
     const epoch = conv?.epoch ?? 0;
     const payload: MessagePayload = { text, sentAt: Date.now() };
+    if (opts?.gif) payload.gif = opts.gif;
     const { ciphertext, iv } = await encryptMessage(key, payload);
     const sent = await api.messageSend(convId, { ciphertext, iv, epoch });
-    mergeMessages(convId, [{ ...sent, text }]);
+    mergeMessages(convId, [{ ...sent, text, gif: opts?.gif ?? null }]);
     bumpLastSeq(convId, sent.seq);
   }
 

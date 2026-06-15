@@ -226,12 +226,48 @@ export interface ChatMessage {
   createdAt: number;
 }
 
+/** A GIF chosen from KLIPY search, embedded inside the encrypted message so the
+ *  server never learns which GIF was sent. The animated media lives on KLIPY's
+ *  CDN (`url`); the recipient loads it from there (a documented third-party
+ *  metadata tradeoff — see spec/security.md). */
+export interface GifRef {
+  provider: 'klipy';
+  /** provider id/slug (attribution / dedupe) */
+  id: string;
+  /** animated media URL to render (webp preferred, gif fallback) */
+  url: string;
+  /** still/animated thumbnail URL for the picker grid */
+  previewUrl: string;
+  width: number;
+  height: number;
+  title?: string;
+}
+
 /** What the client encrypts into a message blob (extensible in v3.1). */
 export interface MessagePayload {
-  /** markdown text */
+  /** markdown text (may be empty when the message is purely a GIF) */
   text: string;
   /** the sender's own clock (server time is separate metadata) */
   sentAt: number;
+  /** an embedded GIF (KLIPY search) — v3.1 */
+  gif?: GifRef;
+}
+
+/** One normalized GIF search hit returned by the server-side KLIPY proxy. */
+export interface GifSearchResult {
+  id: string;
+  title: string;
+  url: string;
+  previewUrl: string;
+  width: number;
+  height: number;
+}
+
+/** Server-side KLIPY proxy response. `next` is an opaque pagination cursor
+ *  (page number as a string) or null when there are no more results. */
+export interface GifSearchResponse {
+  results: GifSearchResult[];
+  next: string | null;
 }
 
 /** One member's sealed key when creating a conversation client-side. */
