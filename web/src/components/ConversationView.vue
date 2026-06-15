@@ -419,7 +419,7 @@ async function sendGif(gif: GifRef) {
         </div>
       </div>
 
-      <div class="shrink-0 border-t border-zinc-200 p-3 dark:border-zinc-800">
+      <div class="shrink-0 p-3">
         <!-- Replying-to banner. -->
         <div
           v-if="replyingTo"
@@ -447,20 +447,22 @@ async function sendGif(gif: GifRef) {
           <span v-if="attachError" class="text-xs text-red-500">{{ attachError }}</span>
         </div>
 
-        <div class="flex items-end gap-2">
+        <!-- Buttons stretch to the input's height (square), so they line up. -->
+        <div class="flex items-stretch gap-2">
           <input ref="fileInput" type="file" multiple class="hidden" @change="onPickFiles" />
           <button
             type="button"
             title="Attach files"
-            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            class="flex aspect-square shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
             @click="fileInput?.click()"
           >
             <IconPaperclip class="h-5 w-5" />
           </button>
           <!-- Reuse the v2.1 live editor as the composer: code blocks, spoilers,
                colors, and the selection toolbar all come for free. Enter sends;
-               Shift+Enter inserts a newline. -->
-          <div class="grow rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900">
+               Shift+Enter inserts a newline. The fill matches the app background
+               so the bordered input + buttons read as one consistent surface. -->
+          <div class="grow rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-950">
             <MarkdownEditor
               ref="composer"
               v-model="text"
