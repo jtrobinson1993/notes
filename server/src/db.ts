@@ -14,7 +14,18 @@ export interface UserRow {
   recovery_auth_hash: string | null;
   display_name: string | null;
   name_color: string | null;
+  /** 1 = only friends may receive the encrypted profile (default). */
+  profile_friends_only: number;
   created_at: number;
+}
+
+export interface ProfileRow {
+  owner_id: string;
+  ciphertext: string;
+  iv: string;
+  epoch: number;
+  owner_wrapped_key: string;
+  updated_at: number;
 }
 
 export interface FriendInviteRow {
@@ -287,6 +298,26 @@ CREATE TABLE IF NOT EXISTS device_links (
   expires_at INTEGER NOT NULL,
   completed INTEGER NOT NULL DEFAULT 0
 );
+-- A user's E2EE profile blob (bio + avatar), encrypted under their profile key.
+-- The server only ever stores the ciphertext, the rotation epoch, and the
+-- profile key wrapped under the owner's master key (for cross-device recovery).
+CREATE TABLE IF NOT EXISTS profiles (
+  owner_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  ciphertext TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  epoch INTEGER NOT NULL DEFAULT 0,
+  owner_wrapped_key TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+-- The profile key sealed to each recipient who may render the profile. Deleting
+-- a row revokes access to the current blob; rotating (new epoch) revokes future.
+CREATE TABLE IF NOT EXISTS profile_keys (
+  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  epoch INTEGER NOT NULL,
+  sealed_key TEXT NOT NULL,
+  PRIMARY KEY (owner_id, recipient_id)
+);
 `;
 
 export type DB = ReturnType<typeof openDb>;
@@ -305,6 +336,10 @@ export function openDb(dataDir: string) {
   }
   if (!userCols.some((c) => c.name === 'name_color')) {
     db.exec('ALTER TABLE users ADD COLUMN name_color TEXT');
+  }
+  // Profile visibility: 1 = only friends may receive the encrypted profile.
+  if (!userCols.some((c) => c.name === 'profile_friends_only')) {
+    db.exec('ALTER TABLE users ADD COLUMN profile_friends_only INTEGER NOT NULL DEFAULT 1');
   }
 
   // Idempotent migration: add conversations.parent_id/parent_seq (threads).
@@ -570,6 +605,70 @@ export function openDb(dataDir: string) {
     },
     setNameColor(userId: string, nameColor: string | null): void {
       db.prepare('UPDATE users SET name_color = ? WHERE id = ?').run(nameColor, userId);
+    },
+
+    // ---- Profiles (E2EE bio + avatar) ----
+    setProfileVisibility(userId: string, friendsOnly: boolean): void {
+      db.prepare('UPDATE users SET profile_friends_only = ? WHERE id = ?').run(friendsOnly ? 1 : 0, userId);
+    },
+    getProfile(ownerId: string): ProfileRow | undefined {
+      return db.prepare('SELECT * FROM profiles WHERE owner_id = ?').get(ownerId) as ProfileRow | undefined;
+    },
+    upsertProfile(p: { ownerId: string; ciphertext: string; iv: string; epoch: number; ownerWrappedKey: string }): void {
+      db.prepare(
+        `INSERT INTO profiles (owner_id, ciphertext, iv, epoch, owner_wrapped_key, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner_id) DO UPDATE SET
+           ciphertext = excluded.ciphertext, iv = excluded.iv, epoch = excluded.epoch,
+           owner_wrapped_key = excluded.owner_wrapped_key, updated_at = excluded.updated_at`,
+      ).run(p.ownerId, p.ciphertext, p.iv, p.epoch, p.ownerWrappedKey, now());
+    },
+    /** Replace the full set of sealed keys for an owner (used on set + rotation). */
+    replaceProfileKeys(ownerId: string, epoch: number, keys: { recipientId: string; sealedKey: string }[]): void {
+      const tx = db.transaction(() => {
+        db.prepare('DELETE FROM profile_keys WHERE owner_id = ?').run(ownerId);
+        const ins = db.prepare(
+          'INSERT INTO profile_keys (owner_id, recipient_id, epoch, sealed_key) VALUES (?, ?, ?, ?)',
+        );
+        for (const k of keys) ins.run(ownerId, k.recipientId, epoch, k.sealedKey);
+      });
+      tx();
+    },
+    /** Add/replace one recipient's sealed key (used to distribute to a new friend). */
+    upsertProfileKey(ownerId: string, recipientId: string, epoch: number, sealedKey: string): void {
+      db.prepare(
+        `INSERT INTO profile_keys (owner_id, recipient_id, epoch, sealed_key) VALUES (?, ?, ?, ?)
+         ON CONFLICT(owner_id, recipient_id) DO UPDATE SET epoch = excluded.epoch, sealed_key = excluded.sealed_key`,
+      ).run(ownerId, recipientId, epoch, sealedKey);
+    },
+    getProfileKeyFor(ownerId: string, recipientId: string): { sealed_key: string; epoch: number } | undefined {
+      return db
+        .prepare('SELECT sealed_key, epoch FROM profile_keys WHERE owner_id = ? AND recipient_id = ?')
+        .get(ownerId, recipientId) as { sealed_key: string; epoch: number } | undefined;
+    },
+    /** Revoke profile-key access in both directions (used on unfriend). */
+    deleteProfileKeyPair(a: string, b: string): void {
+      db.prepare(
+        'DELETE FROM profile_keys WHERE (owner_id = ? AND recipient_id = ?) OR (owner_id = ? AND recipient_id = ?)',
+      ).run(a, b, b, a);
+    },
+    /** Drop any sealed keys an owner granted to non-friends (used when switching
+     *  visibility back to friends-only). */
+    deleteNonFriendProfileKeys(ownerId: string): void {
+      db.prepare(
+        `DELETE FROM profile_keys WHERE owner_id = ? AND recipient_id NOT IN
+           (SELECT friend_id FROM friends WHERE user_id = ?)`,
+      ).run(ownerId, ownerId);
+    },
+    /** True if the two users share any conversation (DM, group, or thread). */
+    sharesConversation(a: string, b: string): boolean {
+      return !!db
+        .prepare(
+          `SELECT 1 FROM conversation_members cm1
+             JOIN conversation_members cm2 ON cm1.conversation_id = cm2.conversation_id
+            WHERE cm1.user_id = ? AND cm2.user_id = ? LIMIT 1`,
+        )
+        .get(a, b);
     },
 
     // ---- Friend invites ----

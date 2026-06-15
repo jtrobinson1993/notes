@@ -332,10 +332,46 @@ export interface SealedMemberKey {
   sealedKey: SealedKey;
 }
 
-/** Public profile metadata (server-visible; usernames never exposed to others). */
+/** Public profile metadata (server-visible; usernames never exposed to others).
+ *  `friendsOnly` is the visibility setting: when true the encrypted profile
+ *  (bio/avatar) is only ever distributed to accepted friends. */
 export interface ProfileInfo {
   displayName: string;
   nameColor: string | null;
+  friendsOnly: boolean;
+}
+
+/** The owner-set, E2E-encrypted profile contents. Encrypted under a per-user
+ *  **profile key** and embedded whole (avatar is a small optimized data URL),
+ *  so the server never sees any of it. */
+export interface ProfileData {
+  bio?: string;
+  /** small optimized avatar as a `data:image/webp` URL */
+  avatar?: string;
+}
+
+/** AES-256-GCM ciphertext of a `ProfileData`, with the rotation epoch (bumped
+ *  when a contact loses access so they can't read future updates). */
+export interface ProfileCipher {
+  ciphertext: string;
+  iv: string;
+  epoch: number;
+}
+
+/** The profile key sealed to one recipient's X25519 public key. */
+export interface SealedProfileKey {
+  recipientId: string;
+  sealedKey: SealedKey;
+}
+
+/** What a viewer receives for another user's profile. `encrypted` is null when
+ *  the viewer isn't a current recipient (not a friend, or visibility-restricted);
+ *  in that case only the display name / color are shown. */
+export interface ProfileView {
+  userId: string;
+  displayName: string;
+  nameColor: string | null;
+  encrypted: (ProfileCipher & { sealedKey: SealedKey }) | null;
 }
 
 // ---- WebSocket frame protocol (JSON frames over one authenticated socket) ----
@@ -349,6 +385,7 @@ export type ServerFrame =
   | { type: 'read'; conversationId: string; userId: string; seq: number }
   | { type: 'friend-request'; request: FriendRequest }
   | { type: 'friend-accepted'; friend: Friend }
+  | { type: 'profile-updated'; userId: string }
   | { type: 'presence'; userId: string; online: boolean };
 
 /** Client -> server. Sends and read-markers go over REST; this stays minimal.

@@ -16,7 +16,7 @@ function get(url: string, cookie: string) {
 describe('GET list endpoints', () => {
   it('GET /api/profile returns the display name (and the privacy fallback)', async () => {
     const named = authCookie(t.db, seedUser(t.db, { displayName: 'Alice' }));
-    expect((await get('/api/profile', named)).json()).toEqual({ displayName: 'Alice', nameColor: null });
+    expect((await get('/api/profile', named)).json()).toEqual({ displayName: 'Alice', nameColor: null, friendsOnly: true });
 
     const id = seedUser(t.db, { id: 'abcdef000000' }); // no display name set
     const res = await get('/api/profile', authCookie(t.db, id));
