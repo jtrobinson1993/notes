@@ -326,13 +326,15 @@ async function sendGif(gif: GifRef) {
           class="group relative flex items-start gap-3 px-4 py-0.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
           :class="row.isStart ? 'mt-3' : ''"
         >
-          <!-- Hover actions: react + reply. Stay visible while a child popover
-               (the emoji picker) is open — otherwise leaving the row to reach
-               the popover hides the trigger and the popover loses its anchor. -->
-          <div class="absolute right-3 top-0 hidden items-center gap-1 rounded-md border border-zinc-200 bg-white px-1 py-0.5 shadow-sm group-hover:flex has-[[data-state=open]]:flex dark:border-zinc-700 dark:bg-zinc-800">
-            <EmojiPicker @pick="(s) => react(row.msg.seq, s)" />
+          <!-- Hover actions: react + reply + thread. Pulled up by half its
+               height (only the bottom half overlays the message). Stays visible
+               while a child popover (the emoji picker) is open — otherwise
+               leaving the row to reach the popover hides the trigger and the
+               popover loses its anchor. -->
+          <div class="absolute right-3 top-0 hidden -translate-y-1/2 items-center gap-0.5 rounded-md border border-zinc-200 bg-white px-1 py-0.5 shadow-sm group-hover:flex has-[[data-state=open]]:flex dark:border-zinc-700 dark:bg-zinc-800">
+            <EmojiPicker compact @pick="(s) => react(row.msg.seq, s)" />
             <button
-              class="flex items-center rounded px-1.5 py-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+              class="flex items-center rounded px-1.5 py-1 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
               title="Reply"
               @click="startReply(row.msg)"
             >
@@ -340,7 +342,7 @@ async function sendGif(gif: GifRef) {
             </button>
             <button
               v-if="!isThread"
-              class="flex items-center rounded px-1.5 py-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+              class="flex items-center rounded px-1.5 py-1 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
               title="Start/open thread"
               @click="openThreadFor(row.msg.seq)"
             >

@@ -9,6 +9,9 @@ import IconSmile from '~icons/mynaui/smile';
 // Emits the exact string to insert at the composer caret: `:name:` for a custom
 // emote, or the raw character for a unicode emoji.
 const emit = defineEmits<{ pick: [string] }>();
+// `compact` renders a small, borderless trigger for the message hover toolbar
+// (matching the reply/thread buttons); the default is the composer's button.
+defineProps<{ compact?: boolean }>();
 
 type Tab = 'emotes' | 'unicode' | 'custom';
 const open = ref(false);
@@ -54,9 +57,11 @@ const tabClass = (t: Tab) =>
   <PopoverRoot v-model:open="open">
     <PopoverTrigger
       title="Emoji"
-      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+      :class="compact
+        ? 'flex items-center rounded px-1.5 py-1 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700'
+        : 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800'"
     >
-      <IconSmile class="h-5 w-5" />
+      <IconSmile :class="compact ? 'h-4 w-4' : 'h-5 w-5'" />
     </PopoverTrigger>
     <PopoverPortal>
       <PopoverContent
