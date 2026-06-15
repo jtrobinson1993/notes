@@ -4,11 +4,21 @@ import { useRoute } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import ConversationView from '../components/ConversationView.vue';
 import { useChatStore } from '../stores/chat';
+import { useSessionStore } from '../stores/session';
 
 const route = useRoute();
 const chat = useChatStore();
+const session = useSessionStore();
 
 const convId = computed(() => String(route.params.id));
+
+// The conversation name shown in the shared header above both panes.
+const conversation = computed(() => chat.conversations.find((c) => c.id === convId.value));
+const otherMember = computed(() => {
+  const me = session.user?.id;
+  return conversation.value?.members.find((m) => m.userId !== me) ?? conversation.value?.members[0];
+});
+const parentTitle = computed(() => otherMember.value?.displayName || 'Conversation');
 // The thread shown in the side panel (a thread is itself a conversation id).
 const activeThread = ref<string | null>(null);
 
@@ -75,10 +85,19 @@ onBeforeUnmount(stopDrag);
 
 <template>
   <AppLayout>
-    <div ref="region" class="relative flex h-full">
-      <div class="min-w-0 flex-1">
-        <ConversationView :conv-id="convId" @open-thread="onOpenThread" />
-      </div>
+    <div class="flex h-full flex-col">
+      <!-- Shared conversation header, above both the chat and the thread panel. -->
+      <header class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-sm font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
+          {{ (parentTitle.trim()[0] ?? '?').toUpperCase() }}
+        </span>
+        <p class="font-semibold">{{ parentTitle }}</p>
+      </header>
+
+      <div ref="region" class="relative flex min-h-0 flex-1">
+        <div class="min-w-0 flex-1">
+          <ConversationView :conv-id="convId" hide-header @open-thread="onOpenThread" />
+        </div>
 
       <template v-if="activeThread">
         <!-- Drag handle = the separating line (wide mode only). -->
@@ -104,6 +123,7 @@ onBeforeUnmount(stopDrag);
           />
         </div>
       </template>
+      </div>
     </div>
   </AppLayout>
 </template>

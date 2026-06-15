@@ -342,7 +342,9 @@ than inventing a parallel model. `conversations` gains `parent_id` +
 UI: the conversation body is a reusable `ConversationView` (driven by a `convId`
 prop), so the parent and a thread render as two instances. A hover thread action
 (and a **"N replies"** link) opens the thread; `ConversationPage` holds the
-active-thread id and chooses the layout from the **chat region's** width
+active-thread id, renders the **conversation name in a shared header above both
+panes** (the parent `ConversationView` is `hide-header`; the thread panel keeps
+its own header), and chooses the layout from the **chat region's** width
 (measured with a `ResizeObserver`, not the viewport, so the sidebar state
 counts). At **≥768px** the thread is a **resizable right-hand panel** — its own
 flex column defaulting to **half** the region, with a **drag handle** on the

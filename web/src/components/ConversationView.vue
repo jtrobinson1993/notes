@@ -20,7 +20,7 @@ import { useSessionStore } from '../stores/session';
 
 // Renders one conversation (DM, group, or a thread). The parent owns routing and
 // the thread panel, so opening a thread just emits the parent message's seq.
-const props = defineProps<{ convId: string; isThreadPanel?: boolean }>();
+const props = defineProps<{ convId: string; isThreadPanel?: boolean; hideHeader?: boolean }>();
 const emit = defineEmits<{ openThread: [seq: number]; close: [] }>();
 const session = useSessionStore();
 const chat = useChatStore();
@@ -273,7 +273,7 @@ async function sendGif(gif: GifRef) {
 
 <template>
     <div class="flex h-full flex-col">
-      <div class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+      <div v-if="!hideHeader" class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
         <IconThread v-if="isThread" class="h-5 w-5 shrink-0 text-zinc-400" />
         <span v-else class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-sm font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
           {{ (title.trim()[0] ?? '?').toUpperCase() }}
