@@ -67,12 +67,12 @@ const activeConvId = computed(() => {
       <div class="flex flex-col gap-1 p-2">
         <SidebarTooltip label="New chat" :disabled="expanded">
           <button
-            class="flex items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-700 dark:text-zinc-200"
-            :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
+            class="flex items-center gap-2 rounded-lg bg-blue-600 px-2 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            :class="expanded ? '' : 'justify-center'"
             aria-label="New chat"
             @click="newChatOpen = true"
           >
-            <IconMessagePlus class="h-6 w-6 shrink-0 text-blue-600" />
+            <IconMessagePlus class="h-6 w-6 shrink-0" />
             <span v-if="expanded" class="truncate">New chat</span>
           </button>
         </SidebarTooltip>
