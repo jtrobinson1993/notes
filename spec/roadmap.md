@@ -41,48 +41,41 @@ Shipped in [#15](https://github.com/jtrobinson1993/notes/pull/15) (merged
 
 Deferred items (link previews) moved to [v3.4](#v34--deferred-backlog).
 
-## v3.2 — Editable user profiles
+## v3.2 — Editable user profiles ✅ shipped
 
-Builds on the v3 display name with the richer profile: description/bio and
-avatar. (Friend bootstrap is already ephemeral 24h codes, so there's no
-permanent handle to regenerate or vanity-customise.) Maybe Discord-style
-decorations (animated avatars, profile backgrounds/borders).
+Implemented — see [profiles.md](profiles.md). The richer profile (bio + avatar)
+builds on the v3 display name + name color.
 
-**Profile data is E2EE to contacts.** Encrypt the profile blob (bio, avatar,
-decorations) under a per-user profile key, wrapped to each contact who needs to
-render it. Reuse the chat key-distribution machinery rather than inventing a
-second mechanism — the same epoch re-keying applies: when a contact loses access
-(unfriended, or removed from the last shared group), rotate the profile key so
-they can't decrypt future updates.
+- **Profile data is E2EE to contacts.** The blob (bio, avatar) is encrypted under
+  a per-user profile key, wrapped under the owner's master key (cross-device
+  recovery) and sealed to each contact — reusing the chat key machinery. Epoch
+  re-keying: when a contact loses access (unfriended), the profile key rotates so
+  they can't decrypt future updates. (implemented)
+- **Visibility setting — "Only allow friends to see my profile" (default on).**
+  Friends always; group co-members too when off. Tightening revokes non-friend
+  keys. (implemented)
+- **Deferred:** Discord-style decorations (animated avatars, profile
+  backgrounds/borders) — the original "maybe"; not built.
 
-**Visibility setting — "Only allow friends to see my profile" (default on).**
-With it on, the profile key is only ever wrapped to accepted friends; group
-co-members who aren't friends see just the display name. Turning it off widens
-distribution to group co-members as well.
+## v3.3 — Cleanup ✅ shipped
 
-## v3.3 — Cleanup
+Polish + bug fixes that shipped alongside the v3.2 profile work.
 
-Polish + bug fixes that ship alongside the v3.2 profile work.
-
-- Sidebar links shouldn't carry the current padding/background hover effect.
-  Instead, instantly show a tooltip to the right of the item with its label on
-  hover.
-- Replace the "New chat" `+` icon with a chat-bubble icon (or similar).
-- Replace the existing new-chat popover (`AppSidebar.vue`) with a centered
-  modal: a "New Chat" heading + short description prompting who to chat with, a
-  search box at the top, and an alphabetical friend list with a checkbox per
-  friend for selecting one or many. Cancel / Create chat buttons at the bottom,
-  an ✕ top-right, and a small blur on the content behind. Fixed width with
-  max-height 80% on desktop; full-screen on mobile. Built on the reusable modal
-  below.
-- Extract a reusable modal component for primary, blocking actions (where the
-  user shouldn't reach the rest of the app until they finish or cancel). Base it
-  on reka-ui `DialogRoot` + an overlay/blur, and refactor the existing
-  `HistoryDialog` and `ShareDialog` onto it.
-- Drop the "Load older messages" button. Instead auto-load older messages in
-  chunks as the user scrolls back, and show "end of message history" when
-  there's nothing left to load. Preserve scroll anchoring so the viewport
-  doesn't jump when older messages prepend.
+- Sidebar links drop the padding/background hover effect when collapsed; hovering
+  shows an instant label tooltip to the right (`SidebarTooltip`). (implemented)
+- The "New chat" `+` is now a chat-bubble icon (`message-plus`), styled as a
+  solid blue button with a white icon. (implemented)
+- The new-chat popover is now a centered modal (`NewChatModal`): heading +
+  description, search box, alphabetical friend list with a checkbox per friend
+  (select one → DM, or many → a **group**), Cancel / Create, ✕ top-right, blur
+  behind, fixed width + max-height 80% on desktop / full-screen on mobile.
+  (implemented; backed by real group-conversation creation)
+- Reusable modal `AppModal` for primary, blocking actions (reka-ui `Dialog` +
+  overlay/blur); `HistoryDialog` and `ShareDialog` refactored onto it.
+  (implemented)
+- Dropped the "Load older messages" button — older messages auto-load on
+  scroll-up, with an "End of message history" marker and preserved scroll
+  anchoring. (implemented)
 
 ## v3.4 — Deferred backlog
 
@@ -96,6 +89,7 @@ tradeoff) — not scheduled until that unblocks.
   browser today. Revisit with a native/extension client that can fetch
   client-side, or an explicitly-accepted SSRF-guarded server-side OG proxy (URL
   transits the trusted server). Until then, no preview.
+  - DECISION: implement this with a per user setting to turn it on or off (OFF BY DEFAULT), with a tooltip succinctly describing the privacy issue with turning on link previews. Only create link previews when _all members_ of a chat have link previews enabled.
 - **Default emoji hosting** (v3.1 ships self-hosted): investigate serving the
   default 7TV set straight from 7TV's API + CDN instead of committing ~300
   optimized WebP into the repo. Tradeoffs: removes the binaries + the periodic
@@ -103,6 +97,14 @@ tradeoff) — not scheduled until that unblocks.
   runtime dependency, a per-render IP leak to 7TV's CDN (mirroring the KLIPY-GIF
   tradeoff), and offline/PWA breakage. If adopted, gate the CDN images the same
   way as GIFs (host allowlist / click-to-load).
+  - Switch to using 7TV api instead of hosting the emojis locally and then heavily cache the api responses (maybe for a day?). Pinia colada will cache the responses locally as well, which you can also place a day cache on, with refetchOnMount: false and refetch on page focus: false
+
+## v3.5 - small bugs / enhancements
+
+- when a reaction is added to a message for the first time, the pill with the emoji in it should start at 1.5x scale and animate to normal in about .15s
+- when an existing reaction is clicked on to increase the count, the number in the pill should pop up and fall back down in about .15s
+- emoji and attachment buttons still aren't the same height of the chat box. instead of trying to fix their height, just remove the border from the chat box and put that around all 3 elements instead, and vertically center them all. The chat input should be 100% of the height so it's easy to click into. The button icons should become solid variants if they're available, and the buttons themselves should have even padding around them. Each of the buttons should be equal size and square still.
+- 
 
 ## v4 — Chat sidebar
 
