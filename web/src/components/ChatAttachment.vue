@@ -3,6 +3,8 @@ import { onBeforeUnmount, onMounted, ref } from 'vue';
 import type { AttachmentRef } from '@notes/shared';
 import { api } from '../lib/api';
 import { decryptBlob } from '../lib/crypto';
+import IconPaperclip from '~icons/mynaui/paperclip';
+import IconDanger from '~icons/mynaui/danger-triangle';
 
 const props = defineProps<{ attachment: AttachmentRef }>();
 
@@ -71,7 +73,8 @@ onBeforeUnmount(() => {
     class="mt-1 flex max-w-[320px] items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-left text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
     @click="download"
   >
-    <span class="text-lg">{{ failed ? '⚠️' : '📎' }}</span>
+    <IconDanger v-if="failed" class="h-5 w-5 shrink-0 text-amber-500" />
+    <IconPaperclip v-else class="h-5 w-5 shrink-0" />
     <span class="min-w-0">
       <span class="block truncate font-medium">{{ attachment.name }}</span>
       <span class="block text-xs text-zinc-500">{{ failed ? 'could not decrypt' : fmtSize(attachment.size) }}</span>

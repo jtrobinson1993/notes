@@ -12,6 +12,10 @@ import { encryptAndUploadFile } from '../lib/attachments';
 import { resolveEmoji } from '../lib/emoji';
 import IconReply from '~icons/mynaui/message-reply';
 import IconThread from '~icons/mynaui/chat-dots';
+import IconReplyQuote from '~icons/mynaui/corner-up-left';
+import IconX from '~icons/mynaui/x';
+import IconImage from '~icons/mynaui/image';
+import IconPaperclip from '~icons/mynaui/paperclip';
 import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
 import { useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
@@ -366,7 +370,7 @@ async function sendGif(gif: GifRef) {
               class="mb-0.5 flex max-w-full items-center gap-1 truncate text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
               @click="scrollToSeq(row.msg.replyTo.seq)"
             >
-              <span class="opacity-60">↩</span>
+              <IconReplyQuote class="h-3.5 w-3.5 shrink-0 opacity-60" />
               <span class="font-medium">{{ memberName(row.msg.replyTo.senderId) }}</span>
               <span class="truncate opacity-80">{{ row.msg.replyTo.preview }}</span>
             </button>
@@ -429,10 +433,10 @@ async function sendGif(gif: GifRef) {
           v-if="replyingTo"
           class="mb-2 flex items-center gap-2 rounded-lg bg-zinc-50 px-3 py-1.5 text-xs dark:bg-zinc-800"
         >
-          <span class="opacity-60">↩ Replying to</span>
+          <span class="flex items-center gap-1 opacity-60"><IconReplyQuote class="h-3.5 w-3.5" /> Replying to</span>
           <span class="font-medium">{{ memberName(replyingTo.senderId) }}</span>
           <span class="min-w-0 grow truncate opacity-80">{{ replyingTo.preview }}</span>
-          <button class="rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Cancel reply" @click="replyingTo = null">✕</button>
+          <button class="flex items-center rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Cancel reply" @click="replyingTo = null"><IconX class="h-3.5 w-3.5" /></button>
         </div>
 
         <!-- Staged attachments (uploaded encrypted; sent with the next message). -->
@@ -442,8 +446,10 @@ async function sendGif(gif: GifRef) {
             :key="a.id"
             class="flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50 py-1 pl-2 pr-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
           >
-            <span class="max-w-[160px] truncate">{{ a.type.startsWith('image/') ? '🖼️' : '📎' }} {{ a.name }}</span>
-            <button class="rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Remove" @click="removeStaged(a.id)">✕</button>
+            <IconImage v-if="a.type.startsWith('image/')" class="h-3.5 w-3.5 shrink-0" />
+            <IconPaperclip v-else class="h-3.5 w-3.5 shrink-0" />
+            <span class="max-w-[160px] truncate">{{ a.name }}</span>
+            <button class="flex items-center rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Remove" @click="removeStaged(a.id)"><IconX class="h-3.5 w-3.5" /></button>
           </span>
           <span v-if="attaching" class="text-xs text-zinc-400">Uploading…</span>
           <span v-if="attachError" class="text-xs text-red-500">{{ attachError }}</span>
@@ -454,10 +460,10 @@ async function sendGif(gif: GifRef) {
           <button
             type="button"
             title="Attach files"
-            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-lg text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
             @click="fileInput?.click()"
           >
-            +
+            <IconPaperclip class="h-5 w-5" />
           </button>
           <!-- Reuse the v2.1 live editor as the composer: code blocks, spoilers,
                colors, and the selection toolbar all come for free. Enter sends;

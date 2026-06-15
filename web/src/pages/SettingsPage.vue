@@ -11,6 +11,7 @@ import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
 import { addCustomEmoji, customEmoji, loadCustomEmoji, removeCustomEmoji } from '../lib/emoji/custom';
 import { resolveEmoji } from '../lib/emoji';
+import IconX from '~icons/mynaui/x';
 
 const session = useSessionStore();
 const notes = useNotesStore();
@@ -345,7 +346,7 @@ async function importFiles(event: Event) {
           >
             <img v-if="resolveEmoji(e.name)" :src="resolveEmoji(e.name)!" :alt="e.name" class="h-5 w-5 object-contain" />
             <span>:{{ e.name }}:</span>
-            <button class="rounded px-1 text-zinc-400 hover:text-red-500" title="Remove" @click="removeCustomEmoji(e.name)">✕</button>
+            <button class="flex items-center rounded px-1 text-zinc-400 hover:text-red-500" title="Remove" @click="removeCustomEmoji(e.name)"><IconX class="h-3.5 w-3.5" /></button>
           </span>
         </div>
       </section>
