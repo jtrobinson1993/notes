@@ -22,11 +22,10 @@ const isAdmin = session.user?.role === 'admin';
 // Settings is split into sections navigated by the left rail.
 const sections = [
   { id: 'profile', label: 'Profile' },
-  { id: 'appearance', label: 'Appearance & security' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'security', label: 'Security' },
   { id: 'privacy', label: 'Privacy' },
   { id: 'emoji', label: 'Custom emoji' },
-  { id: 'passkeys', label: 'Passkeys' },
-  { id: 'recovery', label: 'Recovery code' },
   { id: 'data', label: 'Import & export' },
   ...(isAdmin ? [{ id: 'invites', label: 'Invites' }, { id: 'users', label: 'Users' }] : []),
 ];
@@ -313,7 +312,7 @@ async function importFiles(event: Event) {
       </section>
 
       <section v-show="activeSection === 'appearance'" class="space-y-3">
-        <h2 class="text-lg font-semibold">Appearance & security</h2>
+        <h2 class="text-lg font-semibold">Appearance</h2>
         <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <span class="text-sm">Light / dark</span>
           <select v-model="theme" class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900" @change="applyTheme">
@@ -330,6 +329,11 @@ async function importFiles(event: Event) {
             <option value="high-contrast">High contrast</option>
           </select>
         </div>
+      </section>
+
+      <!-- Security: auto-lock + passkeys + recovery code -->
+      <section v-show="activeSection === 'security'" class="space-y-3">
+        <h2 class="text-lg font-semibold">Auto-lock</h2>
         <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <span class="text-sm">Auto-lock after inactivity</span>
           <select v-model="autoLock" class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900" @change="applyAutoLock">
@@ -423,7 +427,7 @@ async function importFiles(event: Event) {
         </div>
       </section>
 
-      <section v-show="activeSection === 'passkeys'" class="space-y-3">
+      <section v-show="activeSection === 'security'" class="space-y-3">
         <h2 class="text-lg font-semibold">Passkeys</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           Register a passkey on each device you use. Every passkey can unlock your encrypted notes.
@@ -464,7 +468,7 @@ async function importFiles(event: Event) {
         <p v-if="passkeyError" class="text-sm text-red-600 dark:text-red-400">{{ passkeyError }}</p>
       </section>
 
-      <section v-show="activeSection === 'recovery'" class="space-y-3">
+      <section v-show="activeSection === 'security'" class="space-y-3">
         <h2 class="text-lg font-semibold">Recovery code</h2>
         <button
           :disabled="!session.unlocked"
