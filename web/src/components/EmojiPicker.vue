@@ -4,6 +4,7 @@ import { PopoverRoot, PopoverTrigger, PopoverPortal, PopoverContent } from 'reka
 import { searchDefaultEmoji, emojiUrl, resolveEmoji } from '../lib/emoji';
 import { loadUnicodeEmoji, searchUnicode, type UnicodeEmoji } from '../lib/emoji/unicode';
 import { customEmoji } from '../lib/emoji/custom';
+import IconSmile from '~icons/mynaui/smile';
 
 // Emits the exact string to insert at the composer caret: `:name:` for a custom
 // emote, or the raw character for a unicode emoji.
@@ -53,9 +54,9 @@ const tabClass = (t: Tab) =>
   <PopoverRoot v-model:open="open">
     <PopoverTrigger
       title="Emoji"
-      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-lg hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
     >
-      🙂
+      <IconSmile class="h-5 w-5" />
     </PopoverTrigger>
     <PopoverPortal>
       <PopoverContent

@@ -10,6 +10,8 @@ import EmojiPicker from '../components/EmojiPicker.vue';
 import ChatAttachment from '../components/ChatAttachment.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
 import { resolveEmoji } from '../lib/emoji';
+import IconReply from '~icons/mynaui/message-reply';
+import IconThread from '~icons/mynaui/chat-dots';
 import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
 import { useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
@@ -290,7 +292,7 @@ async function sendGif(gif: GifRef) {
           {{ (title.trim()[0] ?? '?').toUpperCase() }}
         </span>
         <p class="font-semibold">{{ title }}</p>
-        <span v-if="isThread" class="text-xs text-zinc-400">💬 thread</span>
+        <span v-if="isThread" class="flex items-center gap-1 text-xs text-zinc-400"><IconThread class="h-3.5 w-3.5" /> thread</span>
       </div>
 
       <div ref="scroller" class="min-h-0 grow overflow-y-auto py-2" @scroll="onScroll">
@@ -326,19 +328,19 @@ async function sendGif(gif: GifRef) {
           <div class="absolute right-3 top-0 hidden items-center gap-1 rounded-md border border-zinc-200 bg-white px-1 py-0.5 shadow-sm group-hover:flex has-[[data-state=open]]:flex dark:border-zinc-700 dark:bg-zinc-800">
             <EmojiPicker @pick="(s) => react(row.msg.seq, s)" />
             <button
-              class="rounded px-1.5 py-0.5 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+              class="flex items-center rounded px-1.5 py-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700"
               title="Reply"
               @click="startReply(row.msg)"
             >
-              ↩
+              <IconReply class="h-4 w-4" />
             </button>
             <button
               v-if="!isThread"
-              class="rounded px-1.5 py-0.5 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+              class="flex items-center rounded px-1.5 py-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700"
               title="Start/open thread"
               @click="openThreadFor(row.msg.seq)"
             >
-              💬
+              <IconThread class="h-4 w-4" />
             </button>
           </div>
           <!-- Left gutter: avatar at a group's first message; otherwise a
@@ -414,7 +416,8 @@ async function sendGif(gif: GifRef) {
               class="mt-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950"
               @click="openThreadFor(row.msg.seq)"
             >
-              💬 {{ threadReplies(row.msg.seq) }} {{ threadReplies(row.msg.seq) === 1 ? 'reply' : 'replies' }}
+              <IconThread class="h-3.5 w-3.5" />
+              {{ threadReplies(row.msg.seq) }} {{ threadReplies(row.msg.seq) === 1 ? 'reply' : 'replies' }}
             </button>
           </div>
         </div>
