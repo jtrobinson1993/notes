@@ -19,6 +19,19 @@ const notes = useNotesStore();
 const queryCache = useQueryCache();
 const isAdmin = session.user?.role === 'admin';
 
+// Settings is split into sections navigated by the left rail.
+const sections = [
+  { id: 'profile', label: 'Profile' },
+  { id: 'appearance', label: 'Appearance & security' },
+  { id: 'privacy', label: 'Privacy' },
+  { id: 'emoji', label: 'Custom emoji' },
+  { id: 'passkeys', label: 'Passkeys' },
+  { id: 'recovery', label: 'Recovery code' },
+  { id: 'data', label: 'Import & export' },
+  ...(isAdmin ? [{ id: 'invites', label: 'Invites' }, { id: 'users', label: 'Users' }] : []),
+];
+const activeSection = ref('profile');
+
 const theme = ref<Theme>(getTheme());
 const palette = ref<Palette>(getPalette());
 const autoLock = ref(String(session.autoLockMinutes));
@@ -218,8 +231,8 @@ async function importFiles(event: Event) {
 
 <template>
   <AppLayout>
-    <div class="mx-auto max-w-2xl space-y-8 overflow-y-auto p-6">
-      <div class="flex items-center justify-between">
+    <div class="flex h-full flex-col">
+      <div class="flex shrink-0 items-center justify-between border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
         <h1 class="text-2xl font-bold">Settings</h1>
         <RouterLink
           to="/"
@@ -231,7 +244,26 @@ async function importFiles(event: Event) {
         </RouterLink>
       </div>
 
-      <section class="space-y-3">
+      <div class="flex min-h-0 flex-1">
+        <!-- Section nav -->
+        <nav class="w-52 shrink-0 space-y-0.5 overflow-y-auto border-r border-zinc-200 p-3 dark:border-zinc-800">
+          <button
+            v-for="s in sections"
+            :key="s.id"
+            class="block w-full rounded-lg px-3 py-1.5 text-left text-sm"
+            :class="activeSection === s.id
+              ? 'bg-zinc-200 font-medium text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
+              : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'"
+            @click="activeSection = s.id"
+          >
+            {{ s.label }}
+          </button>
+        </nav>
+
+        <div class="min-w-0 grow overflow-y-auto p-6">
+          <div class="mx-auto max-w-2xl space-y-8">
+
+      <section v-show="activeSection === 'profile'" class="space-y-3">
         <h2 class="text-lg font-semibold">Profile</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           This is the name other users see in chats and friend requests. Your username is never shown to them.
@@ -280,7 +312,7 @@ async function importFiles(event: Event) {
         </div>
       </section>
 
-      <section class="space-y-3">
+      <section v-show="activeSection === 'appearance'" class="space-y-3">
         <h2 class="text-lg font-semibold">Appearance & security</h2>
         <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <span class="text-sm">Light / dark</span>
@@ -310,7 +342,7 @@ async function importFiles(event: Event) {
         </div>
       </section>
 
-      <section class="space-y-3">
+      <section v-show="activeSection === 'privacy'" class="space-y-3">
         <h2 class="text-lg font-semibold">Privacy</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           Loading remote media reveals your IP address to whoever hosts it. Click to load keeps
@@ -352,7 +384,7 @@ async function importFiles(event: Event) {
         </div>
       </section>
 
-      <section class="space-y-3">
+      <section v-show="activeSection === 'emoji'" class="space-y-3">
         <h2 class="text-lg font-semibold">Custom emoji</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           Upload your own emoji to use in chat as <code>:name:</code>. Images are encrypted on this
@@ -391,7 +423,7 @@ async function importFiles(event: Event) {
         </div>
       </section>
 
-      <section class="space-y-3">
+      <section v-show="activeSection === 'passkeys'" class="space-y-3">
         <h2 class="text-lg font-semibold">Passkeys</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           Register a passkey on each device you use. Every passkey can unlock your encrypted notes.
@@ -432,7 +464,7 @@ async function importFiles(event: Event) {
         <p v-if="passkeyError" class="text-sm text-red-600 dark:text-red-400">{{ passkeyError }}</p>
       </section>
 
-      <section class="space-y-3">
+      <section v-show="activeSection === 'recovery'" class="space-y-3">
         <h2 class="text-lg font-semibold">Recovery code</h2>
         <button
           :disabled="!session.unlocked"
@@ -444,7 +476,7 @@ async function importFiles(event: Event) {
         <RecoveryCodeCard v-if="newRecoveryCode" :code="newRecoveryCode" />
       </section>
 
-      <section class="space-y-3">
+      <section v-show="activeSection === 'data'" class="space-y-3">
         <h2 class="text-lg font-semibold">Import & export</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           Export decrypts your notes locally into a zip of Markdown files. Import accepts .md/.txt
@@ -482,7 +514,7 @@ async function importFiles(event: Event) {
       </section>
 
       <template v-if="isAdmin">
-        <section class="space-y-3">
+        <section v-show="activeSection === 'invites'" class="space-y-3">
           <h2 class="text-lg font-semibold">Invites</h2>
           <button
             class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
@@ -515,7 +547,7 @@ async function importFiles(event: Event) {
           </ul>
         </section>
 
-        <section class="space-y-3">
+        <section v-show="activeSection === 'users'" class="space-y-3">
           <h2 class="text-lg font-semibold">Users</h2>
           <ul class="divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-900 dark:border-zinc-800">
             <li v-for="u in users" :key="u.id" class="flex items-center gap-3 p-3">
@@ -534,6 +566,9 @@ async function importFiles(event: Event) {
           </ul>
         </section>
       </template>
+          </div>
+        </div>
+      </div>
     </div>
   </AppLayout>
 </template>

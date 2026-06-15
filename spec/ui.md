@@ -92,3 +92,11 @@ Implemented in `AppSidebar.vue`, mounted as a left rail in `AppLayout.vue`
 (shown when logged in). `AppLayout` has **no header** — just the rail and the
 page content region (`<main>`), which is the only thing that scrolls, so the
 fixed sidebar controls never scroll out of view.
+
+## Settings
+
+`SettingsPage.vue` is split into **sections** (Profile, Appearance & security,
+Privacy, Custom emoji, Passkeys, Recovery code, Import & export, plus Invites /
+Users for admins) navigated by a **left rail within the page** — one section
+shown at a time (`v-show`, so form state persists across switches), with the
+"Settings" title + close in a fixed top bar above the split.
