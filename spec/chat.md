@@ -225,3 +225,24 @@ Web: `lib/chatCrypto.ts`, `lib/chatSocket.ts`, `lib/api.ts`, `stores/chat.ts`,
 A true two-user browser flow (passkey login → friend → send an encrypted
 message, observing realtime delivery) — passkey ceremonies are browser-only, so
 this is the one check left and the first target in [testing.md](testing.md).
+
+---
+
+## v3.1 — Chat polish (as built)
+
+Incremental polish on top of phase 1; each item below is the as-built record.
+
+### Composer — the v2.1 live editor reused
+
+The composer is the same `MarkdownEditor.vue` used in notes (CodeMirror live
+preview: code blocks, spoilers, colors, the selection toolbar), not a plain
+`<textarea>`. Two composer-only props keep the notes editor untouched:
+
+- **`submit-on-enter`** — binds **Enter → `submit`** (ahead of the default
+  keymap) and **Shift+Enter → newline**; also switches sizing from "fill the
+  pane" to **auto-grow up to `max-height: 40vh`, then scroll**.
+- **`placeholder`** — composer shows `Message…`.
+
+Messages already render through the same token renderer (`MarkdownView`), so a
+sent message renders with identical formatting to the live preview — no
+`v-html`, raw HTML inert by construction (see [security.md](security.md)).

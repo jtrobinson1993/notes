@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import MarkdownView from '../components/MarkdownView.vue';
+import MarkdownEditor from '../components/MarkdownEditor.vue';
 import ChatAvatar from '../components/ChatAvatar.vue';
 import type { Conversation } from '@notes/shared';
 import { useChatStore, type ChatMessageView } from '../stores/chat';
@@ -143,13 +144,6 @@ async function send() {
     sending.value = false;
   }
 }
-
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    void send();
-  }
-}
 </script>
 
 <template>
@@ -219,13 +213,17 @@ function onKeydown(e: KeyboardEvent) {
 
       <div class="shrink-0 border-t border-zinc-200 p-3 dark:border-zinc-800">
         <div class="flex items-end gap-2">
-          <textarea
-            v-model="text"
-            rows="1"
-            placeholder="Message…"
-            class="max-h-40 grow resize-none rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
-            @keydown="onKeydown"
-          />
+          <!-- Reuse the v2.1 live editor as the composer: code blocks, spoilers,
+               colors, and the selection toolbar all come for free. Enter sends;
+               Shift+Enter inserts a newline. -->
+          <div class="grow rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900">
+            <MarkdownEditor
+              v-model="text"
+              submit-on-enter
+              placeholder="Message…"
+              @submit="send"
+            />
+          </div>
           <button
             :disabled="!text.trim() || sending"
             class="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
