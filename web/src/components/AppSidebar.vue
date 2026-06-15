@@ -11,14 +11,25 @@ import type { Conversation } from '@notes/shared';
 import { useChatStore } from '../stores/chat';
 import { useFriendsStore } from '../stores/friends';
 import { useSessionStore } from '../stores/session';
+import { useNotesStore } from '../stores/notes';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
 import IconPanelLeftClose from '~icons/mynaui/panel-left-close';
 import IconPen from '~icons/mynaui/pen';
+import IconLock from '~icons/mynaui/lock';
+import IconCog from '~icons/mynaui/cog';
+import IconLogout from '~icons/mynaui/logout';
 
 const session = useSessionStore();
 const chat = useChatStore();
 const friends = useFriendsStore();
+const notes = useNotesStore();
 const router = useRouter();
+
+async function logout() {
+  await session.logout();
+  notes.reset();
+  router.push('/login');
+}
 
 const STORAGE_KEY = 'sidebar-expanded';
 const expanded = ref(localStorage.getItem(STORAGE_KEY) === '1');
@@ -163,8 +174,17 @@ async function startDm(userId: string) {
       </RouterLink>
     </div>
 
-    <!-- Bottom: expand/collapse toggle -->
-    <div class="p-2">
+    <!-- Bottom: fixed controls (the chat/note list scrolls underneath). A line
+         separates them from the list above. -->
+    <div class="shrink-0 border-t border-zinc-200 p-2 dark:border-zinc-800">
+      <p
+        v-if="expanded && (notes.syncing || notes.syncError)"
+        class="px-2 pb-1 text-xs"
+        :class="notes.syncError ? 'text-amber-500' : 'text-zinc-400'"
+        :title="notes.syncError || ''"
+      >
+        {{ notes.syncError ? 'offline' : 'syncing…' }}
+      </p>
       <button
         class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
         :class="expanded ? '' : 'justify-center'"
@@ -174,6 +194,34 @@ async function startDm(userId: string) {
         <IconPanelLeftClose v-if="expanded" class="h-5 w-5 shrink-0" />
         <IconPanelLeftOpen v-else class="h-5 w-5 shrink-0" />
         <span v-if="expanded" class="truncate">Collapse</span>
+      </button>
+      <button
+        v-if="session.unlocked"
+        class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        :class="expanded ? '' : 'justify-center'"
+        title="Lock now"
+        @click="session.lock()"
+      >
+        <IconLock class="h-5 w-5 shrink-0" />
+        <span v-if="expanded" class="truncate">Lock</span>
+      </button>
+      <RouterLink
+        to="/settings"
+        class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        :class="expanded ? '' : 'justify-center'"
+        title="Settings"
+      >
+        <IconCog class="h-5 w-5 shrink-0" />
+        <span v-if="expanded" class="truncate">Settings</span>
+      </RouterLink>
+      <button
+        class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        :class="expanded ? '' : 'justify-center'"
+        title="Sign out"
+        @click="logout"
+      >
+        <IconLogout class="h-5 w-5 shrink-0" />
+        <span v-if="expanded" class="truncate">Sign out</span>
       </button>
     </div>
   </nav>
