@@ -10,6 +10,16 @@ if (!globalThis.crypto || !('subtle' in globalThis.crypto)) {
   });
 }
 
+// jsdom ships no ResizeObserver; the conversation page observes the chat region
+// to decide the thread layout. A no-op stub is enough (callbacks never fire).
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
+
 // jsdom ships no matchMedia; theme.ts and friends call it. Default to a
 // light-scheme, no-op-listener stub.
 if (typeof window !== 'undefined' && !window.matchMedia) {

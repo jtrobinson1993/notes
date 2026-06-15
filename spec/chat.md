@@ -342,13 +342,13 @@ than inventing a parallel model. `conversations` gains `parent_id` +
 UI: the conversation body is a reusable `ConversationView` (driven by a `convId`
 prop), so the parent and a thread render as two instances. A hover thread action
 (and a **"N replies"** link) opens the thread; `ConversationPage` holds the
-active-thread id and renders it in a **side panel**. The chat region is a
-**container** (`@container/chat`): at ≥48rem the thread is a static right-hand
-panel (`@3xl/chat`, ~22rem); narrower, it slides in over the whole chat as an
-overlay (with a close button). Container queries (not viewport media queries) are
-used because the available width also depends on the sidebar state. The sidebar
-**excludes** `thread` conversations (reached from their parent message, not
-listed top-level).
+active-thread id and chooses the layout from the **chat region's** width
+(measured with a `ResizeObserver`, not the viewport, so the sidebar state
+counts). At **≥768px** the thread is a **resizable right-hand panel** — its own
+flex column defaulting to **half** the region, with a **drag handle** on the
+separating line (clamped so neither side collapses); below that it's a
+full-cover overlay with a close button. The sidebar **excludes** `thread`
+conversations (reached from their parent message, not listed top-level).
 
 This completes the v3.1 "reactions, replies, and threads" bullet.
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import ConversationView from '../components/ConversationView.vue';
@@ -24,28 +24,77 @@ async function onOpenThread(seq: number) {
 watch(convId, () => {
   activeThread.value = null;
 });
+
+// --- Responsive split (measured on the chat region, not the viewport, so the
+// sidebar state is accounted for) + a draggable thread width. ---
+const region = ref<HTMLElement>();
+const regionWidth = ref(0);
+let ro: ResizeObserver | null = null;
+onMounted(() => {
+  ro = new ResizeObserver((entries) => {
+    regionWidth.value = entries[0]!.contentRect.width;
+  });
+  if (region.value) ro.observe(region.value);
+});
+onBeforeUnmount(() => ro?.disconnect());
+
+// Wide enough to split side-by-side; otherwise the thread slides over the chat.
+const WIDE_MIN = 768;
+const isWide = computed(() => regionWidth.value >= WIDE_MIN);
+
+const MIN_PANEL = 320;
+const MIN_CHAT = 360;
+function clampWidth(w: number): number {
+  const max = Math.max(MIN_PANEL, regionWidth.value - MIN_CHAT);
+  return Math.min(max, Math.max(MIN_PANEL, w));
+}
+
+// User-set width (px); null until dragged → defaults to half the chat region.
+const panelWidth = ref<number | null>(null);
+const displayWidth = computed(() => clampWidth(panelWidth.value ?? regionWidth.value / 2));
+
+const dragging = ref(false);
+function onDrag(e: PointerEvent) {
+  if (!region.value) return;
+  panelWidth.value = clampWidth(region.value.getBoundingClientRect().right - e.clientX);
+}
+function stopDrag() {
+  dragging.value = false;
+  document.body.style.userSelect = '';
+  window.removeEventListener('pointermove', onDrag);
+  window.removeEventListener('pointerup', stopDrag);
+}
+function startDrag() {
+  dragging.value = true;
+  document.body.style.userSelect = 'none';
+  window.addEventListener('pointermove', onDrag);
+  window.addEventListener('pointerup', stopDrag);
+}
+onBeforeUnmount(stopDrag);
 </script>
 
 <template>
   <AppLayout>
-    <!-- Container query on the chat region (not the viewport): the available
-         width depends on the sidebar state too. Wide enough → thread opens as a
-         right-hand panel; otherwise it slides over the whole chat. -->
-    <div class="@container/chat relative flex h-full">
+    <div ref="region" class="relative flex h-full">
       <div class="min-w-0 flex-1">
         <ConversationView :conv-id="convId" @open-thread="onOpenThread" />
       </div>
 
-      <Transition
-        enter-active-class="transition-transform duration-200 ease-out"
-        leave-active-class="transition-transform duration-150 ease-in"
-        enter-from-class="translate-x-full"
-        leave-to-class="translate-x-full"
-      >
+      <template v-if="activeThread">
+        <!-- Drag handle = the separating line (wide mode only). -->
         <div
-          v-if="activeThread"
-          :key="activeThread"
-          class="h-full w-88 shrink-0 border-l border-zinc-200 dark:border-zinc-800 @max-3xl/chat:absolute @max-3xl/chat:inset-0 @max-3xl/chat:z-20 @max-3xl/chat:w-full @max-3xl/chat:bg-white @max-3xl/chat:dark:bg-zinc-900"
+          v-if="isWide"
+          role="separator"
+          aria-orientation="vertical"
+          title="Drag to resize"
+          class="w-1 shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-blue-400 dark:bg-zinc-800 dark:hover:bg-blue-500"
+          :class="{ '!bg-blue-400 dark:!bg-blue-500': dragging }"
+          @pointerdown.prevent="startDrag"
+        />
+        <!-- Wide: sized flex child (defaults to half). Narrow: full-cover overlay. -->
+        <div
+          :class="isWide ? 'shrink-0' : 'absolute inset-0 z-20 bg-white dark:bg-zinc-900'"
+          :style="isWide ? { width: `${displayWidth}px` } : undefined"
         >
           <ConversationView
             :conv-id="activeThread"
@@ -54,7 +103,7 @@ watch(convId, () => {
             @close="activeThread = null"
           />
         </div>
-      </Transition>
+      </template>
     </div>
   </AppLayout>
 </template>
