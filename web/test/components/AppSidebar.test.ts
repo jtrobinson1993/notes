@@ -52,7 +52,7 @@ describe('AppSidebar collapse / expand', () => {
     const nav = w.find('nav');
     expect(nav.classes()).toContain('w-14');
 
-    await w.get('button[title="Expand"]').trigger('click');
+    await w.get('button[aria-label="Expand"]').trigger('click');
     expect(w.find('nav').classes()).toContain('w-56');
     expect(localStorage.getItem('sidebar-expanded')).toBe('1');
   });
