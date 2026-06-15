@@ -44,6 +44,15 @@ Each user has an editable **display name** — the only name other users ever se
 is never exposed to other users**. When a user hasn't set a display name, the
 server shows a neutral `User-<id-prefix>` fallback — **never** the username.
 
+Each user may also pick a **name color** shown to others in chat. Choices are
+restricted to the curated **`NAME_COLORS`** palette (the `--brand-*` accents,
+each a `light-dark()` pair) — a free color picker is deliberately *not* offered,
+so every choice stays readable in every theme. Stored server-side as the color
+name (`users.name_color`, validated against the palette; null = default),
+surfaced on `ProfileInfo` and each `ConversationMember`, and rendered as
+`color: var(--brand-<name>)` on the sender's name (message header, reply quote,
+replying-to banner). Set it in Settings → Profile.
+
 ## What is E2E-encrypted vs server-visible
 
 Encrypted (server sees only ciphertext): **message content** and the

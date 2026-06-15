@@ -11,6 +11,7 @@ import type {
   SealedKey,
   SealedMemberKey,
 } from '@notes/shared';
+import { NAME_COLORS } from '@notes/shared';
 import {
   effectiveDisplayName,
   type ConversationRow,
@@ -71,6 +72,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
         userId: m.user_id,
         displayName: u ? effectiveDisplayName(u) : `User-${m.user_id.slice(0, 6)}`,
         publicKey: u?.public_key ?? null,
+        nameColor: u?.name_color ?? null,
       };
     });
     // DM access requires current friendship — unfriending revokes access
@@ -240,19 +242,34 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
   // ---------------------------------------------------------------- Profile
 
   app.get('/api/profile', { preHandler: requireAuth }, async (request) => {
-    const info: ProfileInfo = { displayName: effectiveDisplayName(request.user!) };
+    const info: ProfileInfo = {
+      displayName: effectiveDisplayName(request.user!),
+      nameColor: request.user!.name_color ?? null,
+    };
     return info;
   });
 
   app.put('/api/profile', { preHandler: requireAuth }, async (request, reply) => {
+    const me = request.user!.id;
     const b = request.body as Record<string, unknown> | null;
-    if (typeof b?.displayName !== 'string') return reply.code(400).send({ error: 'invalid display name' });
-    const trimmed = b.displayName.trim();
-    if (trimmed.length < 1 || trimmed.length > 50) {
-      return reply.code(400).send({ error: 'display name must be 1..50 chars' });
+    // Both fields are optional; update whichever is present.
+    if (b?.displayName !== undefined) {
+      if (typeof b.displayName !== 'string') return reply.code(400).send({ error: 'invalid display name' });
+      const trimmed = b.displayName.trim();
+      if (trimmed.length < 1 || trimmed.length > 50) {
+        return reply.code(400).send({ error: 'display name must be 1..50 chars' });
+      }
+      db.setDisplayName(me, trimmed);
     }
-    db.setDisplayName(request.user!.id, trimmed);
-    const info: ProfileInfo = { displayName: trimmed };
+    if (b?.nameColor !== undefined) {
+      const nc = b.nameColor;
+      if (nc !== null && (typeof nc !== 'string' || !(NAME_COLORS as readonly string[]).includes(nc))) {
+        return reply.code(400).send({ error: 'invalid name color' });
+      }
+      db.setNameColor(me, nc);
+    }
+    const u = db.getUser(me)!;
+    const info: ProfileInfo = { displayName: effectiveDisplayName(u), nameColor: u.name_color ?? null };
     return info;
   });
 

@@ -154,6 +154,13 @@ select:not(:disabled) {
   vertical-align: -0.3em;
   margin: 0 1px;
 }
+
+/* Theme the editor placeholder (composer "Message…", notes "Write in Markdown…")
+   to the muted zinc token, matching native ::placeholder fields like "Add tag…"
+   instead of CodeMirror's default grey. */
+.cm-editor .cm-placeholder {
+  color: var(--color-zinc-400);
+}
 .spoiler:not(.spoiler-revealed),
 .spoiler:not(.spoiler-revealed) *,
 .cm-live-spoiler:not(.cm-spoiler-revealed),

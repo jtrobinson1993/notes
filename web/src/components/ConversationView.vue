@@ -67,6 +67,13 @@ function memberName(senderId: string): string {
   return conversation.value?.members.find((m) => m.userId === senderId)?.displayName || 'Unknown';
 }
 
+// A member's chosen name color as a CSS value (theme-aware --brand-* pair), or
+// undefined for the default text color.
+function nameColorCss(senderId: string): string | undefined {
+  const c = conversation.value?.members.find((m) => m.userId === senderId)?.nameColor;
+  return c ? `var(--brand-${c})` : undefined;
+}
+
 // A short, single-line preview of a message, for the reply quote.
 function previewOf(m: ChatMessageView): string {
   const t = (m.text ?? '').replace(/\s+/g, ' ').trim();
@@ -363,11 +370,11 @@ async function sendGif(gif: GifRef) {
               @click="scrollToSeq(row.msg.replyTo.seq)"
             >
               <IconReplyQuote class="h-3.5 w-3.5 shrink-0 opacity-60" />
-              <span class="font-medium">{{ memberName(row.msg.replyTo.senderId) }}</span>
+              <span class="font-medium" :style="{ color: nameColorCss(row.msg.replyTo.senderId) }">{{ memberName(row.msg.replyTo.senderId) }}</span>
               <span class="truncate opacity-80">{{ row.msg.replyTo.preview }}</span>
             </button>
             <div v-if="row.isStart" class="mb-0.5 flex items-baseline gap-2">
-              <span class="font-medium text-zinc-700 dark:text-zinc-200">{{ row.name }}</span>
+              <span class="font-medium text-zinc-700 dark:text-zinc-200" :style="{ color: nameColorCss(row.senderId) }">{{ row.name }}</span>
               <time class="text-xs text-zinc-400 dark:text-zinc-500">{{ formatTime(row.msg.createdAt) }}</time>
             </div>
             <div class="chat-message">
@@ -426,7 +433,7 @@ async function sendGif(gif: GifRef) {
           class="mb-2 flex items-center gap-2 rounded-lg bg-zinc-50 px-3 py-1.5 text-xs dark:bg-zinc-800"
         >
           <span class="flex items-center gap-1 opacity-60"><IconReplyQuote class="h-3.5 w-3.5" /> Replying to</span>
-          <span class="font-medium">{{ memberName(replyingTo.senderId) }}</span>
+          <span class="font-medium" :style="{ color: nameColorCss(replyingTo.senderId) }">{{ memberName(replyingTo.senderId) }}</span>
           <span class="min-w-0 grow truncate opacity-80">{{ replyingTo.preview }}</span>
           <button class="flex items-center rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Cancel reply" @click="replyingTo = null"><IconX class="h-3.5 w-3.5" /></button>
         </div>
@@ -447,13 +454,13 @@ async function sendGif(gif: GifRef) {
           <span v-if="attachError" class="text-xs text-red-500">{{ attachError }}</span>
         </div>
 
-        <!-- Buttons stretch to the input's height (square), so they line up. -->
-        <div class="flex items-stretch gap-2">
+        <!-- Square buttons (~input height) anchored to the bottom. -->
+        <div class="flex items-end gap-2">
           <input ref="fileInput" type="file" multiple class="hidden" @change="onPickFiles" />
           <button
             type="button"
             title="Attach files"
-            class="flex aspect-square shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
             @click="fileInput?.click()"
           >
             <IconPaperclip class="h-5 w-5" />

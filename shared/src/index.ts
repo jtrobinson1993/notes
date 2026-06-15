@@ -193,7 +193,16 @@ export interface ConversationMember {
   displayName: string;
   /** base64 X25519 public key */
   publicKey: string | null;
+  /** chosen name color (a NAME_COLORS value), or null for the default */
+  nameColor: string | null;
 }
+
+/** Curated name-color palette: the `--brand-*` accents, each defined in CSS as a
+ *  light-dark() pair, so any choice stays readable in every theme. Stored as the
+ *  color name and rendered as `var(--brand-<name>)`; null = default text color.
+ *  Restricting to this set (no free picker) is what guarantees readability. */
+export const NAME_COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink'] as const;
+export type NameColor = (typeof NAME_COLORS)[number];
 
 /** A conversation as returned to one of its members, including that member's
  * own sealed copy of the current-epoch conversation key. */
@@ -326,6 +335,7 @@ export interface SealedMemberKey {
 /** Public profile metadata (server-visible; usernames never exposed to others). */
 export interface ProfileInfo {
   displayName: string;
+  nameColor: string | null;
 }
 
 // ---- WebSocket frame protocol (JSON frames over one authenticated socket) ----

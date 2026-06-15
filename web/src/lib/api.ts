@@ -155,7 +155,8 @@ export const api = {
 
   // ---- v3 chat: profile ----
   profileGet: () => req<ProfileInfo>('GET', '/api/profile'),
-  profileSet: (displayName: string) => req<ProfileInfo>('PUT', '/api/profile', { displayName }),
+  profileSet: (patch: { displayName?: string; nameColor?: string | null }) =>
+    req<ProfileInfo>('PUT', '/api/profile', patch),
 
   // ---- v3 chat: conversations + messages ----
   conversations: () => req<Conversation[]>('GET', '/api/conversations'),

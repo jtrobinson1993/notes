@@ -11,6 +11,7 @@ import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
 import { addCustomEmoji, customEmoji, loadCustomEmoji, removeCustomEmoji } from '../lib/emoji/custom';
 import { resolveEmoji } from '../lib/emoji';
+import { NAME_COLORS } from '@notes/shared';
 import IconX from '~icons/mynaui/x';
 
 const session = useSessionStore();
@@ -57,11 +58,14 @@ async function addEmoji() {
   }
 }
 
+const nameColor = ref<string | null>(null);
+
 useQuery({
   key: ['profile'],
   query: async () => {
     const p = await api.profileGet();
     displayName.value = p.displayName;
+    nameColor.value = p.nameColor;
     return p;
   },
 });
@@ -72,7 +76,7 @@ async function saveDisplayName() {
   displayNameBusy.value = true;
   displayNameMsg.value = '';
   try {
-    const p = await api.profileSet(name);
+    const p = await api.profileSet({ displayName: name });
     displayName.value = p.displayName;
     displayNameOk.value = true;
     displayNameMsg.value = 'Saved.';
@@ -81,6 +85,17 @@ async function saveDisplayName() {
     displayNameMsg.value = e instanceof Error ? e.message : 'could not save';
   } finally {
     displayNameBusy.value = false;
+  }
+}
+
+// Name color: pick from the curated NAME_COLORS palette (or null for default).
+async function pickNameColor(c: string | null) {
+  const prev = nameColor.value;
+  nameColor.value = c;
+  try {
+    await api.profileSet({ nameColor: c });
+  } catch {
+    nameColor.value = prev; // revert on failure
   }
 }
 
@@ -238,6 +253,31 @@ async function importFiles(event: Event) {
         <p v-if="displayNameMsg" class="text-sm" :class="displayNameOk ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'">
           {{ displayNameMsg }}
         </p>
+
+        <div>
+          <p class="mb-1.5 text-sm text-zinc-500 dark:text-zinc-400">Name color (shown to others in chat)</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              title="Default"
+              class="flex h-7 w-7 items-center justify-center rounded-full border text-xs"
+              :class="nameColor === null ? 'border-blue-500 ring-2 ring-blue-500/40' : 'border-zinc-300 dark:border-zinc-600'"
+              @click="pickNameColor(null)"
+            >
+              <IconX class="h-3.5 w-3.5 text-zinc-400" />
+            </button>
+            <button
+              v-for="c in NAME_COLORS"
+              :key="c"
+              type="button"
+              :title="c"
+              class="h-7 w-7 rounded-full border"
+              :class="nameColor === c ? 'border-blue-500 ring-2 ring-blue-500/40' : 'border-transparent'"
+              :style="{ backgroundColor: `var(--brand-${c})` }"
+              @click="pickNameColor(c)"
+            />
+          </div>
+        </div>
       </section>
 
       <section class="space-y-3">

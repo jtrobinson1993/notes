@@ -13,6 +13,7 @@ export interface UserRow {
   recovery_wrapped_mk: string | null;
   recovery_auth_hash: string | null;
   display_name: string | null;
+  name_color: string | null;
   created_at: number;
 }
 
@@ -297,10 +298,13 @@ export function openDb(dataDir: string) {
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
 
-  // Idempotent migration: add users.display_name if missing.
+  // Idempotent migration: add users.display_name / name_color if missing.
   const userCols = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
   if (!userCols.some((c) => c.name === 'display_name')) {
     db.exec('ALTER TABLE users ADD COLUMN display_name TEXT');
+  }
+  if (!userCols.some((c) => c.name === 'name_color')) {
+    db.exec('ALTER TABLE users ADD COLUMN name_color TEXT');
   }
 
   // Idempotent migration: add conversations.parent_id/parent_seq (threads).
@@ -563,6 +567,9 @@ export function openDb(dataDir: string) {
     },
     setDisplayName(userId: string, displayName: string): void {
       db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(displayName, userId);
+    },
+    setNameColor(userId: string, nameColor: string | null): void {
+      db.prepare('UPDATE users SET name_color = ? WHERE id = ?').run(nameColor, userId);
     },
 
     // ---- Friend invites ----
