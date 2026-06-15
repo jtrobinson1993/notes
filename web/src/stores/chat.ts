@@ -7,6 +7,7 @@ import type {
   Friend,
   GifRef,
   MessagePayload,
+  ReplyRef,
   SealedMemberKey,
   ServerFrame,
 } from '@notes/shared';
@@ -29,6 +30,7 @@ export interface ChatMessageView extends ChatMessage {
   text: string | null;
   gif?: GifRef | null;
   attachments?: AttachmentRef[];
+  replyTo?: ReplyRef;
 }
 
 const HISTORY_LIMIT = 50;
@@ -70,7 +72,13 @@ export const useChatStore = defineStore('chat', () => {
     if (!key) return { ...m, text: null };
     try {
       const payload = await decryptMessage(key, m.ciphertext, m.iv);
-      return { ...m, text: payload.text, gif: safeGif(payload.gif), attachments: payload.attachments ?? [] };
+      return {
+        ...m,
+        text: payload.text,
+        gif: safeGif(payload.gif),
+        attachments: payload.attachments ?? [],
+        replyTo: payload.replyTo,
+      };
     } catch {
       return { ...m, text: null };
     }
@@ -152,7 +160,7 @@ export const useChatStore = defineStore('chat', () => {
   async function sendMessage(
     convId: string,
     text: string,
-    opts?: { gif?: GifRef; attachments?: AttachmentRef[] },
+    opts?: { gif?: GifRef; attachments?: AttachmentRef[]; replyTo?: ReplyRef },
   ): Promise<void> {
     const key = convKeys.get(convId);
     if (!key) throw new Error('no conversation key');
@@ -161,9 +169,12 @@ export const useChatStore = defineStore('chat', () => {
     const payload: MessagePayload = { text, sentAt: Date.now() };
     if (opts?.gif) payload.gif = opts.gif;
     if (opts?.attachments?.length) payload.attachments = opts.attachments;
+    if (opts?.replyTo) payload.replyTo = opts.replyTo;
     const { ciphertext, iv } = await encryptMessage(key, payload);
     const sent = await api.messageSend(convId, { ciphertext, iv, epoch });
-    mergeMessages(convId, [{ ...sent, text, gif: opts?.gif ?? null, attachments: opts?.attachments ?? [] }]);
+    mergeMessages(convId, [
+      { ...sent, text, gif: opts?.gif ?? null, attachments: opts?.attachments ?? [], replyTo: opts?.replyTo },
+    ]);
     bumpLastSeq(convId, sent.seq);
   }
 

@@ -8,7 +8,7 @@ import ChatAvatar from '../components/ChatAvatar.vue';
 import GifPicker from '../components/GifPicker.vue';
 import ChatAttachment from '../components/ChatAttachment.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
-import type { AttachmentRef, Conversation, GifRef } from '@notes/shared';
+import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
 import { useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 
@@ -26,6 +26,7 @@ const fileInput = ref<HTMLInputElement>();
 const staged = ref<AttachmentRef[]>([]);
 const attaching = ref(false);
 const attachError = ref('');
+const replyingTo = ref<ReplyRef | null>(null);
 
 const conversation = computed<Conversation | undefined>(() =>
   chat.conversations.find((c) => c.id === convId.value),
@@ -42,6 +43,24 @@ const msgs = computed(() => chat.messages[convId.value] ?? []);
 
 function memberName(senderId: string): string {
   return conversation.value?.members.find((m) => m.userId === senderId)?.displayName || 'Unknown';
+}
+
+// A short, single-line preview of a message, for the reply quote.
+function previewOf(m: ChatMessageView): string {
+  const t = (m.text ?? '').replace(/\s+/g, ' ').trim();
+  if (t) return t.length > 100 ? `${t.slice(0, 100)}…` : t;
+  if (m.gif) return '[GIF]';
+  if (m.attachments?.length) return `[${m.attachments.length} attachment${m.attachments.length > 1 ? 's' : ''}]`;
+  return '[message]';
+}
+
+function startReply(m: ChatMessageView) {
+  replyingTo.value = { seq: m.seq, senderId: m.senderId, preview: previewOf(m) };
+}
+
+function scrollToSeq(seq: number) {
+  const el = scroller.value?.querySelector(`[data-seq="${seq}"]`);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function formatTime(ts: number): string {
@@ -144,9 +163,13 @@ async function send() {
   if ((!body && !staged.value.length) || sending.value) return;
   sending.value = true;
   try {
-    await chat.sendMessage(convId.value, body, staged.value.length ? { attachments: [...staged.value] } : undefined);
+    const opts: { attachments?: AttachmentRef[]; replyTo?: ReplyRef } = {};
+    if (staged.value.length) opts.attachments = [...staged.value];
+    if (replyingTo.value) opts.replyTo = replyingTo.value;
+    await chat.sendMessage(convId.value, body, Object.keys(opts).length ? opts : undefined);
     text.value = '';
     staged.value = [];
+    replyingTo.value = null;
     await scrollToBottom();
   } finally {
     sending.value = false;
@@ -224,9 +247,18 @@ async function sendGif(gif: GifRef) {
         <div
           v-for="row in rows"
           :key="row.key"
-          class="group flex items-start gap-3 px-4 py-0.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+          :data-seq="row.msg.seq"
+          class="group relative flex items-start gap-3 px-4 py-0.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
           :class="row.isStart ? 'mt-3' : ''"
         >
+          <!-- Hover action: reply to this message. -->
+          <button
+            class="absolute right-3 top-0 hidden rounded-md border border-zinc-200 bg-white px-2 py-0.5 text-xs text-zinc-500 shadow-sm hover:bg-zinc-50 group-hover:block dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+            title="Reply"
+            @click="startReply(row.msg)"
+          >
+            ↩ Reply
+          </button>
           <!-- Left gutter: avatar at a group's first message; otherwise a
                hover-only timestamp for the consecutive message. -->
           <div class="w-10 shrink-0">
@@ -244,6 +276,16 @@ async function sendGif(gif: GifRef) {
           </div>
           <!-- Content fills the rest of the width. -->
           <div class="min-w-0 grow text-sm">
+            <!-- Reply quote: a snapshot embedded in the message; click to jump. -->
+            <button
+              v-if="row.msg.replyTo"
+              class="mb-0.5 flex max-w-full items-center gap-1 truncate text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+              @click="scrollToSeq(row.msg.replyTo.seq)"
+            >
+              <span class="opacity-60">↩</span>
+              <span class="font-medium">{{ memberName(row.msg.replyTo.senderId) }}</span>
+              <span class="truncate opacity-80">{{ row.msg.replyTo.preview }}</span>
+            </button>
             <div v-if="row.isStart" class="mb-0.5 flex items-baseline gap-2">
               <span class="font-medium text-zinc-700 dark:text-zinc-200">{{ row.name }}</span>
               <time class="text-xs text-zinc-400 dark:text-zinc-500">{{ formatTime(row.msg.createdAt) }}</time>
@@ -275,6 +317,17 @@ async function sendGif(gif: GifRef) {
       </div>
 
       <div class="shrink-0 border-t border-zinc-200 p-3 dark:border-zinc-800">
+        <!-- Replying-to banner. -->
+        <div
+          v-if="replyingTo"
+          class="mb-2 flex items-center gap-2 rounded-lg bg-zinc-50 px-3 py-1.5 text-xs dark:bg-zinc-800"
+        >
+          <span class="opacity-60">↩ Replying to</span>
+          <span class="font-medium">{{ memberName(replyingTo.senderId) }}</span>
+          <span class="min-w-0 grow truncate opacity-80">{{ replyingTo.preview }}</span>
+          <button class="rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Cancel reply" @click="replyingTo = null">✕</button>
+        </div>
+
         <!-- Staged attachments (uploaded encrypted; sent with the next message). -->
         <div v-if="staged.length || attaching || attachError" class="mb-2 flex flex-wrap items-center gap-2">
           <span

@@ -255,6 +255,20 @@ export interface MessagePayload {
    *  storing the ref inside this (conversation-key-encrypted) payload means only
    *  conversation members can decrypt the blob — same shape as NotePayload. */
   attachments?: AttachmentRef[];
+  /** a reply to an earlier message. The parent `seq` plus a sender + text
+   *  snapshot are embedded (encrypted) so the quote renders even before the
+   *  parent is loaded, and survives the parent being deleted/unreadable. */
+  replyTo?: ReplyRef;
+}
+
+/** A snapshot of the message being replied to, embedded in the reply's payload. */
+export interface ReplyRef {
+  /** parent message's per-conversation sequence number */
+  seq: number;
+  /** parent sender's user id (rendered via the member list's display name) */
+  senderId: string;
+  /** short plaintext preview of the parent (already decrypted by the sender) */
+  preview: string;
 }
 
 /** One normalized GIF search hit returned by the server-side KLIPY proxy. */

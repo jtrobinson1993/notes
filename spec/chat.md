@@ -289,3 +289,22 @@ Rendering (`ChatAttachment.vue`) decrypts the blob locally to an object URL —
 images inline, other files as a download chip. Decryption is local, so (like
 note attachments) there's **no remote fetch and no IP leak**. The per-file size
 cap mirrors the server's 32 MiB.
+
+### Replies
+
+A reply embeds a `ReplyRef` snapshot — `{seq, senderId, preview}` — in the
+sender's encrypted `MessagePayload.replyTo`. The `preview` is a short plaintext
+snippet the sender already holds (text, or `[GIF]` / `[N attachments]`), so the
+quote renders **even before the parent is loaded** and survives the parent
+becoming unreadable. No server change: replies are pure payload.
+
+UI (`ConversationPage.vue`): a hover **Reply** action stages a "replying to…"
+banner above the composer (cancellable); **Send** embeds the `ReplyRef`. Each
+message renders its quote as a clickable line that scrolls to the parent (`rows`
+carry `data-seq`).
+
+> **Reactions** and **threads** (the other two parts of this roadmap bullet)
+> are **not yet built** — unlike replies they need server state (a reactions
+> table + realtime fan-out; threads as sub-conversations) and a decision on
+> whether reaction emoji are stored plaintext (server-visible metadata) or
+> encrypted. Tracked as remaining v3.1 work.

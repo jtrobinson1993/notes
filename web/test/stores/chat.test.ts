@@ -157,6 +157,25 @@ describe('sendMessage', () => {
     expect(payload.attachments).toEqual([att]);
   });
 
+  it('embeds a reply snapshot in the encrypted payload and the view', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 0 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    const replyTo = { seq: 3, senderId: 'friend', preview: 'earlier message' };
+    api.messageSend.mockResolvedValue(msg({ seq: 4, senderId: 'me' }));
+    await store.sendMessage('c1', 'replying', { replyTo });
+
+    expect(store.messages['c1']?.find((m) => m.seq === 4)?.replyTo).toEqual(replyTo);
+    const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
+    const payload = await decryptMessage(serverKey, sentArg.ciphertext, sentArg.iv);
+    expect(payload.replyTo).toEqual(replyTo);
+  });
+
   it('drops a non-KLIPY gif url on inbound decrypt (anti-IP-harvest) but keeps a KLIPY one', async () => {
     const kp = await myKeyPair();
     const serverKey = generateConversationKey();
