@@ -462,7 +462,7 @@ async function sendGif(gif: GifRef) {
                colors, and the selection toolbar all come for free. Enter sends;
                Shift+Enter inserts a newline. A subtle 5% tint lifts it off the
                app background without a hard fill. -->
-          <div class="grow rounded-lg border border-zinc-300 bg-black/5 px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-white/5">
+          <div class="grow rounded-lg border border-zinc-300 bg-black/[2.5%] px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-white/[2.5%]">
             <MarkdownEditor
               ref="composer"
               v-model="text"
