@@ -42,7 +42,7 @@ export interface ChatReactionView extends ChatReaction {
   emoji: string | null;
 }
 
-const HISTORY_LIMIT = 50;
+export const HISTORY_LIMIT = 50;
 
 // A GIF's media URL is sender-controlled, so a hostile sender could embed an
 // arbitrary tracking URL the recipient's client would eager-load (IP leak),
@@ -216,11 +216,14 @@ export const useChatStore = defineStore('chat', () => {
     return thread.id;
   }
 
-  /** Fetch (older, when `before` is set) history and merge decrypted views. */
-  async function loadHistory(convId: string, before?: number): Promise<void> {
+  /** Fetch (older, when `before` is set) history and merge decrypted views.
+   *  Returns the number of messages fetched — a count below `HISTORY_LIMIT`
+   *  means the conversation's start has been reached. */
+  async function loadHistory(convId: string, before?: number): Promise<number> {
     const raw = await api.conversationMessages(convId, { before, limit: HISTORY_LIMIT });
     const views = await Promise.all(raw.map((m) => decryptOne(convId, m)));
     mergeMessages(convId, views);
+    return raw.length;
   }
 
   async function sendMessage(

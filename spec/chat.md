@@ -217,6 +217,13 @@ go over REST; client→server frames are minimal (liveness is protocol ping/pong
   Conversation keys are held in an in-memory `Map` only (never persisted).
 - Self-echo dedupe by `seq`; an inbound message for an unknown conversation
   triggers `loadConversations()` first (so a friend's opening DM appears).
+- **Infinite history scroll:** `ConversationView` auto-loads the next older page
+  (`loadHistory(convId, oldestSeq)`, `HISTORY_LIMIT` 50) when the user scrolls
+  near the top — no "load older" button. `loadHistory` returns the fetched count;
+  a page shorter than the limit sets `reachedStart`, which stops further loads
+  and shows an **"End of message history"** marker. Scroll anchoring is preserved
+  by measuring height before the loading indicator renders and restoring
+  `scrollTop = scrollHeight − prevHeight` after the rows prepend (no jump).
 
 ### Security decisions from review
 

@@ -55,19 +55,22 @@ describe('loadConversations + loadHistory', () => {
     await store.loadConversations();
     expect(store.conversations.map((c) => c.id)).toEqual(['c1']);
 
-    await store.loadHistory('c1');
+    const count = await store.loadHistory('c1');
     expect(api.conversationMessages).toHaveBeenCalledWith('c1', { before: undefined, limit: 50 });
     expect(store.messages['c1']?.[0]?.text).toBe('hello there');
+    // The fetched count drives the view's "reached start of history" detection.
+    expect(count).toBe(1);
   });
 
-  it('loadHistory passes the before cursor for older pages', async () => {
+  it('loadHistory passes the before cursor for older pages and returns the count', async () => {
     const kp = await myKeyPair();
     api.conversations.mockResolvedValue([conv(kp.publicKey, await sealKey(kp.publicKey, generateConversationKey()))]);
     api.conversationMessages.mockResolvedValue([]);
     const store = useChatStore();
     await store.loadConversations();
-    await store.loadHistory('c1', 10);
+    const count = await store.loadHistory('c1', 10);
     expect(api.conversationMessages).toHaveBeenCalledWith('c1', { before: 10, limit: 50 });
+    expect(count).toBe(0);
   });
 });
 

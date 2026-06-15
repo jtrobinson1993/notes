@@ -14,7 +14,7 @@ import IconX from '~icons/mynaui/x';
 import IconImage from '~icons/mynaui/image';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
-import { useChatStore, type ChatMessageView } from '../stores/chat';
+import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 import { conversationTitle } from '../lib/convName';
 
@@ -28,6 +28,8 @@ const chat = useChatStore();
 const convId = computed(() => props.convId);
 const loading = ref(false);
 const loadingOlder = ref(false);
+// True once we've fetched a partial page of older messages — no more to load.
+const reachedStart = ref(false);
 const text = ref('');
 const sending = ref(false);
 const scroller = ref<HTMLElement>();
@@ -136,9 +138,12 @@ async function markReadHere() {
 async function activate(id: string) {
   chat.setActive(id);
   loading.value = true;
+  reachedStart.value = false;
   try {
     if ((chat.messages[id]?.length ?? 0) === 0) {
-      await chat.loadHistory(id);
+      const count = await chat.loadHistory(id);
+      // A first page shorter than the limit is the whole conversation.
+      if (count < HISTORY_LIMIT) reachedStart.value = true;
     }
     await chat.loadReactions(id);
   } finally {
@@ -167,20 +172,29 @@ watch(
 
 async function loadOlder() {
   const oldest = msgs.value[0];
-  if (!oldest || loadingOlder.value) return;
-  loadingOlder.value = true;
+  if (!oldest || loadingOlder.value || reachedStart.value) return;
   const el = scroller.value;
+  // Measure height before the "Loading…" indicator renders, and restore scroll
+  // after it's removed, so only the prepended rows count toward the adjustment —
+  // keeping the previously-top message visually in place (no viewport jump).
   const prevHeight = el?.scrollHeight ?? 0;
+  loadingOlder.value = true;
   try {
-    await chat.loadHistory(convId.value, oldest.seq);
-    await nextTick();
-    if (el) el.scrollTop = el.scrollHeight - prevHeight;
+    const count = await chat.loadHistory(convId.value, oldest.seq);
+    if (count < HISTORY_LIMIT) reachedStart.value = true;
   } finally {
     loadingOlder.value = false;
   }
+  await nextTick();
+  if (el) el.scrollTop = el.scrollHeight - prevHeight;
 }
 
+// Distance from the top at which we begin fetching the next older chunk.
+const LOAD_OLDER_THRESHOLD_PX = 200;
+
 function onScroll() {
+  const el = scroller.value;
+  if (el && el.scrollTop < LOAD_OLDER_THRESHOLD_PX) void loadOlder();
   if (atBottom()) void markReadHere();
 }
 
@@ -293,14 +307,14 @@ async function sendGif(gif: GifRef) {
       </div>
 
       <div ref="scroller" class="min-h-0 grow overflow-y-auto py-2" @scroll="onScroll">
-        <div v-if="msgs.length" class="flex justify-center py-2">
-          <button
-            :disabled="loadingOlder"
-            class="rounded-lg px-3 py-1 text-xs text-zinc-500 hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800"
-            @click="loadOlder"
-          >
-            {{ loadingOlder ? 'Loading…' : 'Load older messages' }}
-          </button>
+        <!-- Older messages auto-load as the user scrolls up; this just reflects
+             the in-flight fetch and marks the start of history. -->
+        <div v-if="loadingOlder" class="flex justify-center py-2 text-xs text-zinc-400">Loading…</div>
+        <div
+          v-else-if="reachedStart && msgs.length"
+          class="flex justify-center py-2 text-xs text-zinc-400"
+        >
+          End of message history
         </div>
 
         <div v-if="loading && !msgs.length" class="flex h-full items-center justify-center text-sm text-zinc-400">
