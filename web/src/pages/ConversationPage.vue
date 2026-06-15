@@ -204,8 +204,8 @@ function removeStaged(id: string) {
   staged.value = staged.value.filter((a) => a.id !== id);
 }
 
-function insertEmoji(name: string) {
-  composer.value?.insertText(`:${name}:`);
+function insertEmoji(s: string) {
+  composer.value?.insertText(s);
 }
 
 async function sendGif(gif: GifRef) {

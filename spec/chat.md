@@ -326,10 +326,19 @@ Messages use Discord-style **`:shortcode:`** syntax. The token renderer
 when `resolveEmoji(name)` matches; unknown shortcodes stay literal, and code
 spans/blocks are never substituted (so `` `:KEKW:` `` stays text). The set is
 global UI chrome, so notes render them too. `EmojiPicker.vue` is a searchable
-popover; picking inserts `:name:` at the composer caret via the editor's
-exposed `insertText`.
+two-tab popover; picking inserts at the composer caret via the editor's exposed
+`insertText`.
 
-> Hosting note: whether to keep self-hosting or serve straight from 7TV's CDN is
-> an open follow-up (see [roadmap.md](roadmap.md) v3.3). **Unicode emoji search
-> (emojibase)** and **per-user custom encrypted emoji** are the remaining parts
-> of this roadmap bullet — not yet built.
+### Unicode emoji search (emojibase)
+
+The picker's **Emoji** tab searches the local unicode set from `emojibase-data`
+(`lib/emoji/unicode.ts`). The ~1,900-entry dataset is **dynamically imported**
+the first time the tab opens (a lazy ~82 KB-gzip chunk, kept out of the main
+bundle) and cached; component glyphs (skin tones/hair, group 2) are excluded.
+Search is substring over label + tags; picking inserts the raw unicode
+character (no shortcode needed — it renders natively).
+
+> Hosting note: whether to keep self-hosting the 7TV set or serve straight from
+> 7TV's CDN is an open follow-up (see [roadmap.md](roadmap.md) v3.3). **Per-user
+> custom encrypted emoji** is the one remaining part of this roadmap bullet —
+> not yet built.
