@@ -55,7 +55,7 @@ describe('auth — every chat route rejects the unauthenticated', () => {
     const me = seedUser(t.db, { displayName: 'Me' });
     const res = await inject({ method: 'GET', url: '/api/profile', cookie: authCookie(t.db, me) });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ displayName: 'Me' });
+    expect(res.json()).toEqual({ displayName: 'Me', nameColor: null });
   });
 
   it('rejects a cross-origin mutating request (CSRF guard)', async () => {
@@ -363,6 +363,18 @@ describe('profile', () => {
     const me = seedUser(t.db);
     const res = await inject({ method: 'PUT', url: '/api/profile', cookie: authCookie(t.db, me), payload: { displayName: '  Alice  ' } });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ displayName: 'Alice' });
+    expect(res.json()).toEqual({ displayName: 'Alice', nameColor: null });
+  });
+
+  it('sets and validates the name color', async () => {
+    const me = seedUser(t.db);
+    const cookie = authCookie(t.db, me);
+    const ok = await inject({ method: 'PUT', url: '/api/profile', cookie, payload: { nameColor: 'blue' } });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().nameColor).toBe('blue');
+    // rejects a color outside the palette
+    expect((await inject({ method: 'PUT', url: '/api/profile', cookie, payload: { nameColor: '#ff0000' } })).statusCode).toBe(400);
+    // null clears it
+    expect((await inject({ method: 'PUT', url: '/api/profile', cookie, payload: { nameColor: null } })).json().nameColor).toBeNull();
   });
 });

@@ -3,15 +3,19 @@ import { createPinia, setActivePinia } from 'pinia';
 import type { ChatMessage, Conversation, Friend } from '@notes/shared';
 import { generateKeyPair, sealKey } from '../../src/lib/crypto';
 import { b64 } from '../../src/lib/b64';
-import { encryptMessage, generateConversationKey } from '../../src/lib/chatCrypto';
+import { decryptMessage, encryptMessage, encryptReaction, generateConversationKey } from '../../src/lib/chatCrypto';
 
 // The api surface the chat store touches, hoisted so the mock factory can see it.
 const api = vi.hoisted(() => ({
   conversations: vi.fn(),
   conversationCreateDm: vi.fn(),
+  threadCreate: vi.fn(),
   conversationMessages: vi.fn(),
   messageSend: vi.fn(),
   conversationRead: vi.fn(),
+  reactions: vi.fn().mockResolvedValue([]),
+  reactionAdd: vi.fn(),
+  reactionRemove: vi.fn().mockResolvedValue({ ok: true }),
 }));
 vi.mock('../../src/lib/api', () => ({ api }));
 
@@ -29,6 +33,7 @@ vi.mock('../../src/stores/session', async () => {
 
 import { useChatStore } from '../../src/stores/chat';
 import { useSessionStore } from '../../src/stores/session';
+import { customEmoji } from '../../src/lib/emoji/custom';
 
 async function myKeyPair() {
   return useSessionStore().getKeyPair();
@@ -115,6 +120,104 @@ describe('sendMessage', () => {
     await store.handleFrame({ type: 'message', message: msg({ seq: 1, senderId: 'me', ciphertext: echo.ciphertext, iv: echo.iv }) });
     expect(store.messages['c1']?.filter((m) => m.seq === 1)).toHaveLength(1);
   });
+
+  it('embeds a GIF inside the encrypted payload and the optimistic view', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 0 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    const gif = { provider: 'klipy' as const, id: '42', url: 'https://cdn/x.webp', previewUrl: 'https://cdn/p.webp', width: 100, height: 80, title: 'Cat' };
+    api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
+    await store.sendMessage('c1', '', { gif });
+
+    // Optimistic view carries the GIF.
+    expect(store.messages['c1']?.find((m) => m.seq === 1)?.gif).toEqual(gif);
+
+    // The GIF is inside the encrypted blob (server never sees it in the clear).
+    const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
+    const payload = await decryptMessage(serverKey, sentArg.ciphertext, sentArg.iv);
+    expect(payload.gif).toEqual(gif);
+  });
+
+  it('embeds attachments inside the encrypted payload and the optimistic view', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 0 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    const att = { id: 'a1', name: 'cat.png', type: 'image/png', size: 12, key: 'AAAA', iv: 'BBBB' };
+    api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
+    await store.sendMessage('c1', 'look', { attachments: [att] });
+
+    expect(store.messages['c1']?.find((m) => m.seq === 1)?.attachments).toEqual([att]);
+    const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
+    const payload = await decryptMessage(serverKey, sentArg.ciphertext, sentArg.iv);
+    expect(payload.attachments).toEqual([att]);
+  });
+
+  it('embeds used custom emoji refs in the encrypted payload', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 0 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    const ref = { id: 'x', name: 'foo', type: 'image/png', size: 1, key: 'AAAA', iv: 'BBBB' };
+    customEmoji.items = [{ name: 'foo', ref }];
+    api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
+    await store.sendMessage('c1', 'hi :foo: but not :bar:');
+    customEmoji.items = [];
+
+    const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
+    const payload = await decryptMessage(serverKey, sentArg.ciphertext, sentArg.iv);
+    expect(payload.customEmoji).toEqual({ foo: ref });
+  });
+
+  it('embeds a reply snapshot in the encrypted payload and the view', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 0 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    const replyTo = { seq: 3, senderId: 'friend', preview: 'earlier message' };
+    api.messageSend.mockResolvedValue(msg({ seq: 4, senderId: 'me' }));
+    await store.sendMessage('c1', 'replying', { replyTo });
+
+    expect(store.messages['c1']?.find((m) => m.seq === 4)?.replyTo).toEqual(replyTo);
+    const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
+    const payload = await decryptMessage(serverKey, sentArg.ciphertext, sentArg.iv);
+    expect(payload.replyTo).toEqual(replyTo);
+  });
+
+  it('drops a non-KLIPY gif url on inbound decrypt (anti-IP-harvest) but keeps a KLIPY one', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversations.mockResolvedValue([convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey))]);
+    const store = useChatStore();
+    await store.loadConversations();
+
+    const evil = { provider: 'klipy' as const, id: '1', url: 'https://evil.example/track.gif', previewUrl: 'https://evil.example/p.gif', width: 1, height: 1 };
+    const good = { provider: 'klipy' as const, id: '2', url: 'https://static.klipy.com/x.webp', previewUrl: 'https://static.klipy.com/p.webp', width: 10, height: 10 };
+    const e1 = await encryptMessage(serverKey, { text: '', sentAt: 1, gif: evil });
+    const e2 = await encryptMessage(serverKey, { text: '', sentAt: 2, gif: good });
+    await store.handleFrame({ type: 'message', message: msg({ seq: 1, ciphertext: e1.ciphertext, iv: e1.iv }) });
+    await store.handleFrame({ type: 'message', message: msg({ seq: 2, ciphertext: e2.ciphertext, iv: e2.iv }) });
+
+    expect(store.messages['c1']?.find((m) => m.seq === 1)?.gif).toBeNull();
+    expect(store.messages['c1']?.find((m) => m.seq === 2)?.gif).toEqual(good);
+  });
 });
 
 describe('handleFrame: inbound message for an unknown conversation', () => {
@@ -155,5 +258,75 @@ describe('markRead + unreadCount', () => {
     expect(store.conversations[0]!.lastReadSeq).toBe(6);
     await store.markRead('c1', 4); // backward → ignored
     expect(store.conversations[0]!.lastReadSeq).toBe(6);
+  });
+});
+
+describe('reactions', () => {
+  async function openedStore() {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 1 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+    return { store, serverKey };
+  }
+
+  it('toggleReaction adds my reaction, then a second toggle removes it', async () => {
+    const { store } = await openedStore();
+    api.reactionAdd.mockResolvedValue({ id: 'r1', conversationId: 'c1', seq: 1, userId: 'me', ciphertext: 'X', iv: 'Y', createdAt: 0 });
+
+    await store.toggleReaction('c1', 1, '👍');
+    expect(store.reactions['c1']?.find((r) => r.id === 'r1')?.emoji).toBe('👍');
+    expect(api.reactionAdd).toHaveBeenCalledTimes(1);
+
+    await store.toggleReaction('c1', 1, '👍'); // same emoji → remove
+    expect(store.reactions['c1']?.length).toBe(0);
+    expect(api.reactionRemove).toHaveBeenCalledWith('c1', 'r1');
+  });
+
+  it('applies inbound reaction and reaction-removed frames', async () => {
+    const { store, serverKey } = await openedStore();
+    const enc = await encryptReaction(serverKey, '🎉');
+    await store.handleFrame({ type: 'reaction', reaction: { id: 'r9', conversationId: 'c1', seq: 2, userId: 'friend', ciphertext: enc.ciphertext, iv: enc.iv, createdAt: 0 } });
+    expect(store.reactions['c1']?.find((r) => r.id === 'r9')?.emoji).toBe('🎉');
+
+    await store.handleFrame({ type: 'reaction-removed', conversationId: 'c1', id: 'r9' });
+    expect(store.reactions['c1']?.find((r) => r.id === 'r9')).toBeUndefined();
+  });
+});
+
+describe('openThread', () => {
+  it('seals to all parent members, caches the thread key, and is idempotent', async () => {
+    const kp = await myKeyPair();
+    const parentKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, parentKey), { lastSeq: 2 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    const threadKey = generateConversationKey();
+    api.threadCreate.mockResolvedValue({
+      ...convTo(kp.publicKey, await sealKey(kp.publicKey, threadKey)),
+      id: 't1',
+      kind: 'thread',
+      parentId: 'c1',
+      parentSeq: 2,
+    });
+
+    const id = await store.openThread('c1', 2);
+    expect(id).toBe('t1');
+    expect(store.threadFor('c1', 2)?.id).toBe('t1');
+
+    // The thread key was cached → a thread message decrypts.
+    const enc = await encryptMessage(threadKey, { text: 'in thread', sentAt: 1 });
+    await store.handleFrame({ type: 'message', message: { conversationId: 't1', seq: 1, senderId: 'friend', epoch: 0, ciphertext: enc.ciphertext, iv: enc.iv, createdAt: 0 } });
+    expect(store.messages['t1']?.[0]?.text).toBe('in thread');
+
+    // Idempotent: a second open reuses the in-memory thread.
+    await store.openThread('c1', 2);
+    expect(api.threadCreate).toHaveBeenCalledTimes(1);
   });
 });

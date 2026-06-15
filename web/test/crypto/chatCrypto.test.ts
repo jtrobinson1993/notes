@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { MessagePayload } from '@notes/shared';
 import {
   decryptMessage,
+  decryptReaction,
   encryptMessage,
+  encryptReaction,
   generateConversationKey,
   sealConversationKey,
   unsealConversationKey,
@@ -59,5 +61,13 @@ describe('encryptMessage / decryptMessage', () => {
     const bytes = ub64(ciphertext);
     bytes[0] ^= 0xff;
     await expect(decryptMessage(convKey, b64(bytes), iv)).rejects.toThrow();
+  });
+
+  it('round-trips a reaction emoji under the conversation key', async () => {
+    const convKey = generateConversationKey();
+    const { ciphertext, iv } = await encryptReaction(convKey, ':catJAM:');
+    expect(await decryptReaction(convKey, ciphertext, iv)).toBe(':catJAM:');
+    // wrong key fails (server can't read the emoji)
+    await expect(decryptReaction(generateConversationKey(), ciphertext, iv)).rejects.toThrow();
   });
 });

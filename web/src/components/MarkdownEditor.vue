@@ -4,7 +4,7 @@ import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigg
 import ColorPalette from './ColorPalette.vue';
 import { EditorView, keymap, placeholder } from '@codemirror/view';
 import { EditorState, Compartment } from '@codemirror/state';
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, insertNewlineAndIndent } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
@@ -34,8 +34,13 @@ const props = defineProps<{
   readonly?: boolean;
   mode?: 'live' | 'source';
   resolveAttachment?: AttachmentResolver;
+  /** Placeholder shown when empty. */
+  placeholder?: string;
+  /** Chat composer mode: Enter submits (Shift+Enter inserts a newline), height
+   *  auto-grows to a cap instead of filling the parent. */
+  submitOnEnter?: boolean;
 }>();
-const emit = defineEmits<{ 'update:modelValue': [string] }>();
+const emit = defineEmits<{ 'update:modelValue': [string]; submit: [] }>();
 
 const host = ref<HTMLDivElement>();
 let view: EditorView | null = null;
@@ -66,14 +71,25 @@ const liveHighlight = HighlightStyle.define([
   { tag: tags.processingInstruction, color: '#a1a1aa' },
 ]);
 
+// Notes fill their pane (height 100%); the chat composer auto-grows with content
+// up to a cap, then scrolls — like a Discord/Slack message box.
 const editorTheme = EditorView.theme({
-  '&': { height: '100%', fontSize: '15px', backgroundColor: 'transparent' },
+  '&': props.submitOnEnter
+    ? { maxHeight: '40vh', fontSize: '15px', backgroundColor: 'transparent' }
+    : { height: '100%', fontSize: '15px', backgroundColor: 'transparent' },
   '.cm-content': { fontFamily: 'inherit', caretColor: 'currentColor', lineHeight: '1.65' },
   '.cm-scroller': { fontFamily: 'inherit', overflow: 'auto' },
   '&.cm-focused': { outline: 'none' },
   '.cm-line': { padding: '0' },
   '.cm-cursor': { borderLeftColor: 'currentColor' },
 });
+
+// In composer mode, Enter submits and Shift+Enter inserts a newline. Bound ahead
+// of defaultKeymap so it wins for the bare Enter key.
+const submitKeymap = keymap.of([
+  { key: 'Enter', run: () => (emit('submit'), true) },
+  { key: 'Shift-Enter', run: insertNewlineAndIndent },
+]);
 
 const md = () =>
   markdown({ base: markdownLanguage, codeLanguages: languages, extensions: extendedSyntax });
@@ -164,11 +180,12 @@ onMounted(() => {
       doc: props.modelValue,
       extensions: [
         history(),
+        ...(props.submitOnEnter ? [submitKeymap] : []),
         keymap.of([...formattingKeymap, ...defaultKeymap, ...historyKeymap]),
         modeCompartment.of(modeExtensions(props.mode ?? 'live')),
         editorTheme,
         EditorView.lineWrapping,
-        placeholder('Write in Markdown…'),
+        placeholder(props.placeholder ?? 'Write in Markdown…'),
         attachmentResolver.of(props.resolveAttachment ?? (() => Promise.resolve(null))),
         readonlyCompartment.of(EditorState.readOnly.of(props.readonly ?? false)),
         EditorView.updateListener.of((update) => {
@@ -203,12 +220,22 @@ watch(
   },
 );
 
+// Insert text at the current cursor (replacing any selection). Used by the chat
+// emoji/unicode pickers to drop a :shortcode: or character into the composer.
+function insertText(s: string): void {
+  if (!view) return;
+  const { from, to } = view.state.selection.main;
+  view.dispatch({ changes: { from, to, insert: s }, selection: { anchor: from + s.length } });
+  view.focus();
+}
+defineExpose({ insertText });
+
 onBeforeUnmount(() => view?.destroy());
 </script>
 
 <template>
-  <div class="relative h-full min-h-0">
-    <div ref="host" class="h-full min-h-0" :class="{ 'pb-10': isCoarse && !readonly }" />
+  <div class="relative min-h-0" :class="submitOnEnter ? '' : 'h-full'">
+    <div ref="host" class="min-h-0" :class="[submitOnEnter ? '' : 'h-full', { 'pb-10': isCoarse && !readonly }]" />
 
     <!-- desktop selection toolbar (Reka popover: collision-aware placement) -->
     <PopoverRoot :open="toolbarVisible">

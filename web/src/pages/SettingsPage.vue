@@ -9,11 +9,27 @@ import { getPalette, getTheme, setPalette, setTheme, type Palette, type Theme } 
 import { exportNotesZip, parseImportFiles, type ExportFormat } from '../lib/transfer';
 import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
+import { addCustomEmoji, customEmoji, loadCustomEmoji, removeCustomEmoji } from '../lib/emoji/custom';
+import { resolveEmoji } from '../lib/emoji';
+import { NAME_COLORS } from '@notes/shared';
+import IconX from '~icons/mynaui/x';
 
 const session = useSessionStore();
 const notes = useNotesStore();
 const queryCache = useQueryCache();
 const isAdmin = session.user?.role === 'admin';
+
+// Settings is split into sections navigated by the left rail.
+const sections = [
+  { id: 'profile', label: 'Profile' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'security', label: 'Security' },
+  { id: 'privacy', label: 'Privacy' },
+  { id: 'emoji', label: 'Custom emoji' },
+  { id: 'data', label: 'Import & export' },
+  ...(isAdmin ? [{ id: 'invites', label: 'Invites' }, { id: 'users', label: 'Users' }] : []),
+];
+const activeSection = ref('profile');
 
 const theme = ref<Theme>(getTheme());
 const palette = ref<Palette>(getPalette());
@@ -27,11 +43,41 @@ const passkeyError = ref('');
 const newRecoveryCode = ref('');
 const copiedInvite = ref('');
 
+// Custom emoji palette (encrypted; see lib/emoji/custom.ts).
+const emojiName = ref('');
+const emojiInput = ref<HTMLInputElement>();
+const emojiError = ref('');
+const emojiBusy = ref(false);
+void loadCustomEmoji();
+
+async function addEmoji() {
+  const file = emojiInput.value?.files?.[0];
+  const name = emojiName.value.trim();
+  if (!name || !file) {
+    emojiError.value = 'Pick an image and enter a name.';
+    return;
+  }
+  emojiBusy.value = true;
+  emojiError.value = '';
+  try {
+    await addCustomEmoji(name, file);
+    emojiName.value = '';
+    if (emojiInput.value) emojiInput.value.value = '';
+  } catch (e) {
+    emojiError.value = e instanceof Error ? e.message : 'could not add emoji';
+  } finally {
+    emojiBusy.value = false;
+  }
+}
+
+const nameColor = ref<string | null>(null);
+
 useQuery({
   key: ['profile'],
   query: async () => {
     const p = await api.profileGet();
     displayName.value = p.displayName;
+    nameColor.value = p.nameColor;
     return p;
   },
 });
@@ -42,7 +88,7 @@ async function saveDisplayName() {
   displayNameBusy.value = true;
   displayNameMsg.value = '';
   try {
-    const p = await api.profileSet(name);
+    const p = await api.profileSet({ displayName: name });
     displayName.value = p.displayName;
     displayNameOk.value = true;
     displayNameMsg.value = 'Saved.';
@@ -51,6 +97,17 @@ async function saveDisplayName() {
     displayNameMsg.value = e instanceof Error ? e.message : 'could not save';
   } finally {
     displayNameBusy.value = false;
+  }
+}
+
+// Name color: pick from the curated NAME_COLORS palette (or null for default).
+async function pickNameColor(c: string | null) {
+  const prev = nameColor.value;
+  nameColor.value = c;
+  try {
+    await api.profileSet({ nameColor: c });
+  } catch {
+    nameColor.value = prev; // revert on failure
   }
 }
 
@@ -173,8 +230,8 @@ async function importFiles(event: Event) {
 
 <template>
   <AppLayout>
-    <div class="mx-auto max-w-2xl space-y-8 overflow-y-auto p-6">
-      <div class="flex items-center justify-between">
+    <div class="flex h-full flex-col">
+      <div class="flex shrink-0 items-center justify-between border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
         <h1 class="text-2xl font-bold">Settings</h1>
         <RouterLink
           to="/"
@@ -186,7 +243,26 @@ async function importFiles(event: Event) {
         </RouterLink>
       </div>
 
-      <section class="space-y-3">
+      <div class="flex min-h-0 flex-1">
+        <!-- Section nav -->
+        <nav class="w-52 shrink-0 space-y-0.5 overflow-y-auto border-r border-zinc-200 p-3 dark:border-zinc-800">
+          <button
+            v-for="s in sections"
+            :key="s.id"
+            class="block w-full rounded-lg px-3 py-1.5 text-left text-sm"
+            :class="activeSection === s.id
+              ? 'bg-zinc-200 font-medium text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
+              : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'"
+            @click="activeSection = s.id"
+          >
+            {{ s.label }}
+          </button>
+        </nav>
+
+        <div class="min-w-0 grow overflow-y-auto p-6">
+          <div class="mx-auto max-w-2xl space-y-8">
+
+      <section v-show="activeSection === 'profile'" class="space-y-3">
         <h2 class="text-lg font-semibold">Profile</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           This is the name other users see in chats and friend requests. Your username is never shown to them.
@@ -208,10 +284,35 @@ async function importFiles(event: Event) {
         <p v-if="displayNameMsg" class="text-sm" :class="displayNameOk ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'">
           {{ displayNameMsg }}
         </p>
+
+        <div>
+          <p class="mb-1.5 text-sm text-zinc-500 dark:text-zinc-400">Name color (shown to others in chat)</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              title="Default"
+              class="flex h-7 w-7 items-center justify-center rounded-full border text-xs"
+              :class="nameColor === null ? 'border-blue-500 ring-2 ring-blue-500/40' : 'border-zinc-300 dark:border-zinc-600'"
+              @click="pickNameColor(null)"
+            >
+              <IconX class="h-3.5 w-3.5 text-zinc-400" />
+            </button>
+            <button
+              v-for="c in NAME_COLORS"
+              :key="c"
+              type="button"
+              :title="c"
+              class="h-7 w-7 rounded-full border"
+              :class="nameColor === c ? 'border-blue-500 ring-2 ring-blue-500/40' : 'border-transparent'"
+              :style="{ backgroundColor: `var(--brand-${c})` }"
+              @click="pickNameColor(c)"
+            />
+          </div>
+        </div>
       </section>
 
-      <section class="space-y-3">
-        <h2 class="text-lg font-semibold">Appearance & security</h2>
+      <section v-show="activeSection === 'appearance'" class="space-y-3">
+        <h2 class="text-lg font-semibold">Appearance</h2>
         <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <span class="text-sm">Light / dark</span>
           <select v-model="theme" class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900" @change="applyTheme">
@@ -228,6 +329,11 @@ async function importFiles(event: Event) {
             <option value="high-contrast">High contrast</option>
           </select>
         </div>
+      </section>
+
+      <!-- Security: auto-lock + passkeys + recovery code -->
+      <section v-show="activeSection === 'security'" class="space-y-3">
+        <h2 class="text-lg font-semibold">Auto-lock</h2>
         <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <span class="text-sm">Auto-lock after inactivity</span>
           <select v-model="autoLock" class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900" @change="applyAutoLock">
@@ -240,7 +346,7 @@ async function importFiles(event: Event) {
         </div>
       </section>
 
-      <section class="space-y-3">
+      <section v-show="activeSection === 'privacy'" class="space-y-3">
         <h2 class="text-lg font-semibold">Privacy</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           Loading remote media reveals your IP address to whoever hosts it. Click to load keeps
@@ -282,7 +388,46 @@ async function importFiles(event: Event) {
         </div>
       </section>
 
-      <section class="space-y-3">
+      <section v-show="activeSection === 'emoji'" class="space-y-3">
+        <h2 class="text-lg font-semibold">Custom emoji</h2>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400">
+          Upload your own emoji to use in chat as <code>:name:</code>. Images are encrypted on this
+          device before upload; when you send one, it's embedded (encrypted) in the message so others
+          can see it.
+        </p>
+        <div class="flex flex-wrap items-end gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <label class="flex flex-col gap-1 text-xs">
+            <span class="text-zinc-500">Name</span>
+            <input
+              v-model="emojiName"
+              placeholder="catJAM"
+              class="w-40 rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+          <input ref="emojiInput" type="file" accept="image/*" class="text-sm" />
+          <button
+            :disabled="emojiBusy"
+            class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            @click="addEmoji"
+          >
+            {{ emojiBusy ? 'Adding…' : 'Add' }}
+          </button>
+          <span v-if="emojiError" class="text-xs text-red-500">{{ emojiError }}</span>
+        </div>
+        <div v-if="customEmoji.items.length" class="flex flex-wrap gap-2">
+          <span
+            v-for="e in customEmoji.items"
+            :key="e.name"
+            class="flex items-center gap-1.5 rounded-lg border border-zinc-200 py-1 pl-2 pr-1 text-xs dark:border-zinc-700"
+          >
+            <img v-if="resolveEmoji(e.name)" :src="resolveEmoji(e.name)!" :alt="e.name" class="h-5 w-5 object-contain" />
+            <span>:{{ e.name }}:</span>
+            <button class="flex items-center rounded px-1 text-zinc-400 hover:text-red-500" title="Remove" @click="removeCustomEmoji(e.name)"><IconX class="h-3.5 w-3.5" /></button>
+          </span>
+        </div>
+      </section>
+
+      <section v-show="activeSection === 'security'" class="space-y-3">
         <h2 class="text-lg font-semibold">Passkeys</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           Register a passkey on each device you use. Every passkey can unlock your encrypted notes.
@@ -323,7 +468,7 @@ async function importFiles(event: Event) {
         <p v-if="passkeyError" class="text-sm text-red-600 dark:text-red-400">{{ passkeyError }}</p>
       </section>
 
-      <section class="space-y-3">
+      <section v-show="activeSection === 'security'" class="space-y-3">
         <h2 class="text-lg font-semibold">Recovery code</h2>
         <button
           :disabled="!session.unlocked"
@@ -335,7 +480,7 @@ async function importFiles(event: Event) {
         <RecoveryCodeCard v-if="newRecoveryCode" :code="newRecoveryCode" />
       </section>
 
-      <section class="space-y-3">
+      <section v-show="activeSection === 'data'" class="space-y-3">
         <h2 class="text-lg font-semibold">Import & export</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           Export decrypts your notes locally into a zip of Markdown files. Import accepts .md/.txt
@@ -373,7 +518,7 @@ async function importFiles(event: Event) {
       </section>
 
       <template v-if="isAdmin">
-        <section class="space-y-3">
+        <section v-show="activeSection === 'invites'" class="space-y-3">
           <h2 class="text-lg font-semibold">Invites</h2>
           <button
             class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
@@ -406,7 +551,7 @@ async function importFiles(event: Event) {
           </ul>
         </section>
 
-        <section class="space-y-3">
+        <section v-show="activeSection === 'users'" class="space-y-3">
           <h2 class="text-lg font-semibold">Users</h2>
           <ul class="divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-900 dark:border-zinc-800">
             <li v-for="u in users" :key="u.id" class="flex items-center gap-3 p-3">
@@ -425,6 +570,9 @@ async function importFiles(event: Event) {
           </ul>
         </section>
       </template>
+          </div>
+        </div>
+      </div>
     </div>
   </AppLayout>
 </template>

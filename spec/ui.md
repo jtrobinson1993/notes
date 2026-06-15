@@ -64,7 +64,11 @@ name** (state persisted in localStorage). **No hover-to-open.** Top to bottom:
     display-name first character, expanded name = members' display names listed
     out ("Alice, Bob, Carol").
 - The **Notes** item — directly **below the chats** (in flow, not pinned).
-- **Bottom:** the expand / collapse toggle.
+- **Bottom (fixed, separated by a top border):** the expand / collapse toggle,
+  then **Lock** (when unlocked), **Settings**, and **Sign out**. There is **no
+  top app header** — these live in the sidebar. The conversation/note list above
+  scrolls **underneath** this fixed block. The notes sync status (`syncing…` /
+  `offline`) shows here when expanded.
 
 ```
  collapsed      expanded
@@ -75,14 +79,24 @@ name** (state persisted in localStorage). **No hover-to-open.** Top to bottom:
  | F  |         |  F    Foxy            |  DM, the friend's display name
  | ## |         |  ##   Custom Group    |  group with a custom icon + name
  | [] |         |  []   Notes           |  below the chats (not pinned)
- |    |         |                       |
- |----|         |----------------------|
- | >> |         |  <<   Collapse        |  expand / collapse toggle (bottom)
+ |    |         |                       |  (list scrolls under the block below)
+ |----|         |----------------------|  ← separating border
+ | >> |         |  <<   Collapse        |  expand / collapse toggle
+ | 🔒 |         |  🔒   Lock            |  fixed bottom controls
+ | ⚙  |         |  ⚙    Settings        |
+ | ⏏  |         |  ⏏    Sign out        |
  +----+         +----------------------+
 ```
 
 Implemented in `AppSidebar.vue`, mounted as a left rail in `AppLayout.vue`
-(shown when logged in); the existing top header (Lock / Settings / Sign out)
-stays to its right. The sidebar and header are **fixed** — only the page content
-region (`<main>`) scrolls, so tall pages (e.g. Settings) never scroll the rail
-out of view.
+(shown when logged in). `AppLayout` has **no header** — just the rail and the
+page content region (`<main>`), which is the only thing that scrolls, so the
+fixed sidebar controls never scroll out of view.
+
+## Settings
+
+`SettingsPage.vue` is split into **sections** (Profile, Appearance, **Security**
+— auto-lock + passkeys + recovery code, Privacy, Custom emoji, Import & export,
+plus Invites / Users for admins) navigated by a **left rail within the page** — one section
+shown at a time (`v-show`, so form state persists across switches), with the
+"Settings" title + close in a fixed top bar above the split.

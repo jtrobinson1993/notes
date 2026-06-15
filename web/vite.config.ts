@@ -15,6 +15,19 @@ export default defineConfig({
       registerType: 'autoUpdate',
       workbox: {
         navigateFallbackDenylist: [/^\/api\//],
+        // The default 7TV emoji set is hundreds of small files; don't bloat the
+        // precache with them — cache on demand the first time one is rendered.
+        globIgnores: ['**/emoji/**'],
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith('/emoji/'),
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'emoji',
+              expiration: { maxEntries: 600, maxAgeSeconds: 60 * 60 * 24 * 30 },
+            },
+          },
+        ],
       },
       manifest: {
         name: 'Notes',

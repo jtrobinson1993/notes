@@ -44,6 +44,15 @@ Each user has an editable **display name** — the only name other users ever se
 is never exposed to other users**. When a user hasn't set a display name, the
 server shows a neutral `User-<id-prefix>` fallback — **never** the username.
 
+Each user may also pick a **name color** shown to others in chat. Choices are
+restricted to the curated **`NAME_COLORS`** palette (the `--brand-*` accents,
+each a `light-dark()` pair) — a free color picker is deliberately *not* offered,
+so every choice stays readable in every theme. Stored server-side as the color
+name (`users.name_color`, validated against the palette; null = default),
+surfaced on `ProfileInfo` and each `ConversationMember`, and rendered as
+`color: var(--brand-<name>)` on the sender's name (message header, reply quote,
+replying-to banner). Set it in Settings → Profile.
+
 ## What is E2E-encrypted vs server-visible
 
 Encrypted (server sees only ciphertext): **message content** and the
@@ -225,3 +234,186 @@ Web: `lib/chatCrypto.ts`, `lib/chatSocket.ts`, `lib/api.ts`, `stores/chat.ts`,
 A true two-user browser flow (passkey login → friend → send an encrypted
 message, observing realtime delivery) — passkey ceremonies are browser-only, so
 this is the one check left and the first target in [testing.md](testing.md).
+
+---
+
+## v3.1 — Chat polish (as built)
+
+Incremental polish on top of phase 1; each item below is the as-built record.
+
+### Composer — the v2.1 live editor reused
+
+The composer is the same `MarkdownEditor.vue` used in notes (CodeMirror live
+preview: code blocks, spoilers, colors, the selection toolbar), not a plain
+`<textarea>`. Two composer-only props keep the notes editor untouched:
+
+- **`submit-on-enter`** — binds **Enter → `submit`** (ahead of the default
+  keymap) and **Shift+Enter → newline**; also switches sizing from "fill the
+  pane" to **auto-grow up to `max-height: 40vh`, then scroll**.
+- **`placeholder`** — composer shows `Message…`.
+
+There is **no visible Send button** — Enter sends. An `sr-only` submit button
+remains for screen-reader/keyboard users. The composer's only visible controls
+are attach (📎) and the emoji/GIF picker.
+
+Messages already render through the same token renderer (`MarkdownView`), so a
+sent message renders with identical formatting to the live preview — no
+`v-html`, raw HTML inert by construction (see [security.md](security.md)).
+
+### GIF search — KLIPY, proxied
+
+GIFs are searched through a **server-side proxy** (`routes/gifs.ts`:
+`GET /api/gifs/search?q=&pos=`, `GET /api/gifs/trending?pos=`, both
+`requireAuth`). The proxy:
+
+- keeps the **`KLIPY_API_KEY`** server-side (from `.env`; never shipped to the
+  browser). With no key set, the routes return **503** and the picker shows
+  "GIF search isn't configured".
+- **normalizes** KLIPY's `size × format` matrix to `{id, title, url, previewUrl,
+  width, height}` — animated **webp** preferred (far smaller than gif), gif
+  fallback; `md` for the embed URL, `xs` for the picker thumbnail. Items with no
+  usable media are dropped. `next` is the next page number or null.
+- passes an opaque per-user `customer_id` (`sha256('klipy:'+userId)`), and maps
+  upstream errors to **502**.
+
+The chosen GIF is embedded in the **encrypted** `MessagePayload.gif`
+(`GifRef`) — a small CDN URL + dimensions, never inline bytes (the WS frame cap
+is 64 KiB). So **the server never learns which GIF was sent.** The recipient's
+client loads the animated media directly from KLIPY's CDN — a third-party
+metadata tradeoff (recipient IP/timing), documented in
+[security.md](security.md). GIF search is a **tab in the emoji picker**
+(`EmojiPicker.vue`, debounced, trending on open) — picking emits a `gif` event
+that sends the message; a purely-GIF message has empty `text`. (There is no
+separate GIF button and no visible Send button — see the composer note above.)
+
+### Encrypted attachments
+
+Chat attachments reuse the **note** attachment machinery unchanged: the client
+optimizes (images), encrypts the blob with a **fresh per-file AES-256-GCM key**
+(`encryptAndUploadFile` → `lib/attachments.ts`), uploads ciphertext to the
+capability-style `POST /api/attachments`, and embeds the resulting
+`AttachmentRef` (`{id, name, type, size, key, iv}`) in
+`MessagePayload.attachments`. Because that payload is itself sealed under the
+conversation key, only conversation members can read the per-file key — so the
+attachment is **effectively conversation-keyed** (the same indirection notes
+use), without a second key-distribution mechanism.
+
+The composer (`+` button) uploads each picked file immediately and stages it as
+a removable chip; **Send** embeds the staged refs with the (optional) text.
+Rendering (`ChatAttachment.vue`) decrypts the blob locally to an object URL —
+images inline, other files as a download chip. Decryption is local, so (like
+note attachments) there's **no remote fetch and no IP leak**. The per-file size
+cap mirrors the server's 32 MiB.
+
+### Replies
+
+A reply embeds a `ReplyRef` snapshot — `{seq, senderId, preview}` — in the
+sender's encrypted `MessagePayload.replyTo`. The `preview` is a short plaintext
+snippet the sender already holds (text, or `[GIF]` / `[N attachments]`), so the
+quote renders **even before the parent is loaded** and survives the parent
+becoming unreadable. No server change: replies are pure payload.
+
+UI (`ConversationPage.vue`): a hover **Reply** action stages a "replying to…"
+banner above the composer (cancellable); **Send** embeds the `ReplyRef`. Each
+message renders its quote as a clickable line that scrolls to the parent (`rows`
+carry `data-seq`).
+
+### Reactions (encrypted per-conversation)
+
+A reaction's **emoji is encrypted with the conversation key**, so the server
+stores opaque blobs and can't read which emoji was used; clients decrypt and
+aggregate. Server (`message_reactions` table + routes, all membership-gated):
+
+- `POST /api/conversations/:id/messages/:seq/reactions {ciphertext, iv}` — add;
+  fans out a `reaction` frame.
+- `DELETE /api/conversations/:id/reactions/:rid` — remove; **owner-only** (IDOR
+  guard) and scoped to the conversation; fans out `reaction-removed`.
+- `GET /api/conversations/:id/reactions` — list (clients decrypt + group).
+
+The emoji string (a unicode char, `:emote:`, or `:customName:`) is sealed via
+`encryptReaction` (same AES-GCM as messages). The store groups by emoji per
+message; `toggleReaction` removes my existing reaction with that emoji or adds
+one. UI: a hover **react** action (the emoji picker) and reaction pills under
+each message (count + highlighted when mine) that toggle on click.
+
+### Threads
+
+A **thread is a child conversation** (`kind: 'thread'`) hung off a parent
+message — so it reuses the entire conversation machinery (its own key/epoch,
+messages, reactions, realtime fan-out, and `ConversationPage` itself) rather
+than inventing a parallel model. `conversations` gains `parent_id` +
+`parent_seq` (idempotent migration) with a **partial unique index** on
+`(parent_id, parent_seq)` → one thread per parent message.
+
+- `POST /api/conversations/:id/messages/:seq/thread {members}` — membership-gated,
+  idempotent. The thread key is sealed to **exactly the parent's members** (so
+  everyone who can see the parent can read the thread); the server validates the
+  member set matches. Rejects threading a thread, and an out-of-range `seq`. A
+  1:1 thread inherits the DM's friendship gate (unfriending revokes it too).
+- Threads are ordinary conversations in `GET /api/conversations`, so loading +
+  key-unseal + inbound delivery all work unchanged. The client (`openThread`)
+  seals the new key to all parent members, like a DM but for N members.
+
+UI: the conversation body is a reusable `ConversationView` (driven by a `convId`
+prop), so the parent and a thread render as two instances. A hover thread action
+(and a **"N replies"** link) opens the thread; `ConversationPage` holds the
+active-thread id, renders the **conversation name in a shared header above both
+panes** (the parent `ConversationView` is `hide-header`; the thread panel keeps
+its own header), and chooses the layout from the **chat region's** width
+(measured with a `ResizeObserver`, not the viewport, so the sidebar state
+counts). At **≥768px** the thread is a **resizable right-hand panel** — its own
+flex column defaulting to **half** the region, with a **drag handle** on the
+separating line (clamped so neither side collapses); below that it's a
+full-cover overlay with a close button. The sidebar **excludes** `thread`
+conversations (reached from their parent message, not listed top-level).
+
+This completes the v3.1 "reactions, replies, and threads" bullet.
+
+### Custom emoji — default 7TV set
+
+A few hundred of the most-used 7TV emotes are **self-hosted** (decision: commit
+the assets). `scripts/fetch-emojis.mjs` pulls them via 7TV's GQL
+(`filter.category = TOP`, i.e. most-used), downloads each as a small WebP
+(prefers crisp 2x, falls back to 1x for heavy/animated, skips >48 KB; filenames
+by emote id to avoid case-insensitive-FS collisions) into
+`web/public/emoji/7tv/`, and writes `web/src/lib/emoji/defaultEmoji.json` **in
+7TV popularity order** (the picker shows top emotes first; not alphabetized).
+Re-run the script to refresh. These are served at `/emoji/7tv/…` and excluded
+from the PWA precache (cached on demand via a `CacheFirst` runtime rule).
+
+Messages use Discord-style **`:shortcode:`** syntax. The token renderer
+(`MdTokens.emojiText`) replaces a `:name:` run with an inline `<img.chat-emoji>`
+when `resolveEmoji(name)` matches; unknown shortcodes stay literal, and code
+spans/blocks are never substituted (so `` `:KEKW:` `` stays text). The set is
+global UI chrome, so notes render them too. `EmojiPicker.vue` is a searchable
+two-tab popover; picking inserts at the composer caret via the editor's exposed
+`insertText`.
+
+### Unicode emoji search (emojibase)
+
+The picker's **Emoji** tab searches the local unicode set from `emojibase-data`
+(`lib/emoji/unicode.ts`). The ~1,900-entry dataset is **dynamically imported**
+the first time the tab opens (a lazy ~82 KB-gzip chunk, kept out of the main
+bundle) and cached; component glyphs (skin tones/hair, group 2) are excluded.
+Search is substring over label + tags; picking inserts the raw unicode
+character (no shortcode needed — it renders natively).
+
+> Hosting note: whether to keep self-hosting the 7TV set or serve straight from
+> 7TV's CDN is an open follow-up (see [roadmap.md](roadmap.md) v3.3).
+
+### Custom (encrypted) per-user emoji
+
+A user uploads their own emoji (Settings → Custom emoji). Each image is an
+**encrypted attachment** (fresh per-file key, via `encryptAndUploadFile`); the
+palette (`name → AttachmentRef`) is stored as a **master-key-encrypted settings
+blob** (`chat-emoji`, like tag colors), so the server never sees the names or
+images. `lib/emoji/custom.ts` loads + decrypts the palette on chat start and
+registers each as an object URL so `:name:` renders; the picker's **Custom** tab
+inserts them.
+
+When a message uses a custom emoji, its ref is embedded in the encrypted
+`MessagePayload.customEmoji` (name → ref). On decrypt, the recipient registers
+those (decrypting the blob to an object URL) **before** the message view is
+shown, so it renders for everyone — without sharing the whole palette. Names are
+registered into one global map, so across users the last-seen `:name:` wins (fine
+at this app's scale).

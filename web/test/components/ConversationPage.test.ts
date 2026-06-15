@@ -9,12 +9,13 @@ const api = vi.hoisted(() => ({
   conversationRead: vi.fn().mockResolvedValue(undefined),
   messageSend: vi.fn(),
   conversationCreateDm: vi.fn(),
+  reactions: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../../src/lib/api', () => ({ api }));
 vi.mock('../../src/stores/session', () => ({
   useSessionStore: () => ({ user: { id: 'me' }, getKeyPair: async () => ({ privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) }) }),
 }));
-vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'c1' } }) }));
+vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'c1' } }), useRouter: () => ({ push: vi.fn() }) }));
 
 import ConversationPage from '../../src/pages/ConversationPage.vue';
 import { useChatStore } from '../../src/stores/chat';

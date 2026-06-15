@@ -145,6 +145,22 @@ select:not(:disabled) {
   border-radius: 2px;
   background: light-dark(#000, #d4d4d8);
 }
+
+/* Inline custom emoji (:shortcode:) rendered by MdTokens. */
+.chat-emoji {
+  display: inline-block;
+  height: 1.4em;
+  width: auto;
+  vertical-align: -0.3em;
+  margin: 0 1px;
+}
+
+/* Theme the editor placeholder (composer "Message…", notes "Write in Markdown…")
+   to the muted zinc token, matching native ::placeholder fields like "Add tag…"
+   instead of CodeMirror's default grey. */
+.cm-editor .cm-placeholder {
+  color: var(--color-zinc-400);
+}
 .spoiler:not(.spoiler-revealed),
 .spoiler:not(.spoiler-revealed) *,
 .cm-live-spoiler:not(.cm-spoiler-revealed),

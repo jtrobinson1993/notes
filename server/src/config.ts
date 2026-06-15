@@ -9,6 +9,8 @@ export interface Config {
   appName: string;
   /** Directory of the built SPA, or null to disable static serving */
   webDist: string | null;
+  /** KLIPY API key for the server-side GIF-search proxy; null disables GIF search */
+  klipyApiKey: string | null;
 }
 
 export function loadConfig(): Config {
@@ -28,5 +30,6 @@ export function loadConfig(): Config {
     rpId,
     appName: process.env.APP_NAME ?? 'Notes',
     webDist: process.env.WEB_DIST === 'off' ? null : (process.env.WEB_DIST ?? null),
+    klipyApiKey: process.env.KLIPY_API_KEY?.trim() || null,
   };
 }

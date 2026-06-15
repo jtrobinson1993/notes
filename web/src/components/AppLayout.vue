@@ -1,13 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { useSessionStore } from '../stores/session';
-import { useNotesStore } from '../stores/notes';
 import AppSidebar from './AppSidebar.vue';
 
 const session = useSessionStore();
-const notes = useNotesStore();
-const router = useRouter();
 const unlockError = ref('');
 const unlocking = ref(false);
 
@@ -23,46 +19,12 @@ async function unlock() {
     unlocking.value = false;
   }
 }
-
-async function logout() {
-  await session.logout();
-  notes.reset();
-  router.push('/login');
-}
 </script>
 
 <template>
   <div class="flex h-full overflow-hidden">
     <AppSidebar v-if="session.loggedIn" />
-    <div class="flex min-h-0 min-w-0 grow flex-col">
-    <header class="flex items-center gap-3 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-      <RouterLink to="/" class="font-bold">{{ session.appName }}</RouterLink>
-      <span v-if="notes.syncing" class="text-xs text-zinc-400">syncing…</span>
-      <span v-else-if="notes.syncError" class="text-xs text-amber-500" :title="notes.syncError">offline</span>
-      <div class="grow" />
-      <button
-        v-if="session.unlocked"
-        class="rounded-lg px-2 py-1 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
-        title="Lock now"
-        @click="session.lock()"
-      >
-        Lock
-      </button>
-      <RouterLink
-        to="/settings"
-        class="rounded-lg px-2 py-1 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
-      >
-        Settings
-      </RouterLink>
-      <button
-        class="rounded-lg px-2 py-1 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
-        @click="logout"
-      >
-        Sign out
-      </button>
-    </header>
-
-    <main class="relative min-h-0 grow overflow-y-auto">
+    <main class="relative min-h-0 min-w-0 grow overflow-y-auto">
       <div
         v-if="!session.unlocked"
         class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-zinc-50/95 p-6 backdrop-blur dark:bg-zinc-950/95"
@@ -82,6 +44,5 @@ async function logout() {
       </div>
       <slot />
     </main>
-    </div>
   </div>
 </template>

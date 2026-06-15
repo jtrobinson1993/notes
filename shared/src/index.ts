@@ -186,14 +186,23 @@ export interface Friend {
   online: boolean;
 }
 
-export type ConversationKind = 'dm' | 'group';
+export type ConversationKind = 'dm' | 'group' | 'thread';
 
 export interface ConversationMember {
   userId: string;
   displayName: string;
   /** base64 X25519 public key */
   publicKey: string | null;
+  /** chosen name color (a NAME_COLORS value), or null for the default */
+  nameColor: string | null;
 }
+
+/** Curated name-color palette: the `--brand-*` accents, each defined in CSS as a
+ *  light-dark() pair, so any choice stays readable in every theme. Stored as the
+ *  color name and rendered as `var(--brand-<name>)`; null = default text color.
+ *  Restricting to this set (no free picker) is what guarantees readability. */
+export const NAME_COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink'] as const;
+export type NameColor = (typeof NAME_COLORS)[number];
 
 /** A conversation as returned to one of its members, including that member's
  * own sealed copy of the current-epoch conversation key. */
@@ -209,6 +218,10 @@ export interface Conversation {
   /** my last-read seq; unread count = lastSeq - lastReadSeq */
   lastReadSeq: number;
   createdAt: number;
+  /** for a thread (`kind: 'thread'`): the parent conversation it hangs off */
+  parentId?: string | null;
+  /** for a thread: the parent message seq it's rooted on */
+  parentSeq?: number | null;
 }
 
 /** One chat message. ciphertext/iv are opaque to the server. */
@@ -226,12 +239,91 @@ export interface ChatMessage {
   createdAt: number;
 }
 
+/** One reaction on a message. The emoji is encrypted with the conversation key
+ *  (`ciphertext`/`iv`), so the server can't read which emoji was used; clients
+ *  decrypt and aggregate. The server keys a reaction by its own `id`. */
+export interface ChatReaction {
+  id: string;
+  conversationId: string;
+  /** the reacted message's per-conversation seq */
+  seq: number;
+  userId: string;
+  /** base64 AES-256-GCM ciphertext of a JSON ReactionPayload */
+  ciphertext: string;
+  iv: string;
+  createdAt: number;
+}
+
+/** What the client encrypts into a reaction blob. */
+export interface ReactionPayload {
+  /** the emoji: a unicode char, `:emote:`, or `:customName:` */
+  emoji: string;
+}
+
+/** A GIF chosen from KLIPY search, embedded inside the encrypted message so the
+ *  server never learns which GIF was sent. The animated media lives on KLIPY's
+ *  CDN (`url`); the recipient loads it from there (a documented third-party
+ *  metadata tradeoff — see spec/security.md). */
+export interface GifRef {
+  provider: 'klipy';
+  /** provider id/slug (attribution / dedupe) */
+  id: string;
+  /** animated media URL to render (webp preferred, gif fallback) */
+  url: string;
+  /** still/animated thumbnail URL for the picker grid */
+  previewUrl: string;
+  width: number;
+  height: number;
+  title?: string;
+}
+
 /** What the client encrypts into a message blob (extensible in v3.1). */
 export interface MessagePayload {
-  /** markdown text */
+  /** markdown text (may be empty when the message is purely a GIF/attachment) */
   text: string;
   /** the sender's own clock (server time is separate metadata) */
   sentAt: number;
+  /** an embedded GIF (KLIPY search) — v3.1 */
+  gif?: GifRef;
+  /** encrypted file/image attachments. Each carries its own random AES key, so
+   *  storing the ref inside this (conversation-key-encrypted) payload means only
+   *  conversation members can decrypt the blob — same shape as NotePayload. */
+  attachments?: AttachmentRef[];
+  /** a reply to an earlier message. The parent `seq` plus a sender + text
+   *  snapshot are embedded (encrypted) so the quote renders even before the
+   *  parent is loaded, and survives the parent being deleted/unreadable. */
+  replyTo?: ReplyRef;
+  /** custom emoji used in `text` (`:name:`), keyed by name. Each is an encrypted
+   *  attachment ref so recipients (who don't have the sender's private emoji
+   *  palette) can decrypt + render it. */
+  customEmoji?: Record<string, AttachmentRef>;
+}
+
+/** A snapshot of the message being replied to, embedded in the reply's payload. */
+export interface ReplyRef {
+  /** parent message's per-conversation sequence number */
+  seq: number;
+  /** parent sender's user id (rendered via the member list's display name) */
+  senderId: string;
+  /** short plaintext preview of the parent (already decrypted by the sender) */
+  preview: string;
+}
+
+/** One normalized GIF search hit returned by the server-side KLIPY proxy. */
+export interface GifSearchResult {
+  id: string;
+  title: string;
+  url: string;
+  previewUrl: string;
+  width: number;
+  height: number;
+}
+
+/** Server-side KLIPY proxy response. `next` is an opaque pagination cursor
+ *  (page number as a string) or null when there are no more results. */
+export interface GifSearchResponse {
+  results: GifSearchResult[];
+  next: string | null;
 }
 
 /** One member's sealed key when creating a conversation client-side. */
@@ -243,6 +335,7 @@ export interface SealedMemberKey {
 /** Public profile metadata (server-visible; usernames never exposed to others). */
 export interface ProfileInfo {
   displayName: string;
+  nameColor: string | null;
 }
 
 // ---- WebSocket frame protocol (JSON frames over one authenticated socket) ----
@@ -251,6 +344,8 @@ export interface ProfileInfo {
 export type ServerFrame =
   | { type: 'hello'; userId: string }
   | { type: 'message'; message: ChatMessage }
+  | { type: 'reaction'; reaction: ChatReaction }
+  | { type: 'reaction-removed'; conversationId: string; id: string }
   | { type: 'read'; conversationId: string; userId: string; seq: number }
   | { type: 'friend-request'; request: FriendRequest }
   | { type: 'friend-accepted'; friend: Friend }

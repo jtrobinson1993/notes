@@ -1,4 +1,4 @@
-import type { MessagePayload, SealedKey } from '@notes/shared';
+import type { MessagePayload, ReactionPayload, SealedKey } from '@notes/shared';
 import { b64, ub64 } from './b64';
 import { randomBytes, sealKey, unsealKey } from './crypto';
 
@@ -53,4 +53,18 @@ export async function decryptMessage(
     ub64(ciphertext) as BufferSource,
   );
   return JSON.parse(td.decode(pt)) as MessagePayload;
+}
+
+/** Encrypt a reaction emoji with the conversation key. */
+export async function encryptReaction(
+  convKey: Uint8Array,
+  emoji: string,
+): Promise<{ ciphertext: string; iv: string }> {
+  return encryptMessage(convKey, { emoji } as unknown as MessagePayload);
+}
+
+/** Decrypt a reaction blob to its emoji string. */
+export async function decryptReaction(convKey: Uint8Array, ciphertext: string, iv: string): Promise<string> {
+  const payload = (await decryptMessage(convKey, ciphertext, iv)) as unknown as ReactionPayload;
+  return payload.emoji;
 }

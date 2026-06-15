@@ -18,6 +18,9 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
   `spec/<area>.md` for a new app surface — and update the `SPEC.md` table and
   `spec/README.md` index accordingly.
 
+- **Icons: use the Myna set** via `unplugin-icons` (`import Icon from
+  '~icons/mynaui/<name>'`), never emoji glyphs or another icon pack.
+
 ## Git
 
 - **Branch per workitem.** Start each task on a new branch off `main`; never

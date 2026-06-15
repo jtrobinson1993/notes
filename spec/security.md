@@ -22,6 +22,15 @@ note) can't harvest the reader's IP via a hostile image/embed URL. Per-device
 Settings → Privacy toggles (`notes:click-load-images`, `notes:click-load-embeds`).
 Attachment images are unaffected (local decrypts).
 
+**Chat GIFs (KLIPY).** A GIF chosen from search is embedded in the encrypted
+message as a CDN URL (`MessagePayload.gif`), so the recipient loads the animated
+media from KLIPY's CDN on display — an accepted third-party metadata leak
+(recipient IP/timing to KLIPY, never to our server, which only sees ciphertext).
+Because that URL is **sender-controlled**, the recipient's client only renders
+GIFs whose media host is `*.klipy.com` over HTTPS (`safeGif` in the chat store);
+anything else is dropped, so a hostile sender can't smuggle an arbitrary
+tracking URL past the click-to-load model above.
+
 ## Content-Security-Policy (lands with chat, phase 3)
 
 A CSP response header as defense-in-depth: roughly `script-src 'self'` (only our

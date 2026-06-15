@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type {
   ChatMessage,
+  ChatReaction,
   Conversation,
   ConversationMember,
   Friend,
@@ -10,11 +11,13 @@ import type {
   SealedKey,
   SealedMemberKey,
 } from '@notes/shared';
+import { NAME_COLORS } from '@notes/shared';
 import {
   effectiveDisplayName,
   type ConversationRow,
   type DB,
   type MessageRow,
+  type ReactionRow,
 } from '../db.js';
 import type { Realtime } from '../realtime.js';
 import { requireAuth } from '../session.js';
@@ -46,6 +49,18 @@ function toMessage(m: MessageRow): ChatMessage {
   };
 }
 
+function toReaction(r: ReactionRow): ChatReaction {
+  return {
+    id: r.id,
+    conversationId: r.conversation_id,
+    seq: r.seq,
+    userId: r.user_id,
+    ciphertext: r.ciphertext,
+    iv: r.iv,
+    createdAt: r.created_at,
+  };
+}
+
 export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
   // Build a Conversation for a given member, including their own sealed key.
   function toConversation(conv: ConversationRow, userId: string): Conversation | null {
@@ -57,11 +72,13 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
         userId: m.user_id,
         displayName: u ? effectiveDisplayName(u) : `User-${m.user_id.slice(0, 6)}`,
         publicKey: u?.public_key ?? null,
+        nameColor: u?.name_color ?? null,
       };
     });
     // DM access requires current friendship — unfriending revokes access
-    // (history preserved; restored on re-friend).
-    if (conv.kind === 'dm') {
+    // (history preserved; restored on re-friend). A 1:1 thread inherits the
+    // same rule (it has the same two members as its parent DM).
+    if (conv.kind === 'dm' || (conv.kind === 'thread' && members.length === 2)) {
       const other = members.find((m) => m.userId !== userId);
       if (other && !db.areFriends(userId, other.userId)) return null;
     }
@@ -74,6 +91,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
       lastSeq: db.getMaxSeq(conv.id),
       lastReadSeq: mine.last_read_seq,
       createdAt: conv.created_at,
+      parentId: conv.parent_id,
+      parentSeq: conv.parent_seq,
     };
   }
 
@@ -223,19 +242,34 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
   // ---------------------------------------------------------------- Profile
 
   app.get('/api/profile', { preHandler: requireAuth }, async (request) => {
-    const info: ProfileInfo = { displayName: effectiveDisplayName(request.user!) };
+    const info: ProfileInfo = {
+      displayName: effectiveDisplayName(request.user!),
+      nameColor: request.user!.name_color ?? null,
+    };
     return info;
   });
 
   app.put('/api/profile', { preHandler: requireAuth }, async (request, reply) => {
+    const me = request.user!.id;
     const b = request.body as Record<string, unknown> | null;
-    if (typeof b?.displayName !== 'string') return reply.code(400).send({ error: 'invalid display name' });
-    const trimmed = b.displayName.trim();
-    if (trimmed.length < 1 || trimmed.length > 50) {
-      return reply.code(400).send({ error: 'display name must be 1..50 chars' });
+    // Both fields are optional; update whichever is present.
+    if (b?.displayName !== undefined) {
+      if (typeof b.displayName !== 'string') return reply.code(400).send({ error: 'invalid display name' });
+      const trimmed = b.displayName.trim();
+      if (trimmed.length < 1 || trimmed.length > 50) {
+        return reply.code(400).send({ error: 'display name must be 1..50 chars' });
+      }
+      db.setDisplayName(me, trimmed);
     }
-    db.setDisplayName(request.user!.id, trimmed);
-    const info: ProfileInfo = { displayName: trimmed };
+    if (b?.nameColor !== undefined) {
+      const nc = b.nameColor;
+      if (nc !== null && (typeof nc !== 'string' || !(NAME_COLORS as readonly string[]).includes(nc))) {
+        return reply.code(400).send({ error: 'invalid name color' });
+      }
+      db.setNameColor(me, nc);
+    }
+    const u = db.getUser(me)!;
+    const info: ProfileInfo = { displayName: effectiveDisplayName(u), nameColor: u.name_color ?? null };
     return info;
   });
 
@@ -312,6 +346,74 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     return toConversation(conv, me)!;
   });
 
+  // Create (or return) the thread rooted on a parent message. A thread is a
+  // child conversation with its own key, sealed to ALL parent members — so it
+  // reuses the entire message/reaction/realtime machinery.
+  app.post('/api/conversations/:id/messages/:seq/thread', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, seq } = request.params as { id: string; seq: string };
+    const me = request.user!.id;
+    const parent = db.getConversation(id);
+    if (!parent) return reply.code(404).send({ error: 'not found' });
+    if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
+    if (parent.kind === 'thread') return reply.code(400).send({ error: 'cannot thread a thread' });
+    const seqNum = Number(seq);
+    if (!Number.isInteger(seqNum) || seqNum < 1 || seqNum > db.getMaxSeq(id)) {
+      return reply.code(400).send({ error: 'invalid seq' });
+    }
+
+    // Idempotent: one thread per parent message.
+    const existing = db.getThreadByParent(id, seqNum);
+    if (existing) {
+      const c = toConversation(existing, me);
+      if (c) return c;
+    }
+
+    // Members must be exactly the parent's members (the thread key is sealed to
+    // everyone who can see the parent).
+    const parentMemberIds = new Set(db.listConversationMembers(id).map((m) => m.user_id));
+    const members = (request.body as Record<string, unknown> | null)?.members;
+    if (!Array.isArray(members) || members.length !== parentMemberIds.size) {
+      return reply.code(400).send({ error: 'members must match the parent conversation' });
+    }
+    const byUser = new Map<string, SealedMemberKey>();
+    for (const m of members as unknown[]) {
+      if (typeof m !== 'object' || m === null) return reply.code(400).send({ error: 'invalid member' });
+      const mm = m as Record<string, unknown>;
+      if (typeof mm.userId !== 'string' || !validSealedKey(mm.sealedKey)) {
+        return reply.code(400).send({ error: 'invalid member' });
+      }
+      byUser.set(mm.userId, { userId: mm.userId, sealedKey: mm.sealedKey });
+    }
+    if (byUser.size !== parentMemberIds.size || [...byUser.keys()].some((u) => !parentMemberIds.has(u))) {
+      return reply.code(400).send({ error: 'members must match the parent conversation' });
+    }
+
+    const convId = newId();
+    try {
+      const tx = db.raw.transaction(() => {
+        db.createConversation({ id: convId, kind: 'thread', createdBy: me, dmKey: null, parentId: id, parentSeq: seqNum });
+        for (const mk of byUser.values()) {
+          db.addConversationMember({
+            conversationId: convId,
+            userId: mk.userId,
+            sealedKey: JSON.stringify(mk.sealedKey),
+            epoch: 0,
+          });
+        }
+      });
+      tx();
+    } catch {
+      // UNIQUE(parent_id, parent_seq) race: re-fetch the winner.
+      const raced = db.getThreadByParent(id, seqNum);
+      if (raced) {
+        const c = toConversation(raced, me);
+        if (c) return c;
+      }
+      return reply.code(409).send({ error: 'thread conflict' });
+    }
+    return toConversation(db.getConversation(convId)!, me)!;
+  });
+
   app.get('/api/conversations/:id/messages', { preHandler: requireAuth }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const me = request.user!.id;
@@ -376,6 +478,49 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
       { type: 'read', conversationId: id, userId: me, seq: b.seq },
       me,
     );
+    return { ok: true };
+  });
+
+  // ---- Reactions (emoji encrypted with the conversation key) ----
+
+  app.get('/api/conversations/:id/reactions', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const me = request.user!.id;
+    if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
+    if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
+    return db.listReactions(id).map(toReaction);
+  });
+
+  app.post('/api/conversations/:id/messages/:seq/reactions', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, seq } = request.params as { id: string; seq: string };
+    const me = request.user!.id;
+    if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
+    if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
+    const seqNum = Number(seq);
+    if (!Number.isInteger(seqNum) || seqNum < 1) return reply.code(400).send({ error: 'invalid seq' });
+    const b = request.body as Record<string, unknown> | null;
+    if (
+      typeof b?.ciphertext !== 'string' || b.ciphertext.length < 1 || b.ciphertext.length > 4096 ||
+      typeof b.iv !== 'string' || b.iv.length > 256
+    ) {
+      return reply.code(400).send({ error: 'invalid reaction payload' });
+    }
+    const row = db.addReaction({ id: newId(), conversationId: id, seq: seqNum, userId: me, ciphertext: b.ciphertext, iv: b.iv });
+    const reaction = toReaction(row);
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'reaction', reaction });
+    return reaction;
+  });
+
+  app.delete('/api/conversations/:id/reactions/:rid', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, rid } = request.params as { id: string; rid: string };
+    const me = request.user!.id;
+    if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
+    if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
+    const existing = db.getReaction(rid);
+    // Scope to this conversation, and only the owner may remove (IDOR guard).
+    if (!existing || existing.conversation_id !== id) return reply.code(404).send({ error: 'not found' });
+    if (!db.removeReaction(rid, me)) return reply.code(403).send({ error: 'not your reaction' });
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'reaction-removed', conversationId: id, id: rid });
     return { ok: true };
   });
 }

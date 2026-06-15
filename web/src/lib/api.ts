@@ -2,9 +2,11 @@ import type {
   ChatMessage,
   Conversation,
   CredentialInfo,
+  ChatReaction,
   Friend,
   FriendInvite,
   FriendRequest,
+  GifSearchResponse,
   InviteInfo,
   LoginVerifyResponse,
   MemberInfo,
@@ -153,12 +155,15 @@ export const api = {
 
   // ---- v3 chat: profile ----
   profileGet: () => req<ProfileInfo>('GET', '/api/profile'),
-  profileSet: (displayName: string) => req<ProfileInfo>('PUT', '/api/profile', { displayName }),
+  profileSet: (patch: { displayName?: string; nameColor?: string | null }) =>
+    req<ProfileInfo>('PUT', '/api/profile', patch),
 
   // ---- v3 chat: conversations + messages ----
   conversations: () => req<Conversation[]>('GET', '/api/conversations'),
   conversationCreateDm: (friendId: string, members: SealedMemberKey[]) =>
     req<Conversation>('POST', '/api/conversations/dm', { friendId, members }),
+  threadCreate: (parentId: string, seq: number, members: SealedMemberKey[]) =>
+    req<Conversation>('POST', `/api/conversations/${encodeURIComponent(parentId)}/messages/${seq}/thread`, { members }),
   conversationMessages: (id: string, opts?: { before?: number; limit?: number }) => {
     const q = new URLSearchParams();
     if (opts?.before !== undefined) q.set('before', String(opts.before));
@@ -173,4 +178,17 @@ export const api = {
     req<ChatMessage>('POST', `/api/conversations/${encodeURIComponent(id)}/messages`, body),
   conversationRead: (id: string, seq: number) =>
     req<{ ok: true }>('POST', `/api/conversations/${encodeURIComponent(id)}/read`, { seq }),
+  reactions: (id: string) =>
+    req<ChatReaction[]>('GET', `/api/conversations/${encodeURIComponent(id)}/reactions`),
+  reactionAdd: (id: string, seq: number, body: { ciphertext: string; iv: string }) =>
+    req<ChatReaction>('POST', `/api/conversations/${encodeURIComponent(id)}/messages/${seq}/reactions`, body),
+  reactionRemove: (id: string, rid: string) =>
+    req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/reactions/${encodeURIComponent(rid)}`),
+  gifSearch: (q: string, pos?: string) => {
+    const params = new URLSearchParams({ q });
+    if (pos) params.set('pos', pos);
+    return req<GifSearchResponse>('GET', `/api/gifs/search?${params}`);
+  },
+  gifTrending: (pos?: string) =>
+    req<GifSearchResponse>('GET', `/api/gifs/trending${pos ? `?pos=${encodeURIComponent(pos)}` : ''}`),
 };

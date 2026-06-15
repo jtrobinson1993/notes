@@ -13,6 +13,7 @@ export interface UserRow {
   recovery_wrapped_mk: string | null;
   recovery_auth_hash: string | null;
   display_name: string | null;
+  name_color: string | null;
   created_at: number;
 }
 
@@ -43,6 +44,8 @@ export interface ConversationRow {
   created_by: string;
   created_at: number;
   dm_key: string | null;
+  parent_id: string | null;
+  parent_seq: number | null;
 }
 
 export interface ConversationMemberRow {
@@ -61,6 +64,16 @@ export interface MessageRow {
   sender_id: string;
   seq: number;
   epoch: number;
+  ciphertext: string;
+  iv: string;
+  created_at: number;
+}
+
+export interface ReactionRow {
+  id: string;
+  conversation_id: string;
+  seq: number;
+  user_id: string;
   ciphertext: string;
   iv: string;
   created_at: number;
@@ -227,7 +240,9 @@ CREATE TABLE IF NOT EXISTS conversations (
   kind TEXT NOT NULL,
   created_by TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  dm_key TEXT UNIQUE
+  dm_key TEXT UNIQUE,
+  parent_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+  parent_seq INTEGER
 );
 CREATE TABLE IF NOT EXISTS conversation_members (
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -251,6 +266,16 @@ CREATE TABLE IF NOT EXISTS messages (
   UNIQUE(conversation_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conversation_id, seq);
+CREATE TABLE IF NOT EXISTS message_reactions (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_conv_seq ON message_reactions(conversation_id, seq);
 CREATE TABLE IF NOT EXISTS device_links (
   id TEXT PRIMARY KEY,
   code TEXT NOT NULL UNIQUE,
@@ -273,11 +298,29 @@ export function openDb(dataDir: string) {
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
 
-  // Idempotent migration: add users.display_name if missing.
+  // Idempotent migration: add users.display_name / name_color if missing.
   const userCols = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
   if (!userCols.some((c) => c.name === 'display_name')) {
     db.exec('ALTER TABLE users ADD COLUMN display_name TEXT');
   }
+  if (!userCols.some((c) => c.name === 'name_color')) {
+    db.exec('ALTER TABLE users ADD COLUMN name_color TEXT');
+  }
+
+  // Idempotent migration: add conversations.parent_id/parent_seq (threads).
+  // Must precede the partial unique index, which references parent_id.
+  const convCols = db.prepare('PRAGMA table_info(conversations)').all() as { name: string }[];
+  if (!convCols.some((c) => c.name === 'parent_id')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN parent_id TEXT REFERENCES conversations(id) ON DELETE CASCADE');
+  }
+  if (!convCols.some((c) => c.name === 'parent_seq')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN parent_seq INTEGER');
+  }
+  // One thread per (parent conversation, parent message). Partial index so NULL
+  // parent_id (DMs/groups) is unconstrained.
+  db.exec(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_parent ON conversations(parent_id, parent_seq) WHERE parent_id IS NOT NULL',
+  );
 
   return {
     raw: db as SqliteDatabase,
@@ -525,6 +568,9 @@ export function openDb(dataDir: string) {
     setDisplayName(userId: string, displayName: string): void {
       db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(displayName, userId);
     },
+    setNameColor(userId: string, nameColor: string | null): void {
+      db.prepare('UPDATE users SET name_color = ? WHERE id = ?').run(nameColor, userId);
+    },
 
     // ---- Friend invites ----
     createFriendInvite(i: { id: string; token: string; createdBy: string; expiresAt: number }): void {
@@ -620,16 +666,29 @@ export function openDb(dataDir: string) {
     },
 
     // ---- Conversations ----
-    createConversation(c: { id: string; kind: string; createdBy: string; dmKey: string | null }): void {
-      db.prepare('INSERT INTO conversations (id, kind, created_by, created_at, dm_key) VALUES (?, ?, ?, ?, ?)').run(
-        c.id, c.kind, c.createdBy, now(), c.dmKey,
-      );
+    createConversation(c: {
+      id: string;
+      kind: string;
+      createdBy: string;
+      dmKey: string | null;
+      parentId?: string | null;
+      parentSeq?: number | null;
+    }): void {
+      db.prepare(
+        'INSERT INTO conversations (id, kind, created_by, created_at, dm_key, parent_id, parent_seq) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(c.id, c.kind, c.createdBy, now(), c.dmKey, c.parentId ?? null, c.parentSeq ?? null);
     },
     getConversation(id: string): ConversationRow | undefined {
       return db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as ConversationRow | undefined;
     },
     getConversationByDmKey(dmKey: string): ConversationRow | undefined {
       return db.prepare('SELECT * FROM conversations WHERE dm_key = ?').get(dmKey) as ConversationRow | undefined;
+    },
+    /** The thread rooted on a specific parent message, if any. */
+    getThreadByParent(parentId: string, parentSeq: number): ConversationRow | undefined {
+      return db
+        .prepare('SELECT * FROM conversations WHERE parent_id = ? AND parent_seq = ?')
+        .get(parentId, parentSeq) as ConversationRow | undefined;
     },
     listConversationsForUser(userId: string): ConversationRow[] {
       return db
@@ -730,6 +789,45 @@ export function openDb(dataDir: string) {
       return db
         .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT ?')
         .all(conversationId, limit) as MessageRow[];
+    },
+
+    // ---- Reactions (emoji encrypted with the conversation key) ----
+    addReaction(r: {
+      id: string;
+      conversationId: string;
+      seq: number;
+      userId: string;
+      ciphertext: string;
+      iv: string;
+    }): ReactionRow {
+      const createdAt = now();
+      db.prepare(
+        `INSERT INTO message_reactions (id, conversation_id, seq, user_id, ciphertext, iv, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(r.id, r.conversationId, r.seq, r.userId, r.ciphertext, r.iv, createdAt);
+      return {
+        id: r.id,
+        conversation_id: r.conversationId,
+        seq: r.seq,
+        user_id: r.userId,
+        ciphertext: r.ciphertext,
+        iv: r.iv,
+        created_at: createdAt,
+      };
+    },
+    getReaction(id: string): ReactionRow | undefined {
+      return db.prepare('SELECT * FROM message_reactions WHERE id = ?').get(id) as ReactionRow | undefined;
+    },
+    /** Delete a reaction only if it belongs to `userId`; returns true if removed. */
+    removeReaction(id: string, userId: string): boolean {
+      return (
+        db.prepare('DELETE FROM message_reactions WHERE id = ? AND user_id = ?').run(id, userId).changes > 0
+      );
+    },
+    listReactions(conversationId: string, limit = 5000): ReactionRow[] {
+      return db
+        .prepare('SELECT * FROM message_reactions WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?')
+        .all(conversationId, limit) as ReactionRow[];
     },
 
     // ---- Device links (cross-device onboarding) ----
