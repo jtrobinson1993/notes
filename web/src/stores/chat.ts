@@ -27,6 +27,7 @@ import { customEmojiForText, loadCustomEmoji, registerEmbeddedEmoji, resetCustom
 import { b64 } from '../lib/b64';
 import { useSessionStore } from './session';
 import { useFriendsStore } from './friends';
+import { useProfileStore } from './profile';
 
 /** Client-only view of a message: `text` is null when decryption failed.
  *  `gif`/`attachments` are decrypted embeds, if any. */
@@ -395,10 +396,15 @@ let unsubConnect: (() => void) | null = null;
 export function startChat(): void {
   const chat = useChatStore();
   const friends = useFriendsStore();
+  const profile = useProfileStore();
 
   const dispatch = (frame: ServerFrame): void => {
     void chat.handleFrame(frame);
     friends.handleFrame(frame);
+    // A new friend should receive my profile key; a contact's profile change
+    // invalidates its cached decryption.
+    if (frame.type === 'friend-accepted') void profile.distributeTo(frame.friend);
+    else if (frame.type === 'profile-updated') profile.invalidate(frame.userId);
   };
 
   unsubConnect?.();
@@ -406,6 +412,7 @@ export function startChat(): void {
     void (async () => {
       await chat.loadConversations();
       await friends.load();
+      await profile.load();
       void loadCustomEmoji();
       if (chat.activeId) {
         await chat.loadHistory(chat.activeId);
@@ -424,4 +431,5 @@ export function stopChat(): void {
   disconnectChatSocket();
   resetCustomEmoji();
   useChatStore().reset();
+  useProfileStore().reset();
 }

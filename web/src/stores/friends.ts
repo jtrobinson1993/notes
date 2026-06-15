@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type { Friend, FriendInvite, FriendRequest, ServerFrame } from '@notes/shared';
 import { api } from '../lib/api';
+import { useProfileStore } from './profile';
 
 export const useFriendsStore = defineStore('friends', () => {
   const friends = ref<Friend[]>([]);
@@ -36,6 +37,9 @@ export const useFriendsStore = defineStore('friends', () => {
     const friend = await api.friendRequestAccept(id);
     requests.value = requests.value.filter((x) => x.id !== id);
     upsertFriend(friend);
+    // Share my profile with the new friend (the other side does the same on its
+    // 'friend-accepted' frame).
+    void useProfileStore().distributeTo(friend);
     return friend;
   }
 
@@ -47,6 +51,8 @@ export const useFriendsStore = defineStore('friends', () => {
   async function unfriend(userId: string): Promise<void> {
     await api.unfriend(userId);
     friends.value = friends.value.filter((x) => x.userId !== userId);
+    // Rotate my profile key so the removed friend can't read future updates.
+    void useProfileStore().rotate();
   }
 
   function upsertFriend(friend: Friend): void {

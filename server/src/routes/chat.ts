@@ -299,6 +299,21 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     return !friendsOnly && db.sharesConversation(ownerId, recipientId);
   }
 
+  // The owner's own encrypted profile + the profile key wrapped under their MK,
+  // so they can decrypt and edit it on any device. Null when none is set yet.
+  app.get('/api/profile/data', { preHandler: requireAuth }, async (request) => {
+    const p = db.getProfile(request.user!.id);
+    if (!p) return { profile: null };
+    return {
+      profile: {
+        ciphertext: p.ciphertext,
+        iv: p.iv,
+        epoch: p.epoch,
+        ownerWrappedKey: JSON.parse(p.owner_wrapped_key) as unknown,
+      },
+    };
+  });
+
   // Set (or rotate) the encrypted profile blob and the per-recipient sealed keys.
   app.put('/api/profile/data', { preHandler: requireAuth }, async (request, reply) => {
     const me = request.user!.id;

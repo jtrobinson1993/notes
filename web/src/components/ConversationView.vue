@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import MarkdownView from './MarkdownView.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import ChatAvatar from './ChatAvatar.vue';
+import ProfileDialog from './ProfileDialog.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import ChatAttachment from './ChatAttachment.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
@@ -16,6 +17,7 @@ import IconPaperclip from '~icons/mynaui/paperclip';
 import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
 import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
+import { useProfileStore } from '../stores/profile';
 import { conversationTitle } from '../lib/convName';
 
 // Renders one conversation (DM, group, or a thread). The parent owns routing and
@@ -24,6 +26,7 @@ const props = defineProps<{ convId: string; isThreadPanel?: boolean; hideHeader?
 const emit = defineEmits<{ openThread: [seq: number]; close: [] }>();
 const session = useSessionStore();
 const chat = useChatStore();
+const profile = useProfileStore();
 
 const convId = computed(() => props.convId);
 const loading = ref(false);
@@ -70,6 +73,29 @@ function memberName(senderId: string): string {
 function nameColorCss(senderId: string): string | undefined {
   const c = conversation.value?.members.find((m) => m.userId === senderId)?.nameColor;
   return c ? `var(--brand-${c})` : undefined;
+}
+
+// A member's decrypted avatar (from the profile cache), or null for the initial
+// fallback. Cache lookups are reactive, so avatars fill in once fetched.
+function avatarFor(senderId: string): string | null {
+  return profile.cache[senderId]?.data?.avatar ?? null;
+}
+
+// Lazily fetch every member's profile so avatars (and the profile dialog) resolve.
+function loadMemberProfiles() {
+  const meId = session.user?.id;
+  for (const m of conversation.value?.members ?? []) {
+    if (m.userId !== meId) void profile.fetch(m.userId).catch(() => {});
+  }
+}
+
+// Profile dialog (opened by clicking a sender's avatar or name).
+const profileUserId = ref<string | null>(null);
+const profileOpen = ref(false);
+function openProfile(userId: string) {
+  if (userId === session.user?.id) return; // own profile lives in Settings
+  profileUserId.value = userId;
+  profileOpen.value = true;
 }
 
 // A short, single-line preview of a message, for the reply quote.
@@ -149,6 +175,7 @@ async function activate(id: string) {
   } finally {
     loading.value = false;
   }
+  loadMemberProfiles();
   await scrollToBottom();
   await markReadHere();
 }
@@ -364,7 +391,14 @@ async function sendGif(gif: GifRef) {
                  and the fixed height keeps it in that same spot when the message
                  wraps to multiple lines. -->
             <div v-if="row.isStart" class="flex h-11 items-center">
-              <ChatAvatar :name="row.name" :seed="row.senderId" class="h-10 w-10 text-sm" />
+              <button
+                type="button"
+                class="rounded-full transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                :aria-label="`View ${row.name}'s profile`"
+                @click="openProfile(row.senderId)"
+              >
+                <ChatAvatar :name="row.name" :seed="row.senderId" :src="avatarFor(row.senderId)" class="h-10 w-10 text-sm" />
+              </button>
             </div>
             <time
               v-else
@@ -384,7 +418,12 @@ async function sendGif(gif: GifRef) {
               <span class="truncate opacity-80">{{ row.msg.replyTo.preview }}</span>
             </button>
             <div v-if="row.isStart" class="mb-0.5 flex items-baseline gap-2">
-              <span class="font-medium text-zinc-700 dark:text-zinc-200" :style="{ color: nameColorCss(row.senderId) }">{{ row.name }}</span>
+              <button
+                type="button"
+                class="font-medium text-zinc-700 hover:underline dark:text-zinc-200"
+                :style="{ color: nameColorCss(row.senderId) }"
+                @click="openProfile(row.senderId)"
+              >{{ row.name }}</button>
               <time class="text-xs text-zinc-400 dark:text-zinc-500">{{ formatTime(row.msg.createdAt) }}</time>
             </div>
             <div class="chat-message">
@@ -500,5 +539,7 @@ async function sendGif(gif: GifRef) {
           </button>
         </div>
       </div>
+
+      <ProfileDialog v-model:open="profileOpen" :user-id="profileUserId" />
     </div>
 </template>

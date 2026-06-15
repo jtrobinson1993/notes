@@ -39,6 +39,7 @@ describe('auth — every chat route rejects the unauthenticated', () => {
     ['DELETE', '/api/friends/x'],
     ['GET', '/api/profile'],
     ['PUT', '/api/profile'],
+    ['GET', '/api/profile/data'],
     ['PUT', '/api/profile/data'],
     ['POST', '/api/profile/keys'],
     ['PUT', '/api/profile/visibility'],
@@ -508,6 +509,16 @@ describe('E2EE profiles (bio + avatar)', () => {
     await put('/api/profile/data', authCookie(t.db, me), dataPayload([])); // no recipients
     const view = await inject({ method: 'GET', url: `/api/users/${me}/profile`, cookie: authCookie(t.db, friend) });
     expect(view.json().encrypted).toBeNull();
+  });
+
+  it('GET /api/profile/data returns the owner’s own blob + wrapped key (null when unset)', async () => {
+    const me = seedUser(t.db);
+    const cookie = authCookie(t.db, me);
+    expect((await inject({ method: 'GET', url: '/api/profile/data', cookie })).json()).toEqual({ profile: null });
+
+    await put('/api/profile/data', cookie, dataPayload([]));
+    const got = (await inject({ method: 'GET', url: '/api/profile/data', cookie })).json();
+    expect(got.profile).toMatchObject({ ciphertext: 'CT', iv: 'IV', epoch: 0, ownerWrappedKey: WRAPPED });
   });
 
   it('rejects a sealed key for a non-friend when friends-only (the default)', async () => {

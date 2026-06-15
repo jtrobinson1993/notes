@@ -13,9 +13,12 @@ import type {
   MetaResponse,
   NoteVersionInfo,
   NotesSyncResponse,
+  ProfileCipher,
   ProfileInfo,
+  ProfileView,
   SealedKey,
   SealedMemberKey,
+  SealedProfileKey,
   ShareAccess,
   ShareInfo,
   SharedNoteRecord,
@@ -157,6 +160,23 @@ export const api = {
   profileGet: () => req<ProfileInfo>('GET', '/api/profile'),
   profileSet: (patch: { displayName?: string; nameColor?: string | null }) =>
     req<ProfileInfo>('PUT', '/api/profile', patch),
+
+  // ---- v3.2: E2EE profiles (bio + avatar) ----
+  profileDataGet: () =>
+    req<{ profile: (ProfileCipher & { ownerWrappedKey: WrappedKey }) | null }>('GET', '/api/profile/data'),
+  profileDataSet: (body: {
+    ciphertext: string;
+    iv: string;
+    epoch: number;
+    ownerWrappedKey: WrappedKey;
+    keys: SealedProfileKey[];
+  }) => req<{ ok: true; epoch: number }>('PUT', '/api/profile/data', body),
+  profileKeysAdd: (epoch: number, keys: SealedProfileKey[]) =>
+    req<{ ok: true }>('POST', '/api/profile/keys', { epoch, keys }),
+  profileVisibilitySet: (friendsOnly: boolean) =>
+    req<ProfileInfo>('PUT', '/api/profile/visibility', { friendsOnly }),
+  userProfileGet: (userId: string) =>
+    req<ProfileView>('GET', `/api/users/${encodeURIComponent(userId)}/profile`),
 
   // ---- v3 chat: conversations + messages ----
   conversations: () => req<Conversation[]>('GET', '/api/conversations'),
