@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type {
+  AttachmentRef,
   ChatMessage,
   Conversation,
   Friend,
@@ -23,10 +24,11 @@ import { useSessionStore } from './session';
 import { useFriendsStore } from './friends';
 
 /** Client-only view of a message: `text` is null when decryption failed.
- *  `gif` is the decrypted embedded GIF, if any. */
+ *  `gif`/`attachments` are decrypted embeds, if any. */
 export interface ChatMessageView extends ChatMessage {
   text: string | null;
   gif?: GifRef | null;
+  attachments?: AttachmentRef[];
 }
 
 const HISTORY_LIMIT = 50;
@@ -68,7 +70,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!key) return { ...m, text: null };
     try {
       const payload = await decryptMessage(key, m.ciphertext, m.iv);
-      return { ...m, text: payload.text, gif: safeGif(payload.gif) };
+      return { ...m, text: payload.text, gif: safeGif(payload.gif), attachments: payload.attachments ?? [] };
     } catch {
       return { ...m, text: null };
     }
@@ -147,16 +149,21 @@ export const useChatStore = defineStore('chat', () => {
     mergeMessages(convId, views);
   }
 
-  async function sendMessage(convId: string, text: string, opts?: { gif?: GifRef }): Promise<void> {
+  async function sendMessage(
+    convId: string,
+    text: string,
+    opts?: { gif?: GifRef; attachments?: AttachmentRef[] },
+  ): Promise<void> {
     const key = convKeys.get(convId);
     if (!key) throw new Error('no conversation key');
     const conv = conversations.value.find((c) => c.id === convId);
     const epoch = conv?.epoch ?? 0;
     const payload: MessagePayload = { text, sentAt: Date.now() };
     if (opts?.gif) payload.gif = opts.gif;
+    if (opts?.attachments?.length) payload.attachments = opts.attachments;
     const { ciphertext, iv } = await encryptMessage(key, payload);
     const sent = await api.messageSend(convId, { ciphertext, iv, epoch });
-    mergeMessages(convId, [{ ...sent, text, gif: opts?.gif ?? null }]);
+    mergeMessages(convId, [{ ...sent, text, gif: opts?.gif ?? null, attachments: opts?.attachments ?? [] }]);
     bumpLastSeq(convId, sent.seq);
   }
 

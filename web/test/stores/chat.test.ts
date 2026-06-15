@@ -138,6 +138,25 @@ describe('sendMessage', () => {
     expect(payload.gif).toEqual(gif);
   });
 
+  it('embeds attachments inside the encrypted payload and the optimistic view', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 0 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    const att = { id: 'a1', name: 'cat.png', type: 'image/png', size: 12, key: 'AAAA', iv: 'BBBB' };
+    api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
+    await store.sendMessage('c1', 'look', { attachments: [att] });
+
+    expect(store.messages['c1']?.find((m) => m.seq === 1)?.attachments).toEqual([att]);
+    const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
+    const payload = await decryptMessage(serverKey, sentArg.ciphertext, sentArg.iv);
+    expect(payload.attachments).toEqual([att]);
+  });
+
   it('drops a non-KLIPY gif url on inbound decrypt (anti-IP-harvest) but keeps a KLIPY one', async () => {
     const kp = await myKeyPair();
     const serverKey = generateConversationKey();

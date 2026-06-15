@@ -245,12 +245,16 @@ export interface GifRef {
 
 /** What the client encrypts into a message blob (extensible in v3.1). */
 export interface MessagePayload {
-  /** markdown text (may be empty when the message is purely a GIF) */
+  /** markdown text (may be empty when the message is purely a GIF/attachment) */
   text: string;
   /** the sender's own clock (server time is separate metadata) */
   sentAt: number;
   /** an embedded GIF (KLIPY search) — v3.1 */
   gif?: GifRef;
+  /** encrypted file/image attachments. Each carries its own random AES key, so
+   *  storing the ref inside this (conversation-key-encrypted) payload means only
+   *  conversation members can decrypt the blob — same shape as NotePayload. */
+  attachments?: AttachmentRef[];
 }
 
 /** One normalized GIF search hit returned by the server-side KLIPY proxy. */

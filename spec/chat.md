@@ -270,3 +270,22 @@ client loads the animated media directly from KLIPY's CDN — a third-party
 metadata tradeoff (recipient IP/timing), documented in
 [security.md](security.md). `GifPicker.vue` is a debounced popover (trending on
 open); a purely-GIF message has empty `text`.
+
+### Encrypted attachments
+
+Chat attachments reuse the **note** attachment machinery unchanged: the client
+optimizes (images), encrypts the blob with a **fresh per-file AES-256-GCM key**
+(`encryptAndUploadFile` → `lib/attachments.ts`), uploads ciphertext to the
+capability-style `POST /api/attachments`, and embeds the resulting
+`AttachmentRef` (`{id, name, type, size, key, iv}`) in
+`MessagePayload.attachments`. Because that payload is itself sealed under the
+conversation key, only conversation members can read the per-file key — so the
+attachment is **effectively conversation-keyed** (the same indirection notes
+use), without a second key-distribution mechanism.
+
+The composer (`+` button) uploads each picked file immediately and stages it as
+a removable chip; **Send** embeds the staged refs with the (optional) text.
+Rendering (`ChatAttachment.vue`) decrypts the blob locally to an object URL —
+images inline, other files as a download chip. Decryption is local, so (like
+note attachments) there's **no remote fetch and no IP leak**. The per-file size
+cap mirrors the server's 32 MiB.

@@ -6,7 +6,9 @@ import MarkdownView from '../components/MarkdownView.vue';
 import MarkdownEditor from '../components/MarkdownEditor.vue';
 import ChatAvatar from '../components/ChatAvatar.vue';
 import GifPicker from '../components/GifPicker.vue';
-import type { Conversation, GifRef } from '@notes/shared';
+import ChatAttachment from '../components/ChatAttachment.vue';
+import { encryptAndUploadFile } from '../lib/attachments';
+import type { AttachmentRef, Conversation, GifRef } from '@notes/shared';
 import { useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 
@@ -20,6 +22,10 @@ const loadingOlder = ref(false);
 const text = ref('');
 const sending = ref(false);
 const scroller = ref<HTMLElement>();
+const fileInput = ref<HTMLInputElement>();
+const staged = ref<AttachmentRef[]>([]);
+const attaching = ref(false);
+const attachError = ref('');
 
 const conversation = computed<Conversation | undefined>(() =>
   chat.conversations.find((c) => c.id === convId.value),
@@ -135,15 +141,42 @@ function onScroll() {
 
 async function send() {
   const body = text.value.trim();
-  if (!body || sending.value) return;
+  if ((!body && !staged.value.length) || sending.value) return;
   sending.value = true;
   try {
-    await chat.sendMessage(convId.value, body);
+    await chat.sendMessage(convId.value, body, staged.value.length ? { attachments: [...staged.value] } : undefined);
     text.value = '';
+    staged.value = [];
     await scrollToBottom();
   } finally {
     sending.value = false;
   }
+}
+
+// Each file uploads independently (encrypted client-side) and is staged as a
+// chip; Send then embeds the refs in the message. A single failure doesn't
+// abort the batch.
+async function onPickFiles(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const files = input.files;
+  if (!files?.length) return;
+  attaching.value = true;
+  attachError.value = '';
+  const failed: string[] = [];
+  for (const file of files) {
+    try {
+      staged.value.push(await encryptAndUploadFile(file));
+    } catch (err) {
+      failed.push(`${file.name} — ${err instanceof Error ? err.message : 'upload failed'}`);
+    }
+  }
+  input.value = '';
+  attaching.value = false;
+  attachError.value = failed.length ? `Couldn't attach: ${failed.join('; ')}` : '';
+}
+
+function removeStaged(id: string) {
+  staged.value = staged.value.filter((a) => a.id !== id);
 }
 
 async function sendGif(gif: GifRef) {
@@ -216,7 +249,10 @@ async function sendGif(gif: GifRef) {
               <time class="text-xs text-zinc-400 dark:text-zinc-500">{{ formatTime(row.msg.createdAt) }}</time>
             </div>
             <div class="chat-message">
-              <span v-if="row.msg.text === null && !row.msg.gif" class="italic opacity-70">message could not be decrypted</span>
+              <span
+                v-if="row.msg.text === null && !row.msg.gif && !row.msg.attachments?.length"
+                class="italic opacity-70"
+              >message could not be decrypted</span>
               <template v-else>
                 <MarkdownView v-if="row.msg.text" :source="row.msg.text" />
                 <img
@@ -227,6 +263,11 @@ async function sendGif(gif: GifRef) {
                   class="mt-1 w-full max-w-[260px] rounded-lg bg-zinc-100 dark:bg-zinc-800"
                   loading="lazy"
                 />
+                <ChatAttachment
+                  v-for="a in row.msg.attachments"
+                  :key="a.id"
+                  :attachment="a"
+                />
               </template>
             </div>
           </div>
@@ -234,7 +275,30 @@ async function sendGif(gif: GifRef) {
       </div>
 
       <div class="shrink-0 border-t border-zinc-200 p-3 dark:border-zinc-800">
+        <!-- Staged attachments (uploaded encrypted; sent with the next message). -->
+        <div v-if="staged.length || attaching || attachError" class="mb-2 flex flex-wrap items-center gap-2">
+          <span
+            v-for="a in staged"
+            :key="a.id"
+            class="flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50 py-1 pl-2 pr-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+          >
+            <span class="max-w-[160px] truncate">{{ a.type.startsWith('image/') ? '🖼️' : '📎' }} {{ a.name }}</span>
+            <button class="rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Remove" @click="removeStaged(a.id)">✕</button>
+          </span>
+          <span v-if="attaching" class="text-xs text-zinc-400">Uploading…</span>
+          <span v-if="attachError" class="text-xs text-red-500">{{ attachError }}</span>
+        </div>
+
         <div class="flex items-end gap-2">
+          <input ref="fileInput" type="file" multiple class="hidden" @change="onPickFiles" />
+          <button
+            type="button"
+            title="Attach files"
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-lg text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            @click="fileInput?.click()"
+          >
+            +
+          </button>
           <!-- Reuse the v2.1 live editor as the composer: code blocks, spoilers,
                colors, and the selection toolbar all come for free. Enter sends;
                Shift+Enter inserts a newline. -->
@@ -248,7 +312,7 @@ async function sendGif(gif: GifRef) {
           </div>
           <GifPicker @pick="sendGif" />
           <button
-            :disabled="!text.trim() || sending"
+            :disabled="(!text.trim() && !staged.length) || sending"
             class="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             @click="send"
           >
