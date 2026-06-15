@@ -1,7 +1,19 @@
+import { existsSync } from 'node:fs';
 import { loadConfig } from './config.js';
 import { openDb } from './db.js';
 import { buildApp } from './app.js';
 import { startBackups } from './backup.js';
+
+// Load integration secrets (KLIPY_API_KEY, …) from a gitignored .env if present.
+// Documented in .env.example. Check cwd (prod/docker run from repo root) and the
+// repo root relative to the server/ workspace (dev runs there). Must precede
+// loadConfig(), which reads process.env.
+for (const envPath of ['.env', '../.env']) {
+  if (existsSync(envPath)) {
+    process.loadEnvFile(envPath);
+    break;
+  }
+}
 
 const config = loadConfig();
 const db = openDb(config.dataDir);
