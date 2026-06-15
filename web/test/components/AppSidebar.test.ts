@@ -11,16 +11,10 @@ vi.mock('../../src/stores/session', () => ({ useSessionStore: () => ({ user: { i
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn(), currentRoute: { value: { path: '/chat/c1' } } }),
 }));
-// reka-ui popover internals aren't relevant here; render slots inline.
-vi.mock('reka-ui', () => {
-  const slot = (name: string) => ({ name, template: '<div><slot /></div>' });
-  return {
-    PopoverRoot: slot('PopoverRoot'),
-    PopoverTrigger: slot('PopoverTrigger'),
-    PopoverPortal: slot('PopoverPortal'),
-    PopoverContent: slot('PopoverContent'),
-  };
-});
+// The new-chat modal (and its reka-ui Dialog internals) isn't relevant here.
+vi.mock('../../src/components/NewChatModal.vue', () => ({
+  default: { name: 'NewChatModal', template: '<div />' },
+}));
 
 import AppSidebar from '../../src/components/AppSidebar.vue';
 import { useChatStore } from '../../src/stores/chat';

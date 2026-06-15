@@ -346,6 +346,49 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     return toConversation(conv, me)!;
   });
 
+  // Create a group conversation (3+ members: me + 2 or more friends). Unlike a
+  // DM, a group isn't idempotent — each call makes a distinct group. The key is
+  // sealed client-side to every member, so the server only stores opaque keys.
+  app.post('/api/conversations/group', { preHandler: requireAuth }, async (request, reply) => {
+    const me = request.user!.id;
+    const members = (request.body as Record<string, unknown> | null)?.members;
+    if (!Array.isArray(members) || members.length < 3) {
+      return reply.code(400).send({ error: 'a group needs at least 3 members' });
+    }
+    const byUser = new Map<string, SealedMemberKey>();
+    for (const m of members as unknown[]) {
+      if (typeof m !== 'object' || m === null) return reply.code(400).send({ error: 'invalid member' });
+      const mm = m as Record<string, unknown>;
+      if (typeof mm.userId !== 'string' || !validSealedKey(mm.sealedKey)) {
+        return reply.code(400).send({ error: 'invalid member' });
+      }
+      byUser.set(mm.userId, { userId: mm.userId, sealedKey: mm.sealedKey });
+    }
+    if (!byUser.has(me) || byUser.size !== members.length) {
+      return reply.code(400).send({ error: 'members must include you, with no duplicates' });
+    }
+    // Every other member must currently be a friend of the creator.
+    for (const userId of byUser.keys()) {
+      if (userId === me) continue;
+      if (!db.areFriends(me, userId)) return reply.code(400).send({ error: 'not a friend' });
+    }
+
+    const convId = newId();
+    const tx = db.raw.transaction(() => {
+      db.createConversation({ id: convId, kind: 'group', createdBy: me, dmKey: null });
+      for (const mk of byUser.values()) {
+        db.addConversationMember({
+          conversationId: convId,
+          userId: mk.userId,
+          sealedKey: JSON.stringify(mk.sealedKey),
+          epoch: 0,
+        });
+      }
+    });
+    tx();
+    return toConversation(db.getConversation(convId)!, me)!;
+  });
+
   // Create (or return) the thread rooted on a parent message. A thread is a
   // child conversation with its own key, sealed to ALL parent members — so it
   // reuses the entire message/reaction/realtime machinery.

@@ -16,6 +16,7 @@ import IconPaperclip from '~icons/mynaui/paperclip';
 import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
 import { useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
+import { conversationTitle } from '../lib/convName';
 
 // Renders one conversation (DM, group, or a thread). The parent owns routing and
 // the thread panel, so opening a thread just emits the parent message's seq.
@@ -41,14 +42,9 @@ const conversation = computed<Conversation | undefined>(() =>
   chat.conversations.find((c) => c.id === convId.value),
 );
 
-const otherMember = computed(() => {
-  const meId = session.user?.id;
-  return conversation.value?.members.find((m) => m.userId !== meId) ?? conversation.value?.members[0];
-});
-
 const isThread = computed(() => conversation.value?.kind === 'thread');
 const title = computed(() =>
-  isThread.value ? 'Thread' : otherMember.value?.displayName || 'Conversation',
+  conversation.value ? conversationTitle(conversation.value, session.user?.id) : 'Conversation',
 );
 
 // Opening a thread is owned by the parent (it manages the side panel).

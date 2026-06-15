@@ -163,6 +163,30 @@ export const useChatStore = defineStore('chat', () => {
     return conv.id;
   }
 
+  /** Create a group conversation with 2+ friends; returns its id. The group key
+   *  is sealed to me + every selected friend, reusing the conv-key machinery. */
+  async function openGroup(selected: Friend[]): Promise<string> {
+    const { privateKey, publicKey } = await session.getKeyPair();
+    const me = session.user;
+    if (!me) throw new Error('not logged in');
+    if (selected.length < 2) throw new Error('a group needs at least two friends');
+
+    const convKey = generateConversationKey();
+    const members: SealedMemberKey[] = [
+      { userId: me.id, sealedKey: await sealConversationKey(b64(publicKey), convKey) },
+    ];
+    for (const f of selected) {
+      if (!f.publicKey) throw new Error(`${f.displayName} has no public key`);
+      members.push({ userId: f.userId, sealedKey: await sealConversationKey(f.publicKey, convKey) });
+    }
+    const conv = await api.conversationCreateGroup(members);
+    convKeys.set(conv.id, await unsealConversationKey(conv.sealedKey, privateKey, publicKey));
+    upsertConversation(conv);
+    setActive(conv.id);
+    await loadHistory(conv.id);
+    return conv.id;
+  }
+
   /** The thread rooted on a parent message, if one exists in memory. */
   function threadFor(parentConvId: string, seq: number): Conversation | undefined {
     return conversations.value.find(
@@ -341,6 +365,7 @@ export const useChatStore = defineStore('chat', () => {
     setActive,
     loadConversations,
     openDm,
+    openGroup,
     openThread,
     threadFor,
     loadHistory,

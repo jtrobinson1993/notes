@@ -41,6 +41,7 @@ describe('auth — every chat route rejects the unauthenticated', () => {
     ['PUT', '/api/profile'],
     ['GET', '/api/conversations'],
     ['POST', '/api/conversations/dm'],
+    ['POST', '/api/conversations/group'],
     ['GET', '/api/conversations/x/messages'],
     ['POST', '/api/conversations/x/messages'],
     ['POST', '/api/conversations/x/read'],
@@ -237,6 +238,84 @@ describe('DM conversations', () => {
     const res = await inject({ method: 'POST', url: '/api/conversations/dm', cookie: authCookie(t.db, me), payload: dmPayload(me, friend) });
     expect(res.json().sealedKey).toEqual(SEALED);
     expect(res.json().members).toHaveLength(2);
+  });
+});
+
+describe('Group conversations', () => {
+  function groupPayload(...userIds: string[]) {
+    return { members: userIds.map((userId) => ({ userId, sealedKey: SEALED })) };
+  }
+
+  it('creates a group of me + two friends', async () => {
+    const me = seedUser(t.db);
+    const a = seedUser(t.db);
+    const b = seedUser(t.db);
+    makeFriends(t.db, me, a);
+    makeFriends(t.db, me, b);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/conversations/group',
+      cookie: authCookie(t.db, me),
+      payload: groupPayload(me, a, b),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().kind).toBe('group');
+    expect(res.json().members).toHaveLength(3);
+    expect(res.json().sealedKey).toEqual(SEALED);
+  });
+
+  it('is not idempotent — each call makes a distinct group', async () => {
+    const me = seedUser(t.db);
+    const a = seedUser(t.db);
+    const b = seedUser(t.db);
+    makeFriends(t.db, me, a);
+    makeFriends(t.db, me, b);
+    const cookie = authCookie(t.db, me);
+    const first = await inject({ method: 'POST', url: '/api/conversations/group', cookie, payload: groupPayload(me, a, b) });
+    const second = await inject({ method: 'POST', url: '/api/conversations/group', cookie, payload: groupPayload(me, a, b) });
+    expect(first.json().id).not.toBe(second.json().id);
+  });
+
+  it('rejects fewer than three members', async () => {
+    const me = seedUser(t.db);
+    const a = seedUser(t.db);
+    makeFriends(t.db, me, a);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/conversations/group',
+      cookie: authCookie(t.db, me),
+      payload: groupPayload(me, a),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a group that includes a non-friend', async () => {
+    const me = seedUser(t.db);
+    const friend = seedUser(t.db);
+    const stranger = seedUser(t.db);
+    makeFriends(t.db, me, friend);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/conversations/group',
+      cookie: authCookie(t.db, me),
+      payload: groupPayload(me, friend, stranger),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a member set that omits the creator', async () => {
+    const me = seedUser(t.db);
+    const a = seedUser(t.db);
+    const b = seedUser(t.db);
+    makeFriends(t.db, me, a);
+    makeFriends(t.db, me, b);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/conversations/group',
+      cookie: authCookie(t.db, me),
+      payload: groupPayload(a, b, seedUser(t.db)),
+    });
+    expect(res.statusCode).toBe(400);
   });
 });
 

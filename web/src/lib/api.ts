@@ -162,6 +162,8 @@ export const api = {
   conversations: () => req<Conversation[]>('GET', '/api/conversations'),
   conversationCreateDm: (friendId: string, members: SealedMemberKey[]) =>
     req<Conversation>('POST', '/api/conversations/dm', { friendId, members }),
+  conversationCreateGroup: (members: SealedMemberKey[]) =>
+    req<Conversation>('POST', '/api/conversations/group', { members }),
   threadCreate: (parentId: string, seq: number, members: SealedMemberKey[]) =>
     req<Conversation>('POST', `/api/conversations/${encodeURIComponent(parentId)}/messages/${seq}/thread`, { members }),
   conversationMessages: (id: string, opts?: { before?: number; limit?: number }) => {

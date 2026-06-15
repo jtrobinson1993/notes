@@ -1,19 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import {
-  PopoverContent,
-  PopoverPortal,
-  PopoverRoot,
-  PopoverTrigger,
-} from 'reka-ui';
 import type { Conversation } from '@notes/shared';
 import { useChatStore } from '../stores/chat';
-import { useFriendsStore } from '../stores/friends';
 import { useSessionStore } from '../stores/session';
 import { useNotesStore } from '../stores/notes';
+import NewChatModal from './NewChatModal.vue';
+import { conversationInitial, conversationTitle } from '../lib/convName';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
 import IconPanelLeftClose from '~icons/mynaui/panel-left-close';
+import IconMessagePlus from '~icons/mynaui/message-plus';
 import IconPen from '~icons/mynaui/pen';
 import IconLock from '~icons/mynaui/lock';
 import IconCog from '~icons/mynaui/cog';
@@ -21,7 +17,6 @@ import IconLogout from '~icons/mynaui/logout';
 
 const session = useSessionStore();
 const chat = useChatStore();
-const friends = useFriendsStore();
 const notes = useNotesStore();
 const router = useRouter();
 
@@ -41,18 +36,12 @@ function toggle() {
 
 const newChatOpen = ref(false);
 
-/** For a DM, the member who isn't me; otherwise the first member. */
-function otherMember(conv: Conversation) {
-  const meId = session.user?.id;
-  return conv.members.find((m) => m.userId !== meId) ?? conv.members[0];
-}
-
 function convName(conv: Conversation): string {
-  return otherMember(conv)?.displayName || 'Conversation';
+  return conversationTitle(conv, session.user?.id);
 }
 
 function convInitial(conv: Conversation): string {
-  return (convName(conv).trim()[0] ?? '?').toUpperCase();
+  return conversationInitial(conv, session.user?.id);
 }
 
 const sortedConversations = computed(() =>
@@ -64,19 +53,6 @@ const activeConvId = computed(() => {
   const m = /^\/chat\/(.+)$/.exec(router.currentRoute.value.path);
   return m ? m[1] : null;
 });
-
-async function startDm(userId: string) {
-  newChatOpen.value = false;
-  const friend = friends.friends.find((f) => f.userId === userId);
-  if (!friend) return;
-  try {
-    const convId = await chat.openDm(friend);
-    router.push(`/chat/${convId}`);
-  } catch {
-    // openDm can throw if the friend has no public key; fall back to friends view.
-    router.push('/friends');
-  }
-}
 </script>
 
 <template>
@@ -86,46 +62,22 @@ async function startDm(userId: string) {
   >
     <!-- Top: new chat -->
     <div class="flex flex-col gap-1 p-2">
-      <PopoverRoot v-model:open="newChatOpen">
-        <PopoverTrigger
-          class="flex items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-700 hover:bg-zinc-200 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          :class="expanded ? '' : 'justify-center'"
-          title="New chat"
+      <button
+        class="group/item relative flex items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-700 hover:bg-zinc-200 dark:text-zinc-200 dark:hover:bg-zinc-800"
+        :class="expanded ? '' : 'justify-center'"
+        @click="newChatOpen = true"
+      >
+        <IconMessagePlus class="h-6 w-6 shrink-0 text-blue-600" />
+        <span v-if="expanded" class="truncate">New chat</span>
+        <span
+          v-if="!expanded"
+          class="pointer-events-none absolute left-full top-1/2 z-40 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md bg-zinc-900 px-2 py-1 text-xs text-white opacity-0 shadow-lg transition-opacity group-hover/item:opacity-100 dark:bg-zinc-700"
         >
-          <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-600 text-base leading-none text-white">+</span>
-          <span v-if="expanded" class="truncate">New chat</span>
-        </PopoverTrigger>
-        <PopoverPortal>
-          <PopoverContent
-            side="right"
-            align="start"
-            :side-offset="6"
-            class="z-30 w-56 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
-          >
-            <p class="px-3 py-1.5 text-xs font-medium text-zinc-400">Start a chat</p>
-            <button
-              v-for="f in friends.friends"
-              :key="f.userId"
-              class="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
-              @click="startDm(f.userId)"
-            >
-              <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-xs font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
-                {{ (f.displayName.trim()[0] ?? '?').toUpperCase() }}
-              </span>
-              <span class="truncate">{{ f.displayName }}</span>
-            </button>
-            <p v-if="!friends.friends.length" class="px-3 py-2 text-xs text-zinc-400">No friends yet</p>
-            <RouterLink
-              to="/friends"
-              class="mt-1 block border-t border-zinc-100 px-3 py-1.5 text-sm text-blue-600 hover:underline dark:border-zinc-800 dark:text-blue-400"
-              @click="newChatOpen = false"
-            >
-              Manage friends…
-            </RouterLink>
-          </PopoverContent>
-        </PopoverPortal>
-      </PopoverRoot>
+          New chat
+        </span>
+      </button>
     </div>
+    <NewChatModal v-model:open="newChatOpen" />
 
     <!-- Conversations + Notes -->
     <div class="min-h-0 grow overflow-y-auto px-2">
