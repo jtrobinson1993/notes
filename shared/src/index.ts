@@ -186,7 +186,7 @@ export interface Friend {
   online: boolean;
 }
 
-export type ConversationKind = 'dm' | 'group';
+export type ConversationKind = 'dm' | 'group' | 'thread';
 
 export interface ConversationMember {
   userId: string;
@@ -209,6 +209,10 @@ export interface Conversation {
   /** my last-read seq; unread count = lastSeq - lastReadSeq */
   lastReadSeq: number;
   createdAt: number;
+  /** for a thread (`kind: 'thread'`): the parent conversation it hangs off */
+  parentId?: string | null;
+  /** for a thread: the parent message seq it's rooted on */
+  parentSeq?: number | null;
 }
 
 /** One chat message. ciphertext/iv are opaque to the server. */

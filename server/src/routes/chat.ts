@@ -74,8 +74,9 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
       };
     });
     // DM access requires current friendship — unfriending revokes access
-    // (history preserved; restored on re-friend).
-    if (conv.kind === 'dm') {
+    // (history preserved; restored on re-friend). A 1:1 thread inherits the
+    // same rule (it has the same two members as its parent DM).
+    if (conv.kind === 'dm' || (conv.kind === 'thread' && members.length === 2)) {
       const other = members.find((m) => m.userId !== userId);
       if (other && !db.areFriends(userId, other.userId)) return null;
     }
@@ -88,6 +89,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
       lastSeq: db.getMaxSeq(conv.id),
       lastReadSeq: mine.last_read_seq,
       createdAt: conv.created_at,
+      parentId: conv.parent_id,
+      parentSeq: conv.parent_seq,
     };
   }
 
@@ -324,6 +327,74 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     }
     const conv = db.getConversation(convId)!;
     return toConversation(conv, me)!;
+  });
+
+  // Create (or return) the thread rooted on a parent message. A thread is a
+  // child conversation with its own key, sealed to ALL parent members — so it
+  // reuses the entire message/reaction/realtime machinery.
+  app.post('/api/conversations/:id/messages/:seq/thread', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, seq } = request.params as { id: string; seq: string };
+    const me = request.user!.id;
+    const parent = db.getConversation(id);
+    if (!parent) return reply.code(404).send({ error: 'not found' });
+    if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
+    if (parent.kind === 'thread') return reply.code(400).send({ error: 'cannot thread a thread' });
+    const seqNum = Number(seq);
+    if (!Number.isInteger(seqNum) || seqNum < 1 || seqNum > db.getMaxSeq(id)) {
+      return reply.code(400).send({ error: 'invalid seq' });
+    }
+
+    // Idempotent: one thread per parent message.
+    const existing = db.getThreadByParent(id, seqNum);
+    if (existing) {
+      const c = toConversation(existing, me);
+      if (c) return c;
+    }
+
+    // Members must be exactly the parent's members (the thread key is sealed to
+    // everyone who can see the parent).
+    const parentMemberIds = new Set(db.listConversationMembers(id).map((m) => m.user_id));
+    const members = (request.body as Record<string, unknown> | null)?.members;
+    if (!Array.isArray(members) || members.length !== parentMemberIds.size) {
+      return reply.code(400).send({ error: 'members must match the parent conversation' });
+    }
+    const byUser = new Map<string, SealedMemberKey>();
+    for (const m of members as unknown[]) {
+      if (typeof m !== 'object' || m === null) return reply.code(400).send({ error: 'invalid member' });
+      const mm = m as Record<string, unknown>;
+      if (typeof mm.userId !== 'string' || !validSealedKey(mm.sealedKey)) {
+        return reply.code(400).send({ error: 'invalid member' });
+      }
+      byUser.set(mm.userId, { userId: mm.userId, sealedKey: mm.sealedKey });
+    }
+    if (byUser.size !== parentMemberIds.size || [...byUser.keys()].some((u) => !parentMemberIds.has(u))) {
+      return reply.code(400).send({ error: 'members must match the parent conversation' });
+    }
+
+    const convId = newId();
+    try {
+      const tx = db.raw.transaction(() => {
+        db.createConversation({ id: convId, kind: 'thread', createdBy: me, dmKey: null, parentId: id, parentSeq: seqNum });
+        for (const mk of byUser.values()) {
+          db.addConversationMember({
+            conversationId: convId,
+            userId: mk.userId,
+            sealedKey: JSON.stringify(mk.sealedKey),
+            epoch: 0,
+          });
+        }
+      });
+      tx();
+    } catch {
+      // UNIQUE(parent_id, parent_seq) race: re-fetch the winner.
+      const raced = db.getThreadByParent(id, seqNum);
+      if (raced) {
+        const c = toConversation(raced, me);
+        if (c) return c;
+      }
+      return reply.code(409).send({ error: 'thread conflict' });
+    }
+    return toConversation(db.getConversation(convId)!, me)!;
   });
 
   app.get('/api/conversations/:id/messages', { preHandler: requireAuth }, async (request, reply) => {

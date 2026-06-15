@@ -45,7 +45,8 @@ function convInitial(conv: Conversation): string {
 }
 
 const sortedConversations = computed(() =>
-  [...chat.conversations].sort((a, b) => b.lastSeq - a.lastSeq),
+  // Threads aren't top-level entries — they're reached from their parent message.
+  chat.conversations.filter((c) => c.kind !== 'thread').sort((a, b) => b.lastSeq - a.lastSeq),
 );
 
 const activeConvId = computed(() => {

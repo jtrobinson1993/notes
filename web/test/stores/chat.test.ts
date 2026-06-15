@@ -9,6 +9,7 @@ import { decryptMessage, encryptMessage, encryptReaction, generateConversationKe
 const api = vi.hoisted(() => ({
   conversations: vi.fn(),
   conversationCreateDm: vi.fn(),
+  threadCreate: vi.fn(),
   conversationMessages: vi.fn(),
   messageSend: vi.fn(),
   conversationRead: vi.fn(),
@@ -293,5 +294,39 @@ describe('reactions', () => {
 
     await store.handleFrame({ type: 'reaction-removed', conversationId: 'c1', id: 'r9' });
     expect(store.reactions['c1']?.find((r) => r.id === 'r9')).toBeUndefined();
+  });
+});
+
+describe('openThread', () => {
+  it('seals to all parent members, caches the thread key, and is idempotent', async () => {
+    const kp = await myKeyPair();
+    const parentKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, parentKey), { lastSeq: 2 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    const threadKey = generateConversationKey();
+    api.threadCreate.mockResolvedValue({
+      ...convTo(kp.publicKey, await sealKey(kp.publicKey, threadKey)),
+      id: 't1',
+      kind: 'thread',
+      parentId: 'c1',
+      parentSeq: 2,
+    });
+
+    const id = await store.openThread('c1', 2);
+    expect(id).toBe('t1');
+    expect(store.threadFor('c1', 2)?.id).toBe('t1');
+
+    // The thread key was cached → a thread message decrypts.
+    const enc = await encryptMessage(threadKey, { text: 'in thread', sentAt: 1 });
+    await store.handleFrame({ type: 'message', message: { conversationId: 't1', seq: 1, senderId: 'friend', epoch: 0, ciphertext: enc.ciphertext, iv: enc.iv, createdAt: 0 } });
+    expect(store.messages['t1']?.[0]?.text).toBe('in thread');
+
+    // Idempotent: a second open reuses the in-memory thread.
+    await store.openThread('c1', 2);
+    expect(api.threadCreate).toHaveBeenCalledTimes(1);
   });
 });

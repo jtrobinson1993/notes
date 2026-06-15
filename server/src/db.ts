@@ -43,6 +43,8 @@ export interface ConversationRow {
   created_by: string;
   created_at: number;
   dm_key: string | null;
+  parent_id: string | null;
+  parent_seq: number | null;
 }
 
 export interface ConversationMemberRow {
@@ -237,7 +239,9 @@ CREATE TABLE IF NOT EXISTS conversations (
   kind TEXT NOT NULL,
   created_by TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  dm_key TEXT UNIQUE
+  dm_key TEXT UNIQUE,
+  parent_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+  parent_seq INTEGER
 );
 CREATE TABLE IF NOT EXISTS conversation_members (
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -298,6 +302,21 @@ export function openDb(dataDir: string) {
   if (!userCols.some((c) => c.name === 'display_name')) {
     db.exec('ALTER TABLE users ADD COLUMN display_name TEXT');
   }
+
+  // Idempotent migration: add conversations.parent_id/parent_seq (threads).
+  // Must precede the partial unique index, which references parent_id.
+  const convCols = db.prepare('PRAGMA table_info(conversations)').all() as { name: string }[];
+  if (!convCols.some((c) => c.name === 'parent_id')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN parent_id TEXT REFERENCES conversations(id) ON DELETE CASCADE');
+  }
+  if (!convCols.some((c) => c.name === 'parent_seq')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN parent_seq INTEGER');
+  }
+  // One thread per (parent conversation, parent message). Partial index so NULL
+  // parent_id (DMs/groups) is unconstrained.
+  db.exec(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_parent ON conversations(parent_id, parent_seq) WHERE parent_id IS NOT NULL',
+  );
 
   return {
     raw: db as SqliteDatabase,
@@ -640,16 +659,29 @@ export function openDb(dataDir: string) {
     },
 
     // ---- Conversations ----
-    createConversation(c: { id: string; kind: string; createdBy: string; dmKey: string | null }): void {
-      db.prepare('INSERT INTO conversations (id, kind, created_by, created_at, dm_key) VALUES (?, ?, ?, ?, ?)').run(
-        c.id, c.kind, c.createdBy, now(), c.dmKey,
-      );
+    createConversation(c: {
+      id: string;
+      kind: string;
+      createdBy: string;
+      dmKey: string | null;
+      parentId?: string | null;
+      parentSeq?: number | null;
+    }): void {
+      db.prepare(
+        'INSERT INTO conversations (id, kind, created_by, created_at, dm_key, parent_id, parent_seq) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(c.id, c.kind, c.createdBy, now(), c.dmKey, c.parentId ?? null, c.parentSeq ?? null);
     },
     getConversation(id: string): ConversationRow | undefined {
       return db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as ConversationRow | undefined;
     },
     getConversationByDmKey(dmKey: string): ConversationRow | undefined {
       return db.prepare('SELECT * FROM conversations WHERE dm_key = ?').get(dmKey) as ConversationRow | undefined;
+    },
+    /** The thread rooted on a specific parent message, if any. */
+    getThreadByParent(parentId: string, parentSeq: number): ConversationRow | undefined {
+      return db
+        .prepare('SELECT * FROM conversations WHERE parent_id = ? AND parent_seq = ?')
+        .get(parentId, parentSeq) as ConversationRow | undefined;
     },
     listConversationsForUser(userId: string): ConversationRow[] {
       return db

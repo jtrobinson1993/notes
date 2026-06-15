@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import MarkdownView from '../components/MarkdownView.vue';
 import MarkdownEditor from '../components/MarkdownEditor.vue';
@@ -15,6 +15,7 @@ import { useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 
 const route = useRoute();
+const router = useRouter();
 const session = useSessionStore();
 const chat = useChatStore();
 
@@ -40,7 +41,29 @@ const otherMember = computed(() => {
   return conversation.value?.members.find((m) => m.userId !== meId) ?? conversation.value?.members[0];
 });
 
-const title = computed(() => otherMember.value?.displayName || 'Conversation');
+const isThread = computed(() => conversation.value?.kind === 'thread');
+const title = computed(() =>
+  isThread.value ? 'Thread' : otherMember.value?.displayName || 'Conversation',
+);
+
+async function openThreadFor(seq: number) {
+  try {
+    const tid = await chat.openThread(convId.value, seq);
+    router.push(`/chat/${tid}`);
+  } catch {
+    /* member missing a public key, etc. */
+  }
+}
+
+// Number of messages in the thread rooted on this message (0 = none yet).
+function threadReplies(seq: number): number {
+  return chat.threadFor(convId.value, seq)?.lastSeq ?? 0;
+}
+
+function goToParent() {
+  const pid = conversation.value?.parentId;
+  if (pid) router.push(`/chat/${pid}`);
+}
 
 const msgs = computed(() => chat.messages[convId.value] ?? []);
 
@@ -255,10 +278,19 @@ async function sendGif(gif: GifRef) {
   <AppLayout>
     <div class="flex h-full flex-col">
       <div class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-sm font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
+        <button
+          v-if="isThread"
+          class="rounded-lg px-1.5 py-0.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          title="Back to conversation"
+          @click="goToParent"
+        >
+          ←
+        </button>
+        <span v-if="!isThread" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-sm font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
           {{ (title.trim()[0] ?? '?').toUpperCase() }}
         </span>
         <p class="font-semibold">{{ title }}</p>
+        <span v-if="isThread" class="text-xs text-zinc-400">💬 thread</span>
       </div>
 
       <div ref="scroller" class="min-h-0 grow overflow-y-auto py-2" @scroll="onScroll">
@@ -297,6 +329,14 @@ async function sendGif(gif: GifRef) {
               @click="startReply(row.msg)"
             >
               ↩
+            </button>
+            <button
+              v-if="!isThread"
+              class="rounded px-1.5 py-0.5 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+              title="Start/open thread"
+              @click="openThreadFor(row.msg.seq)"
+            >
+              💬
             </button>
           </div>
           <!-- Left gutter: avatar at a group's first message; otherwise a
@@ -366,6 +406,14 @@ async function sendGif(gif: GifRef) {
                 <span class="tabular-nums text-zinc-500">{{ g.count }}</span>
               </button>
             </div>
+            <!-- Thread indicator: open the thread rooted on this message. -->
+            <button
+              v-if="!isThread && threadReplies(row.msg.seq) > 0"
+              class="mt-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950"
+              @click="openThreadFor(row.msg.seq)"
+            >
+              💬 {{ threadReplies(row.msg.seq) }} {{ threadReplies(row.msg.seq) === 1 ? 'reply' : 'replies' }}
+            </button>
           </div>
         </div>
       </div>

@@ -161,6 +161,8 @@ export const api = {
   conversations: () => req<Conversation[]>('GET', '/api/conversations'),
   conversationCreateDm: (friendId: string, members: SealedMemberKey[]) =>
     req<Conversation>('POST', '/api/conversations/dm', { friendId, members }),
+  threadCreate: (parentId: string, seq: number, members: SealedMemberKey[]) =>
+    req<Conversation>('POST', `/api/conversations/${encodeURIComponent(parentId)}/messages/${seq}/thread`, { members }),
   conversationMessages: (id: string, opts?: { before?: number; limit?: number }) => {
     const q = new URLSearchParams();
     if (opts?.before !== undefined) q.set('before', String(opts.before));

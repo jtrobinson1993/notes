@@ -321,10 +321,30 @@ message; `toggleReaction` removes my existing reaction with that emoji or adds
 one. UI: a hover **react** action (the emoji picker) and reaction pills under
 each message (count + highlighted when mine) that toggle on click.
 
-> **Threads** (the third part of this roadmap bullet) are **not yet built** —
-> they need a sub-conversation model (a child conversation hung off a message)
-> that's substantially larger than reactions/replies. Tracked as remaining v3.1
-> work; replies already cover lightweight "in reply to" referencing.
+### Threads
+
+A **thread is a child conversation** (`kind: 'thread'`) hung off a parent
+message — so it reuses the entire conversation machinery (its own key/epoch,
+messages, reactions, realtime fan-out, and `ConversationPage` itself) rather
+than inventing a parallel model. `conversations` gains `parent_id` +
+`parent_seq` (idempotent migration) with a **partial unique index** on
+`(parent_id, parent_seq)` → one thread per parent message.
+
+- `POST /api/conversations/:id/messages/:seq/thread {members}` — membership-gated,
+  idempotent. The thread key is sealed to **exactly the parent's members** (so
+  everyone who can see the parent can read the thread); the server validates the
+  member set matches. Rejects threading a thread, and an out-of-range `seq`. A
+  1:1 thread inherits the DM's friendship gate (unfriending revokes it too).
+- Threads are ordinary conversations in `GET /api/conversations`, so loading +
+  key-unseal + inbound delivery all work unchanged. The client (`openThread`)
+  seals the new key to all parent members, like a DM but for N members.
+
+UI: a hover **💬** action starts/opens the thread (navigates to it — it's just a
+conversation route); messages with a thread show a **"N replies"** link; the
+thread view shows a back-to-parent header. The sidebar **excludes** `thread`
+conversations (they're reached from their parent message, not listed top-level).
+
+This completes the v3.1 "reactions, replies, and threads" bullet.
 
 ### Custom emoji — default 7TV set
 

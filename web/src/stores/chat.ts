@@ -163,6 +163,35 @@ export const useChatStore = defineStore('chat', () => {
     return conv.id;
   }
 
+  /** The thread rooted on a parent message, if one exists in memory. */
+  function threadFor(parentConvId: string, seq: number): Conversation | undefined {
+    return conversations.value.find(
+      (c) => c.kind === 'thread' && c.parentId === parentConvId && c.parentSeq === seq,
+    );
+  }
+
+  /** Open (or create) the thread on a parent message; returns its conversation
+   *  id. The thread key is sealed to ALL parent members, reusing the conv-key
+   *  machinery. */
+  async function openThread(parentConvId: string, seq: number): Promise<string> {
+    const existing = threadFor(parentConvId, seq);
+    if (existing) return existing.id;
+    const parent = conversations.value.find((c) => c.id === parentConvId);
+    if (!parent) throw new Error('unknown conversation');
+    const { privateKey, publicKey } = await session.getKeyPair();
+    const convKey = generateConversationKey();
+    const members: SealedMemberKey[] = [];
+    for (const m of parent.members) {
+      if (!m.publicKey) throw new Error('member missing public key');
+      members.push({ userId: m.userId, sealedKey: await sealConversationKey(m.publicKey, convKey) });
+    }
+    // Idempotent server-side: an existing thread's sealedKey is authoritative.
+    const thread = await api.threadCreate(parentConvId, seq, members);
+    convKeys.set(thread.id, await unsealConversationKey(thread.sealedKey, privateKey, publicKey));
+    upsertConversation(thread);
+    return thread.id;
+  }
+
   /** Fetch (older, when `before` is set) history and merge decrypted views. */
   async function loadHistory(convId: string, before?: number): Promise<void> {
     const raw = await api.conversationMessages(convId, { before, limit: HISTORY_LIMIT });
@@ -312,6 +341,8 @@ export const useChatStore = defineStore('chat', () => {
     setActive,
     loadConversations,
     openDm,
+    openThread,
+    threadFor,
     loadHistory,
     sendMessage,
     loadReactions,
