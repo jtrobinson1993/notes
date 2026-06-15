@@ -460,9 +460,9 @@ async function sendGif(gif: GifRef) {
           </button>
           <!-- Reuse the v2.1 live editor as the composer: code blocks, spoilers,
                colors, and the selection toolbar all come for free. Enter sends;
-               Shift+Enter inserts a newline. The fill matches the app background
-               so the bordered input + buttons read as one consistent surface. -->
-          <div class="grow rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-950">
+               Shift+Enter inserts a newline. A subtle 5% tint lifts it off the
+               app background without a hard fill. -->
+          <div class="grow rounded-lg border border-zinc-300 bg-black/5 px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-white/5">
             <MarkdownEditor
               ref="composer"
               v-model="text"
