@@ -9,6 +9,7 @@ import GifPicker from '../components/GifPicker.vue';
 import EmojiPicker from '../components/EmojiPicker.vue';
 import ChatAttachment from '../components/ChatAttachment.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
+import { resolveEmoji } from '../lib/emoji';
 import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
 import { useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
@@ -117,6 +118,7 @@ async function activate(id: string) {
     if ((chat.messages[id]?.length ?? 0) === 0) {
       await chat.loadHistory(id);
     }
+    await chat.loadReactions(id);
   } finally {
     loading.value = false;
   }
@@ -208,6 +210,35 @@ function insertEmoji(s: string) {
   composer.value?.insertText(s);
 }
 
+// Reactions: group the conversation's reactions for a given message by emoji.
+interface ReactionGroup {
+  emoji: string;
+  count: number;
+  mine: boolean;
+}
+function reactionGroups(seq: number): ReactionGroup[] {
+  const meId = session.user?.id;
+  const map = new Map<string, ReactionGroup>();
+  for (const r of chat.reactions[convId.value] ?? []) {
+    if (r.seq !== seq || !r.emoji) continue;
+    const g = map.get(r.emoji) ?? { emoji: r.emoji, count: 0, mine: false };
+    g.count++;
+    if (r.userId === meId) g.mine = true;
+    map.set(r.emoji, g);
+  }
+  return [...map.values()];
+}
+
+// A reaction emoji is either a `:name:` custom/emote (→ image) or a literal char.
+function reactionImg(emoji: string): string | null {
+  const m = /^:([A-Za-z0-9_]{2,40}):$/.exec(emoji);
+  return m ? resolveEmoji(m[1]!) : null;
+}
+
+function react(seq: number, emoji: string) {
+  void chat.toggleReaction(convId.value, seq, emoji);
+}
+
 async function sendGif(gif: GifRef) {
   if (sending.value) return;
   sending.value = true;
@@ -257,14 +288,17 @@ async function sendGif(gif: GifRef) {
           class="group relative flex items-start gap-3 px-4 py-0.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
           :class="row.isStart ? 'mt-3' : ''"
         >
-          <!-- Hover action: reply to this message. -->
-          <button
-            class="absolute right-3 top-0 hidden rounded-md border border-zinc-200 bg-white px-2 py-0.5 text-xs text-zinc-500 shadow-sm hover:bg-zinc-50 group-hover:block dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700"
-            title="Reply"
-            @click="startReply(row.msg)"
-          >
-            ↩ Reply
-          </button>
+          <!-- Hover actions: react + reply. -->
+          <div class="absolute right-3 top-0 hidden items-center gap-1 rounded-md border border-zinc-200 bg-white px-1 py-0.5 shadow-sm group-hover:flex dark:border-zinc-700 dark:bg-zinc-800">
+            <EmojiPicker @pick="(s) => react(row.msg.seq, s)" />
+            <button
+              class="rounded px-1.5 py-0.5 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+              title="Reply"
+              @click="startReply(row.msg)"
+            >
+              ↩
+            </button>
+          </div>
           <!-- Left gutter: avatar at a group's first message; otherwise a
                hover-only timestamp for the consecutive message. -->
           <div class="w-10 shrink-0">
@@ -317,6 +351,20 @@ async function sendGif(gif: GifRef) {
                   :attachment="a"
                 />
               </template>
+            </div>
+            <!-- Reaction pills: grouped by emoji; click toggles mine. -->
+            <div v-if="reactionGroups(row.msg.seq).length" class="mt-1 flex flex-wrap gap-1">
+              <button
+                v-for="g in reactionGroups(row.msg.seq)"
+                :key="g.emoji"
+                class="flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs leading-none"
+                :class="g.mine ? 'border-blue-400 bg-blue-50 dark:border-blue-500 dark:bg-blue-950' : 'border-zinc-200 dark:border-zinc-700'"
+                @click="react(row.msg.seq, g.emoji)"
+              >
+                <img v-if="reactionImg(g.emoji)" :src="reactionImg(g.emoji)!" :alt="g.emoji" class="h-4 w-4 object-contain" />
+                <span v-else>{{ g.emoji }}</span>
+                <span class="tabular-nums text-zinc-500">{{ g.count }}</span>
+              </button>
             </div>
           </div>
         </div>

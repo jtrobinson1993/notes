@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import type { ChatMessage, Conversation, Friend } from '@notes/shared';
 import { generateKeyPair, sealKey } from '../../src/lib/crypto';
 import { b64 } from '../../src/lib/b64';
-import { decryptMessage, encryptMessage, generateConversationKey } from '../../src/lib/chatCrypto';
+import { decryptMessage, encryptMessage, encryptReaction, generateConversationKey } from '../../src/lib/chatCrypto';
 
 // The api surface the chat store touches, hoisted so the mock factory can see it.
 const api = vi.hoisted(() => ({
@@ -12,6 +12,9 @@ const api = vi.hoisted(() => ({
   conversationMessages: vi.fn(),
   messageSend: vi.fn(),
   conversationRead: vi.fn(),
+  reactions: vi.fn().mockResolvedValue([]),
+  reactionAdd: vi.fn(),
+  reactionRemove: vi.fn().mockResolvedValue({ ok: true }),
 }));
 vi.mock('../../src/lib/api', () => ({ api }));
 
@@ -254,5 +257,41 @@ describe('markRead + unreadCount', () => {
     expect(store.conversations[0]!.lastReadSeq).toBe(6);
     await store.markRead('c1', 4); // backward → ignored
     expect(store.conversations[0]!.lastReadSeq).toBe(6);
+  });
+});
+
+describe('reactions', () => {
+  async function openedStore() {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 1 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+    return { store, serverKey };
+  }
+
+  it('toggleReaction adds my reaction, then a second toggle removes it', async () => {
+    const { store } = await openedStore();
+    api.reactionAdd.mockResolvedValue({ id: 'r1', conversationId: 'c1', seq: 1, userId: 'me', ciphertext: 'X', iv: 'Y', createdAt: 0 });
+
+    await store.toggleReaction('c1', 1, '👍');
+    expect(store.reactions['c1']?.find((r) => r.id === 'r1')?.emoji).toBe('👍');
+    expect(api.reactionAdd).toHaveBeenCalledTimes(1);
+
+    await store.toggleReaction('c1', 1, '👍'); // same emoji → remove
+    expect(store.reactions['c1']?.length).toBe(0);
+    expect(api.reactionRemove).toHaveBeenCalledWith('c1', 'r1');
+  });
+
+  it('applies inbound reaction and reaction-removed frames', async () => {
+    const { store, serverKey } = await openedStore();
+    const enc = await encryptReaction(serverKey, '🎉');
+    await store.handleFrame({ type: 'reaction', reaction: { id: 'r9', conversationId: 'c1', seq: 2, userId: 'friend', ciphertext: enc.ciphertext, iv: enc.iv, createdAt: 0 } });
+    expect(store.reactions['c1']?.find((r) => r.id === 'r9')?.emoji).toBe('🎉');
+
+    await store.handleFrame({ type: 'reaction-removed', conversationId: 'c1', id: 'r9' });
+    expect(store.reactions['c1']?.find((r) => r.id === 'r9')).toBeUndefined();
   });
 });

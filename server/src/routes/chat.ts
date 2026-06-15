@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type {
   ChatMessage,
+  ChatReaction,
   Conversation,
   ConversationMember,
   Friend,
@@ -15,6 +16,7 @@ import {
   type ConversationRow,
   type DB,
   type MessageRow,
+  type ReactionRow,
 } from '../db.js';
 import type { Realtime } from '../realtime.js';
 import { requireAuth } from '../session.js';
@@ -43,6 +45,18 @@ function toMessage(m: MessageRow): ChatMessage {
     ciphertext: m.ciphertext,
     iv: m.iv,
     createdAt: m.created_at,
+  };
+}
+
+function toReaction(r: ReactionRow): ChatReaction {
+  return {
+    id: r.id,
+    conversationId: r.conversation_id,
+    seq: r.seq,
+    userId: r.user_id,
+    ciphertext: r.ciphertext,
+    iv: r.iv,
+    createdAt: r.created_at,
   };
 }
 
@@ -376,6 +390,49 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
       { type: 'read', conversationId: id, userId: me, seq: b.seq },
       me,
     );
+    return { ok: true };
+  });
+
+  // ---- Reactions (emoji encrypted with the conversation key) ----
+
+  app.get('/api/conversations/:id/reactions', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const me = request.user!.id;
+    if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
+    if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
+    return db.listReactions(id).map(toReaction);
+  });
+
+  app.post('/api/conversations/:id/messages/:seq/reactions', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, seq } = request.params as { id: string; seq: string };
+    const me = request.user!.id;
+    if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
+    if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
+    const seqNum = Number(seq);
+    if (!Number.isInteger(seqNum) || seqNum < 1) return reply.code(400).send({ error: 'invalid seq' });
+    const b = request.body as Record<string, unknown> | null;
+    if (
+      typeof b?.ciphertext !== 'string' || b.ciphertext.length < 1 || b.ciphertext.length > 4096 ||
+      typeof b.iv !== 'string' || b.iv.length > 256
+    ) {
+      return reply.code(400).send({ error: 'invalid reaction payload' });
+    }
+    const row = db.addReaction({ id: newId(), conversationId: id, seq: seqNum, userId: me, ciphertext: b.ciphertext, iv: b.iv });
+    const reaction = toReaction(row);
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'reaction', reaction });
+    return reaction;
+  });
+
+  app.delete('/api/conversations/:id/reactions/:rid', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, rid } = request.params as { id: string; rid: string };
+    const me = request.user!.id;
+    if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
+    if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
+    const existing = db.getReaction(rid);
+    // Scope to this conversation, and only the owner may remove (IDOR guard).
+    if (!existing || existing.conversation_id !== id) return reply.code(404).send({ error: 'not found' });
+    if (!db.removeReaction(rid, me)) return reply.code(403).send({ error: 'not your reaction' });
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'reaction-removed', conversationId: id, id: rid });
     return { ok: true };
   });
 }

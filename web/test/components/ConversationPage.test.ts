@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   conversationRead: vi.fn().mockResolvedValue(undefined),
   messageSend: vi.fn(),
   conversationCreateDm: vi.fn(),
+  reactions: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../../src/lib/api', () => ({ api }));
 vi.mock('../../src/stores/session', () => ({

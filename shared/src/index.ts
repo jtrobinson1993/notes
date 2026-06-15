@@ -226,6 +226,27 @@ export interface ChatMessage {
   createdAt: number;
 }
 
+/** One reaction on a message. The emoji is encrypted with the conversation key
+ *  (`ciphertext`/`iv`), so the server can't read which emoji was used; clients
+ *  decrypt and aggregate. The server keys a reaction by its own `id`. */
+export interface ChatReaction {
+  id: string;
+  conversationId: string;
+  /** the reacted message's per-conversation seq */
+  seq: number;
+  userId: string;
+  /** base64 AES-256-GCM ciphertext of a JSON ReactionPayload */
+  ciphertext: string;
+  iv: string;
+  createdAt: number;
+}
+
+/** What the client encrypts into a reaction blob. */
+export interface ReactionPayload {
+  /** the emoji: a unicode char, `:emote:`, or `:customName:` */
+  emoji: string;
+}
+
 /** A GIF chosen from KLIPY search, embedded inside the encrypted message so the
  *  server never learns which GIF was sent. The animated media lives on KLIPY's
  *  CDN (`url`); the recipient loads it from there (a documented third-party
@@ -309,6 +330,8 @@ export interface ProfileInfo {
 export type ServerFrame =
   | { type: 'hello'; userId: string }
   | { type: 'message'; message: ChatMessage }
+  | { type: 'reaction'; reaction: ChatReaction }
+  | { type: 'reaction-removed'; conversationId: string; id: string }
   | { type: 'read'; conversationId: string; userId: string; seq: number }
   | { type: 'friend-request'; request: FriendRequest }
   | { type: 'friend-accepted'; friend: Friend }

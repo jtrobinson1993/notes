@@ -303,11 +303,28 @@ banner above the composer (cancellable); **Send** embeds the `ReplyRef`. Each
 message renders its quote as a clickable line that scrolls to the parent (`rows`
 carry `data-seq`).
 
-> **Reactions** and **threads** (the other two parts of this roadmap bullet)
-> are **not yet built** — unlike replies they need server state (a reactions
-> table + realtime fan-out; threads as sub-conversations). Reactions will be
-> **encrypted per-conversation** (the server can't read which emoji). Tracked as
-> remaining v3.1 work.
+### Reactions (encrypted per-conversation)
+
+A reaction's **emoji is encrypted with the conversation key**, so the server
+stores opaque blobs and can't read which emoji was used; clients decrypt and
+aggregate. Server (`message_reactions` table + routes, all membership-gated):
+
+- `POST /api/conversations/:id/messages/:seq/reactions {ciphertext, iv}` — add;
+  fans out a `reaction` frame.
+- `DELETE /api/conversations/:id/reactions/:rid` — remove; **owner-only** (IDOR
+  guard) and scoped to the conversation; fans out `reaction-removed`.
+- `GET /api/conversations/:id/reactions` — list (clients decrypt + group).
+
+The emoji string (a unicode char, `:emote:`, or `:customName:`) is sealed via
+`encryptReaction` (same AES-GCM as messages). The store groups by emoji per
+message; `toggleReaction` removes my existing reaction with that emoji or adds
+one. UI: a hover **react** action (the emoji picker) and reaction pills under
+each message (count + highlighted when mine) that toggle on click.
+
+> **Threads** (the third part of this roadmap bullet) are **not yet built** —
+> they need a sub-conversation model (a child conversation hung off a message)
+> that's substantially larger than reactions/replies. Tracked as remaining v3.1
+> work; replies already cover lightweight "in reply to" referencing.
 
 ### Custom emoji — default 7TV set
 

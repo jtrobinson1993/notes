@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import type {
   AttachmentRef,
   ChatMessage,
+  ChatReaction,
   Conversation,
   Friend,
   GifRef,
@@ -14,7 +15,9 @@ import type {
 import { api } from '../lib/api';
 import {
   decryptMessage,
+  decryptReaction,
   encryptMessage,
+  encryptReaction,
   generateConversationKey,
   sealConversationKey,
   unsealConversationKey,
@@ -32,6 +35,11 @@ export interface ChatMessageView extends ChatMessage {
   gif?: GifRef | null;
   attachments?: AttachmentRef[];
   replyTo?: ReplyRef;
+}
+
+/** A reaction with its decrypted emoji (null if it couldn't be decrypted). */
+export interface ChatReactionView extends ChatReaction {
+  emoji: string | null;
 }
 
 const HISTORY_LIMIT = 50;
@@ -59,6 +67,7 @@ export const useChatStore = defineStore('chat', () => {
 
   const conversations = ref<Conversation[]>([]);
   const messages = ref<Record<string, ChatMessageView[]>>({});
+  const reactions = ref<Record<string, ChatReactionView[]>>({});
   const activeId = ref<string | null>(null);
 
   // Unsealed conversation keys; in-memory only (never persisted).
@@ -184,6 +193,50 @@ export const useChatStore = defineStore('chat', () => {
     bumpLastSeq(convId, sent.seq);
   }
 
+  async function decryptReactionOne(convId: string, r: ChatReaction): Promise<ChatReactionView> {
+    const key = convKeys.get(convId);
+    if (!key) return { ...r, emoji: null };
+    try {
+      return { ...r, emoji: await decryptReaction(key, r.ciphertext, r.iv) };
+    } catch {
+      return { ...r, emoji: null };
+    }
+  }
+
+  function upsertReaction(convId: string, view: ChatReactionView): void {
+    const list = reactions.value[convId] ?? [];
+    if (list.some((r) => r.id === view.id)) return; // dedupe self-echo / refetch
+    reactions.value = { ...reactions.value, [convId]: [...list, view] };
+  }
+
+  function dropReaction(convId: string, id: string): void {
+    const list = reactions.value[convId];
+    if (!list) return;
+    reactions.value = { ...reactions.value, [convId]: list.filter((r) => r.id !== id) };
+  }
+
+  async function loadReactions(convId: string): Promise<void> {
+    const raw = await api.reactions(convId);
+    reactions.value = { ...reactions.value, [convId]: await Promise.all(raw.map((r) => decryptReactionOne(convId, r))) };
+  }
+
+  /** Toggle my reaction with `emoji` on a message: remove it if I already have
+   *  one, otherwise add it. */
+  async function toggleReaction(convId: string, seq: number, emoji: string): Promise<void> {
+    const key = convKeys.get(convId);
+    if (!key) return;
+    const me = session.user?.id;
+    const mine = (reactions.value[convId] ?? []).find((r) => r.seq === seq && r.userId === me && r.emoji === emoji);
+    if (mine) {
+      dropReaction(convId, mine.id);
+      await api.reactionRemove(convId, mine.id);
+      return;
+    }
+    const { ciphertext, iv } = await encryptReaction(key, emoji);
+    const created = await api.reactionAdd(convId, seq, { ciphertext, iv });
+    upsertReaction(convId, { ...created, emoji });
+  }
+
   async function markRead(convId: string, seq: number): Promise<void> {
     await api.conversationRead(convId, seq);
     const idx = conversations.value.findIndex((c) => c.id === convId);
@@ -213,6 +266,15 @@ export const useChatStore = defineStore('chat', () => {
         bumpLastSeq(m.conversationId, m.seq);
         break;
       }
+      case 'reaction': {
+        const r = frame.reaction;
+        if (convKeys.has(r.conversationId)) upsertReaction(r.conversationId, await decryptReactionOne(r.conversationId, r));
+        break;
+      }
+      case 'reaction-removed': {
+        dropReaction(frame.conversationId, frame.id);
+        break;
+      }
       case 'read': {
         const idx = conversations.value.findIndex((c) => c.id === frame.conversationId);
         const conv = conversations.value[idx];
@@ -237,6 +299,7 @@ export const useChatStore = defineStore('chat', () => {
   function reset(): void {
     conversations.value = [];
     messages.value = {};
+    reactions.value = {};
     activeId.value = null;
     convKeys.clear();
   }
@@ -244,12 +307,15 @@ export const useChatStore = defineStore('chat', () => {
   return {
     conversations,
     messages,
+    reactions,
     activeId,
     setActive,
     loadConversations,
     openDm,
     loadHistory,
     sendMessage,
+    loadReactions,
+    toggleReaction,
     markRead,
     handleFrame,
     unreadCount,
@@ -282,7 +348,10 @@ export function startChat(): void {
       await chat.loadConversations();
       await friends.load();
       void loadCustomEmoji();
-      if (chat.activeId) await chat.loadHistory(chat.activeId);
+      if (chat.activeId) {
+        await chat.loadHistory(chat.activeId);
+        await chat.loadReactions(chat.activeId);
+      }
     })();
   });
 

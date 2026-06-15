@@ -66,6 +66,16 @@ export interface MessageRow {
   created_at: number;
 }
 
+export interface ReactionRow {
+  id: string;
+  conversation_id: string;
+  seq: number;
+  user_id: string;
+  ciphertext: string;
+  iv: string;
+  created_at: number;
+}
+
 export interface DeviceLinkRow {
   id: string;
   code: string;
@@ -251,6 +261,16 @@ CREATE TABLE IF NOT EXISTS messages (
   UNIQUE(conversation_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conversation_id, seq);
+CREATE TABLE IF NOT EXISTS message_reactions (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_conv_seq ON message_reactions(conversation_id, seq);
 CREATE TABLE IF NOT EXISTS device_links (
   id TEXT PRIMARY KEY,
   code TEXT NOT NULL UNIQUE,
@@ -730,6 +750,45 @@ export function openDb(dataDir: string) {
       return db
         .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT ?')
         .all(conversationId, limit) as MessageRow[];
+    },
+
+    // ---- Reactions (emoji encrypted with the conversation key) ----
+    addReaction(r: {
+      id: string;
+      conversationId: string;
+      seq: number;
+      userId: string;
+      ciphertext: string;
+      iv: string;
+    }): ReactionRow {
+      const createdAt = now();
+      db.prepare(
+        `INSERT INTO message_reactions (id, conversation_id, seq, user_id, ciphertext, iv, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(r.id, r.conversationId, r.seq, r.userId, r.ciphertext, r.iv, createdAt);
+      return {
+        id: r.id,
+        conversation_id: r.conversationId,
+        seq: r.seq,
+        user_id: r.userId,
+        ciphertext: r.ciphertext,
+        iv: r.iv,
+        created_at: createdAt,
+      };
+    },
+    getReaction(id: string): ReactionRow | undefined {
+      return db.prepare('SELECT * FROM message_reactions WHERE id = ?').get(id) as ReactionRow | undefined;
+    },
+    /** Delete a reaction only if it belongs to `userId`; returns true if removed. */
+    removeReaction(id: string, userId: string): boolean {
+      return (
+        db.prepare('DELETE FROM message_reactions WHERE id = ? AND user_id = ?').run(id, userId).changes > 0
+      );
+    },
+    listReactions(conversationId: string, limit = 5000): ReactionRow[] {
+      return db
+        .prepare('SELECT * FROM message_reactions WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?')
+        .all(conversationId, limit) as ReactionRow[];
     },
 
     // ---- Device links (cross-device onboarding) ----
