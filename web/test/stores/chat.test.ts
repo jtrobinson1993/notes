@@ -29,6 +29,7 @@ vi.mock('../../src/stores/session', async () => {
 
 import { useChatStore } from '../../src/stores/chat';
 import { useSessionStore } from '../../src/stores/session';
+import { customEmoji } from '../../src/lib/emoji/custom';
 
 async function myKeyPair() {
   return useSessionStore().getKeyPair();
@@ -155,6 +156,26 @@ describe('sendMessage', () => {
     const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
     const payload = await decryptMessage(serverKey, sentArg.ciphertext, sentArg.iv);
     expect(payload.attachments).toEqual([att]);
+  });
+
+  it('embeds used custom emoji refs in the encrypted payload', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 0 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    const ref = { id: 'x', name: 'foo', type: 'image/png', size: 1, key: 'AAAA', iv: 'BBBB' };
+    customEmoji.items = [{ name: 'foo', ref }];
+    api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
+    await store.sendMessage('c1', 'hi :foo: but not :bar:');
+    customEmoji.items = [];
+
+    const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
+    const payload = await decryptMessage(serverKey, sentArg.ciphertext, sentArg.iv);
+    expect(payload.customEmoji).toEqual({ foo: ref });
   });
 
   it('embeds a reply snapshot in the encrypted payload and the view', async () => {

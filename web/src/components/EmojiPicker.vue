@@ -1,19 +1,26 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from 'vue';
 import { PopoverRoot, PopoverTrigger, PopoverPortal, PopoverContent } from 'reka-ui';
-import { searchDefaultEmoji, emojiUrl } from '../lib/emoji';
+import { searchDefaultEmoji, emojiUrl, resolveEmoji } from '../lib/emoji';
 import { loadUnicodeEmoji, searchUnicode, type UnicodeEmoji } from '../lib/emoji/unicode';
+import { customEmoji } from '../lib/emoji/custom';
 
 // Emits the exact string to insert at the composer caret: `:name:` for a custom
 // emote, or the raw character for a unicode emoji.
 const emit = defineEmits<{ pick: [string] }>();
 
-type Tab = 'emotes' | 'unicode';
+type Tab = 'emotes' | 'unicode' | 'custom';
 const open = ref(false);
 const tab = ref<Tab>('emotes');
 const query = ref('');
 
 const emoteResults = computed(() => searchDefaultEmoji(query.value));
+
+const customResults = computed(() => {
+  const q = query.value.trim().toLowerCase();
+  const items = q ? customEmoji.items.filter((e) => e.name.toLowerCase().includes(q)) : customEmoji.items;
+  return items.map((e) => ({ name: e.name, url: resolveEmoji(e.name) }));
+});
 
 // Unicode set is lazy-loaded the first time the tab is shown.
 const unicodeAll = shallowRef<UnicodeEmoji[] | null>(null);
@@ -62,6 +69,7 @@ const tabClass = (t: Tab) =>
         <div class="mb-2 flex shrink-0 gap-1 text-xs">
           <button class="rounded-md px-2 py-1" :class="tabClass('emotes')" @click="tab = 'emotes'">Emotes</button>
           <button class="rounded-md px-2 py-1" :class="tabClass('unicode')" @click="tab = 'unicode'">Emoji</button>
+          <button class="rounded-md px-2 py-1" :class="tabClass('custom')" @click="tab = 'custom'">Custom</button>
         </div>
         <input
           v-model="query"
@@ -87,6 +95,24 @@ const tabClass = (t: Tab) =>
             </div>
           </template>
 
+          <!-- Per-user custom (encrypted) emoji -->
+          <template v-else-if="tab === 'custom'">
+            <p v-if="!customResults.length" class="px-1 py-4 text-center text-xs text-zinc-400">
+              No custom emoji yet — add some in Settings.
+            </p>
+            <div v-else class="grid grid-cols-7 gap-1">
+              <button
+                v-for="e in customResults"
+                :key="e.name"
+                :title="`:${e.name}:`"
+                class="flex aspect-square items-center justify-center rounded hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                @click="emit('pick', `:${e.name}:`)"
+              >
+                <img v-if="e.url" :src="e.url" :alt="`:${e.name}:`" class="max-h-7 max-w-7" loading="lazy" />
+              </button>
+            </div>
+          </template>
+
           <!-- Unicode emoji (emojibase) -->
           <template v-else>
             <p v-if="unicodeLoading && !unicodeAll" class="px-1 py-4 text-center text-xs text-zinc-400">Loading…</p>
@@ -105,7 +131,7 @@ const tabClass = (t: Tab) =>
           </template>
         </div>
         <p class="shrink-0 pt-1 text-center text-[10px] text-zinc-400">
-          {{ tab === 'emotes' ? 'Top emotes via 7TV' : 'Unicode via emojibase' }}
+          {{ tab === 'emotes' ? 'Top emotes via 7TV' : tab === 'unicode' ? 'Unicode via emojibase' : 'Your custom emoji' }}
         </p>
       </PopoverContent>
     </PopoverPortal>

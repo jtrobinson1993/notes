@@ -339,6 +339,21 @@ Search is substring over label + tags; picking inserts the raw unicode
 character (no shortcode needed — it renders natively).
 
 > Hosting note: whether to keep self-hosting the 7TV set or serve straight from
-> 7TV's CDN is an open follow-up (see [roadmap.md](roadmap.md) v3.3). **Per-user
-> custom encrypted emoji** is the one remaining part of this roadmap bullet —
-> not yet built.
+> 7TV's CDN is an open follow-up (see [roadmap.md](roadmap.md) v3.3).
+
+### Custom (encrypted) per-user emoji
+
+A user uploads their own emoji (Settings → Custom emoji). Each image is an
+**encrypted attachment** (fresh per-file key, via `encryptAndUploadFile`); the
+palette (`name → AttachmentRef`) is stored as a **master-key-encrypted settings
+blob** (`chat-emoji`, like tag colors), so the server never sees the names or
+images. `lib/emoji/custom.ts` loads + decrypts the palette on chat start and
+registers each as an object URL so `:name:` renders; the picker's **Custom** tab
+inserts them.
+
+When a message uses a custom emoji, its ref is embedded in the encrypted
+`MessagePayload.customEmoji` (name → ref). On decrypt, the recipient registers
+those (decrypting the blob to an object URL) **before** the message view is
+shown, so it renders for everyone — without sharing the whole palette. Names are
+registered into one global map, so across users the last-seen `:name:` wins (fine
+at this app's scale).

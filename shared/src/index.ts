@@ -259,6 +259,10 @@ export interface MessagePayload {
    *  snapshot are embedded (encrypted) so the quote renders even before the
    *  parent is loaded, and survives the parent being deleted/unreadable. */
   replyTo?: ReplyRef;
+  /** custom emoji used in `text` (`:name:`), keyed by name. Each is an encrypted
+   *  attachment ref so recipients (who don't have the sender's private emoji
+   *  palette) can decrypt + render it. */
+  customEmoji?: Record<string, AttachmentRef>;
 }
 
 /** A snapshot of the message being replied to, embedded in the reply's payload. */

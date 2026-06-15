@@ -9,6 +9,8 @@ import { getPalette, getTheme, setPalette, setTheme, type Palette, type Theme } 
 import { exportNotesZip, parseImportFiles, type ExportFormat } from '../lib/transfer';
 import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
+import { addCustomEmoji, customEmoji, loadCustomEmoji, removeCustomEmoji } from '../lib/emoji/custom';
+import { resolveEmoji } from '../lib/emoji';
 
 const session = useSessionStore();
 const notes = useNotesStore();
@@ -26,6 +28,33 @@ const newPasskeyName = ref('');
 const passkeyError = ref('');
 const newRecoveryCode = ref('');
 const copiedInvite = ref('');
+
+// Custom emoji palette (encrypted; see lib/emoji/custom.ts).
+const emojiName = ref('');
+const emojiInput = ref<HTMLInputElement>();
+const emojiError = ref('');
+const emojiBusy = ref(false);
+void loadCustomEmoji();
+
+async function addEmoji() {
+  const file = emojiInput.value?.files?.[0];
+  const name = emojiName.value.trim();
+  if (!name || !file) {
+    emojiError.value = 'Pick an image and enter a name.';
+    return;
+  }
+  emojiBusy.value = true;
+  emojiError.value = '';
+  try {
+    await addCustomEmoji(name, file);
+    emojiName.value = '';
+    if (emojiInput.value) emojiInput.value.value = '';
+  } catch (e) {
+    emojiError.value = e instanceof Error ? e.message : 'could not add emoji';
+  } finally {
+    emojiBusy.value = false;
+  }
+}
 
 useQuery({
   key: ['profile'],
@@ -279,6 +308,45 @@ async function importFiles(event: Event) {
             <option value="true">On</option>
             <option value="false">Off</option>
           </select>
+        </div>
+      </section>
+
+      <section class="space-y-3">
+        <h2 class="text-lg font-semibold">Custom emoji</h2>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400">
+          Upload your own emoji to use in chat as <code>:name:</code>. Images are encrypted on this
+          device before upload; when you send one, it's embedded (encrypted) in the message so others
+          can see it.
+        </p>
+        <div class="flex flex-wrap items-end gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <label class="flex flex-col gap-1 text-xs">
+            <span class="text-zinc-500">Name</span>
+            <input
+              v-model="emojiName"
+              placeholder="catJAM"
+              class="w-40 rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+          <input ref="emojiInput" type="file" accept="image/*" class="text-sm" />
+          <button
+            :disabled="emojiBusy"
+            class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            @click="addEmoji"
+          >
+            {{ emojiBusy ? 'Adding…' : 'Add' }}
+          </button>
+          <span v-if="emojiError" class="text-xs text-red-500">{{ emojiError }}</span>
+        </div>
+        <div v-if="customEmoji.items.length" class="flex flex-wrap gap-2">
+          <span
+            v-for="e in customEmoji.items"
+            :key="e.name"
+            class="flex items-center gap-1.5 rounded-lg border border-zinc-200 py-1 pl-2 pr-1 text-xs dark:border-zinc-700"
+          >
+            <img v-if="resolveEmoji(e.name)" :src="resolveEmoji(e.name)!" :alt="e.name" class="h-5 w-5 object-contain" />
+            <span>:{{ e.name }}:</span>
+            <button class="rounded px-1 text-zinc-400 hover:text-red-500" title="Remove" @click="removeCustomEmoji(e.name)">✕</button>
+          </span>
         </div>
       </section>
 

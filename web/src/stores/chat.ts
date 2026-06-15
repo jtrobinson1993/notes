@@ -20,6 +20,7 @@ import {
   unsealConversationKey,
 } from '../lib/chatCrypto';
 import { connectChatSocket, disconnectChatSocket, onConnect } from '../lib/chatSocket';
+import { customEmojiForText, loadCustomEmoji, registerEmbeddedEmoji, resetCustomEmoji } from '../lib/emoji/custom';
 import { b64 } from '../lib/b64';
 import { useSessionStore } from './session';
 import { useFriendsStore } from './friends';
@@ -72,6 +73,9 @@ export const useChatStore = defineStore('chat', () => {
     if (!key) return { ...m, text: null };
     try {
       const payload = await decryptMessage(key, m.ciphertext, m.iv);
+      // Register any embedded custom emoji before the view is shown, so the
+      // first render of this message already resolves its :shortcodes:.
+      if (payload.customEmoji) await registerEmbeddedEmoji(payload.customEmoji);
       return {
         ...m,
         text: payload.text,
@@ -170,6 +174,8 @@ export const useChatStore = defineStore('chat', () => {
     if (opts?.gif) payload.gif = opts.gif;
     if (opts?.attachments?.length) payload.attachments = opts.attachments;
     if (opts?.replyTo) payload.replyTo = opts.replyTo;
+    const usedEmoji = customEmojiForText(text);
+    if (usedEmoji) payload.customEmoji = usedEmoji;
     const { ciphertext, iv } = await encryptMessage(key, payload);
     const sent = await api.messageSend(convId, { ciphertext, iv, epoch });
     mergeMessages(convId, [
@@ -275,6 +281,7 @@ export function startChat(): void {
     void (async () => {
       await chat.loadConversations();
       await friends.load();
+      void loadCustomEmoji();
       if (chat.activeId) await chat.loadHistory(chat.activeId);
     })();
   });
@@ -287,5 +294,6 @@ export function stopChat(): void {
   unsubConnect?.();
   unsubConnect = null;
   disconnectChatSocket();
+  resetCustomEmoji();
   useChatStore().reset();
 }
