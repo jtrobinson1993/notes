@@ -491,10 +491,10 @@ async function sendGif(gif: GifRef) {
                  pops in (TransitionGroup enter, never on initial load); the count
                  pops when it changes (keyed Transition). -->
             <TransitionGroup
-              v-if="reactionGroups(row.msg.seq).length"
               tag="div"
               name="pill"
-              class="mt-1 flex flex-wrap gap-1"
+              class="flex flex-wrap gap-1 empty:hidden"
+              :class="reactionGroups(row.msg.seq).length ? 'mt-1' : ''"
             >
               <button
                 v-for="g in reactionGroups(row.msg.seq)"
