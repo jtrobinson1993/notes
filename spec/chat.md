@@ -388,15 +388,18 @@ This completes the v3.1 "reactions, replies, and threads" bullet.
 
 ### Custom emoji — default 7TV set
 
-A few hundred of the most-used 7TV emotes are **self-hosted** (decision: commit
-the assets). `scripts/fetch-emojis.mjs` pulls them via 7TV's GQL
-(`filter.category = TOP`, i.e. most-used), downloads each as a small WebP
-(prefers crisp 2x, falls back to 1x for heavy/animated, skips >48 KB; filenames
-by emote id to avoid case-insensitive-FS collisions) into
-`web/public/emoji/7tv/`, and writes `web/src/lib/emoji/defaultEmoji.json` **in
-7TV popularity order** (the picker shows top emotes first; not alphabetized).
-Re-run the script to refresh. These are served at `/emoji/7tv/…` and excluded
-from the PWA precache (cached on demand via a `CacheFirst` runtime rule).
+A few hundred of the most-used 7TV emotes back the default set. The binaries are
+**not committed**; instead the server **proxies and disk-caches** each image
+from 7TV's CDN on first request and serves it from our own origin
+(`server/routes/emoji.ts`, `GET /emoji/7tv/:id.webp`, `requireAuth`, validated
+26-char ULID only → never an open proxy; `Cache-Control: immutable`). That keeps
+the self-hosting privacy/offline posture (no per-render IP leak to 7TV;
+service-worker cacheable) without ~300 binaries in the repo. The **metadata set**
+(`web/src/lib/emoji/defaultEmoji.json`, names → 7TV ids, **in 7TV popularity
+order**) is refreshed from 7TV's GQL (`filter.category = TOP`) by
+`scripts/fetch-emojis.mjs` (now metadata-only). The bundled manifest seeds
+`resolveEmoji` synchronously; images load from `/emoji/7tv/…`, excluded from the
+PWA precache and cached on demand via a `CacheFirst` runtime rule.
 
 Messages use Discord-style **`:shortcode:`** syntax. The token renderer
 (`MdTokens.emojiText`) replaces a `:name:` run with an inline `<img.chat-emoji>`
@@ -415,8 +418,8 @@ bundle) and cached; component glyphs (skin tones/hair, group 2) are excluded.
 Search is substring over label + tags; picking inserts the raw unicode
 character (no shortcode needed — it renders natively).
 
-> Hosting note: whether to keep self-hosting the 7TV set or serve straight from
-> 7TV's CDN is an open follow-up (see [roadmap.md](roadmap.md) v3.3).
+> Hosting note: the default set's images are server-proxied + cached from 7TV's
+> CDN (above) rather than committed — resolved in v3.4.
 
 ### Custom (encrypted) per-user emoji
 

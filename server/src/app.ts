@@ -16,6 +16,7 @@ import { settingsRoutes } from './routes/settings.js';
 import { chatRoutes } from './routes/chat.js';
 import { linkRoutes } from './routes/link.js';
 import { gifRoutes } from './routes/gifs.js';
+import { emojiRoutes } from './routes/emoji.js';
 import { createRealtime, WS_MAX_PAYLOAD } from './realtime.js';
 
 export async function buildApp(db: DB, config: Config): Promise<FastifyInstance> {
@@ -36,6 +37,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   chatRoutes(app, db, realtime);
   linkRoutes(app, db, config);
   gifRoutes(app, config);
+  emojiRoutes(app, config);
   realtime.register(app);
 
   // Serve the built SPA. Default: web/dist relative to the repo layout
