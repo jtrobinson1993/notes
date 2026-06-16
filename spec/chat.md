@@ -328,7 +328,10 @@ viewer (reka-ui Dialog; Escape / overlay-click / close-button dismiss). A plain
 cursor; **click-and-hold drags** to pan once zoomed (the wheel also zooms toward
 the cursor). The pan/zoom math is the pure, unit-tested `lib/imageZoom.ts`
 (`zoomToPoint` pins the cursor point across a scale change; `clampPan` keeps the
-scaled image from revealing a gap past its edges).
+scaled image from revealing a gap past its edges). A corner overlay shows the
+file metadata — name, pixel **dimensions** (read from the loaded image's natural
+size), **size**, and **format** (`formatBytes` / `formatMime` in
+`lib/fileMeta.ts`, also unit-tested).
 
 Opening/closing **morphs** the thumbnail into the modal image via the View
 Transitions API: both elements share a temporary `view-transition-name` (per

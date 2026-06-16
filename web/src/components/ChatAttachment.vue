@@ -3,6 +3,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { AttachmentRef } from '@notes/shared';
 import { api } from '../lib/api';
 import { decryptBlob } from '../lib/crypto';
+import { formatBytes } from '../lib/fileMeta';
 import { withViewTransition } from '../lib/viewTransition';
 import ImageLightbox from './ImageLightbox.vue';
 import IconPaperclip from '~icons/mynaui/paperclip';
@@ -34,12 +35,6 @@ async function setOpen(open: boolean) {
     await nextTick(); // let the target element mount/unmount before the new snapshot
   });
   morphing.value = false;
-}
-
-function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** Decrypt the blob once; cached for both inline display and download. */
@@ -100,6 +95,9 @@ onBeforeUnmount(() => {
       :open="lightboxOpen"
       :src="imgUrl"
       :alt="attachment.name"
+      :name="attachment.name"
+      :size="attachment.size"
+      :type="attachment.type"
       :view-transition-name="morphing && lightboxOpen ? vtName : undefined"
       @update:open="setOpen"
     />
@@ -115,7 +113,7 @@ onBeforeUnmount(() => {
     <IconPaperclip v-else class="h-5 w-5 shrink-0" />
     <span class="min-w-0">
       <span class="block truncate font-medium">{{ attachment.name }}</span>
-      <span class="block text-xs text-zinc-500">{{ failed ? 'could not decrypt' : fmtSize(attachment.size) }}</span>
+      <span class="block text-xs text-zinc-500">{{ failed ? 'could not decrypt' : formatBytes(attachment.size) }}</span>
     </span>
   </button>
 </template>
