@@ -47,6 +47,11 @@ function toggle(userId: string) {
   selected.value = next;
 }
 
+function goToFriends() {
+  open.value = false;
+  router.push('/friends');
+}
+
 async function create() {
   if (count.value === 0 || busy.value) return;
   busy.value = true;
@@ -102,7 +107,13 @@ async function create() {
         </label>
       </li>
       <li v-if="!filtered.length" class="px-2 py-6 text-center text-sm text-zinc-400">
-        {{ friends.friends.length ? 'No friends match your search.' : 'No friends yet.' }}
+        <template v-if="friends.friends.length">No friends match your search.</template>
+        <template v-else>
+          No friends yet.
+          <button class="font-medium text-blue-600 hover:underline dark:text-blue-400" @click="goToFriends">
+            Add a friend
+          </button>
+        </template>
       </li>
     </ul>
 
