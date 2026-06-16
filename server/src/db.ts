@@ -916,8 +916,10 @@ export function openDb(dataDir: string) {
         .get(conversationId, userId) as ConversationMemberRow | undefined;
     },
     listConversationMembers(conversationId: string): ConversationMemberRow[] {
+      // `user_id` tiebreaks members that joined in the same transaction (equal
+      // joined_at), so ordering — and owner-succession on a leave — is stable.
       return db
-        .prepare('SELECT * FROM conversation_members WHERE conversation_id = ? ORDER BY joined_at')
+        .prepare('SELECT * FROM conversation_members WHERE conversation_id = ? ORDER BY joined_at, user_id')
         .all(conversationId) as ConversationMemberRow[];
     },
     listConversationMemberIds(conversationId: string): string[] {

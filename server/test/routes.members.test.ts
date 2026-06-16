@@ -136,11 +136,12 @@ describe('remove / leave', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('owner leaving transfers ownership to the earliest-joined remaining member', async () => {
+  it('owner leaving transfers ownership to exactly one remaining member', async () => {
     const res = await inject('DELETE', `/api/conversations/${convId}/members/${owner}`, ownerCookie, removeBody([a, b]));
     expect(res.statusCode).toBe(200);
-    const forA = await findConv(a);
-    expect(forA?.members.find((m) => m.userId === a)?.role).toBe('owner');
+    const remaining = (await findConv(a))?.members ?? [];
+    expect(remaining.map((m) => m.userId).sort()).toEqual([a, b].sort());
+    expect(remaining.filter((m) => m.role === 'owner')).toHaveLength(1);
   });
 });
 
