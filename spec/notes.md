@@ -11,9 +11,13 @@ See [accounts-and-crypto.md](accounts-and-crypto.md) for the key model,
 - Tags (no folders); client-side full-text search over decrypted titles+bodies.
 - **Encrypted local cache** (IndexedDB stores ciphertext only): instant load,
   background sync via Pinia Colada, offline reading.
-- **Sharing** notes between users: the note key is sealed to the recipient's
-  X25519 key (read or write access, revocable) — see the sealing primitive in
-  [accounts-and-crypto.md](accounts-and-crypto.md).
+- **Sharing** notes — **with friends only**: the note key is sealed to the
+  recipient's X25519 key (read or write access, revocable) — see the sealing
+  primitive in [accounts-and-crypto.md](accounts-and-crypto.md). The server
+  enforces friendship on `POST /api/notes/:id/shares` (non-friend → 403), and the
+  picker (`/api/members`, `ShareDialog.vue`) lists only the caller's friends. All
+  three surfaces — the picker, the recipient list, and the "shared by" label —
+  show **display names, never usernames** (matching the chat rule).
 - **Encrypted attachments** — a per-attachment key stored *inside* the encrypted
   note payload (so sharing a note shares its attachments); images embed via
   `attachment:` URLs. 32 MiB cap.

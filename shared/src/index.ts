@@ -56,16 +56,18 @@ export interface SealedKey {
 
 export type ShareAccess = 'read' | 'write';
 
+/** A person you can share a note with — always one of your friends. Carries the
+ *  display name (never the username) and their key to seal the note key to. */
 export interface MemberInfo {
   id: string;
-  username: string;
+  displayName: string;
   publicKey: string | null;
 }
 
 export interface ShareInfo {
   noteId: string;
   recipientId: string;
-  recipientUsername: string;
+  recipientDisplayName: string;
   access: ShareAccess;
   createdAt: number;
 }
@@ -147,7 +149,7 @@ export interface SharedNoteRecord {
   iv: string;
   /** note key sealed to my X25519 public key */
   sealedKey: SealedKey;
-  ownerUsername: string;
+  ownerDisplayName: string;
   access: ShareAccess;
   createdAt: number;
   updatedAt: number;

@@ -49,7 +49,7 @@ const toggleShare = useMutation({
   <AppModal
     v-model:open="open"
     title="Share note"
-    description="The note's key is encrypted to each person you share with — the server still can't read it."
+    description="Share with a friend — the note's key is encrypted to them, so the server still can't read it."
   >
     <ul class="divide-y divide-zinc-100 pb-5 dark:divide-zinc-800">
       <li
@@ -57,7 +57,7 @@ const toggleShare = useMutation({
         :key="m.id"
         class="flex items-center gap-2 py-2"
       >
-        <span class="grow text-sm font-medium">{{ m.username }}</span>
+        <span class="grow text-sm font-medium">{{ m.displayName }}</span>
         <select
           :value="shareOf(m.id)?.access ?? 'none'"
           class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
@@ -76,8 +76,8 @@ const toggleShare = useMutation({
           <option value="write">Can edit</option>
         </select>
       </li>
-      <li v-if="(members?.length ?? 0) <= 1" class="py-2 text-sm text-zinc-400">
-        No other users on this server yet.
+      <li v-if="!members?.length" class="py-2 text-sm text-zinc-400">
+        Add friends to share notes with them.
       </li>
     </ul>
     <p v-if="error" class="pb-4 text-sm text-red-600 dark:text-red-400">{{ error }}</p>

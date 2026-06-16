@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { MemberInfo, NotesSyncResponse, SealedKey, ShareInfo, SharedNoteRecord, WrappedKey } from '@notes/shared';
-import { toNoteRecord, type DB } from '../db.js';
+import { effectiveDisplayName, toNoteRecord, type DB } from '../db.js';
 import { requireAuth } from '../session.js';
 import { now, validWrappedKey } from '../util.js';
 
@@ -110,9 +110,15 @@ export function noteRoutes(app: FastifyInstance, db: DB): void {
 
   // ---- Sharing ----
 
-  app.get('/api/members', { preHandler: requireAuth }, async () => {
-    return db.listMembers().map(
-      (m): MemberInfo => ({ id: m.id, username: m.username, publicKey: m.public_key }),
+  // Only friends can be shared with, so the picker lists exactly your friends —
+  // by display name, never the username.
+  app.get('/api/members', { preHandler: requireAuth }, async (request) => {
+    return db.listFriendMembers(request.user!.id).map(
+      (m): MemberInfo => ({
+        id: m.id,
+        displayName: effectiveDisplayName({ id: m.id, display_name: m.display_name }),
+        publicKey: m.public_key,
+      }),
     );
   });
 
@@ -123,7 +129,7 @@ export function noteRoutes(app: FastifyInstance, db: DB): void {
         ciphertext: r.ciphertext,
         iv: r.iv,
         sealedKey: JSON.parse(r.sealed_key) as SealedKey,
-        ownerUsername: r.owner_username,
+        ownerDisplayName: effectiveDisplayName({ id: r.owner_id, display_name: r.owner_display_name }),
         access: r.access as SharedNoteRecord['access'],
         createdAt: r.created_at,
         updatedAt: r.updated_at,
@@ -139,7 +145,7 @@ export function noteRoutes(app: FastifyInstance, db: DB): void {
       (s): ShareInfo => ({
         noteId: s.note_id,
         recipientId: s.recipient_id,
-        recipientUsername: s.recipient_username,
+        recipientDisplayName: effectiveDisplayName({ id: s.recipient_id, display_name: s.recipient_display_name }),
         access: s.access as ShareInfo['access'],
         createdAt: s.created_at,
       }),
@@ -148,15 +154,19 @@ export function noteRoutes(app: FastifyInstance, db: DB): void {
 
   app.post('/api/notes/:id/shares', { preHandler: requireAuth }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    const me = request.user!.id;
     const b = request.body as Record<string, unknown>;
     const note = db.getNote(id);
-    if (!note || note.user_id !== request.user!.id || note.deleted) {
+    if (!note || note.user_id !== me || note.deleted) {
       return reply.code(404).send({ error: 'not found' });
     }
     if (typeof b.recipientId !== 'string' || !validSealedKey(b.sealedKey) || (b.access !== 'read' && b.access !== 'write')) {
       return reply.code(400).send({ error: 'invalid share payload' });
     }
-    if (b.recipientId === request.user!.id) return reply.code(400).send({ error: 'cannot share with yourself' });
+    if (b.recipientId === me) return reply.code(400).send({ error: 'cannot share with yourself' });
+    // You can only share with a friend (mirrors DM access — non-friends are
+    // reachable only via a group a mutual friend creates).
+    if (!db.areFriends(me, b.recipientId)) return reply.code(403).send({ error: 'not a friend' });
     const recipient = db.getUser(b.recipientId);
     if (!recipient?.public_key) return reply.code(400).send({ error: 'recipient has no public key yet' });
     db.upsertShare({ noteId: id, recipientId: b.recipientId, sealedKey: JSON.stringify(b.sealedKey), access: b.access });

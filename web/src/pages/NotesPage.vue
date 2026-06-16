@@ -121,7 +121,7 @@ function excerpt(body: string): string {
             >
               <p class="truncate text-sm font-medium">
                 {{ note.payload.title || 'Untitled' }}
-                <span v-if="note.shared" class="text-xs font-normal text-violet-500">· from {{ note.shared.ownerUsername }}</span>
+                <span v-if="note.shared" class="text-xs font-normal text-violet-500">· from {{ note.shared.ownerDisplayName }}</span>
               </p>
               <div class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
                 <span

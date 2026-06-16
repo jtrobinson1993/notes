@@ -33,7 +33,7 @@ export interface DecryptedNote {
   createdAt: number;
   updatedAt: number;
   /** set when this note is shared *with* me */
-  shared?: { ownerUsername: string; access: ShareAccess };
+  shared?: { ownerDisplayName: string; access: ShareAccess };
 }
 
 export const useNotesStore = defineStore('notes', () => {
@@ -86,7 +86,7 @@ export const useNotesStore = defineStore('notes', () => {
       payload,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
-      shared: { ownerUsername: record.ownerUsername, access: record.access },
+      shared: { ownerDisplayName: record.ownerDisplayName, access: record.access },
     });
   }
 

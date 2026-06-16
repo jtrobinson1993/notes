@@ -29,6 +29,12 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
   everywhere a user is surfaced to another user: chat (members, friend requests,
   reply quotes) and note sharing (pickers, "shared by" labels) alike.
 
+- **Friends-gate all 1:1 reach.** A user may only **DM** or **share a note** with
+  a current **friend** — the server enforces friendship on DM creation and on
+  note sharing, and member/recipient pickers list only friends. The *only* way to
+  reach a non-friend is a **group chat** a mutual friend adds you both to
+  (friends-of-friends); there is no direct DM or share with a non-friend.
+
 ## Git
 
 - **Branch per workitem.** Start each task on a new branch off `main`; never

@@ -553,13 +553,13 @@ export function openDb(dataDir: string) {
     listShares(noteId: string) {
       return db
         .prepare(
-          `SELECT s.*, u.username AS recipient_username FROM note_shares s
+          `SELECT s.*, u.display_name AS recipient_display_name FROM note_shares s
            JOIN users u ON u.id = s.recipient_id WHERE s.note_id = ?`,
         )
         .all(noteId) as {
         note_id: string;
         recipient_id: string;
-        recipient_username: string;
+        recipient_display_name: string | null;
         sealed_key: string;
         access: string;
         created_at: number;
@@ -571,7 +571,8 @@ export function openDb(dataDir: string) {
     listSharedWith(recipientId: string) {
       return db
         .prepare(
-          `SELECT n.id, n.ciphertext, n.iv, n.created_at, n.updated_at, s.sealed_key, s.access, u.username AS owner_username
+          `SELECT n.id, n.ciphertext, n.iv, n.created_at, n.updated_at, s.sealed_key, s.access,
+                  n.user_id AS owner_id, u.display_name AS owner_display_name
            FROM note_shares s
            JOIN notes n ON n.id = s.note_id AND n.deleted = 0
            JOIN users u ON u.id = n.user_id
@@ -585,7 +586,8 @@ export function openDb(dataDir: string) {
         updated_at: number;
         sealed_key: string;
         access: string;
-        owner_username: string;
+        owner_id: string;
+        owner_display_name: string | null;
       }[];
     },
 
@@ -609,6 +611,15 @@ export function openDb(dataDir: string) {
         username: string;
         public_key: string | null;
       }[];
+    },
+    /** A user's friends (the only people they can share a note with). */
+    listFriendMembers(userId: string): { id: string; display_name: string | null; public_key: string | null }[] {
+      return db
+        .prepare(
+          `SELECT u.id, u.display_name, u.public_key FROM friends f
+           JOIN users u ON u.id = f.friend_id WHERE f.user_id = ? ORDER BY u.display_name`,
+        )
+        .all(userId) as { id: string; display_name: string | null; public_key: string | null }[];
     },
 
     getUserSetting(userId: string, key: string) {

@@ -231,7 +231,7 @@ function fmtSize(bytes: number): string {
         class="min-w-0 grow bg-transparent text-xl font-semibold outline-none placeholder:text-zinc-400"
       />
       <span v-if="note.shared" class="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700 dark:bg-violet-950 dark:text-violet-300">
-        {{ note.shared.ownerUsername }} · {{ note.shared.access === 'read' ? 'read-only' : 'can edit' }}
+        {{ note.shared.ownerDisplayName }} · {{ note.shared.access === 'read' ? 'read-only' : 'can edit' }}
       </span>
       <div class="flex shrink-0 gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
         <button
