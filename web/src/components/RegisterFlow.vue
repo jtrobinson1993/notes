@@ -75,7 +75,7 @@ function finish() {
           autocomplete="nickname"
           class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
         />
-        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">The name your friends will see. You can change it later.</p>
+        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">The name everyone in your chats will see, including people you aren't friends with</p>
       </div>
       <p class="text-sm text-zinc-500 dark:text-zinc-400">
         You'll sign in with a <strong>passkey</strong> — no password. Your browser or password
