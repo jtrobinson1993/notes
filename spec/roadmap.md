@@ -4,8 +4,9 @@
 
 - **Phase 1** — friends + 1:1 DMs over WebSocket (implemented; see
   [chat.md](chat.md#phase-1--as-built)).
-- **Phase 2** — group channels: membership add/remove, epoch re-keying, the
-  inviter's share-history choice.
+- **Phase 2** — group channels: membership add/remove + leave, epoch re-keying,
+  the inviter's share-history choice, per-group permissions + owner/admin roles
+  (implemented; see [chat.md](chat.md#conversation-keys--epochs)).
 - **Phase 3** — hardening: CSP headers (theme-script hash) + background/PWA push.
 
 ## v3.1 — Chat polish

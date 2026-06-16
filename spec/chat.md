@@ -66,25 +66,47 @@ self-hosted server — see [security.md](security.md) for what could be hardened
 
 Each conversation has a symmetric **conversation key** that encrypts its
 messages, distributed with the sealed-box primitive (`sealKey` → a member's
-X25519 public key; `unsealKey` with their private key). The server stores one
-sealed copy of the key **per member** (like `note_shares`).
+X25519 public key; `unsealKey` with their private key). Because a group re-keys
+on every membership change, the server keeps each member's sealed key **per
+epoch** in a `conversation_keys` table (`conversation_members.sealed_key` holds
+only the current one); `toConversation` returns the member's full `epochKeys`
+list, and the client unseals each into a `convId → epoch → key` map. Keeping all
+epoch keys server-side is what lets a re-keyed group's **back-scroll survive a
+reload** (the in-memory cache is lost).
 
 Membership changes mint a **new epoch**: a fresh key sealed to all current
-members; each message records its epoch. Clients keep every epoch key sealed to
-them, so:
+members; each message records its epoch and is decrypted with the key for *that*
+epoch. Clients keep every epoch key sealed to them, so:
 
-- **Removing a member:** the remover's client mints the new epoch and seals it
-  only to the *remaining* members. The removed member keeps earlier epoch keys,
-  so reads everything **up to** removal but nothing after. (Re-keying is
-  client-side → requires the actor online.)
+- **Removing a member (or leaving):** the actor's client mints the new epoch and
+  seals it only to the *remaining* members; the target's `conversation_keys` rows
+  are deleted. The removed member reads everything **up to** removal (via keys
+  already in memory) but nothing after. (Re-keying is client-side → requires the
+  actor online.)
 - **Adding a member — the inviter decides history:** a *share-history* flag.
-  *Share* → also seal prior epoch keys to the joiner (back-scroll readable).
-  *Start fresh* → only the new epoch key (visible from join point on).
+  *Share* → also seal every prior epoch key to the joiner (back-scroll readable).
+  *Start fresh* → only the new epoch key (unread starts at the latest seq;
+  earlier messages aren't decryptable).
+
+The server validates each re-key: the `keys` must cover **exactly** the expected
+member set, `epoch` must be `current + 1`, and a share-history join's `priorKeys`
+must cover epochs `0..current` — so a partial or stale re-key is rejected, never
+half-applied.
+
+**Permissions.** Each group has a `manage_policy` (`owner` | `admins` | `open`,
+default owner-only) and members carry a `role` (`owner` = creator, `admin`,
+`member`). The pure `canManageMembers(policy, role)` rule (in `@notes/shared`,
+enforced server-side and used for client affordances) decides who may add/remove.
+The owner alone sets the policy and grants/revokes admin; anyone may leave; the
+owner can't be removed, and an owner who leaves hands ownership to the
+earliest-joined remaining member. A group never drops below two members. Live
+membership/epoch/role/policy changes fan out as a `conversation-updated` frame
+(recipients refetch); a removed member gets `conversation-removed` (drops it).
 
 Within an epoch the key is static (no per-message forward secrecy); epochs give
 coarse forward/backward secrecy at membership boundaries. We deliberately do
 **not** hand-roll Double Ratchet / MLS. **1:1 DMs have fixed membership → a
-single epoch and none of the re-keying machinery (phase 1).**
+single epoch and none of the re-keying machinery.**
 
 ## Delivery transport — the WebSocket
 
@@ -131,8 +153,9 @@ encrypted. This deferral explicitly covers PWA message notifications.
 - **Phase 1** — friends (ephemeral invite codes + add/accept) and **1:1 DMs**
   over the WebSocket, persisted ciphertext history, unread markers. Single epoch;
   no re-keying. **Implemented — see below.**
-- **Phase 2** — **group channels:** membership add/remove, epoch re-keying, the
-  inviter's share-history choice.
+- **Phase 2** — **group channels:** membership add/remove + leave, epoch
+  re-keying, the inviter's share-history choice, and per-group permissions
+  (owner/admins/open) with owner/admin roles. **Implemented — see above.**
 - **Phase 3** — hardening: CSP headers (theme-script hash) + background/PWA push.
 
 ---
@@ -155,12 +178,18 @@ a crypto seal→unseal→encrypt→decrypt round-trip; server boots and enforces
 - `friend_requests(id, from_user, to_user, created_at, UNIQUE(from_user,to_user))`.
 - `friends(user_id, friend_id, created_at, PK(user_id,friend_id))` — two rows
   per friendship for simple lookups.
-- `conversations(id, kind, created_by, created_at, dm_key UNIQUE)` — `dm_key` is
-  the sorted `min(uid):max(uid)` pair for DMs (NULL for groups), giving one DM
-  per pair via the UNIQUE index.
+- `conversations(id, kind, created_by, created_at, dm_key UNIQUE,
+  manage_policy DEFAULT 'owner')` — `dm_key` is the sorted `min(uid):max(uid)`
+  pair for DMs (NULL for groups), giving one DM per pair via the UNIQUE index;
+  `manage_policy` (`owner`|`admins`|`open`) gates group membership management.
 - `conversation_members(conversation_id, user_id, sealed_key, epoch DEFAULT 0,
   last_read_seq DEFAULT 0, joined_at, role, PK(conversation_id,user_id))` —
-  `sealed_key` = JSON `SealedKey`.
+  `sealed_key` = the current epoch's JSON `SealedKey`; `role` is
+  `owner`|`admin`|`member`.
+- `conversation_keys(conversation_id, user_id, epoch, sealed_key,
+  PK(conversation_id,user_id,epoch))` — every epoch key a member can read (kept
+  so back-scroll survives a re-key + reload); a member's rows are deleted when
+  they leave/are removed, which cuts their future access.
 - `messages(id, conversation_id, sender_id, seq, epoch, ciphertext, iv,
   created_at, UNIQUE(conversation_id,seq))` + `idx_messages_conv_seq`. `seq` is
   assigned `MAX(seq)+1` inside a transaction.
@@ -177,11 +206,17 @@ Conversations: `GET /api/conversations`, `POST /api/conversations/dm`
 (idempotent on `dm_key`, members must be exactly {me, friend}),
 `POST /api/conversations/group` (creates a `kind:'group'` conversation of 3+
 members — me plus 2+ friends; **not** idempotent, every other member must be a
-current friend of the creator; membership add/remove + epoch re-keying remain
-Phase 2),
+current friend of the creator; the creator is the `owner`),
 `GET /api/conversations/:id/messages?before=&limit=` (DESC, ≤100),
 `POST /api/conversations/:id/messages` (assigns seq, fans out), 
 `POST /api/conversations/:id/read` (advances `last_read_seq`, fans out a receipt).
+Group membership (Phase 2, all re-key-validated & permission-gated):
+`POST /api/conversations/:id/members` (add a friend, mints a new epoch sealed to
+everyone + joiner, `history: share|fresh`),
+`DELETE /api/conversations/:id/members/:userId` (remove, or leave when it's you;
+re-keys the remainder),
+`PATCH /api/conversations/:id` (owner sets `managePolicy`),
+`POST /api/conversations/:id/members/:userId/role` (owner grants/revokes admin).
 
 ### Realtime hub (`realtime.ts`)
 
@@ -192,14 +227,17 @@ frame, exceptUserId?), isOnline }`. The `/api/ws` upgrade authenticates via the
 `Map<userId, Set<socket>>`; on open sends `{type:'hello'}` and broadcasts
 presence to online friends; heartbeat every 30s (ping/`isAlive`); per-user cap 8
 (evict oldest); `maxPayload` 64 KiB. Server→client `ServerFrame`s: `hello`,
-`message`, `read`, `friend-request`, `friend-accepted`, `presence`. Send/read
-go over REST; client→server frames are minimal (liveness is protocol ping/pong).
+`message`, `read`, `friend-request`, `friend-accepted`, `profile-updated`,
+`conversation-updated`, `conversation-removed`, `presence`. Send/read go over
+REST; client→server frames are minimal (liveness is protocol ping/pong).
 
 ### Client crypto & state
 
 - `chatCrypto.ts` — `generateConversationKey`, `sealConversationKey`,
   `unsealConversationKey`, `encryptMessage`/`decryptMessage` (AES-256-GCM over a
-  JSON `MessagePayload {text, sentAt}`).
+  JSON `MessagePayload {text, sentAt}`), plus the re-key helpers
+  `sealConversationKeyToMembers` (one new key → many members) and
+  `sealEpochKeysTo` (prior epoch keys → a share-history joiner).
 - **DM creation:** the client generates a conv key, seals it to **both** members'
   public keys, and `POST`s. Because the create endpoint is **idempotent**, the
   client always derives its in-memory key by **unsealing the server-returned
@@ -211,10 +249,20 @@ go over REST; client→server frames are minimal (liveness is protocol ping/pong
   many friends — one → a DM, many → a group. Members discover a new group the
   same way as a DM: the first `message` frame for an unknown conversation
   triggers a `loadConversations()`.
+- **Group membership** (`chat.addMember`/`removeMember`/`setManagePolicy`/
+  `setMemberRole`): the actor mints a new conv key, seals it to the post-change
+  member set, and (on a share-history add) seals every prior epoch key to the
+  joiner, then POSTs. `ManageMembersModal.vue` — opened from a members button on
+  the **right of the group header** — drives it: member list with owner/admin
+  badges, add-a-friend with a per-add share/start-fresh toggle, remove, leave,
+  and owner-only admin promotion + policy selector (gated on `canManageMembers`).
+  A `conversation-updated` frame triggers a `loadConversations()` (picks up new
+  members + epoch keys); `conversation-removed` drops the conversation.
 - `chatSocket.ts` — reconnecting WS client (exponential backoff). `chat.ts`
   store wires frames to both the chat and friends stores and backfills on every
   (re)connect; `startChat()/stopChat()` are hooked to session unlock/lock.
-  Conversation keys are held in an in-memory `Map` only (never persisted).
+  Conversation keys are held in an in-memory `convId → epoch → key` `Map` only
+  (never persisted); each message decrypts under the key for its own epoch.
 - Self-echo dedupe by `seq`; an inbound message for an unknown conversation
   triggers `loadConversations()` first (so a friend's opening DM appears).
 - **Infinite history scroll:** `ConversationView` auto-loads the next older page
