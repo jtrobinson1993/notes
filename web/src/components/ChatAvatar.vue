@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-// Default profile image: a colored circle with the first letter of the display
-// name. Size/typography come from classes the parent applies (h-/w-/text-).
-const props = defineProps<{ name: string; seed?: string }>();
+// Profile image: the contact's decrypted avatar when available, else a colored
+// circle with the first letter of the display name. Size/typography come from
+// classes the parent applies (h-/w-/text-).
+const props = defineProps<{ name: string; seed?: string; src?: string | null }>();
 
 // Fixed palette; pick deterministically from the seed (e.g. userId) so a user
 // keeps the same color across renders and sessions.
@@ -22,7 +23,10 @@ const letter = computed(() => (props.name.trim()[0] ?? '?').toUpperCase());
 
 <template>
   <span
-    class="flex shrink-0 select-none items-center justify-center rounded-full font-semibold text-white"
+    class="flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full font-semibold text-white"
     :style="{ backgroundColor: bg }"
-  >{{ letter }}</span>
+  >
+    <img v-if="src" :src="src" :alt="name" class="h-full w-full object-cover" />
+    <template v-else>{{ letter }}</template>
+  </span>
 </template>

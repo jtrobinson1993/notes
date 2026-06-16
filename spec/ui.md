@@ -54,9 +54,14 @@ existing notes restyle for free.
 A thin, Discord-style **left sidebar** shared across the whole app (notes and
 chat are two sections of one app). Collapsed by default it shows just an **icon**
 per item; an **expand / collapse button at the bottom** toggles to **icon +
-name** (state persisted in localStorage). **No hover-to-open.** Top to bottom:
+name** (state persisted in localStorage). **No hover-to-open.** When collapsed,
+items carry **no boxy background hover**; instead hovering shows an **instant
+label tooltip to the right** (reka-ui `Tooltip`, portaled so it isn't clipped;
+`SidebarTooltip.vue`). Expanded, the labels are inline and a subtle row hover
+returns. Top to bottom:
 
-- **Top:** a **`+`** button — start a new chat (a DM with a friend, or a group).
+- **Top:** a **chat-bubble** button (`message-plus` icon) — opens the **New chat
+  modal** to start a DM with a friend, or a group.
 - One item per conversation:
   - *DM:* the other member's avatar (display-name initial fallback) and, expanded,
     their **display name**.
@@ -92,6 +97,19 @@ Implemented in `AppSidebar.vue`, mounted as a left rail in `AppLayout.vue`
 (shown when logged in). `AppLayout` has **no header** — just the rail and the
 page content region (`<main>`), which is the only thing that scrolls, so the
 fixed sidebar controls never scroll out of view.
+
+## Modals
+
+`AppModal.vue` is the reusable shell for **primary, blocking actions** (the user
+shouldn't reach the rest of the app until they finish or cancel). It wraps
+reka-ui `Dialog` with an **overlay blur**, a **✕ close**, and optional
+title/description/footer slots. Layout is responsive: **centered with a fixed
+max-width and capped height on desktop, full-screen on mobile**. `ShareDialog`,
+`HistoryDialog`, and the new-chat modal are built on it.
+
+`NewChatModal.vue` — the **New chat** modal: a search box, an **alphabetical
+friend list with a checkbox per friend** (select one or many), and Cancel /
+Create. One friend → a **DM**; several → a **group** (`chat.openGroup`).
 
 ## Settings
 

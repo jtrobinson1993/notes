@@ -8,6 +8,7 @@ import type {
   FriendInvite,
   FriendRequest,
   ProfileInfo,
+  ProfileView,
   SealedKey,
   SealedMemberKey,
 } from '@notes/shared';
@@ -32,6 +33,16 @@ function validSealedKey(s: unknown): s is SealedKey {
   const o = s as Record<string, unknown>;
   return (
     typeof o.epk === 'string' && o.epk.length < 256 &&
+    typeof o.iv === 'string' && o.iv.length < 256 &&
+    typeof o.ct === 'string' && o.ct.length < 1024
+  );
+}
+
+function validWrappedKey(s: unknown): boolean {
+  if (typeof s !== 'object' || s === null) return false;
+  const o = s as Record<string, unknown>;
+  return (
+    typeof o.salt === 'string' && o.salt.length < 256 &&
     typeof o.iv === 'string' && o.iv.length < 256 &&
     typeof o.ct === 'string' && o.ct.length < 1024
   );
@@ -234,19 +245,28 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
   });
 
   app.delete('/api/friends/:userId', { preHandler: requireAuth }, async (request) => {
+    const me = request.user!.id;
     const { userId } = request.params as { userId: string };
-    db.deleteFriendPair(request.user!.id, userId);
+    db.deleteFriendPair(me, userId);
+    // Revoke profile-key access in both directions. The current blobs become
+    // unreadable to each other immediately; rotation on the next profile update
+    // protects future ones (the ex-friend keeps only stale plaintext).
+    db.deleteProfileKeyPair(me, userId);
     return { ok: true };
   });
 
   // ---------------------------------------------------------------- Profile
 
-  app.get('/api/profile', { preHandler: requireAuth }, async (request) => {
-    const info: ProfileInfo = {
-      displayName: effectiveDisplayName(request.user!),
-      nameColor: request.user!.name_color ?? null,
+  function profileInfo(u: { id: string; display_name: string | null; name_color: string | null; profile_friends_only: number }): ProfileInfo {
+    return {
+      displayName: effectiveDisplayName(u),
+      nameColor: u.name_color ?? null,
+      friendsOnly: u.profile_friends_only !== 0,
     };
-    return info;
+  }
+
+  app.get('/api/profile', { preHandler: requireAuth }, async (request) => {
+    return profileInfo(request.user!);
   });
 
   app.put('/api/profile', { preHandler: requireAuth }, async (request, reply) => {
@@ -268,9 +288,134 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
       }
       db.setNameColor(me, nc);
     }
-    const u = db.getUser(me)!;
-    const info: ProfileInfo = { displayName: effectiveDisplayName(u), nameColor: u.name_color ?? null };
-    return info;
+    return profileInfo(db.getUser(me)!);
+  });
+
+  // Who may currently receive my encrypted profile: friends always; group
+  // co-members too when visibility isn't friends-only.
+  function profileRecipientAllowed(ownerId: string, recipientId: string, friendsOnly: boolean): boolean {
+    if (recipientId === ownerId) return false;
+    if (db.areFriends(ownerId, recipientId)) return true;
+    return !friendsOnly && db.sharesConversation(ownerId, recipientId);
+  }
+
+  // The owner's own encrypted profile + the profile key wrapped under their MK,
+  // so they can decrypt and edit it on any device. Null when none is set yet.
+  app.get('/api/profile/data', { preHandler: requireAuth }, async (request) => {
+    const p = db.getProfile(request.user!.id);
+    if (!p) return { profile: null };
+    return {
+      profile: {
+        ciphertext: p.ciphertext,
+        iv: p.iv,
+        epoch: p.epoch,
+        ownerWrappedKey: JSON.parse(p.owner_wrapped_key) as unknown,
+      },
+    };
+  });
+
+  // Set (or rotate) the encrypted profile blob and the per-recipient sealed keys.
+  app.put('/api/profile/data', { preHandler: requireAuth }, async (request, reply) => {
+    const me = request.user!.id;
+    const b = request.body as Record<string, unknown> | null;
+    const ciphertext = b?.ciphertext;
+    const iv = b?.iv;
+    const epoch = b?.epoch;
+    const ownerWrappedKey = b?.ownerWrappedKey;
+    const keys = b?.keys;
+    if (typeof ciphertext !== 'string' || ciphertext.length > MAX_CIPHERTEXT) {
+      return reply.code(400).send({ error: 'invalid ciphertext' });
+    }
+    if (typeof iv !== 'string' || iv.length > 256) return reply.code(400).send({ error: 'invalid iv' });
+    if (!Number.isInteger(epoch) || (epoch as number) < 0) return reply.code(400).send({ error: 'invalid epoch' });
+    if (!validWrappedKey(ownerWrappedKey)) return reply.code(400).send({ error: 'invalid ownerWrappedKey' });
+    if (!Array.isArray(keys)) return reply.code(400).send({ error: 'invalid keys' });
+
+    const friendsOnly = request.user!.profile_friends_only !== 0;
+    const sealed: { recipientId: string; sealedKey: string }[] = [];
+    for (const k of keys as unknown[]) {
+      if (typeof k !== 'object' || k === null) return reply.code(400).send({ error: 'invalid key entry' });
+      const kk = k as Record<string, unknown>;
+      if (typeof kk.recipientId !== 'string' || !validSealedKey(kk.sealedKey)) {
+        return reply.code(400).send({ error: 'invalid key entry' });
+      }
+      if (!profileRecipientAllowed(me, kk.recipientId, friendsOnly)) {
+        return reply.code(400).send({ error: 'recipient not permitted' });
+      }
+      sealed.push({ recipientId: kk.recipientId, sealedKey: JSON.stringify(kk.sealedKey) });
+    }
+
+    db.upsertProfile({ ownerId: me, ciphertext, iv, epoch: epoch as number, ownerWrappedKey: JSON.stringify(ownerWrappedKey) });
+    db.replaceProfileKeys(me, epoch as number, sealed);
+    hub.sendToUsers(sealed.map((s) => s.recipientId), { type: 'profile-updated', userId: me });
+    return { ok: true, epoch };
+  });
+
+  // Distribute the current profile key to additional recipients (e.g. a newly
+  // accepted friend) without rotating — must match the stored epoch.
+  app.post('/api/profile/keys', { preHandler: requireAuth }, async (request, reply) => {
+    const me = request.user!.id;
+    const profile = db.getProfile(me);
+    if (!profile) return reply.code(404).send({ error: 'no profile set' });
+    const b = request.body as Record<string, unknown> | null;
+    if (b?.epoch !== profile.epoch) return reply.code(409).send({ error: 'epoch mismatch' });
+    const keys = b?.keys;
+    if (!Array.isArray(keys)) return reply.code(400).send({ error: 'invalid keys' });
+
+    const friendsOnly = request.user!.profile_friends_only !== 0;
+    for (const k of keys as unknown[]) {
+      if (typeof k !== 'object' || k === null) return reply.code(400).send({ error: 'invalid key entry' });
+      const kk = k as Record<string, unknown>;
+      if (typeof kk.recipientId !== 'string' || !validSealedKey(kk.sealedKey)) {
+        return reply.code(400).send({ error: 'invalid key entry' });
+      }
+      if (!profileRecipientAllowed(me, kk.recipientId, friendsOnly)) {
+        return reply.code(400).send({ error: 'recipient not permitted' });
+      }
+      db.upsertProfileKey(me, kk.recipientId, profile.epoch, JSON.stringify(kk.sealedKey));
+      hub.sendToUser(kk.recipientId, { type: 'profile-updated', userId: me });
+    }
+    return { ok: true };
+  });
+
+  // Toggle profile visibility. Tightening to friends-only immediately revokes any
+  // sealed keys held by non-friend co-members (they lose the current blob).
+  app.put('/api/profile/visibility', { preHandler: requireAuth }, async (request, reply) => {
+    const me = request.user!.id;
+    const b = request.body as Record<string, unknown> | null;
+    if (typeof b?.friendsOnly !== 'boolean') return reply.code(400).send({ error: 'invalid friendsOnly' });
+    db.setProfileVisibility(me, b.friendsOnly);
+    if (b.friendsOnly) db.deleteNonFriendProfileKeys(me);
+    return profileInfo(db.getUser(me)!);
+  });
+
+  // Fetch another user's profile: server-visible name/color always (for a
+  // contact), plus the encrypted blob + MY sealed key when I'm a recipient.
+  app.get('/api/users/:id/profile', { preHandler: requireAuth }, async (request, reply) => {
+    const me = request.user!.id;
+    const { id } = request.params as { id: string };
+    const u = db.getUser(id);
+    if (!u) return reply.code(404).send({ error: 'not found' });
+    if (id !== me && !db.areFriends(me, id) && !db.sharesConversation(me, id)) {
+      return reply.code(403).send({ error: 'no relationship' });
+    }
+    const profile = db.getProfile(id);
+    const myKey = profile ? db.getProfileKeyFor(id, me) : undefined;
+    const view: ProfileView = {
+      userId: id,
+      displayName: effectiveDisplayName(u),
+      nameColor: u.name_color ?? null,
+      encrypted:
+        profile && myKey
+          ? {
+              ciphertext: profile.ciphertext,
+              iv: profile.iv,
+              epoch: profile.epoch,
+              sealedKey: JSON.parse(myKey.sealed_key) as SealedKey,
+            }
+          : null,
+    };
+    return view;
   });
 
   // ---------------------------------------------------------- Conversations
@@ -344,6 +489,49 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     }
     const conv = db.getConversation(convId)!;
     return toConversation(conv, me)!;
+  });
+
+  // Create a group conversation (3+ members: me + 2 or more friends). Unlike a
+  // DM, a group isn't idempotent — each call makes a distinct group. The key is
+  // sealed client-side to every member, so the server only stores opaque keys.
+  app.post('/api/conversations/group', { preHandler: requireAuth }, async (request, reply) => {
+    const me = request.user!.id;
+    const members = (request.body as Record<string, unknown> | null)?.members;
+    if (!Array.isArray(members) || members.length < 3) {
+      return reply.code(400).send({ error: 'a group needs at least 3 members' });
+    }
+    const byUser = new Map<string, SealedMemberKey>();
+    for (const m of members as unknown[]) {
+      if (typeof m !== 'object' || m === null) return reply.code(400).send({ error: 'invalid member' });
+      const mm = m as Record<string, unknown>;
+      if (typeof mm.userId !== 'string' || !validSealedKey(mm.sealedKey)) {
+        return reply.code(400).send({ error: 'invalid member' });
+      }
+      byUser.set(mm.userId, { userId: mm.userId, sealedKey: mm.sealedKey });
+    }
+    if (!byUser.has(me) || byUser.size !== members.length) {
+      return reply.code(400).send({ error: 'members must include you, with no duplicates' });
+    }
+    // Every other member must currently be a friend of the creator.
+    for (const userId of byUser.keys()) {
+      if (userId === me) continue;
+      if (!db.areFriends(me, userId)) return reply.code(400).send({ error: 'not a friend' });
+    }
+
+    const convId = newId();
+    const tx = db.raw.transaction(() => {
+      db.createConversation({ id: convId, kind: 'group', createdBy: me, dmKey: null });
+      for (const mk of byUser.values()) {
+        db.addConversationMember({
+          conversationId: convId,
+          userId: mk.userId,
+          sealedKey: JSON.stringify(mk.sealedKey),
+          epoch: 0,
+        });
+      }
+    });
+    tx();
+    return toConversation(db.getConversation(convId)!, me)!;
   });
 
   // Create (or return) the thread rooted on a parent message. A thread is a

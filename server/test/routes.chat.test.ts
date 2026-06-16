@@ -39,8 +39,14 @@ describe('auth — every chat route rejects the unauthenticated', () => {
     ['DELETE', '/api/friends/x'],
     ['GET', '/api/profile'],
     ['PUT', '/api/profile'],
+    ['GET', '/api/profile/data'],
+    ['PUT', '/api/profile/data'],
+    ['POST', '/api/profile/keys'],
+    ['PUT', '/api/profile/visibility'],
+    ['GET', '/api/users/x/profile'],
     ['GET', '/api/conversations'],
     ['POST', '/api/conversations/dm'],
+    ['POST', '/api/conversations/group'],
     ['GET', '/api/conversations/x/messages'],
     ['POST', '/api/conversations/x/messages'],
     ['POST', '/api/conversations/x/read'],
@@ -55,7 +61,7 @@ describe('auth — every chat route rejects the unauthenticated', () => {
     const me = seedUser(t.db, { displayName: 'Me' });
     const res = await inject({ method: 'GET', url: '/api/profile', cookie: authCookie(t.db, me) });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ displayName: 'Me', nameColor: null });
+    expect(res.json()).toEqual({ displayName: 'Me', nameColor: null, friendsOnly: true });
   });
 
   it('rejects a cross-origin mutating request (CSRF guard)', async () => {
@@ -240,6 +246,84 @@ describe('DM conversations', () => {
   });
 });
 
+describe('Group conversations', () => {
+  function groupPayload(...userIds: string[]) {
+    return { members: userIds.map((userId) => ({ userId, sealedKey: SEALED })) };
+  }
+
+  it('creates a group of me + two friends', async () => {
+    const me = seedUser(t.db);
+    const a = seedUser(t.db);
+    const b = seedUser(t.db);
+    makeFriends(t.db, me, a);
+    makeFriends(t.db, me, b);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/conversations/group',
+      cookie: authCookie(t.db, me),
+      payload: groupPayload(me, a, b),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().kind).toBe('group');
+    expect(res.json().members).toHaveLength(3);
+    expect(res.json().sealedKey).toEqual(SEALED);
+  });
+
+  it('is not idempotent — each call makes a distinct group', async () => {
+    const me = seedUser(t.db);
+    const a = seedUser(t.db);
+    const b = seedUser(t.db);
+    makeFriends(t.db, me, a);
+    makeFriends(t.db, me, b);
+    const cookie = authCookie(t.db, me);
+    const first = await inject({ method: 'POST', url: '/api/conversations/group', cookie, payload: groupPayload(me, a, b) });
+    const second = await inject({ method: 'POST', url: '/api/conversations/group', cookie, payload: groupPayload(me, a, b) });
+    expect(first.json().id).not.toBe(second.json().id);
+  });
+
+  it('rejects fewer than three members', async () => {
+    const me = seedUser(t.db);
+    const a = seedUser(t.db);
+    makeFriends(t.db, me, a);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/conversations/group',
+      cookie: authCookie(t.db, me),
+      payload: groupPayload(me, a),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a group that includes a non-friend', async () => {
+    const me = seedUser(t.db);
+    const friend = seedUser(t.db);
+    const stranger = seedUser(t.db);
+    makeFriends(t.db, me, friend);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/conversations/group',
+      cookie: authCookie(t.db, me),
+      payload: groupPayload(me, friend, stranger),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a member set that omits the creator', async () => {
+    const me = seedUser(t.db);
+    const a = seedUser(t.db);
+    const b = seedUser(t.db);
+    makeFriends(t.db, me, a);
+    makeFriends(t.db, me, b);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/conversations/group',
+      cookie: authCookie(t.db, me),
+      payload: groupPayload(a, b, seedUser(t.db)),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
 // --------------------------------------------------------------- IDOR + revoke
 
 describe('IDOR — a non-member is forbidden, and unfriend revokes a member', () => {
@@ -363,7 +447,7 @@ describe('profile', () => {
     const me = seedUser(t.db);
     const res = await inject({ method: 'PUT', url: '/api/profile', cookie: authCookie(t.db, me), payload: { displayName: '  Alice  ' } });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ displayName: 'Alice', nameColor: null });
+    expect(res.json()).toEqual({ displayName: 'Alice', nameColor: null, friendsOnly: true });
   });
 
   it('sets and validates the name color', async () => {
@@ -376,5 +460,170 @@ describe('profile', () => {
     expect((await inject({ method: 'PUT', url: '/api/profile', cookie, payload: { nameColor: '#ff0000' } })).statusCode).toBe(400);
     // null clears it
     expect((await inject({ method: 'PUT', url: '/api/profile', cookie, payload: { nameColor: null } })).json().nameColor).toBeNull();
+  });
+});
+
+describe('E2EE profiles (bio + avatar)', () => {
+  const WRAPPED = { salt: 'AAAA', iv: 'BBBB', ct: 'CCCC' };
+
+  function dataPayload(recipients: string[], epoch = 0) {
+    return {
+      ciphertext: 'CT',
+      iv: 'IV',
+      epoch,
+      ownerWrappedKey: WRAPPED,
+      keys: recipients.map((recipientId) => ({ recipientId, sealedKey: SEALED })),
+    };
+  }
+
+  // Make two users co-members of a group without making them friends.
+  function shareGroup(...userIds: string[]): void {
+    const convId = `g-${userIds.join('-')}`;
+    t.db.createConversation({ id: convId, kind: 'group', createdBy: userIds[0]!, dmKey: null });
+    for (const userId of userIds) {
+      t.db.addConversationMember({ conversationId: convId, userId, sealedKey: JSON.stringify(SEALED), epoch: 0 });
+    }
+  }
+
+  function put(url: string, cookie: string, payload: unknown) {
+    return inject({ method: 'PUT', url, cookie, payload });
+  }
+
+  it('stores the blob + a friend can fetch the encrypted form with their sealed key', async () => {
+    const me = seedUser(t.db, { publicKey: 'pkme' });
+    const friend = seedUser(t.db, { publicKey: 'pkf' });
+    makeFriends(t.db, me, friend);
+
+    const res = await put('/api/profile/data', authCookie(t.db, me), dataPayload([friend]));
+    expect(res.statusCode).toBe(200);
+
+    const view = await inject({ method: 'GET', url: `/api/users/${me}/profile`, cookie: authCookie(t.db, friend) });
+    expect(view.statusCode).toBe(200);
+    expect(view.json().encrypted).toMatchObject({ ciphertext: 'CT', iv: 'IV', epoch: 0, sealedKey: SEALED });
+  });
+
+  it('returns encrypted:null to a related user who has no sealed key', async () => {
+    const me = seedUser(t.db);
+    const friend = seedUser(t.db);
+    makeFriends(t.db, me, friend);
+    await put('/api/profile/data', authCookie(t.db, me), dataPayload([])); // no recipients
+    const view = await inject({ method: 'GET', url: `/api/users/${me}/profile`, cookie: authCookie(t.db, friend) });
+    expect(view.json().encrypted).toBeNull();
+  });
+
+  it('GET /api/profile/data returns the owner’s own blob + wrapped key (null when unset)', async () => {
+    const me = seedUser(t.db);
+    const cookie = authCookie(t.db, me);
+    expect((await inject({ method: 'GET', url: '/api/profile/data', cookie })).json()).toEqual({ profile: null });
+
+    await put('/api/profile/data', cookie, dataPayload([]));
+    const got = (await inject({ method: 'GET', url: '/api/profile/data', cookie })).json();
+    expect(got.profile).toMatchObject({ ciphertext: 'CT', iv: 'IV', epoch: 0, ownerWrappedKey: WRAPPED });
+  });
+
+  it('rejects a sealed key for a non-friend when friends-only (the default)', async () => {
+    const me = seedUser(t.db);
+    const stranger = seedUser(t.db);
+    const res = await put('/api/profile/data', authCookie(t.db, me), dataPayload([stranger]));
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('403 to GET a profile with no relationship', async () => {
+    const me = seedUser(t.db);
+    const stranger = seedUser(t.db);
+    const view = await inject({ method: 'GET', url: `/api/users/${me}/profile`, cookie: authCookie(t.db, stranger) });
+    expect(view.statusCode).toBe(403);
+  });
+
+  it('with visibility off, a group co-member may receive the key; tightening revokes it', async () => {
+    const me = seedUser(t.db);
+    const coMember = seedUser(t.db);
+    shareGroup(me, coMember); // co-members, not friends
+    const cookie = authCookie(t.db, me);
+
+    // Off → co-member allowed.
+    expect((await put('/api/profile/visibility', cookie, { friendsOnly: false })).json().friendsOnly).toBe(false);
+    expect((await put('/api/profile/data', cookie, dataPayload([coMember]))).statusCode).toBe(200);
+    let view = await inject({ method: 'GET', url: `/api/users/${me}/profile`, cookie: authCookie(t.db, coMember) });
+    expect(view.json().encrypted).not.toBeNull();
+
+    // Tighten to friends-only → the co-member's key is revoked.
+    expect((await put('/api/profile/visibility', cookie, { friendsOnly: true })).json().friendsOnly).toBe(true);
+    view = await inject({ method: 'GET', url: `/api/users/${me}/profile`, cookie: authCookie(t.db, coMember) });
+    expect(view.json().encrypted).toBeNull();
+  });
+
+  it('unfriending revokes profile access in both directions', async () => {
+    const me = seedUser(t.db);
+    const friend = seedUser(t.db);
+    makeFriends(t.db, me, friend);
+    await put('/api/profile/data', authCookie(t.db, me), dataPayload([friend]));
+
+    expect(
+      (await inject({ method: 'GET', url: `/api/users/${me}/profile`, cookie: authCookie(t.db, friend) })).json().encrypted,
+    ).not.toBeNull();
+
+    await inject({ method: 'DELETE', url: `/api/friends/${friend}`, cookie: authCookie(t.db, me) });
+    // No relationship now → 403 (and the key row is gone).
+    expect(
+      (await inject({ method: 'GET', url: `/api/users/${me}/profile`, cookie: authCookie(t.db, friend) })).statusCode,
+    ).toBe(403);
+    expect(t.db.getProfileKeyFor(me, friend)).toBeUndefined();
+  });
+
+  it('POST /api/profile/keys distributes to a new friend at the matching epoch', async () => {
+    const me = seedUser(t.db);
+    const friend = seedUser(t.db);
+    makeFriends(t.db, me, friend);
+    const cookie = authCookie(t.db, me);
+    await put('/api/profile/data', cookie, dataPayload([])); // profile exists at epoch 0, no keys
+
+    const add = await inject({
+      method: 'POST',
+      url: '/api/profile/keys',
+      cookie,
+      payload: { epoch: 0, keys: [{ recipientId: friend, sealedKey: SEALED }] },
+    });
+    expect(add.statusCode).toBe(200);
+    const view = await inject({ method: 'GET', url: `/api/users/${me}/profile`, cookie: authCookie(t.db, friend) });
+    expect(view.json().encrypted).not.toBeNull();
+
+    // Epoch mismatch is rejected.
+    const stale = await inject({
+      method: 'POST',
+      url: '/api/profile/keys',
+      cookie,
+      payload: { epoch: 9, keys: [{ recipientId: friend, sealedKey: SEALED }] },
+    });
+    expect(stale.statusCode).toBe(409);
+  });
+
+  it('POST /api/profile/keys 404s when no profile is set', async () => {
+    const me = seedUser(t.db);
+    const friend = seedUser(t.db);
+    makeFriends(t.db, me, friend);
+    const res = await inject({
+      method: 'POST',
+      url: '/api/profile/keys',
+      cookie: authCookie(t.db, me),
+      payload: { epoch: 0, keys: [{ recipientId: friend, sealedKey: SEALED }] },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rotation: a new epoch replaces the old sealed keys', async () => {
+    const me = seedUser(t.db);
+    const a = seedUser(t.db);
+    const b = seedUser(t.db);
+    makeFriends(t.db, me, a);
+    makeFriends(t.db, me, b);
+    const cookie = authCookie(t.db, me);
+    await put('/api/profile/data', cookie, dataPayload([a, b], 0));
+    expect(t.db.getProfileKeyFor(me, a)).toBeDefined();
+
+    // Rotate to epoch 1, re-sealing only to b (a was removed).
+    await put('/api/profile/data', cookie, dataPayload([b], 1));
+    expect(t.db.getProfileKeyFor(me, a)).toBeUndefined();
+    expect(t.db.getProfileKeyFor(me, b)?.epoch).toBe(1);
   });
 });

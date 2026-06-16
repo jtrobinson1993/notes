@@ -175,6 +175,10 @@ either-direction request), `GET /api/friends/requests`,
 Profile: `GET/PUT /api/profile` (display name, 1..50 chars).
 Conversations: `GET /api/conversations`, `POST /api/conversations/dm`
 (idempotent on `dm_key`, members must be exactly {me, friend}),
+`POST /api/conversations/group` (creates a `kind:'group'` conversation of 3+
+members — me plus 2+ friends; **not** idempotent, every other member must be a
+current friend of the creator; membership add/remove + epoch re-keying remain
+Phase 2),
 `GET /api/conversations/:id/messages?before=&limit=` (DESC, ≤100),
 `POST /api/conversations/:id/messages` (assigns seq, fans out), 
 `POST /api/conversations/:id/read` (advances `last_read_seq`, fans out a receipt).
@@ -201,12 +205,25 @@ go over REST; client→server frames are minimal (liveness is protocol ping/pong
   client always derives its in-memory key by **unsealing the server-returned
   `sealedKey`**, never the locally-generated key — so an already-existing DM
   (other device / race) resolves to the right key.
+- **Group creation** (`chat.openGroup`): same machinery as a DM but the conv key
+  is sealed to **me + every selected friend**. The **New chat** modal
+  (`NewChatModal.vue`, built on the reusable `AppModal`) lets you check one or
+  many friends — one → a DM, many → a group. Members discover a new group the
+  same way as a DM: the first `message` frame for an unknown conversation
+  triggers a `loadConversations()`.
 - `chatSocket.ts` — reconnecting WS client (exponential backoff). `chat.ts`
   store wires frames to both the chat and friends stores and backfills on every
   (re)connect; `startChat()/stopChat()` are hooked to session unlock/lock.
   Conversation keys are held in an in-memory `Map` only (never persisted).
 - Self-echo dedupe by `seq`; an inbound message for an unknown conversation
   triggers `loadConversations()` first (so a friend's opening DM appears).
+- **Infinite history scroll:** `ConversationView` auto-loads the next older page
+  (`loadHistory(convId, oldestSeq)`, `HISTORY_LIMIT` 50) when the user scrolls
+  near the top — no "load older" button. `loadHistory` returns the fetched count;
+  a page shorter than the limit sets `reachedStart`, which stops further loads
+  and shows an **"End of message history"** marker. Scroll anchoring is preserved
+  by measuring height before the loading indicator renders and restoring
+  `scrollTop = scrollHeight − prevHeight` after the rows prepend (no jump).
 
 ### Security decisions from review
 

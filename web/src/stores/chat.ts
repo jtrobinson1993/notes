@@ -27,6 +27,7 @@ import { customEmojiForText, loadCustomEmoji, registerEmbeddedEmoji, resetCustom
 import { b64 } from '../lib/b64';
 import { useSessionStore } from './session';
 import { useFriendsStore } from './friends';
+import { useProfileStore } from './profile';
 
 /** Client-only view of a message: `text` is null when decryption failed.
  *  `gif`/`attachments` are decrypted embeds, if any. */
@@ -42,7 +43,7 @@ export interface ChatReactionView extends ChatReaction {
   emoji: string | null;
 }
 
-const HISTORY_LIMIT = 50;
+export const HISTORY_LIMIT = 50;
 
 // A GIF's media URL is sender-controlled, so a hostile sender could embed an
 // arbitrary tracking URL the recipient's client would eager-load (IP leak),
@@ -163,6 +164,30 @@ export const useChatStore = defineStore('chat', () => {
     return conv.id;
   }
 
+  /** Create a group conversation with 2+ friends; returns its id. The group key
+   *  is sealed to me + every selected friend, reusing the conv-key machinery. */
+  async function openGroup(selected: Friend[]): Promise<string> {
+    const { privateKey, publicKey } = await session.getKeyPair();
+    const me = session.user;
+    if (!me) throw new Error('not logged in');
+    if (selected.length < 2) throw new Error('a group needs at least two friends');
+
+    const convKey = generateConversationKey();
+    const members: SealedMemberKey[] = [
+      { userId: me.id, sealedKey: await sealConversationKey(b64(publicKey), convKey) },
+    ];
+    for (const f of selected) {
+      if (!f.publicKey) throw new Error(`${f.displayName} has no public key`);
+      members.push({ userId: f.userId, sealedKey: await sealConversationKey(f.publicKey, convKey) });
+    }
+    const conv = await api.conversationCreateGroup(members);
+    convKeys.set(conv.id, await unsealConversationKey(conv.sealedKey, privateKey, publicKey));
+    upsertConversation(conv);
+    setActive(conv.id);
+    await loadHistory(conv.id);
+    return conv.id;
+  }
+
   /** The thread rooted on a parent message, if one exists in memory. */
   function threadFor(parentConvId: string, seq: number): Conversation | undefined {
     return conversations.value.find(
@@ -192,11 +217,14 @@ export const useChatStore = defineStore('chat', () => {
     return thread.id;
   }
 
-  /** Fetch (older, when `before` is set) history and merge decrypted views. */
-  async function loadHistory(convId: string, before?: number): Promise<void> {
+  /** Fetch (older, when `before` is set) history and merge decrypted views.
+   *  Returns the number of messages fetched — a count below `HISTORY_LIMIT`
+   *  means the conversation's start has been reached. */
+  async function loadHistory(convId: string, before?: number): Promise<number> {
     const raw = await api.conversationMessages(convId, { before, limit: HISTORY_LIMIT });
     const views = await Promise.all(raw.map((m) => decryptOne(convId, m)));
     mergeMessages(convId, views);
+    return raw.length;
   }
 
   async function sendMessage(
@@ -341,6 +369,7 @@ export const useChatStore = defineStore('chat', () => {
     setActive,
     loadConversations,
     openDm,
+    openGroup,
     openThread,
     threadFor,
     loadHistory,
@@ -367,10 +396,15 @@ let unsubConnect: (() => void) | null = null;
 export function startChat(): void {
   const chat = useChatStore();
   const friends = useFriendsStore();
+  const profile = useProfileStore();
 
   const dispatch = (frame: ServerFrame): void => {
     void chat.handleFrame(frame);
     friends.handleFrame(frame);
+    // A new friend should receive my profile key; a contact's profile change
+    // invalidates its cached decryption.
+    if (frame.type === 'friend-accepted') void profile.distributeTo(frame.friend);
+    else if (frame.type === 'profile-updated') profile.invalidate(frame.userId);
   };
 
   unsubConnect?.();
@@ -378,6 +412,7 @@ export function startChat(): void {
     void (async () => {
       await chat.loadConversations();
       await friends.load();
+      await profile.load();
       void loadCustomEmoji();
       if (chat.activeId) {
         await chat.loadHistory(chat.activeId);
@@ -396,4 +431,5 @@ export function stopChat(): void {
   disconnectChatSocket();
   resetCustomEmoji();
   useChatStore().reset();
+  useProfileStore().reset();
 }

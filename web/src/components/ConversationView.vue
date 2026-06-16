@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import MarkdownView from './MarkdownView.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import ChatAvatar from './ChatAvatar.vue';
+import ProfileDialog from './ProfileDialog.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import ChatAttachment from './ChatAttachment.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
@@ -14,8 +15,10 @@ import IconX from '~icons/mynaui/x';
 import IconImage from '~icons/mynaui/image';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
-import { useChatStore, type ChatMessageView } from '../stores/chat';
+import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
+import { useProfileStore } from '../stores/profile';
+import { conversationTitle } from '../lib/convName';
 
 // Renders one conversation (DM, group, or a thread). The parent owns routing and
 // the thread panel, so opening a thread just emits the parent message's seq.
@@ -23,10 +26,13 @@ const props = defineProps<{ convId: string; isThreadPanel?: boolean; hideHeader?
 const emit = defineEmits<{ openThread: [seq: number]; close: [] }>();
 const session = useSessionStore();
 const chat = useChatStore();
+const profile = useProfileStore();
 
 const convId = computed(() => props.convId);
 const loading = ref(false);
 const loadingOlder = ref(false);
+// True once we've fetched a partial page of older messages — no more to load.
+const reachedStart = ref(false);
 const text = ref('');
 const sending = ref(false);
 const scroller = ref<HTMLElement>();
@@ -41,14 +47,9 @@ const conversation = computed<Conversation | undefined>(() =>
   chat.conversations.find((c) => c.id === convId.value),
 );
 
-const otherMember = computed(() => {
-  const meId = session.user?.id;
-  return conversation.value?.members.find((m) => m.userId !== meId) ?? conversation.value?.members[0];
-});
-
 const isThread = computed(() => conversation.value?.kind === 'thread');
 const title = computed(() =>
-  isThread.value ? 'Thread' : otherMember.value?.displayName || 'Conversation',
+  conversation.value ? conversationTitle(conversation.value, session.user?.id) : 'Conversation',
 );
 
 // Opening a thread is owned by the parent (it manages the side panel).
@@ -72,6 +73,31 @@ function memberName(senderId: string): string {
 function nameColorCss(senderId: string): string | undefined {
   const c = conversation.value?.members.find((m) => m.userId === senderId)?.nameColor;
   return c ? `var(--brand-${c})` : undefined;
+}
+
+// A member's decrypted avatar, or null for the initial fallback. My own avatar
+// comes from my profile data; others' come from the (reactive) profile cache,
+// so they fill in once fetched.
+function avatarFor(senderId: string): string | null {
+  if (senderId === session.user?.id) return profile.myData.avatar ?? null;
+  return profile.cache[senderId]?.data?.avatar ?? null;
+}
+
+// Lazily fetch every member's profile so avatars (and the profile dialog) resolve.
+function loadMemberProfiles() {
+  const meId = session.user?.id;
+  for (const m of conversation.value?.members ?? []) {
+    if (m.userId !== meId) void profile.fetch(m.userId).catch(() => {});
+  }
+}
+
+// Profile dialog (opened by clicking a sender's avatar or name).
+const profileUserId = ref<string | null>(null);
+const profileOpen = ref(false);
+function openProfile(userId: string) {
+  if (userId === session.user?.id) return; // own profile lives in Settings
+  profileUserId.value = userId;
+  profileOpen.value = true;
 }
 
 // A short, single-line preview of a message, for the reply quote.
@@ -140,14 +166,18 @@ async function markReadHere() {
 async function activate(id: string) {
   chat.setActive(id);
   loading.value = true;
+  reachedStart.value = false;
   try {
     if ((chat.messages[id]?.length ?? 0) === 0) {
-      await chat.loadHistory(id);
+      const count = await chat.loadHistory(id);
+      // A first page shorter than the limit is the whole conversation.
+      if (count < HISTORY_LIMIT) reachedStart.value = true;
     }
     await chat.loadReactions(id);
   } finally {
     loading.value = false;
   }
+  loadMemberProfiles();
   await scrollToBottom();
   await markReadHere();
 }
@@ -171,20 +201,29 @@ watch(
 
 async function loadOlder() {
   const oldest = msgs.value[0];
-  if (!oldest || loadingOlder.value) return;
-  loadingOlder.value = true;
+  if (!oldest || loadingOlder.value || reachedStart.value) return;
   const el = scroller.value;
+  // Measure height before the "Loading…" indicator renders, and restore scroll
+  // after it's removed, so only the prepended rows count toward the adjustment —
+  // keeping the previously-top message visually in place (no viewport jump).
   const prevHeight = el?.scrollHeight ?? 0;
+  loadingOlder.value = true;
   try {
-    await chat.loadHistory(convId.value, oldest.seq);
-    await nextTick();
-    if (el) el.scrollTop = el.scrollHeight - prevHeight;
+    const count = await chat.loadHistory(convId.value, oldest.seq);
+    if (count < HISTORY_LIMIT) reachedStart.value = true;
   } finally {
     loadingOlder.value = false;
   }
+  await nextTick();
+  if (el) el.scrollTop = el.scrollHeight - prevHeight;
 }
 
+// Distance from the top at which we begin fetching the next older chunk.
+const LOAD_OLDER_THRESHOLD_PX = 200;
+
 function onScroll() {
+  const el = scroller.value;
+  if (el && el.scrollTop < LOAD_OLDER_THRESHOLD_PX) void loadOlder();
   if (atBottom()) void markReadHere();
 }
 
@@ -297,14 +336,14 @@ async function sendGif(gif: GifRef) {
       </div>
 
       <div ref="scroller" class="min-h-0 grow overflow-y-auto py-2" @scroll="onScroll">
-        <div v-if="msgs.length" class="flex justify-center py-2">
-          <button
-            :disabled="loadingOlder"
-            class="rounded-lg px-3 py-1 text-xs text-zinc-500 hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800"
-            @click="loadOlder"
-          >
-            {{ loadingOlder ? 'Loading…' : 'Load older messages' }}
-          </button>
+        <!-- Older messages auto-load as the user scrolls up; this just reflects
+             the in-flight fetch and marks the start of history. -->
+        <div v-if="loadingOlder" class="flex justify-center py-2 text-xs text-zinc-400">Loading…</div>
+        <div
+          v-else-if="reachedStart && msgs.length"
+          class="flex justify-center py-2 text-xs text-zinc-400"
+        >
+          End of message history
         </div>
 
         <div v-if="loading && !msgs.length" class="flex h-full items-center justify-center text-sm text-zinc-400">
@@ -354,7 +393,14 @@ async function sendGif(gif: GifRef) {
                  and the fixed height keeps it in that same spot when the message
                  wraps to multiple lines. -->
             <div v-if="row.isStart" class="flex h-11 items-center">
-              <ChatAvatar :name="row.name" :seed="row.senderId" class="h-10 w-10 text-sm" />
+              <button
+                type="button"
+                class="rounded-full transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                :aria-label="`View ${row.name}'s profile`"
+                @click="openProfile(row.senderId)"
+              >
+                <ChatAvatar :name="row.name" :seed="row.senderId" :src="avatarFor(row.senderId)" class="h-10 w-10 text-sm" />
+              </button>
             </div>
             <time
               v-else
@@ -374,7 +420,12 @@ async function sendGif(gif: GifRef) {
               <span class="truncate opacity-80">{{ row.msg.replyTo.preview }}</span>
             </button>
             <div v-if="row.isStart" class="mb-0.5 flex items-baseline gap-2">
-              <span class="font-medium text-zinc-700 dark:text-zinc-200" :style="{ color: nameColorCss(row.senderId) }">{{ row.name }}</span>
+              <button
+                type="button"
+                class="font-medium text-zinc-700 hover:underline dark:text-zinc-200"
+                :style="{ color: nameColorCss(row.senderId) }"
+                @click="openProfile(row.senderId)"
+              >{{ row.name }}</button>
               <time class="text-xs text-zinc-400 dark:text-zinc-500">{{ formatTime(row.msg.createdAt) }}</time>
             </div>
             <div class="chat-message">
@@ -490,5 +541,7 @@ async function sendGif(gif: GifRef) {
           </button>
         </div>
       </div>
+
+      <ProfileDialog v-model:open="profileOpen" :user-id="profileUserId" />
     </div>
 </template>

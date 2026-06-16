@@ -10,9 +10,10 @@ This spec is split by app area so you can load just the part you're working on:
 | [accounts-and-crypto.md](accounts-and-crypto.md) | Accounts, passkeys, recovery, the master-key + X25519 crypto model, the sharing primitive |
 | [notes.md](notes.md) | The notes app and the Obsidian-style live editor (formatting, code blocks, tables/checkboxes, attachments, import/export, history, offline) |
 | [ui.md](ui.md) | Theming (brand / pastel / high-contrast) and the app shell / sidebar |
-| [chat.md](chat.md) | v3 E2EE chat — friends, DMs, conversation keys/epochs, the WebSocket transport, **and the phase-1 implementation as built** |
+| [chat.md](chat.md) | v3 E2EE chat — friends, DMs, groups, conversation keys/epochs, the WebSocket transport, **and the phase-1 implementation as built** |
+| [profiles.md](profiles.md) | v3.2 E2EE editable profiles — bio + avatar, the per-user profile key, visibility, distribution + rotation |
 | [security.md](security.md) | Cross-cutting security — rendering/XSS safety, CSP, metadata exposure, threat model |
-| [roadmap.md](roadmap.md) | Phasing and future versions (v3.1 – v5) |
+| [roadmap.md](roadmap.md) | Phasing and future versions (v3.1 – v8) |
 | [testing.md](testing.md) | The unit + e2e test plan (Vitest + Playwright) |
 
 ## Tech stack (decisions)
@@ -32,6 +33,5 @@ This spec is split by app area so you can load just the part you're working on:
 
 ## Status at a glance
 
-- **Shipped:** v1 (notes, passkeys, recovery, PWA), v2 (sharing, attachments, version history, offline editing, import/export, encrypted backups), v2.1 (Obsidian-style live editor), v2.2 (themes, media optimization, block-level live rendering).
-- **In progress:** v3 **phase 1** (friends + 1:1 DMs over WebSocket) — implemented; see [chat.md](chat.md#phase-1--as-built).
-- **Planned:** v3 phases 2–3 (groups + epochs, CSP, PWA push), then v3.1 – v5 — see [roadmap.md](roadmap.md).
+- **Shipped:** v1 (notes, passkeys, recovery, PWA), v2 (sharing, attachments, version history, offline editing, import/export, encrypted backups), v2.1 (Obsidian-style live editor), v2.2 (themes, media optimization, block-level live rendering), v3 phase 1 (friends + 1:1 DMs over WebSocket), v3.1 (chat polish — emoji, GIFs, attachments, reactions/replies/threads), v3.2 (E2EE editable profiles), v3.3 (new-chat modal + groups, reusable modal, sidebar tooltips, infinite scroll).
+- **Planned:** v3 phases 2–3 (group membership management + epoch re-keying, CSP, PWA push), then v3.4 – v8 — see [roadmap.md](roadmap.md).
