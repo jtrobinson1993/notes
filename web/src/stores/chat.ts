@@ -5,11 +5,14 @@ import type {
   ChatMessage,
   ChatReaction,
   Conversation,
+  ConversationRole,
   Friend,
   GifRef,
   LinkPreview,
+  ManagePolicy,
   MessagePayload,
   ReplyRef,
+  SealedEpochKey,
   SealedMemberKey,
   ServerFrame,
 } from '@notes/shared';
@@ -21,6 +24,8 @@ import {
   encryptReaction,
   generateConversationKey,
   sealConversationKey,
+  sealConversationKeyToMembers,
+  sealEpochKeysTo,
   unsealConversationKey,
 } from '../lib/chatCrypto';
 import { connectChatSocket, disconnectChatSocket, onConnect } from '../lib/chatSocket';
@@ -73,15 +78,45 @@ export const useChatStore = defineStore('chat', () => {
   const reactions = ref<Record<string, ChatReactionView[]>>({});
   const activeId = ref<string | null>(null);
 
-  // Unsealed conversation keys; in-memory only (never persisted).
-  const convKeys = new Map<string, Uint8Array>();
+  // Unsealed conversation keys, per epoch (convId → epoch → key); in-memory only
+  // (never persisted). A group re-keys on each membership change, so we keep one
+  // key per epoch and decrypt each message with the key for *its* epoch.
+  const convKeys = new Map<string, Map<number, Uint8Array>>();
 
   function setActive(convId: string | null): void {
     activeId.value = convId;
   }
 
+  /** True once we hold any epoch key for the conversation. */
+  function hasKey(convId: string): boolean {
+    return (convKeys.get(convId)?.size ?? 0) > 0;
+  }
+  function keyForEpoch(convId: string, epoch: number): Uint8Array | undefined {
+    return convKeys.get(convId)?.get(epoch);
+  }
+  /** The key for the conversation's current epoch (used to encrypt new sends). */
+  function currentKey(convId: string): Uint8Array | undefined {
+    const conv = conversations.value.find((c) => c.id === convId);
+    return conv ? keyForEpoch(convId, conv.epoch) : undefined;
+  }
+
+  /** Unseal every epoch key the server handed us into the in-memory map. */
+  async function unsealEpochKeys(conv: Conversation): Promise<void> {
+    const { privateKey, publicKey } = await session.getKeyPair();
+    const map = convKeys.get(conv.id) ?? new Map<number, Uint8Array>();
+    for (const ek of conv.epochKeys) {
+      if (map.has(ek.epoch)) continue;
+      try {
+        map.set(ek.epoch, await unsealConversationKey(ek.sealedKey, privateKey, publicKey));
+      } catch {
+        // Can't unseal this epoch (shouldn't happen) → its messages stay opaque.
+      }
+    }
+    convKeys.set(conv.id, map);
+  }
+
   async function decryptOne(convId: string, m: ChatMessage): Promise<ChatMessageView> {
-    const key = convKeys.get(convId);
+    const key = keyForEpoch(convId, m.epoch);
     if (!key) return { ...m, text: null };
     try {
       const payload = await decryptMessage(key, m.ciphertext, m.iv);
@@ -120,17 +155,13 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function loadConversations(): Promise<void> {
-    const { privateKey, publicKey } = await session.getKeyPair();
     const list = await api.conversations();
     conversations.value = list;
-    for (const conv of list) {
-      if (convKeys.has(conv.id)) continue;
-      try {
-        convKeys.set(conv.id, await unsealConversationKey(conv.sealedKey, privateKey, publicKey));
-      } catch {
-        // Can't unseal (e.g. epoch mismatch); messages will show as undecryptable.
-      }
-    }
+    // Drop keys for conversations we're no longer in (e.g. removed/left).
+    const live = new Set(list.map((c) => c.id));
+    for (const id of [...convKeys.keys()]) if (!live.has(id)) convKeys.delete(id);
+    // Unseal every (possibly new) epoch key — picks up re-keys after a membership change.
+    for (const conv of list) await unsealEpochKeys(conv);
   }
 
   /** Open (or create) a 1:1 DM with a friend; returns the conversation id. */
@@ -145,7 +176,7 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     if (!friend.publicKey) throw new Error('friend has no public key');
-    const { privateKey, publicKey } = await session.getKeyPair();
+    const { publicKey } = await session.getKeyPair();
     const me = session.user;
     if (!me) throw new Error('not logged in');
 
@@ -157,10 +188,10 @@ export const useChatStore = defineStore('chat', () => {
     ];
     // The create endpoint is idempotent: if a DM already exists the server
     // returns it and ignores our keys. Always derive the in-memory key from the
-    // conversation the server returns (its sealedKey is the authoritative one),
+    // conversation the server returns (its epochKeys are the authoritative ones),
     // never the key we just generated.
     const conv = await api.conversationCreateDm(friend.userId, members);
-    convKeys.set(conv.id, await unsealConversationKey(conv.sealedKey, privateKey, publicKey));
+    await unsealEpochKeys(conv);
     upsertConversation(conv);
     setActive(conv.id);
     await loadHistory(conv.id);
@@ -170,7 +201,7 @@ export const useChatStore = defineStore('chat', () => {
   /** Create a group conversation with 2+ friends; returns its id. The group key
    *  is sealed to me + every selected friend, reusing the conv-key machinery. */
   async function openGroup(selected: Friend[]): Promise<string> {
-    const { privateKey, publicKey } = await session.getKeyPair();
+    const { publicKey } = await session.getKeyPair();
     const me = session.user;
     if (!me) throw new Error('not logged in');
     if (selected.length < 2) throw new Error('a group needs at least two friends');
@@ -184,7 +215,7 @@ export const useChatStore = defineStore('chat', () => {
       members.push({ userId: f.userId, sealedKey: await sealConversationKey(f.publicKey, convKey) });
     }
     const conv = await api.conversationCreateGroup(members);
-    convKeys.set(conv.id, await unsealConversationKey(conv.sealedKey, privateKey, publicKey));
+    await unsealEpochKeys(conv);
     upsertConversation(conv);
     setActive(conv.id);
     await loadHistory(conv.id);
@@ -206,7 +237,6 @@ export const useChatStore = defineStore('chat', () => {
     if (existing) return existing.id;
     const parent = conversations.value.find((c) => c.id === parentConvId);
     if (!parent) throw new Error('unknown conversation');
-    const { privateKey, publicKey } = await session.getKeyPair();
     const convKey = generateConversationKey();
     const members: SealedMemberKey[] = [];
     for (const m of parent.members) {
@@ -215,9 +245,85 @@ export const useChatStore = defineStore('chat', () => {
     }
     // Idempotent server-side: an existing thread's sealedKey is authoritative.
     const thread = await api.threadCreate(parentConvId, seq, members);
-    convKeys.set(thread.id, await unsealConversationKey(thread.sealedKey, privateKey, publicKey));
+    await unsealEpochKeys(thread);
     upsertConversation(thread);
     return thread.id;
+  }
+
+  // ---- Group membership management (v3 phase 2) --------------------------
+
+  /** Generate a fresh epoch key and seal it to `members` (those with a public
+   *  key). Returns the new key plus the SealedMemberKey[] to POST. */
+  async function rekey(members: { userId: string; publicKey: string | null }[]) {
+    const convKey = generateConversationKey();
+    const withKeys = members.filter((m): m is { userId: string; publicKey: string } => !!m.publicKey);
+    const keys = await sealConversationKeyToMembers(withKeys, convKey);
+    return { convKey, keys };
+  }
+
+  /** Add a friend to a group, minting a new epoch. `history: 'share'` also seals
+   *  every prior epoch key to the joiner so they can read the back-scroll. */
+  async function addMember(convId: string, friend: Friend, history: 'share' | 'fresh'): Promise<void> {
+    const conv = conversations.value.find((c) => c.id === convId);
+    if (!conv) throw new Error('unknown conversation');
+    if (!friend.publicKey) throw new Error('friend has no public key');
+    const epoch = conv.epoch + 1;
+    const { convKey, keys } = await rekey([...conv.members, friend]);
+
+    let priorKeys: SealedEpochKey[] | undefined;
+    if (history === 'share') {
+      const held: { epoch: number; key: Uint8Array }[] = [];
+      for (let e = 0; e <= conv.epoch; e++) {
+        const k = keyForEpoch(convId, e);
+        if (k) held.push({ epoch: e, key: k });
+      }
+      priorKeys = await sealEpochKeysTo(friend.publicKey, held);
+    }
+
+    const updated = await api.conversationAddMember(convId, { userId: friend.userId, epoch, history, keys, priorKeys });
+    // The server's response carries my new-epoch key; cache it (avoids a refetch).
+    convKeys.get(convId)?.set(epoch, convKey);
+    await unsealEpochKeys(updated);
+    upsertConversation(updated);
+  }
+
+  /** Remove a member (or, when `userId` is me, leave): mint a new epoch sealed to
+   *  the remaining members so the departing member can't read anything after. */
+  async function removeMember(convId: string, userId: string): Promise<void> {
+    const conv = conversations.value.find((c) => c.id === convId);
+    if (!conv) throw new Error('unknown conversation');
+    const leaving = userId === session.user?.id;
+    const remaining = conv.members.filter((m) => m.userId !== userId);
+    const epoch = conv.epoch + 1;
+    const { convKey, keys } = await rekey(remaining);
+    await api.conversationRemoveMember(convId, userId, { epoch, keys });
+    if (leaving) {
+      dropConversation(convId);
+    } else {
+      convKeys.get(convId)?.set(epoch, convKey);
+      await loadConversations(); // refresh members + my new-epoch key
+    }
+  }
+
+  /** Owner sets who may manage membership. */
+  async function setManagePolicy(convId: string, policy: ManagePolicy): Promise<void> {
+    upsertConversation(await api.conversationSetPolicy(convId, policy));
+  }
+
+  /** Owner grants/revokes admin to another member. */
+  async function setMemberRole(convId: string, userId: string, role: Exclude<ConversationRole, 'owner'>): Promise<void> {
+    upsertConversation(await api.conversationSetRole(convId, userId, role));
+  }
+
+  /** Forget a conversation we've left or been removed from. */
+  function dropConversation(convId: string): void {
+    conversations.value = conversations.value.filter((c) => c.id !== convId);
+    convKeys.delete(convId);
+    const { [convId]: _m, ...restM } = messages.value;
+    messages.value = restM;
+    const { [convId]: _r, ...restR } = reactions.value;
+    reactions.value = restR;
+    if (activeId.value === convId) activeId.value = null;
   }
 
   /** Fetch (older, when `before` is set) history and merge decrypted views.
@@ -235,10 +341,10 @@ export const useChatStore = defineStore('chat', () => {
     text: string,
     opts?: { gif?: GifRef; attachments?: AttachmentRef[]; replyTo?: ReplyRef; linkPreview?: LinkPreview },
   ): Promise<void> {
-    const key = convKeys.get(convId);
-    if (!key) throw new Error('no conversation key');
     const conv = conversations.value.find((c) => c.id === convId);
     const epoch = conv?.epoch ?? 0;
+    const key = currentKey(convId);
+    if (!key) throw new Error('no conversation key');
     const payload: MessagePayload = { text, sentAt: Date.now() };
     if (opts?.gif) payload.gif = opts.gif;
     if (opts?.attachments?.length) payload.attachments = opts.attachments;
@@ -255,13 +361,17 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function decryptReactionOne(convId: string, r: ChatReaction): Promise<ChatReactionView> {
-    const key = convKeys.get(convId);
-    if (!key) return { ...r, emoji: null };
-    try {
-      return { ...r, emoji: await decryptReaction(key, r.ciphertext, r.iv) };
-    } catch {
-      return { ...r, emoji: null };
+    // Reactions don't record their epoch, so try each held key (newest first) —
+    // a reaction was sealed under whatever epoch was current when it was added.
+    const keys = [...(convKeys.get(convId)?.entries() ?? [])].sort((x, y) => y[0] - x[0]);
+    for (const [, key] of keys) {
+      try {
+        return { ...r, emoji: await decryptReaction(key, r.ciphertext, r.iv) };
+      } catch {
+        /* wrong epoch key — try the next */
+      }
     }
+    return { ...r, emoji: null };
   }
 
   function upsertReaction(convId: string, view: ChatReactionView): void {
@@ -284,7 +394,7 @@ export const useChatStore = defineStore('chat', () => {
   /** Toggle my reaction with `emoji` on a message: remove it if I already have
    *  one, otherwise add it. */
   async function toggleReaction(convId: string, seq: number, emoji: string): Promise<void> {
-    const key = convKeys.get(convId);
+    const key = currentKey(convId);
     if (!key) return;
     const me = session.user?.id;
     const mine = (reactions.value[convId] ?? []).find((r) => r.seq === seq && r.userId === me && r.emoji === emoji);
@@ -321,7 +431,7 @@ export const useChatStore = defineStore('chat', () => {
         const m = frame.message;
         // First contact with a conversation we don't have yet (e.g. a friend's
         // opening DM): fetch it so we hold its sealed key before decrypting.
-        if (!convKeys.has(m.conversationId)) await loadConversations();
+        if (!hasKey(m.conversationId)) await loadConversations();
         const view = await decryptOne(m.conversationId, m);
         mergeMessages(m.conversationId, [view]);
         bumpLastSeq(m.conversationId, m.seq);
@@ -329,7 +439,17 @@ export const useChatStore = defineStore('chat', () => {
       }
       case 'reaction': {
         const r = frame.reaction;
-        if (convKeys.has(r.conversationId)) upsertReaction(r.conversationId, await decryptReactionOne(r.conversationId, r));
+        if (hasKey(r.conversationId)) upsertReaction(r.conversationId, await decryptReactionOne(r.conversationId, r));
+        break;
+      }
+      case 'conversation-updated': {
+        // Membership/roles/policy or epoch changed — refetch to pick up new
+        // members and any newly-sealed epoch keys.
+        await loadConversations();
+        break;
+      }
+      case 'conversation-removed': {
+        dropConversation(frame.conversationId);
         break;
       }
       case 'reaction-removed': {
@@ -376,6 +496,10 @@ export const useChatStore = defineStore('chat', () => {
     openGroup,
     openThread,
     threadFor,
+    addMember,
+    removeMember,
+    setManagePolicy,
+    setMemberRole,
     loadHistory,
     sendMessage,
     loadReactions,

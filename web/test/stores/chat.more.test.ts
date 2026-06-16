@@ -31,7 +31,8 @@ function conv(myPub: Uint8Array, sealedKey: Conversation['sealedKey'], over: Par
       { userId: 'me', displayName: 'Me', publicKey: b64(myPub) },
       { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey) },
     ],
-    sealedKey, epoch: 0, lastSeq: 0, lastReadSeq: 0, createdAt: 0, ...over,
+    sealedKey, epoch: 0, epochKeys: [{ epoch: 0, sealedKey }], managePolicy: 'owner', myRole: 'member',
+    lastSeq: 0, lastReadSeq: 0, createdAt: 0, ...over,
   };
 }
 function msg(over: Partial<ChatMessage>): ChatMessage {

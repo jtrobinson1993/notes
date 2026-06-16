@@ -13,10 +13,12 @@ import type {
   MetaResponse,
   NoteVersionInfo,
   LinkPreview,
+  ManagePolicy,
   NotesSyncResponse,
   ProfileCipher,
   ProfileInfo,
   ProfileView,
+  SealedEpochKey,
   SealedKey,
   SealedMemberKey,
   SealedProfileKey,
@@ -192,6 +194,17 @@ export const api = {
     req<Conversation>('POST', '/api/conversations/group', { members }),
   threadCreate: (parentId: string, seq: number, members: SealedMemberKey[]) =>
     req<Conversation>('POST', `/api/conversations/${encodeURIComponent(parentId)}/messages/${seq}/thread`, { members }),
+  // ---- v3 phase 2: group membership management ----
+  conversationAddMember: (
+    id: string,
+    body: { userId: string; epoch: number; history: 'share' | 'fresh'; keys: SealedMemberKey[]; priorKeys?: SealedEpochKey[] },
+  ) => req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/members`, body),
+  conversationRemoveMember: (id: string, userId: string, body: { epoch: number; keys: SealedMemberKey[] }) =>
+    req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, body),
+  conversationSetPolicy: (id: string, managePolicy: ManagePolicy) =>
+    req<Conversation>('PATCH', `/api/conversations/${encodeURIComponent(id)}`, { managePolicy }),
+  conversationSetRole: (id: string, userId: string, role: 'admin' | 'member') =>
+    req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}/role`, { role }),
   conversationMessages: (id: string, opts?: { before?: number; limit?: number }) => {
     const q = new URLSearchParams();
     if (opts?.before !== undefined) q.set('before', String(opts.before));

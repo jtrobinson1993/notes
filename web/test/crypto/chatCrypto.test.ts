@@ -7,6 +7,8 @@ import {
   encryptReaction,
   generateConversationKey,
   sealConversationKey,
+  sealConversationKeyToMembers,
+  sealEpochKeysTo,
   unsealConversationKey,
 } from '../../src/lib/chatCrypto';
 import { generateKeyPair } from '../../src/lib/crypto';
@@ -30,6 +32,33 @@ describe('conversation keys', () => {
     const b = generateKeyPair();
     const sealed = await sealConversationKey(b64(a.publicKey), generateConversationKey());
     await expect(unsealConversationKey(sealed, b.privateKey, b.publicKey)).rejects.toThrow();
+  });
+});
+
+describe('re-key helpers (membership changes)', () => {
+  it('seals one key to many members, each unsealable by only that member', async () => {
+    const m1 = generateKeyPair();
+    const m2 = generateKeyPair();
+    const convKey = generateConversationKey();
+    const sealed = await sealConversationKeyToMembers(
+      [{ userId: 'a', publicKey: b64(m1.publicKey) }, { userId: 'b', publicKey: b64(m2.publicKey) }],
+      convKey,
+    );
+    expect(sealed.map((s) => s.userId)).toEqual(['a', 'b']);
+    expect(await unsealConversationKey(sealed[0].sealedKey, m1.privateKey, m1.publicKey)).toEqual(convKey);
+    expect(await unsealConversationKey(sealed[1].sealedKey, m2.privateKey, m2.publicKey)).toEqual(convKey);
+    // a's copy isn't readable by b
+    await expect(unsealConversationKey(sealed[0].sealedKey, m2.privateKey, m2.publicKey)).rejects.toThrow();
+  });
+
+  it('seals each prior epoch key to a joiner (share-history)', async () => {
+    const joiner = generateKeyPair();
+    const k0 = generateConversationKey();
+    const k1 = generateConversationKey();
+    const sealed = await sealEpochKeysTo(b64(joiner.publicKey), [{ epoch: 0, key: k0 }, { epoch: 1, key: k1 }]);
+    expect(sealed.map((s) => s.epoch)).toEqual([0, 1]);
+    expect(await unsealConversationKey(sealed[0].sealedKey, joiner.privateKey, joiner.publicKey)).toEqual(k0);
+    expect(await unsealConversationKey(sealed[1].sealedKey, joiner.privateKey, joiner.publicKey)).toEqual(k1);
   });
 });
 
