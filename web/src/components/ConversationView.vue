@@ -14,6 +14,7 @@ import IconReplyQuote from '~icons/mynaui/corner-up-left';
 import IconX from '~icons/mynaui/x';
 import IconImage from '~icons/mynaui/image';
 import IconPaperclip from '~icons/mynaui/paperclip';
+import IconPaperclipSolid from '~icons/mynaui/paperclip-solid';
 import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
 import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
@@ -36,7 +37,7 @@ const reachedStart = ref(false);
 const text = ref('');
 const sending = ref(false);
 const scroller = ref<HTMLElement>();
-const composer = ref<{ insertText: (s: string) => void }>();
+const composer = ref<{ insertText: (s: string) => void; focus: () => void }>();
 const fileInput = ref<HTMLInputElement>();
 const staged = ref<AttachmentRef[]>([]);
 const attaching = ref(false);
@@ -514,25 +515,29 @@ async function sendGif(gif: GifRef) {
           <span v-if="attachError" class="text-xs text-red-500">{{ attachError }}</span>
         </div>
 
-        <!-- Square buttons (~input height) anchored to the bottom. -->
-        <div class="flex items-end gap-2">
+        <!-- One border wraps the whole composer (input + the two square
+             buttons), all vertically centered. The buttons are borderless,
+             equal-size squares with solid icons; the input fills the height so
+             the whole row is an easy click target. A subtle tint lifts it off
+             the app background. -->
+        <div class="flex items-center gap-1 rounded-xl border border-zinc-300 bg-black/[2.5%] px-1.5 py-1 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-white/[2.5%]">
           <input ref="fileInput" type="file" multiple class="hidden" @change="onPickFiles" />
           <button
             type="button"
             title="Attach files"
-            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-700/70"
             @click="fileInput?.click()"
           >
-            <IconPaperclip class="h-5 w-5" />
+            <IconPaperclipSolid class="h-5 w-5" />
           </button>
           <!-- Reuse the v2.1 live editor as the composer: code blocks, spoilers,
                colors, and the selection toolbar all come for free. Enter sends;
-               Shift+Enter inserts a newline. A subtle 5% tint lifts it off the
-               app background without a hard fill. -->
-          <div class="grow rounded-lg border border-zinc-300 bg-black/[2.5%] px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-white/[2.5%]">
+               Shift+Enter inserts a newline. -->
+          <div class="flex min-w-0 grow cursor-text items-center self-stretch px-1" @click="composer?.focus()">
             <MarkdownEditor
               ref="composer"
               v-model="text"
+              class="w-full"
               submit-on-enter
               placeholder="Message…"
               @submit="send"

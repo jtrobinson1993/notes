@@ -228,7 +228,11 @@ function insertText(s: string): void {
   view.dispatch({ changes: { from, to, insert: s }, selection: { anchor: from + s.length } });
   view.focus();
 }
-defineExpose({ insertText });
+function focus(): void {
+  view?.focus();
+}
+
+defineExpose({ insertText, focus });
 
 onBeforeUnmount(() => view?.destroy());
 </script>

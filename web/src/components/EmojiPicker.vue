@@ -7,6 +7,7 @@ import { searchDefaultEmoji, emojiUrl, resolveEmoji } from '../lib/emoji';
 import { loadUnicodeEmoji, searchUnicode, type UnicodeEmoji } from '../lib/emoji/unicode';
 import { customEmoji } from '../lib/emoji/custom';
 import IconSmile from '~icons/mynaui/smile';
+import IconSmileSolid from '~icons/mynaui/smile-solid';
 
 // `pick` inserts text at the composer caret (`:name:` or a unicode char); `gif`
 // sends a chosen GIF. GIFs are only offered when the `gifs` prop is set (e.g.
@@ -112,9 +113,10 @@ const tabClass = (t: Tab) =>
       title="Emoji & GIFs"
       :class="props.compact
         ? 'flex items-center rounded px-1.5 py-1 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700'
-        : 'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800'"
+        : 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-700/70'"
     >
-      <IconSmile :class="props.compact ? 'h-4 w-4' : 'h-5 w-5'" />
+      <IconSmile v-if="props.compact" class="h-4 w-4" />
+      <IconSmileSolid v-else class="h-5 w-5" />
     </PopoverTrigger>
     <PopoverPortal>
       <PopoverContent
