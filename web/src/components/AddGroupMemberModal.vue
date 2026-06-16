@@ -12,13 +12,15 @@ const open = defineModel<boolean>('open', { default: false });
 const chat = useChatStore();
 const friends = useFriendsStore();
 
-const history = ref<'share' | 'fresh'>('share');
+// Default to 'fresh' — privacy-first: a new member doesn't see prior history
+// unless the inviter deliberately opts to share it.
+const history = ref<'share' | 'fresh'>('fresh');
 const busy = ref('');
 const error = ref('');
 
 watch(open, (o) => {
   if (!o) {
-    history.value = 'share';
+    history.value = 'fresh';
     error.value = '';
     busy.value = '';
   }
@@ -50,8 +52,12 @@ async function add(f: Friend) {
 
 <template>
   <AppModal v-model:open="open" title="Add to group" description="Add a friend to this group.">
-    <!-- Per-add history choice (the inviter decides what a joiner can back-scroll). -->
-    <div class="sticky top-0 flex items-center justify-between gap-2 bg-white pb-3 dark:bg-zinc-900">
+    <!-- Per-add history choice (the inviter decides what a joiner can back-scroll).
+         Only meaningful when there's actually someone to add. -->
+    <div
+      v-if="eligible.length"
+      class="sticky top-0 flex items-center justify-between gap-2 bg-white pb-3 dark:bg-zinc-900"
+    >
       <span class="text-sm text-zinc-500">When they join…</span>
       <div class="flex overflow-hidden rounded-lg border border-zinc-300 text-xs dark:border-zinc-700">
         <button class="px-2.5 py-1" :class="history === 'share' ? 'bg-blue-600 text-white' : 'text-zinc-500'" @click="history = 'share'">

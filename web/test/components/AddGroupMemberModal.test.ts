@@ -40,16 +40,23 @@ describe('AddGroupMemberModal', () => {
     expect(w.findAll('li').some((li) => li.text() === 'b')).toBe(false);
   });
 
-  it('adds with share-history by default', async () => {
+  it('adds with start-fresh by default (privacy-first)', async () => {
     const w = mountModal();
+    await byText(w, 'Fred')!.trigger('click');
+    expect(chat.addMember).toHaveBeenCalledWith('g1', expect.objectContaining({ userId: 'fred' }), 'fresh');
+  });
+
+  it('adds with shared history when toggled', async () => {
+    const w = mountModal();
+    await byText(w, 'Share history')!.trigger('click');
     await byText(w, 'Fred')!.trigger('click');
     expect(chat.addMember).toHaveBeenCalledWith('g1', expect.objectContaining({ userId: 'fred' }), 'share');
   });
 
-  it('adds with fresh history when toggled', async () => {
+  it('hides the history toggle when there are no eligible friends', () => {
+    friendsList.value = [{ userId: 'b', displayName: 'b', publicKey: 'pkb', online: false }]; // already a member
     const w = mountModal();
-    await byText(w, 'Start fresh')!.trigger('click');
-    await byText(w, 'Fred')!.trigger('click');
-    expect(chat.addMember).toHaveBeenCalledWith('g1', expect.objectContaining({ userId: 'fred' }), 'fresh');
+    expect(w.text()).not.toContain('When they join');
+    expect(w.text()).toContain('already in this group');
   });
 });
