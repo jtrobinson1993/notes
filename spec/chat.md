@@ -267,6 +267,12 @@ REST; client→server frames are minimal (liveness is protocol ping/pong).
   share/start-fresh toggle. A `conversation-updated` frame triggers a
   `loadConversations()` (picks up new members + epoch keys); `conversation-removed`
   drops the conversation.
+- **System notices.** Adding a member also posts an ordinary **encrypted message**
+  carrying a `MessagePayload.system` event (`{kind:'member-joined', userId,
+  phrase}`) at the new epoch — so the joiner can read it and the server never sees
+  it. The client renders `system` messages as a **centered, muted line** (no
+  bubble/avatar) and picks a (sometimes silly) join phrase from
+  `lib/systemMessages.ts`; a join you made yourself reads "You joined the chat."
 - `chatSocket.ts` — reconnecting WS client (exponential backoff). `chat.ts`
   store wires frames to both the chat and friends stores and backfills on every
   (re)connect; `startChat()/stopChat()` are hooked to session unlock/lock.

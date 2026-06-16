@@ -3,14 +3,16 @@ import { createPinia, setActivePinia } from 'pinia';
 import type { Conversation, Friend, SealedKey, SealedMemberKey } from '@notes/shared';
 import { generateKeyPair, sealKey, unsealKey } from '../../src/lib/crypto';
 import { b64 } from '../../src/lib/b64';
-import { encryptMessage, generateConversationKey } from '../../src/lib/chatCrypto';
+import { decryptMessage, encryptMessage, generateConversationKey } from '../../src/lib/chatCrypto';
 
 const api = vi.hoisted(() => ({
   conversations: vi.fn(),
   conversationAddMember: vi.fn(),
   conversationRemoveMember: vi.fn(),
-  conversationSetPolicy: vi.fn(),
   conversationSetRole: vi.fn(),
+  messageSend: vi.fn().mockImplementation((convId: string, body: unknown) =>
+    Promise.resolve({ conversationId: convId, seq: 99, senderId: 'me', epoch: 1, ...(body as object), createdAt: 0 }),
+  ),
 }));
 vi.mock('../../src/lib/api', () => ({ api }));
 vi.mock('../../src/stores/session', async () => {
@@ -87,7 +89,14 @@ describe('addMember', () => {
     const e1 = await encryptMessage(epoch1Key, { text: 'new', sentAt: 0 });
     await store.handleFrame({ type: 'message', message: { conversationId: 'g1', seq: 1, senderId: 'm2', epoch: 0, ciphertext: e0.ciphertext, iv: e0.iv, createdAt: 0 } });
     await store.handleFrame({ type: 'message', message: { conversationId: 'g1', seq: 2, senderId: 'me', epoch: 1, ciphertext: e1.ciphertext, iv: e1.iv, createdAt: 0 } });
-    expect(store.messages.g1.map((m) => m.text)).toEqual(['old', 'new']);
+    expect(store.messages.g1.filter((m) => !m.system).map((m) => m.text)).toEqual(['old', 'new']);
+
+    // Adding posts an encrypted "X joined" system message at the new epoch.
+    const sent = api.messageSend.mock.calls.at(-1)![1] as { ciphertext: string; iv: string; epoch: number };
+    expect(sent.epoch).toBe(1);
+    const joinPayload = await decryptMessage(epoch1Key, sent.ciphertext, sent.iv);
+    expect(joinPayload.system).toMatchObject({ kind: 'member-joined', userId: 'f4' });
+    expect(store.messages.g1.some((m) => m.system?.kind === 'member-joined')).toBe(true);
   });
 
   it('omits priorKeys when starting fresh', async () => {

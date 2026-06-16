@@ -14,6 +14,7 @@ import type {
   SealedEpochKey,
   SealedMemberKey,
   ServerFrame,
+  SystemEvent,
 } from '@notes/shared';
 import { api } from '../lib/api';
 import {
@@ -28,6 +29,7 @@ import {
   unsealConversationKey,
 } from '../lib/chatCrypto';
 import { connectChatSocket, disconnectChatSocket, onConnect } from '../lib/chatSocket';
+import { randomJoinPhrase } from '../lib/systemMessages';
 import { customEmojiForText, loadCustomEmoji, registerEmbeddedEmoji, resetCustomEmoji } from '../lib/emoji/custom';
 import { b64 } from '../lib/b64';
 import { useSessionStore } from './session';
@@ -42,6 +44,8 @@ export interface ChatMessageView extends ChatMessage {
   attachments?: AttachmentRef[];
   replyTo?: ReplyRef;
   linkPreview?: LinkPreview;
+  /** an inline system notice (member joined, …) rendered instead of a bubble */
+  system?: SystemEvent;
 }
 
 /** A reaction with its decrypted emoji (null if it couldn't be decrypted). */
@@ -129,6 +133,7 @@ export const useChatStore = defineStore('chat', () => {
         attachments: payload.attachments ?? [],
         replyTo: payload.replyTo,
         linkPreview: payload.linkPreview,
+        system: payload.system,
       };
     } catch {
       return { ...m, text: null };
@@ -284,6 +289,21 @@ export const useChatStore = defineStore('chat', () => {
     convKeys.get(convId)?.set(epoch, convKey);
     await unsealEpochKeys(updated);
     upsertConversation(updated);
+    // Announce the join in-chat (best-effort; encrypted at the new epoch so the
+    // joiner can read it). Never let a failed notice undo a successful add.
+    await announceJoin(convId, friend.userId).catch(() => {});
+  }
+
+  /** Post an encrypted system message announcing a member joining. */
+  async function announceJoin(convId: string, userId: string): Promise<void> {
+    const conv = conversations.value.find((c) => c.id === convId);
+    const key = currentKey(convId);
+    if (!conv || !key) return;
+    const system: SystemEvent = { kind: 'member-joined', userId, phrase: randomJoinPhrase() };
+    const { ciphertext, iv } = await encryptMessage(key, { text: '', sentAt: Date.now(), system });
+    const sent = await api.messageSend(convId, { ciphertext, iv, epoch: conv.epoch });
+    mergeMessages(convId, [{ ...sent, text: '', system }]);
+    bumpLastSeq(convId, sent.seq);
   }
 
   /** Remove a member (or, when `userId` is me, leave): mint a new epoch sealed to

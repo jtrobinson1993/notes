@@ -303,12 +303,26 @@ export interface GifRef {
   title?: string;
 }
 
+/** An inline, non-chat event (e.g. someone joined). Carried inside the encrypted
+ *  `MessagePayload` like any message — so the server never sees it — and rendered
+ *  as a centered system notice instead of a normal bubble. */
+export interface SystemEvent {
+  kind: 'member-joined';
+  /** the user the event is about */
+  userId: string;
+  /** index into the client's join-phrase list (keeps a message's funny line
+   *  stable for everyone, while the display name resolves live) */
+  phrase: number;
+}
+
 /** What the client encrypts into a message blob (extensible in v3.1). */
 export interface MessagePayload {
   /** markdown text (may be empty when the message is purely a GIF/attachment) */
   text: string;
   /** the sender's own clock (server time is separate metadata) */
   sentAt: number;
+  /** a system notice (member joined, …) rendered inline instead of as a bubble */
+  system?: SystemEvent;
   /** an embedded GIF (KLIPY search) — v3.1 */
   gif?: GifRef;
   /** encrypted file/image attachments. Each carries its own random AES key, so

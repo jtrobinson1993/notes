@@ -17,7 +17,8 @@ import IconX from '~icons/mynaui/x';
 import IconImage from '~icons/mynaui/image';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import IconPaperclipSolid from '~icons/mynaui/paperclip-solid';
-import type { AttachmentRef, Conversation, GifRef, LinkPreview, ReplyRef } from '@notes/shared';
+import type { AttachmentRef, Conversation, GifRef, LinkPreview, ReplyRef, SystemEvent } from '@notes/shared';
+import { joinText } from '../lib/systemMessages';
 import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 import { useProfileStore } from '../stores/profile';
@@ -69,6 +70,14 @@ const msgs = computed(() => chat.messages[convId.value] ?? []);
 
 function memberName(senderId: string): string {
   return conversation.value?.members.find((m) => m.userId === senderId)?.displayName || 'Unknown';
+}
+
+/** Render an inline system notice (centered, muted). Self-references read better
+ *  neutrally than as a third-person funny line. */
+function systemText(ev: SystemEvent): string {
+  const me = ev.userId === session.user?.id;
+  if (ev.kind === 'member-joined') return me ? 'You joined the chat.' : joinText(memberName(ev.userId), ev.phrase);
+  return '';
 }
 
 // A member's chosen name color as a CSS value (theme-aware --brand-* pair), or
@@ -150,7 +159,9 @@ const rows = computed<MessageRow[]>(() => {
   const out: MessageRow[] = [];
   let prev: ChatMessageView | undefined;
   for (const m of msgs.value) {
-    const isStart = !prev || prev.senderId !== m.senderId || m.createdAt - prev.createdAt > GROUP_GAP_MS;
+    // A system notice renders on its own and also breaks the avatar grouping of
+    // the messages around it.
+    const isStart = !prev || prev.senderId !== m.senderId || !!prev.system || m.createdAt - prev.createdAt > GROUP_GAP_MS;
     out.push({ key: String(m.seq), msg: m, senderId: m.senderId, name: memberName(m.senderId), isStart });
     prev = m;
   }
@@ -391,9 +402,17 @@ async function sendGif(gif: GifRef) {
 
         <!-- One full-width row per message; the avatar gutter sits on the left.
              Messages align the same for everyone (no own-message special-case). -->
+        <template v-for="row in rows" :key="row.key">
+        <!-- System notice (member joined, …): a centered, muted line, no bubble. -->
         <div
-          v-for="row in rows"
-          :key="row.key"
+          v-if="row.msg.system"
+          :data-seq="row.msg.seq"
+          class="px-4 py-1.5 text-center text-xs text-zinc-400 dark:text-zinc-500"
+        >
+          {{ systemText(row.msg.system) }}
+        </div>
+        <div
+          v-else
           :data-seq="row.msg.seq"
           class="group relative flex items-start gap-3 px-4 py-0.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
           :class="row.isStart ? 'mt-3' : ''"
@@ -521,6 +540,7 @@ async function sendGif(gif: GifRef) {
             </button>
           </div>
         </div>
+        </template>
       </div>
 
       <div class="shrink-0 p-3">
