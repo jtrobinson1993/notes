@@ -7,7 +7,6 @@ import ProfileDialog from './ProfileDialog.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import ChatAttachment from './ChatAttachment.vue';
 import LinkPreviewCard from './LinkPreviewCard.vue';
-import ManageMembersModal from './ManageMembersModal.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
 import { resolveEmoji } from '../lib/emoji';
 import { api } from '../lib/api';
@@ -18,7 +17,6 @@ import IconX from '~icons/mynaui/x';
 import IconImage from '~icons/mynaui/image';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import IconPaperclipSolid from '~icons/mynaui/paperclip-solid';
-import IconUsers from '~icons/mynaui/users';
 import type { AttachmentRef, Conversation, GifRef, LinkPreview, ReplyRef } from '@notes/shared';
 import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
@@ -53,8 +51,6 @@ const conversation = computed<Conversation | undefined>(() =>
 );
 
 const isThread = computed(() => conversation.value?.kind === 'thread');
-const isGroup = computed(() => conversation.value?.kind === 'group');
-const showMembers = ref(false);
 const title = computed(() =>
   conversation.value ? conversationTitle(conversation.value, session.user?.id) : 'Conversation',
 );
@@ -365,27 +361,15 @@ async function sendGif(gif: GifRef) {
         </span>
         <p class="font-semibold">{{ title }}</p>
         <span v-if="isThread" class="text-xs text-zinc-400">thread</span>
-        <!-- Group member management lives on the right of the header. -->
-        <button
-          v-if="isGroup && conversation"
-          class="ml-auto flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          title="Members"
-          @click="showMembers = true"
-        >
-          <IconUsers class="h-4 w-4" />
-          <span>{{ conversation.members.length }}</span>
-        </button>
         <button
           v-if="isThreadPanel"
-          class="flex items-center rounded-lg p-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-          :class="{ 'ml-auto': !isGroup }"
+          class="ml-auto flex items-center rounded-lg p-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
           title="Close thread"
           @click="emit('close')"
         >
           <IconX class="h-4 w-4" />
         </button>
       </div>
-      <ManageMembersModal v-if="conversation && isGroup" v-model:open="showMembers" :conversation="conversation" />
 
       <div ref="scroller" class="min-h-0 grow overflow-y-auto py-2" @scroll="onScroll">
         <!-- Older messages auto-load as the user scrolls up; this just reflects
