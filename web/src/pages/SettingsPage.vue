@@ -10,7 +10,8 @@ import { exportNotesZip, parseImportFiles, type ExportFormat } from '../lib/tran
 import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
 import { useProfileStore } from '../stores/profile';
-import { fileToAvatarDataUrl } from '../lib/avatar';
+import { MAX_AVATAR_INPUT_BYTES } from '../lib/avatar';
+import AvatarCropper from '../components/AvatarCropper.vue';
 import { addCustomEmoji, customEmoji, loadCustomEmoji, removeCustomEmoji } from '../lib/emoji/custom';
 import { resolveEmoji } from '../lib/emoji';
 import { NAME_COLORS } from '@notes/shared';
@@ -133,18 +134,26 @@ useQuery({
   },
 });
 
-async function pickAvatar() {
+// Avatar picking opens the cropper; the cropper emits the final WebP data URL.
+const cropFile = ref<File | null>(null);
+const cropOpen = ref(false);
+
+function pickAvatar() {
   const file = avatarInput.value?.files?.[0];
+  if (avatarInput.value) avatarInput.value.value = '';
   if (!file) return;
   profileMsg.value = '';
-  try {
-    avatar.value = await fileToAvatarDataUrl(file);
-  } catch (e) {
+  if (file.size > MAX_AVATAR_INPUT_BYTES) {
     profileOk.value = false;
-    profileMsg.value = e instanceof Error ? e.message : 'could not load image';
-  } finally {
-    if (avatarInput.value) avatarInput.value.value = '';
+    profileMsg.value = `That image is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). The limit is ${Math.round(MAX_AVATAR_INPUT_BYTES / 1024 / 1024)} MB.`;
+    return;
   }
+  cropFile.value = file;
+  cropOpen.value = true;
+}
+
+function onCropped(dataUrl: string) {
+  avatar.value = dataUrl;
 }
 
 function removeAvatar() {
@@ -438,6 +447,8 @@ async function importFiles(event: Event) {
             </p>
           </div>
         </div>
+
+        <AvatarCropper v-model:open="cropOpen" :file="cropFile" @cropped="onCropped" />
       </section>
 
       <section v-show="activeSection === 'appearance'" class="space-y-3">

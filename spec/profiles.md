@@ -70,9 +70,12 @@ current blob at once; the next save re-seals to friends only.
 - The store holds my profile key in memory only (like conversation keys), my
   decrypted `ProfileData`, visibility, and epoch; it caches other users'
   decrypted profiles by id. It loads on socket connect and resets on lock.
-- **Edit:** Settings → Profile has the avatar uploader (square-cropped to a
-  256px WebP client-side, `lib/avatar.ts`) + bio; Settings → Privacy has the
-  visibility toggle.
+- **Edit:** Settings → Profile has the avatar uploader + bio; Settings → Privacy
+  has the visibility toggle. Picking an avatar opens `AvatarCropper` — a square
+  crop frame with **drag-to-pan + zoom** (slider/wheel) — and the chosen crop is
+  re-encoded client-side to a **256² WebP** (`lib/avatar.ts`; PNG fallback) data
+  URL. Failures (oversized input, undecodable file, encoding/canvas errors, or a
+  rejected save) surface an explicit message rather than failing silently.
 - **View:** `ProfileDialog` (on the reusable `AppModal`) shows a contact's
   avatar + name + bio, opened by clicking a sender's avatar or name in chat.
   `ChatAvatar` renders the decrypted avatar when present, else the initial.
