@@ -41,8 +41,12 @@ declines** — so a leaked code can't silently add anyone.
 
 Each user has an editable **display name** — the only name other users ever see
 (friend lists, DMs, member lists). The **username stays a login credential and
-is never exposed to other users**. When a user hasn't set a display name, the
-server shows a neutral `User-<id-prefix>` fallback — **never** the username.
+is never exposed to other users**. **Registration captures the display name up
+front** (a required field in `RegisterFlow.vue`, persisted via `profileSet`
+once the new session is authenticated) so accounts aren't nameless; it's also
+editable later in Settings → Profile. When a user still has no display name
+(legacy/empty), the server shows a neutral `User-<id-prefix>` fallback —
+**never** the username.
 
 Each user may also pick a **name color** shown to others in chat. Choices are
 restricted to the curated **`NAME_COLORS`** palette (the `--brand-*` accents,

@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useSessionStore } from '../stores/session';
+import { api } from '../lib/api';
 import RecoveryCodeCard from './RecoveryCodeCard.vue';
 
 const props = defineProps<{ inviteToken?: string; title: string; subtitle: string }>();
@@ -10,6 +11,7 @@ const session = useSessionStore();
 const router = useRouter();
 
 const username = ref('');
+const displayName = ref('');
 const error = ref('');
 const busy = ref(false);
 const step = ref<'form' | 'recovery'>('form');
@@ -22,6 +24,14 @@ async function submit() {
   try {
     const { credentialId, prf } = await session.register(username.value.trim(), props.inviteToken);
     recoveryCode.value = await session.setupKeys(credentialId, prf);
+    // Persist the display name now that we're authenticated — this is the only
+    // name other users ever see (the username stays private). Don't let a hiccup
+    // here strand a just-created account; it can also be changed in Settings.
+    try {
+      await api.profileSet({ displayName: displayName.value.trim() });
+    } catch {
+      /* non-fatal — account exists; name editable in Settings → Profile */
+    }
     step.value = 'recovery';
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'registration failed';
@@ -53,6 +63,19 @@ function finish() {
           autocomplete="username"
           class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
         />
+        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Used to sign in; never shown to other users.</p>
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium" for="displayName">Display name</label>
+        <input
+          id="displayName"
+          v-model="displayName"
+          required
+          maxlength="50"
+          autocomplete="nickname"
+          class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
+        />
+        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">The name your friends will see. You can change it later.</p>
       </div>
       <p class="text-sm text-zinc-500 dark:text-zinc-400">
         You'll sign in with a <strong>passkey</strong> — no password. Your browser or password
