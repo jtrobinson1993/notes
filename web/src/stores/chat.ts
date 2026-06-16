@@ -7,6 +7,7 @@ import type {
   Conversation,
   Friend,
   GifRef,
+  LinkPreview,
   MessagePayload,
   ReplyRef,
   SealedMemberKey,
@@ -36,6 +37,7 @@ export interface ChatMessageView extends ChatMessage {
   gif?: GifRef | null;
   attachments?: AttachmentRef[];
   replyTo?: ReplyRef;
+  linkPreview?: LinkPreview;
 }
 
 /** A reaction with its decrypted emoji (null if it couldn't be decrypted). */
@@ -92,6 +94,7 @@ export const useChatStore = defineStore('chat', () => {
         gif: safeGif(payload.gif),
         attachments: payload.attachments ?? [],
         replyTo: payload.replyTo,
+        linkPreview: payload.linkPreview,
       };
     } catch {
       return { ...m, text: null };
@@ -230,7 +233,7 @@ export const useChatStore = defineStore('chat', () => {
   async function sendMessage(
     convId: string,
     text: string,
-    opts?: { gif?: GifRef; attachments?: AttachmentRef[]; replyTo?: ReplyRef },
+    opts?: { gif?: GifRef; attachments?: AttachmentRef[]; replyTo?: ReplyRef; linkPreview?: LinkPreview },
   ): Promise<void> {
     const key = convKeys.get(convId);
     if (!key) throw new Error('no conversation key');
@@ -240,12 +243,13 @@ export const useChatStore = defineStore('chat', () => {
     if (opts?.gif) payload.gif = opts.gif;
     if (opts?.attachments?.length) payload.attachments = opts.attachments;
     if (opts?.replyTo) payload.replyTo = opts.replyTo;
+    if (opts?.linkPreview) payload.linkPreview = opts.linkPreview;
     const usedEmoji = customEmojiForText(text);
     if (usedEmoji) payload.customEmoji = usedEmoji;
     const { ciphertext, iv } = await encryptMessage(key, payload);
     const sent = await api.messageSend(convId, { ciphertext, iv, epoch });
     mergeMessages(convId, [
-      { ...sent, text, gif: opts?.gif ?? null, attachments: opts?.attachments ?? [], replyTo: opts?.replyTo },
+      { ...sent, text, gif: opts?.gif ?? null, attachments: opts?.attachments ?? [], replyTo: opts?.replyTo, linkPreview: opts?.linkPreview },
     ]);
     bumpLastSeq(convId, sent.seq);
   }

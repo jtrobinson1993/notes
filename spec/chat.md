@@ -421,6 +421,28 @@ character (no shortcode needed — it renders natively).
 > Hosting note: the default set's images are server-proxied + cached from 7TV's
 > CDN (above) rather than committed — resolved in v3.4.
 
+### Link previews (v3.4)
+
+**Opt-in, off by default**, and only generated when **every** member of the
+conversation has them enabled (`users.link_previews`, surfaced on each
+`ConversationMember`; the sender's client gates on `members.every(linkPreviews)`).
+
+Because a browser can't fetch arbitrary cross-origin pages, the **sender's
+client** asks the server to fetch the URL via `GET /api/og?url=` and embeds the
+returned `LinkPreview {url,title,description,image,siteName}` inside the
+**encrypted** message payload (Signal-style) — so recipients render it from the
+decrypted payload and the server only ever saw the URL at proxy time. The
+preview image is a remote URL rendered with the usual **click-to-load**
+(`LinkPreviewCard.vue`).
+
+The proxy (`server/routes/og.ts`) is an **SSRF surface** and is guarded: http(s)
+only; the host must resolve to a **public** IP (loopback/private/link-local/
+CGNAT/cloud-metadata/multicast all blocked, IPv4 + IPv6); redirects are followed
+**manually and re-validated each hop**; the response is **size- and
+time-capped** and must be HTML. OG/`<meta>` tags are parsed from the `<head>`
+with no HTML execution. Residual DNS-rebinding between resolve and fetch is
+accepted for a small self-hosted deployment.
+
 ### Custom (encrypted) per-user emoji
 
 A user uploads their own emoji (Settings → Custom emoji). Each image is an

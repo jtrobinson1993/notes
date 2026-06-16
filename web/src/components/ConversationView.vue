@@ -6,8 +6,10 @@ import ChatAvatar from './ChatAvatar.vue';
 import ProfileDialog from './ProfileDialog.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import ChatAttachment from './ChatAttachment.vue';
+import LinkPreviewCard from './LinkPreviewCard.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
 import { resolveEmoji } from '../lib/emoji';
+import { api } from '../lib/api';
 import IconReply from '~icons/mynaui/message-reply';
 import IconThread from '~icons/mynaui/chat-dots';
 import IconReplyQuote from '~icons/mynaui/corner-up-left';
@@ -15,7 +17,7 @@ import IconX from '~icons/mynaui/x';
 import IconImage from '~icons/mynaui/image';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import IconPaperclipSolid from '~icons/mynaui/paperclip-solid';
-import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
+import type { AttachmentRef, Conversation, GifRef, LinkPreview, ReplyRef } from '@notes/shared';
 import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 import { useProfileStore } from '../stores/profile';
@@ -237,14 +239,38 @@ function onScroll() {
   if (atBottom()) void markReadHere();
 }
 
+// Link previews only when EVERY member (including me) has opted in.
+function linkPreviewsAllowed(): boolean {
+  const members = conversation.value?.members ?? [];
+  return members.length > 0 && members.every((m) => m.linkPreviews);
+}
+
+const URL_RE = /\bhttps?:\/\/[^\s<>]+/i;
+function firstUrl(text: string): string | null {
+  const m = URL_RE.exec(text);
+  if (!m) return null;
+  // Trim trailing sentence punctuation the regex may have caught.
+  return m[0].replace(/[)\].,!?;:'"]+$/, '');
+}
+
 async function send() {
   const body = text.value.trim();
   if ((!body && !staged.value.length) || sending.value) return;
   sending.value = true;
   try {
-    const opts: { attachments?: AttachmentRef[]; replyTo?: ReplyRef } = {};
+    const opts: { attachments?: AttachmentRef[]; replyTo?: ReplyRef; linkPreview?: LinkPreview } = {};
     if (staged.value.length) opts.attachments = [...staged.value];
     if (replyingTo.value) opts.replyTo = replyingTo.value;
+    if (body && linkPreviewsAllowed()) {
+      const url = firstUrl(body);
+      if (url) {
+        try {
+          opts.linkPreview = await api.og(url);
+        } catch {
+          // No preview (unreachable / blocked / no OG tags) — send without one.
+        }
+      }
+    }
     await chat.sendMessage(convId.value, body, Object.keys(opts).length ? opts : undefined);
     text.value = '';
     staged.value = [];
@@ -458,6 +484,7 @@ async function sendGif(gif: GifRef) {
                   :key="a.id"
                   :attachment="a"
                 />
+                <LinkPreviewCard v-if="row.msg.linkPreview" :preview="row.msg.linkPreview" />
               </template>
             </div>
             <!-- Reaction pills: grouped by emoji; click toggles mine. A new pill

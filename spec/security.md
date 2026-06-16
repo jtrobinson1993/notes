@@ -31,6 +31,18 @@ GIFs whose media host is `*.klipy.com` over HTTPS (`safeGif` in the chat store);
 anything else is dropped, so a hostile sender can't smuggle an arbitrary
 tracking URL past the click-to-load model above.
 
+**Link previews (SSRF surface, v3.4).** Previews are **opt-in, off by default**,
+and only generated when every chat member has them on. Generating one makes the
+**server** fetch a user-supplied URL (`GET /api/og`), so it's guarded against
+SSRF: http(s) only; the host must resolve to a **public** IP (loopback, private,
+link-local, CGNAT, cloud-metadata `169.254.169.254`, and multicast are blocked
+for both IPv4 and IPv6); redirects are followed **manually and re-validated each
+hop**; the response is size- and time-capped and must be HTML. The parsed OG
+fields are embedded in the **encrypted** message (the server only sees the URL at
+proxy time), and the preview image loads via click-to-load. Residual
+DNS-rebinding between resolve and fetch is an accepted risk for a small
+self-hosted deployment.
+
 ## Content-Security-Policy (lands with chat, phase 3)
 
 A CSP response header as defense-in-depth: roughly `script-src 'self'` (only our

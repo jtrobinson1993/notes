@@ -12,6 +12,7 @@ import type {
   MemberInfo,
   MetaResponse,
   NoteVersionInfo,
+  LinkPreview,
   NotesSyncResponse,
   ProfileCipher,
   ProfileInfo,
@@ -175,8 +176,13 @@ export const api = {
     req<{ ok: true }>('POST', '/api/profile/keys', { epoch, keys }),
   profileVisibilitySet: (friendsOnly: boolean) =>
     req<ProfileInfo>('PUT', '/api/profile/visibility', { friendsOnly }),
+  linkPreviewsSet: (enabled: boolean) =>
+    req<ProfileInfo>('PUT', '/api/profile/link-previews', { enabled }),
   userProfileGet: (userId: string) =>
     req<ProfileView>('GET', `/api/users/${encodeURIComponent(userId)}/profile`),
+
+  // ---- v3.4: link previews (server-side OG proxy) ----
+  og: (url: string) => req<LinkPreview>('GET', `/api/og?url=${encodeURIComponent(url)}`),
 
   // ---- v3 chat: conversations + messages ----
   conversations: () => req<Conversation[]>('GET', '/api/conversations'),

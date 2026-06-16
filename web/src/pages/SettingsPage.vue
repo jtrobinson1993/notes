@@ -197,6 +197,17 @@ async function toggleFriendsOnly(v: boolean) {
   }
 }
 
+// Privacy: link previews (opt-in).
+const linkPreviewBusy = ref(false);
+async function toggleLinkPreviews(v: boolean) {
+  linkPreviewBusy.value = true;
+  try {
+    await profile.setLinkPreviews(v);
+  } finally {
+    linkPreviewBusy.value = false;
+  }
+}
+
 const { data: credentials } = useQuery({ key: ['credentials'], query: () => api.credentials() });
 const { data: invites } = useQuery({ key: ['invites'], query: () => api.invites(), enabled: isAdmin });
 const { data: users } = useQuery({ key: ['users'], query: () => api.users(), enabled: isAdmin });
@@ -513,6 +524,25 @@ async function importFiles(event: Event) {
           >
             <option value="true">Friends only</option>
             <option value="false">Friends + group members</option>
+          </select>
+        </div>
+        <div class="flex items-center justify-between gap-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <div>
+            <p class="text-sm">Link previews</p>
+            <p class="text-xs text-zinc-500 dark:text-zinc-400">
+              Generating a preview sends the link to this server to fetch — so the server sees URLs
+              you post. A preview is only created when <strong>everyone</strong> in the chat has this
+              on. Off by default.
+            </p>
+          </div>
+          <select
+            :value="String(profile.linkPreviews)"
+            :disabled="linkPreviewBusy"
+            class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900"
+            @change="toggleLinkPreviews(($event.target as HTMLSelectElement).value === 'true')"
+          >
+            <option value="false">Off</option>
+            <option value="true">On</option>
           </select>
         </div>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">

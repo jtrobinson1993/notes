@@ -195,6 +195,9 @@ export interface ConversationMember {
   publicKey: string | null;
   /** chosen name color (a NAME_COLORS value), or null for the default */
   nameColor: string | null;
+  /** whether this member has link previews enabled — a preview is only generated
+   *  when EVERY member has it on. */
+  linkPreviews: boolean;
 }
 
 /** Curated name-color palette: the `--brand-*` accents, each defined in CSS as a
@@ -297,6 +300,21 @@ export interface MessagePayload {
    *  attachment ref so recipients (who don't have the sender's private emoji
    *  palette) can decrypt + render it. */
   customEmoji?: Record<string, AttachmentRef>;
+  /** an Open Graph link preview the sender's client generated (only when every
+   *  conversation member has link previews enabled). Embedded in the encrypted
+   *  payload Signal-style, so the server only ever saw the URL at proxy time. */
+  linkPreview?: LinkPreview;
+}
+
+/** Open Graph metadata for a link, fetched via the server-side `/api/og` proxy
+ *  and embedded in the (encrypted) message payload. The `image` is a remote URL
+ *  rendered with click-to-load, like any other remote image. */
+export interface LinkPreview {
+  url: string;
+  title?: string;
+  description?: string;
+  image?: string;
+  siteName?: string;
 }
 
 /** A snapshot of the message being replied to, embedded in the reply's payload. */
@@ -339,6 +357,9 @@ export interface ProfileInfo {
   displayName: string;
   nameColor: string | null;
   friendsOnly: boolean;
+  /** opt-in (default off): generate link previews for my messages. A preview is
+   *  only created when every member of the conversation has this enabled. */
+  linkPreviews: boolean;
 }
 
 /** The owner-set, E2E-encrypted profile contents. Encrypted under a per-user

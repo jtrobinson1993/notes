@@ -16,6 +16,8 @@ export interface UserRow {
   name_color: string | null;
   /** 1 = only friends may receive the encrypted profile (default). */
   profile_friends_only: number;
+  /** 1 = link previews enabled for this user (default 0 / off). */
+  link_previews: number;
   created_at: number;
 }
 
@@ -341,6 +343,10 @@ export function openDb(dataDir: string) {
   if (!userCols.some((c) => c.name === 'profile_friends_only')) {
     db.exec('ALTER TABLE users ADD COLUMN profile_friends_only INTEGER NOT NULL DEFAULT 1');
   }
+  // Link previews: opt-in, default off.
+  if (!userCols.some((c) => c.name === 'link_previews')) {
+    db.exec('ALTER TABLE users ADD COLUMN link_previews INTEGER NOT NULL DEFAULT 0');
+  }
 
   // Idempotent migration: add conversations.parent_id/parent_seq (threads).
   // Must precede the partial unique index, which references parent_id.
@@ -610,6 +616,9 @@ export function openDb(dataDir: string) {
     // ---- Profiles (E2EE bio + avatar) ----
     setProfileVisibility(userId: string, friendsOnly: boolean): void {
       db.prepare('UPDATE users SET profile_friends_only = ? WHERE id = ?').run(friendsOnly ? 1 : 0, userId);
+    },
+    setLinkPreviews(userId: string, enabled: boolean): void {
+      db.prepare('UPDATE users SET link_previews = ? WHERE id = ?').run(enabled ? 1 : 0, userId);
     },
     getProfile(ownerId: string): ProfileRow | undefined {
       return db.prepare('SELECT * FROM profiles WHERE owner_id = ?').get(ownerId) as ProfileRow | undefined;

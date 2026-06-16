@@ -84,6 +84,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
         displayName: u ? effectiveDisplayName(u) : `User-${m.user_id.slice(0, 6)}`,
         publicKey: u?.public_key ?? null,
         nameColor: u?.name_color ?? null,
+        linkPreviews: !!u && u.link_previews !== 0,
       };
     });
     // DM access requires current friendship — unfriending revokes access
@@ -257,11 +258,18 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
 
   // ---------------------------------------------------------------- Profile
 
-  function profileInfo(u: { id: string; display_name: string | null; name_color: string | null; profile_friends_only: number }): ProfileInfo {
+  function profileInfo(u: {
+    id: string;
+    display_name: string | null;
+    name_color: string | null;
+    profile_friends_only: number;
+    link_previews: number;
+  }): ProfileInfo {
     return {
       displayName: effectiveDisplayName(u),
       nameColor: u.name_color ?? null,
       friendsOnly: u.profile_friends_only !== 0,
+      linkPreviews: u.link_previews !== 0,
     };
   }
 
@@ -386,6 +394,16 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     if (typeof b?.friendsOnly !== 'boolean') return reply.code(400).send({ error: 'invalid friendsOnly' });
     db.setProfileVisibility(me, b.friendsOnly);
     if (b.friendsOnly) db.deleteNonFriendProfileKeys(me);
+    return profileInfo(db.getUser(me)!);
+  });
+
+  // Toggle link previews (opt-in, default off). The setting is exposed on each
+  // ConversationMember so the sender's client can gate previews on all-members.
+  app.put('/api/profile/link-previews', { preHandler: requireAuth }, async (request, reply) => {
+    const me = request.user!.id;
+    const b = request.body as Record<string, unknown> | null;
+    if (typeof b?.enabled !== 'boolean') return reply.code(400).send({ error: 'invalid enabled' });
+    db.setLinkPreviews(me, b.enabled);
     return profileInfo(db.getUser(me)!);
   });
 

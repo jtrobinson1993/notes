@@ -32,6 +32,7 @@ export const useProfileStore = defineStore('profile', () => {
   let profileKey: Uint8Array | null = null;
   const myData = ref<ProfileData>({});
   const friendsOnly = ref(true);
+  const linkPreviews = ref(false);
   const epoch = ref(0);
   const loaded = ref(false);
 
@@ -42,6 +43,7 @@ export const useProfileStore = defineStore('profile', () => {
   async function load(): Promise<void> {
     const info = await api.profileGet();
     friendsOnly.value = info.friendsOnly;
+    linkPreviews.value = info.linkPreviews;
     const { profile } = await api.profileDataGet();
     if (profile && session.mk) {
       profileKey = await unwrapProfileKey(session.mk, profile.ownerWrappedKey);
@@ -97,6 +99,11 @@ export const useProfileStore = defineStore('profile', () => {
     if (!v && profileKey) await persist(epoch.value);
   }
 
+  async function setLinkPreviews(v: boolean): Promise<void> {
+    const info = await api.linkPreviewsSet(v);
+    linkPreviews.value = info.linkPreviews;
+  }
+
   /** Rotate after a contact loses access: new key, bumped epoch, re-sealed to the
    *  remaining recipients — so the lost contact can't read future updates. */
   async function rotate(): Promise<void> {
@@ -144,6 +151,7 @@ export const useProfileStore = defineStore('profile', () => {
     profileKey = null;
     myData.value = {};
     friendsOnly.value = true;
+    linkPreviews.value = false;
     epoch.value = 0;
     loaded.value = false;
     cache.value = {};
@@ -152,12 +160,14 @@ export const useProfileStore = defineStore('profile', () => {
   return {
     myData,
     friendsOnly,
+    linkPreviews,
     epoch,
     loaded,
     cache,
     load,
     save,
     setVisibility,
+    setLinkPreviews,
     rotate,
     distributeTo,
     fetch,
