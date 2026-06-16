@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue';
 import type { AttachmentRef } from '@notes/shared';
 import { api } from '../lib/api';
 import { decryptBlob } from '../lib/crypto';
+import ImageLightbox from './ImageLightbox.vue';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import IconDanger from '~icons/mynaui/danger-triangle';
 
@@ -11,6 +12,7 @@ const props = defineProps<{ attachment: AttachmentRef }>();
 const isImage = props.attachment.type.startsWith('image/');
 const imgUrl = ref<string | null>(null);
 const failed = ref(false);
+const lightboxOpen = ref(false);
 let objectUrl: string | null = null;
 let blobData: Uint8Array | null = null;
 
@@ -59,13 +61,17 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- Decrypted locally → no remote fetch, so no IP leak (see spec/security.md). -->
-  <img
-    v-if="isImage && imgUrl"
-    :src="imgUrl"
-    :alt="attachment.name"
-    class="mt-1 max-h-80 max-w-[320px] rounded-lg"
-    loading="lazy"
-  />
+  <template v-if="isImage && imgUrl">
+    <button
+      type="button"
+      class="mt-1 block cursor-zoom-in rounded-lg"
+      :title="`View ${attachment.name}`"
+      @click="lightboxOpen = true"
+    >
+      <img :src="imgUrl" :alt="attachment.name" class="max-h-80 max-w-[320px] rounded-lg" loading="lazy" />
+    </button>
+    <ImageLightbox v-model:open="lightboxOpen" :src="imgUrl" :alt="attachment.name" />
+  </template>
   <button
     v-else
     type="button"

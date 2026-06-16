@@ -322,6 +322,14 @@ images inline, other files as a download chip. Decryption is local, so (like
 note attachments) there's **no remote fetch and no IP leak**. The per-file size
 cap mirrors the server's 32 MiB.
 
+An inline image is **clickable**: it opens `ImageLightbox.vue`, a full-bleed
+viewer (reka-ui Dialog; Escape / overlay-click / close-button dismiss). A plain
+**click toggles** between fit-to-screen and a zoomed-in view anchored on the
+cursor; **click-and-hold drags** to pan once zoomed (the wheel also zooms toward
+the cursor). The pan/zoom math is the pure, unit-tested `lib/imageZoom.ts`
+(`zoomToPoint` pins the cursor point across a scale change; `clampPan` keeps the
+scaled image from revealing a gap past its edges).
+
 ### Replies
 
 A reply embeds a `ReplyRef` snapshot — `{seq, senderId, preview}` — in the
