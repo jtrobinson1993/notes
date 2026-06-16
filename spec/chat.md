@@ -330,6 +330,15 @@ the cursor). The pan/zoom math is the pure, unit-tested `lib/imageZoom.ts`
 (`zoomToPoint` pins the cursor point across a scale change; `clampPan` keeps the
 scaled image from revealing a gap past its edges).
 
+Opening/closing **morphs** the thumbnail into the modal image via the View
+Transitions API: both elements share a temporary `view-transition-name` (per
+attachment id, assigned only while a transition is in flight), and the
+open/close state change is wrapped in `withViewTransition`
+(`lib/viewTransition.ts`, which feature-detects and respects
+`prefers-reduced-motion`, otherwise mutating directly). The lightbox is **fully
+controlled** by `ChatAttachment` so it can't tear down before the morph captures
+its snapshot.
+
 ### Replies
 
 A reply embeds a `ReplyRef` snapshot — `{seq, senderId, preview}` — in the

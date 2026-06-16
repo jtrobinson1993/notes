@@ -15,9 +15,16 @@ import {
  * Full-bleed image viewer. Click toggles between fit and a zoomed-in view
  * anchored on the cursor; click-and-hold drags (pans) when zoomed. Built on
  * reka-ui's Dialog so Escape / overlay-click / the close button all dismiss it.
+ *
+ * Fully controlled (no optimistic local `open`): the parent owns visibility so
+ * it can wrap open/close in a view transition without the dialog tearing down
+ * before the morph captures its snapshot. `viewTransitionName`, when set, is the
+ * shared name that morphs this image to/from its inline thumbnail.
  */
-const props = defineProps<{ src: string; alt: string }>();
-const open = defineModel<boolean>('open', { default: false });
+const props = defineProps<{ open: boolean; src: string; alt: string; viewTransitionName?: string }>();
+const emit = defineEmits<{ 'update:open': [boolean] }>();
+
+const close = () => emit('update:open', false);
 
 const img = ref<HTMLImageElement | null>(null);
 const scale = ref(MIN_SCALE);
@@ -40,9 +47,12 @@ function reset() {
 }
 
 // Fresh image each time it opens.
-watch(open, (v) => {
-  if (v) reset();
-});
+watch(
+  () => props.open,
+  (v) => {
+    if (v) reset();
+  },
+);
 
 /** Cursor offset from the image's current on-screen centre, in px. */
 function relToCentre(e: PointerEvent | MouseEvent): Point {
@@ -99,12 +109,12 @@ function onWheel(e: WheelEvent) {
 </script>
 
 <template>
-  <DialogRoot v-model:open="open">
+  <DialogRoot :open="open" @update:open="(v) => emit('update:open', v)">
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-40 bg-black/80 backdrop-blur-sm" />
       <DialogContent
         class="fixed inset-0 z-50 flex items-center justify-center overflow-hidden focus:outline-none"
-        @pointerdown.self="open = false"
+        @pointerdown.self="close"
       >
         <DialogTitle class="sr-only">{{ alt || 'Image' }}</DialogTitle>
         <img
@@ -119,6 +129,7 @@ function onWheel(e: WheelEvent) {
           :style="{
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
             transition: dragging ? 'none' : 'transform 150ms ease-out',
+            viewTransitionName,
           }"
           @pointerdown="onPointerDown"
           @pointermove="onPointerMove"
@@ -129,7 +140,7 @@ function onWheel(e: WheelEvent) {
           type="button"
           class="absolute right-4 top-4 rounded-lg p-2 text-white/80 hover:bg-white/10 hover:text-white focus:outline-none"
           aria-label="Close"
-          @click="open = false"
+          @click="close"
         >
           <IconX class="h-6 w-6" />
         </button>

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { AttachmentRef } from '@notes/shared';
 import { api } from '../lib/api';
 import { decryptBlob } from '../lib/crypto';
+import { withViewTransition } from '../lib/viewTransition';
 import ImageLightbox from './ImageLightbox.vue';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import IconDanger from '~icons/mynaui/danger-triangle';
@@ -15,6 +16,25 @@ const failed = ref(false);
 const lightboxOpen = ref(false);
 let objectUrl: string | null = null;
 let blobData: Uint8Array | null = null;
+
+// Shared `view-transition-name` so the thumbnail morphs into (and back out of)
+// the lightbox image. Only assigned while a transition is in flight so static
+// images add no snapshot overhead; the thumbnail carries it when closed and the
+// modal image when open (see the gated bindings below). Sanitised to a valid
+// CSS custom-ident.
+const vtName = `chat-img-${props.attachment.id}`.replace(/[^\w-]/g, '-');
+const morphing = ref(false);
+
+/** Toggle the lightbox, morphing the thumbnail ⇄ modal image when supported. */
+async function setOpen(open: boolean) {
+  morphing.value = true;
+  await nextTick(); // assign the name to the source element before snapshotting
+  await withViewTransition(async () => {
+    lightboxOpen.value = open;
+    await nextTick(); // let the target element mount/unmount before the new snapshot
+  });
+  morphing.value = false;
+}
 
 function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -66,11 +86,23 @@ onBeforeUnmount(() => {
       type="button"
       class="mt-1 block cursor-zoom-in rounded-lg"
       :title="`View ${attachment.name}`"
-      @click="lightboxOpen = true"
+      @click="setOpen(true)"
     >
-      <img :src="imgUrl" :alt="attachment.name" class="max-h-80 max-w-[320px] rounded-lg" loading="lazy" />
+      <img
+        :src="imgUrl"
+        :alt="attachment.name"
+        class="max-h-80 max-w-[320px] rounded-lg"
+        loading="lazy"
+        :style="{ viewTransitionName: morphing && !lightboxOpen ? vtName : undefined }"
+      />
     </button>
-    <ImageLightbox v-model:open="lightboxOpen" :src="imgUrl" :alt="attachment.name" />
+    <ImageLightbox
+      :open="lightboxOpen"
+      :src="imgUrl"
+      :alt="attachment.name"
+      :view-transition-name="morphing && lightboxOpen ? vtName : undefined"
+      @update:open="setOpen"
+    />
   </template>
   <button
     v-else
