@@ -17,7 +17,7 @@ defineProps<{ label: string; disabled?: boolean }>();
       <TooltipContent
         side="right"
         :side-offset="8"
-        class="z-50 select-none rounded-md bg-zinc-900 px-2 py-1 text-xs font-medium text-white shadow-lg dark:bg-zinc-700"
+        class="z-tooltip select-none rounded-md bg-zinc-900 px-2 py-1 text-xs font-medium text-white shadow-lg dark:bg-zinc-700"
       >
         {{ label }}
       </TooltipContent>

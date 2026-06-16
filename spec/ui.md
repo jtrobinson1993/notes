@@ -110,7 +110,16 @@ max-width and capped height on desktop, full-screen on mobile**. `ShareDialog`,
 `AppDrawer.vue` is the same reka-ui `Dialog` foundation styled as a **slide-in
 drawer** anchored full-height to the right edge — for secondary, browsable panels
 (e.g. the group `ManageMembersDrawer`) where a centered modal would feel heavy.
-Same overlay/close/title/footer affordances; full-screen on mobile.
+Same overlay/close/title/footer affordances; full-screen on mobile. Its scrim is
+a **light dim with no blur**, so the chat stays legible behind it.
+
+**Z-index layers.** One named scale is the single source of truth for stacking
+(`@theme` in `style.css` → `z-<name>` utilities; never raw `z-10`/`z-[40]`). Low
+→ high: `z-nav` (app chrome, sidebar, sticky headers, in-page side panels) <
+`z-drawer` (`AppDrawer`) < `z-modal` (`AppModal` — above drawers, so a modal
+opened *from* a drawer covers it) < `z-popover` (menus/dropdowns/editor toolbars
+— above modals so an in-modal menu isn't clipped) < `z-lightbox`
+(`ImageLightbox`) < `z-tooltip` (tooltips, toasts).
 
 `NewChatModal.vue` — the **New chat** modal: a search box, an **alphabetical
 friend list with a checkbox per friend** (select one or many), and Cancel /

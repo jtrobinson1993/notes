@@ -2,6 +2,28 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ── Z-index layering scale ────────────────────────────────────────────────
+   ONE ordered set of named layers for every stacking surface, so overlapping
+   UIs never collide by accident. Use the `z-<name>` utilities (e.g. `z-modal`)
+   — never raw `z-10`/`z-[40]` — for any floating/overlay element. Higher wins.
+   Lower → higher:
+     nav      app chrome: sidebar, sticky headers, in-page side panels
+     drawer   slide-in side panels (AppDrawer)
+     modal    centered blocking dialogs (AppModal) — sits ABOVE drawers
+     popover  menus / dropdowns / editor toolbars — ABOVE modals so a menu
+              opened inside a modal is never clipped
+     lightbox fullscreen media viewer (ImageLightbox)
+     tooltip  tooltips + toasts — the very top
+   Keep this in sync with the table in CLAUDE.md / spec/ui.md. */
+@theme {
+  --z-index-nav: 10;
+  --z-index-drawer: 20;
+  --z-index-modal: 30;
+  --z-index-popover: 40;
+  --z-index-lightbox: 50;
+  --z-index-tooltip: 60;
+}
+
 /* light-dark() resolves against color-scheme, which follows the app theme
    (the .dark class), not the OS, so manual theme choice wins. */
 :root {

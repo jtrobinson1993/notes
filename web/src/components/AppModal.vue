@@ -32,9 +32,9 @@ const open = defineModel<boolean>('open', { default: false });
 <template>
   <DialogRoot v-model:open="open">
     <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-20 bg-black/40 backdrop-blur-sm" />
+      <DialogOverlay class="fixed inset-0 z-modal bg-black/40 backdrop-blur-sm" />
       <DialogContent
-        class="fixed inset-0 z-30 flex flex-col bg-white shadow-xl dark:bg-zinc-900 sm:inset-auto sm:left-1/2 sm:top-1/2 sm:max-h-[80vh] sm:w-[90vw] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
+        class="fixed inset-0 z-modal flex flex-col bg-white shadow-xl dark:bg-zinc-900 sm:inset-auto sm:left-1/2 sm:top-1/2 sm:max-h-[80vh] sm:w-[90vw] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
         :class="maxWidth"
       >
         <div class="flex items-start gap-3 p-5 pb-3">

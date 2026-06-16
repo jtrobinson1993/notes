@@ -21,6 +21,15 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
 - **Icons: use the Myna set** via `unplugin-icons` (`import Icon from
   '~icons/mynaui/<name>'`), never emoji glyphs or another icon pack.
 
+- **Z-index: use the named layer scale**, never raw `z-10`/`z-[40]`. The single
+  source of truth is the `@theme` block in `web/src/style.css`, exposing
+  `z-<name>` utilities. Low → high: `z-nav` (app chrome / sidebar / sticky
+  headers / in-page side panels) < `z-drawer` (`AppDrawer`) < `z-modal`
+  (`AppModal`, above drawers) < `z-popover` (menus / dropdowns / editor toolbars,
+  above modals so a menu inside a modal isn't clipped) < `z-lightbox`
+  (`ImageLightbox`) < `z-tooltip` (tooltips / toasts). Add a new layer to that
+  scale rather than inventing an ad-hoc value.
+
 ## Invariants
 
 - **Never show a username to other users.** The username is a login credential;

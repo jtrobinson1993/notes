@@ -33,9 +33,11 @@ const open = defineModel<boolean>('open', { default: false });
 <template>
   <DialogRoot v-model:open="open">
     <DialogPortal>
-      <DialogOverlay class="app-overlay fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" />
+      <!-- A light scrim to catch outside-clicks, but no blur — the chat stays
+           legible behind the drawer. -->
+      <DialogOverlay class="app-overlay fixed inset-0 z-drawer bg-black/20" />
       <DialogContent
-        class="app-drawer fixed inset-y-0 right-0 z-50 flex w-full flex-col bg-white shadow-xl focus:outline-none dark:bg-zinc-900"
+        class="app-drawer fixed inset-y-0 right-0 z-drawer flex w-full flex-col bg-white shadow-xl focus:outline-none dark:bg-zinc-900"
         :class="widthClass"
       >
         <div class="flex items-start gap-3 border-b border-zinc-200 p-4 dark:border-zinc-800">

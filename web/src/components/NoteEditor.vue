@@ -259,7 +259,7 @@ function fmtSize(bytes: number): string {
           <DropdownMenuContent
             align="end"
             :side-offset="4"
-            class="z-30 min-w-44 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+            class="z-popover min-w-44 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
           >
             <DropdownMenuItem
               v-if="isOwner"
@@ -311,7 +311,7 @@ function fmtSize(bytes: number): string {
               side="bottom"
               align="start"
               :side-offset="6"
-              class="z-30 w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+              class="z-popover w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
             >
               <ColorPalette removable remove-label="Reset color" @pick="pickTagColor(tag, $event)" @remove="resetTagColor(tag)" />
             </PopoverContent>

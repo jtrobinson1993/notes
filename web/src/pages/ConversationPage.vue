@@ -128,7 +128,7 @@ onBeforeUnmount(stopDrag);
         />
         <!-- Wide: sized flex child (defaults to half). Narrow: full-cover overlay. -->
         <div
-          :class="isWide ? 'shrink-0' : 'absolute inset-0 z-20 bg-white dark:bg-zinc-900'"
+          :class="isWide ? 'shrink-0' : 'absolute inset-0 z-nav bg-white dark:bg-zinc-900'"
           :style="isWide ? { width: `${displayWidth}px` } : undefined"
         >
           <ConversationView

@@ -124,7 +124,7 @@ const tabClass = (t: Tab) =>
         align="end"
         :side-offset="8"
         :collision-padding="8"
-        class="z-30 flex h-96 w-80 flex-col rounded-xl border border-zinc-200 bg-white p-2 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+        class="z-popover flex h-96 w-80 flex-col rounded-xl border border-zinc-200 bg-white p-2 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
         @open-auto-focus.prevent
       >
         <div class="mb-2 flex shrink-0 gap-1 text-xs">

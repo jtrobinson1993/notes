@@ -253,7 +253,7 @@ onBeforeUnmount(() => view?.destroy());
           align="start"
           :side-offset="6"
           :collision-padding="8"
-          class="z-20 flex items-center gap-0.5 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+          class="z-popover flex items-center gap-0.5 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
           @open-auto-focus.prevent
           @close-auto-focus.prevent
           @interact-outside.prevent
@@ -292,7 +292,7 @@ onBeforeUnmount(() => view?.destroy());
                 align="start"
                 :side-offset="6"
                 :collision-padding="8"
-                class="z-30 w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+                class="z-popover w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
                 @open-auto-focus.prevent
                 @close-auto-focus.prevent
                 @mousedown.prevent
@@ -308,7 +308,7 @@ onBeforeUnmount(() => view?.destroy());
     <!-- mobile formatting bar -->
     <div
       v-if="isCoarse && !readonly && focused && (mode ?? 'live') === 'live'"
-      class="absolute inset-x-0 bottom-0 z-20 flex items-center gap-1 overflow-x-auto border-t border-zinc-200 bg-white/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95"
+      class="absolute inset-x-0 bottom-0 z-nav flex items-center gap-1 overflow-x-auto border-t border-zinc-200 bg-white/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95"
       @mousedown.prevent
       @touchstart.stop
     >

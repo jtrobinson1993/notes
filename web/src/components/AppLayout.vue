@@ -27,7 +27,7 @@ async function unlock() {
     <main class="relative min-h-0 min-w-0 grow overflow-y-auto">
       <div
         v-if="!session.unlocked"
-        class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-zinc-50/95 p-6 backdrop-blur dark:bg-zinc-950/95"
+        class="absolute inset-0 z-nav flex flex-col items-center justify-center gap-4 bg-zinc-50/95 p-6 backdrop-blur dark:bg-zinc-950/95"
       >
         <p class="text-lg font-semibold">Locked</p>
         <p class="max-w-sm text-center text-sm text-zinc-500 dark:text-zinc-400">
