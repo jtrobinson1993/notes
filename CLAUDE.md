@@ -21,6 +21,14 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
 - **Icons: use the Myna set** via `unplugin-icons` (`import Icon from
   '~icons/mynaui/<name>'`), never emoji glyphs or another icon pack.
 
+## Invariants
+
+- **Never show a username to other users.** The username is a login credential;
+  the only name other users ever see is the editable **display name** (with the
+  neutral `User-<id-prefix>` fallback — never the username). This holds
+  everywhere a user is surfaced to another user: chat (members, friend requests,
+  reply quotes) and note sharing (pickers, "shared by" labels) alike.
+
 ## Git
 
 - **Branch per workitem.** Start each task on a new branch off `main`; never
