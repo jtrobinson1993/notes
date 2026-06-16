@@ -22,15 +22,11 @@ const letter = computed(() => (props.name.trim()[0] ?? '?').toUpperCase());
 </script>
 
 <template>
-  <img
-    v-if="src"
-    :src="src"
-    :alt="name"
-    class="shrink-0 rounded-full object-cover"
-  />
   <span
-    v-else
-    class="flex shrink-0 select-none items-center justify-center rounded-full font-semibold text-white"
+    class="flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full font-semibold text-white"
     :style="{ backgroundColor: bg }"
-  >{{ letter }}</span>
+  >
+    <img v-if="src" :src="src" :alt="name" class="h-full w-full object-cover" />
+    <template v-else>{{ letter }}</template>
+  </span>
 </template>

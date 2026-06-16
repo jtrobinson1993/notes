@@ -152,12 +152,17 @@ function pickAvatar() {
   cropOpen.value = true;
 }
 
+// Tracks unsaved avatar/bio edits so we can prompt the user to hit Save.
+const profileDirty = ref(false);
+
 function onCropped(dataUrl: string) {
   avatar.value = dataUrl;
+  profileDirty.value = true;
 }
 
 function removeAvatar() {
   avatar.value = undefined;
+  profileDirty.value = true;
 }
 
 async function saveProfile() {
@@ -172,6 +177,7 @@ async function saveProfile() {
     await profile.save(data);
     profileOk.value = true;
     profileMsg.value = 'Profile saved.';
+    profileDirty.value = false;
   } catch (e) {
     profileOk.value = false;
     profileMsg.value = e instanceof Error ? e.message : 'could not save profile';
@@ -419,6 +425,9 @@ async function importFiles(event: Event) {
                 Remove
               </button>
             </div>
+            <span v-if="profileDirty" class="text-sm font-medium text-red-600 dark:text-red-400">
+              Not saved — click Save profile
+            </span>
           </div>
 
           <label class="mt-3 block">
@@ -429,6 +438,7 @@ async function importFiles(event: Event) {
               rows="3"
               placeholder="A short bio your contacts will see…"
               class="mt-1 w-full resize-none rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
+              @input="profileDirty = true"
             />
             <span class="text-xs text-zinc-400">{{ bio.length }}/{{ BIO_MAX }}</span>
           </label>

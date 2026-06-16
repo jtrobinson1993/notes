@@ -75,9 +75,11 @@ function nameColorCss(senderId: string): string | undefined {
   return c ? `var(--brand-${c})` : undefined;
 }
 
-// A member's decrypted avatar (from the profile cache), or null for the initial
-// fallback. Cache lookups are reactive, so avatars fill in once fetched.
+// A member's decrypted avatar, or null for the initial fallback. My own avatar
+// comes from my profile data; others' come from the (reactive) profile cache,
+// so they fill in once fetched.
 function avatarFor(senderId: string): string | null {
+  if (senderId === session.user?.id) return profile.myData.avatar ?? null;
   return profile.cache[senderId]?.data?.avatar ?? null;
 }
 
