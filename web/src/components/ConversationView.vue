@@ -450,8 +450,15 @@ async function sendGif(gif: GifRef) {
                 />
               </template>
             </div>
-            <!-- Reaction pills: grouped by emoji; click toggles mine. -->
-            <div v-if="reactionGroups(row.msg.seq).length" class="mt-1 flex flex-wrap gap-1">
+            <!-- Reaction pills: grouped by emoji; click toggles mine. A new pill
+                 pops in (TransitionGroup enter, never on initial load); the count
+                 pops when it changes (keyed Transition). -->
+            <TransitionGroup
+              v-if="reactionGroups(row.msg.seq).length"
+              tag="div"
+              name="pill"
+              class="mt-1 flex flex-wrap gap-1"
+            >
               <button
                 v-for="g in reactionGroups(row.msg.seq)"
                 :key="g.emoji"
@@ -461,9 +468,11 @@ async function sendGif(gif: GifRef) {
               >
                 <img v-if="reactionImg(g.emoji)" :src="reactionImg(g.emoji)!" :alt="g.emoji" class="h-4 w-4 object-contain" />
                 <span v-else>{{ g.emoji }}</span>
-                <span class="tabular-nums text-zinc-500">{{ g.count }}</span>
+                <Transition name="count" mode="out-in">
+                  <span :key="g.count" class="tabular-nums text-zinc-500">{{ g.count }}</span>
+                </Transition>
               </button>
-            </div>
+            </TransitionGroup>
             <!-- Thread indicator: open the thread rooted on this message. -->
             <button
               v-if="!isThread && threadReplies(row.msg.seq) > 0"
@@ -545,3 +554,28 @@ async function sendGif(gif: GifRef) {
       <ProfileDialog v-model:open="profileOpen" :user-id="profileUserId" />
     </div>
 </template>
+
+<style scoped>
+/* A newly added reaction pill pops from 1.5x to its normal size (~0.15s).
+   TransitionGroup enter never runs on the initial render, so existing
+   reactions don't animate when a conversation opens. */
+.pill-enter-active {
+  transition: transform 0.15s ease-out;
+}
+.pill-enter-from {
+  transform: scale(1.5);
+}
+
+/* When a reaction count changes, the number pops up and settles back. */
+.count-enter-active {
+  animation: count-pop 0.15s ease-out;
+}
+@keyframes count-pop {
+  0% {
+    transform: translateY(-0.35em) scale(1.25);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+</style>
