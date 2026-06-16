@@ -101,10 +101,12 @@ function openProfile(userId: string) {
   profileOpen.value = true;
 }
 
-// A short, single-line preview of a message, for the reply quote.
+// A short, single-line preview of a message, for the reply quote. Capped small
+// (and the UI also truncates with an ellipsis) so it never wraps on mobile.
+const REPLY_PREVIEW_MAX = 64;
 function previewOf(m: ChatMessageView): string {
   const t = (m.text ?? '').replace(/\s+/g, ' ').trim();
-  if (t) return t.length > 100 ? `${t.slice(0, 100)}…` : t;
+  if (t) return t.length > REPLY_PREVIEW_MAX ? `${t.slice(0, REPLY_PREVIEW_MAX)}…` : t;
   if (m.gif) return '[GIF]';
   if (m.attachments?.length) return `[${m.attachments.length} attachment${m.attachments.length > 1 ? 's' : ''}]`;
   return '[message]';
@@ -115,8 +117,15 @@ function startReply(m: ChatMessageView) {
 }
 
 function scrollToSeq(seq: number) {
-  const el = scroller.value?.querySelector(`[data-seq="${seq}"]`);
-  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const el = scroller.value?.querySelector<HTMLElement>(`[data-seq="${seq}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Briefly highlight the target. Remove + reflow + re-add so a repeat click
+  // restarts the flash.
+  el.classList.remove('reply-flash');
+  void el.offsetWidth;
+  el.classList.add('reply-flash');
+  window.setTimeout(() => el.classList.remove('reply-flash'), 1400);
 }
 
 function formatTime(ts: number): string {
@@ -581,6 +590,20 @@ async function sendGif(gif: GifRef) {
   }
   100% {
     transform: translateY(0) scale(1);
+  }
+}
+
+/* Briefly highlight a message when jumped to from a reply quote. */
+.reply-flash {
+  animation: reply-flash 1.4s ease-out;
+}
+@keyframes reply-flash {
+  0%,
+  30% {
+    background-color: rgb(59 130 246 / 0.18);
+  }
+  100% {
+    background-color: transparent;
   }
 }
 </style>
