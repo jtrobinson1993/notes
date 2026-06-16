@@ -143,7 +143,7 @@ function onWheel(e: WheelEvent) {
 <template>
   <DialogRoot :open="open" @update:open="(v) => emit('update:open', v)">
     <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-40 bg-black/80 backdrop-blur-sm" />
+      <DialogOverlay class="lb-overlay fixed inset-0 z-40 bg-black/80 backdrop-blur-sm" />
       <DialogContent
         class="fixed inset-0 z-50 flex items-center justify-center overflow-hidden focus:outline-none"
         @pointerdown.self="close"
@@ -171,7 +171,7 @@ function onWheel(e: WheelEvent) {
         />
         <button
           type="button"
-          class="absolute right-4 top-4 rounded-lg p-2 text-white/80 hover:bg-white/10 hover:text-white focus:outline-none"
+          class="lb-chrome absolute right-4 top-4 rounded-lg p-2 text-white/80 hover:bg-white/10 hover:text-white focus:outline-none"
           aria-label="Close"
           @click="close"
         >
@@ -179,7 +179,7 @@ function onWheel(e: WheelEvent) {
         </button>
         <div
           v-if="name"
-          class="pointer-events-none absolute bottom-4 right-4 max-w-[80vw] rounded-lg bg-black/55 px-3 py-2 text-right text-xs text-white/90 backdrop-blur-sm"
+          class="lb-chrome pointer-events-none absolute bottom-4 right-4 max-w-[80vw] rounded-lg bg-black/55 px-3 py-2 text-right text-xs text-white/90 backdrop-blur-sm"
         >
           <div class="truncate font-medium">{{ name }}</div>
           <div v-if="metaLine" class="mt-0.5 text-white/55">{{ metaLine }}</div>

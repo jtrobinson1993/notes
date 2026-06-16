@@ -109,6 +109,28 @@ select:not(:disabled) {
   cursor: pointer;
 }
 
+/* Image lightbox (ImageLightbox.vue). The open/close morph captures only the
+   image (ChatAttachment passes excludeRoot), so the rest of the page stays live
+   and the backdrop + chrome animate with these CSS fades instead of a flat root
+   cross-fade. `vt-exclude-root` drops the default root snapshot for the duration. */
+html.vt-exclude-root {
+  view-transition-name: none;
+}
+@keyframes lb-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes lb-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+/* Backdrop fades its opacity (and with it the blur) smoothly in/out. */
+.lb-overlay[data-state='open'] { animation: lb-fade-in 200ms ease-out; }
+.lb-overlay[data-state='closed'] { animation: lb-fade-out 200ms ease-in forwards; }
+/* Filename/meta + close fade in after the image has settled, so the morphing
+   image (which renders in the top-layer transition overlay) never covers them. */
+.lb-chrome { animation: lb-fade-in 180ms ease-out 200ms both; }
+
 /* Minimal typography for rendered Markdown */
 .md-preview {
   @apply text-[15px] leading-relaxed;

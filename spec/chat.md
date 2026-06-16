@@ -340,7 +340,10 @@ open/close state change is wrapped in `withViewTransition`
 (`lib/viewTransition.ts`, which feature-detects and respects
 `prefers-reduced-motion`, otherwise mutating directly). The lightbox is **fully
 controlled** by `ChatAttachment` so it can't tear down before the morph captures
-its snapshot.
+its snapshot. The transition captures **only the image** (`excludeRoot` drops the
+default whole-page `root` snapshot); the backdrop and chrome stay live and fade
+with their own CSS, so the blur ramps smoothly and the chrome fades in after the
+image settles rather than being painted over by the morphing snapshot.
 
 ### Replies
 

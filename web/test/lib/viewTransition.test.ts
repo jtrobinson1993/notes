@@ -43,6 +43,20 @@ describe('withViewTransition', () => {
     expect(mutate).toHaveBeenCalledOnce();
   });
 
+  it('toggles vt-exclude-root on <html> around the transition when asked', async () => {
+    const classList = { add: vi.fn(), remove: vi.fn() };
+    const startViewTransition = vi.fn((cb: () => unknown) => {
+      cb();
+      // The class must be present while the (new-state) capture happens.
+      expect(classList.add).toHaveBeenCalledWith('vt-exclude-root');
+      expect(classList.remove).not.toHaveBeenCalled();
+      return { finished: Promise.resolve() };
+    });
+    const doc = { startViewTransition, documentElement: { classList } } as unknown as Document;
+    await withViewTransition(() => {}, { doc, win: win(false) }, { excludeRoot: true });
+    expect(classList.remove).toHaveBeenCalledWith('vt-exclude-root');
+  });
+
   it('still resolves if the transition is skipped (finished rejects)', async () => {
     const startViewTransition = vi.fn((cb: () => unknown) => {
       cb();

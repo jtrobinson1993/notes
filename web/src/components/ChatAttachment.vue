@@ -30,10 +30,15 @@ const morphing = ref(false);
 async function setOpen(open: boolean) {
   morphing.value = true;
   await nextTick(); // assign the name to the source element before snapshotting
-  await withViewTransition(async () => {
-    lightboxOpen.value = open;
-    await nextTick(); // let the target element mount/unmount before the new snapshot
-  });
+  await withViewTransition(
+    async () => {
+      lightboxOpen.value = open;
+      await nextTick(); // let the target element mount/unmount before the new snapshot
+    },
+    {},
+    // Morph only the image; the lightbox backdrop and chrome animate via CSS.
+    { excludeRoot: true },
+  );
   morphing.value = false;
 }
 

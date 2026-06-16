@@ -23,6 +23,16 @@ export function viewTransitionsEnabled(env: ViewTransitionEnv = {}): boolean {
   return supported && !reduced;
 }
 
+export interface ViewTransitionOptions {
+  /**
+   * Capture only the explicitly-named elements, not the whole page. Adds
+   * `vt-exclude-root` to `<html>` (which sets `view-transition-name: none` on
+   * the root) for the duration, so the rest of the page stays live and can
+   * animate with its own CSS instead of a flat root cross-fade.
+   */
+  excludeRoot?: boolean;
+}
+
 /**
  * Run `mutate` (the DOM/state change) inside a view transition when enabled,
  * otherwise just run it. Resolves once any animation finishes so callers can
@@ -31,16 +41,22 @@ export function viewTransitionsEnabled(env: ViewTransitionEnv = {}): boolean {
 export async function withViewTransition(
   mutate: () => void | Promise<void>,
   env: ViewTransitionEnv = {},
+  opts: ViewTransitionOptions = {},
 ): Promise<void> {
   if (!viewTransitionsEnabled(env)) {
     await mutate();
     return;
   }
-  const start = (env.doc ?? document) as Document & { startViewTransition: StartViewTransition };
-  const t = start.startViewTransition(() => mutate());
+  const doc = (env.doc ?? document) as Document & { startViewTransition: StartViewTransition };
+  // Must be in effect for both the old- and new-state captures, so toggle it
+  // around the whole transition rather than inside the callback.
+  if (opts.excludeRoot) doc.documentElement.classList.add('vt-exclude-root');
+  const t = doc.startViewTransition(() => mutate());
   try {
     await t.finished;
   } catch {
     // Transition skipped/aborted — the callback already applied the mutation.
+  } finally {
+    if (opts.excludeRoot) doc.documentElement.classList.remove('vt-exclude-root');
   }
 }
