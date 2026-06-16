@@ -918,9 +918,6 @@ export function openDb(dataDir: string) {
         userId,
       );
     },
-    setConversationManagePolicy(conversationId: string, policy: string): void {
-      db.prepare('UPDATE conversations SET manage_policy = ? WHERE id = ?').run(policy, conversationId);
-    },
     getConversationMember(conversationId: string, userId: string): ConversationMemberRow | undefined {
       return db
         .prepare('SELECT * FROM conversation_members WHERE conversation_id = ? AND user_id = ?')

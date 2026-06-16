@@ -97,15 +97,17 @@ member set, `epoch` must be `current + 1`, and a share-history join's `priorKeys
 must cover epochs `0..current` — so a partial or stale re-key is rejected, never
 half-applied.
 
-**Permissions.** Each group has a `manage_policy` (`owner` | `admins` | `open`,
-default owner-only) and members carry a `role` (`owner` = creator, `admin`,
-`member`). The pure `canManageMembers(policy, role)` rule (in `@notes/shared`,
-enforced server-side and used for client affordances) decides who may add/remove.
-The owner alone sets the policy and grants/revokes admin; anyone may leave; the
-owner can't be removed, and an owner who leaves hands ownership to the
-earliest-joined remaining member. A group never drops below two members. Live
-membership/epoch/role/policy changes fan out as a `conversation-updated` frame
-(recipients refetch); a removed member gets `conversation-removed` (drops it).
+**Permissions.** Members carry a `role` (`owner` = creator, `admin`, `member`).
+The pure `canManageMembers(role)` rule (in `@notes/shared`, enforced server-side
+and used for client affordances) decides who may add/remove/change roles: owners
+**and admins** can — **admins have the same powers as the owner**, with two
+exceptions baked into the routes: an admin can never **remove or demote the
+owner**, and only the owner can't have their role changed at all. Anyone may
+**leave**; an owner who leaves hands ownership to the earliest-joined remaining
+member; a group never drops below two members. Live membership/epoch/role
+changes fan out as a `conversation-updated` frame (recipients refetch); a removed
+member gets `conversation-removed` (drops it). (There is no configurable
+per-group "who can manage" policy — admins always can.)
 
 Within an epoch the key is static (no per-message forward secrecy); epochs give
 coarse forward/backward secrecy at membership boundaries. We deliberately do
@@ -159,7 +161,8 @@ encrypted. This deferral explicitly covers PWA message notifications.
   no re-keying. **Implemented — see below.**
 - **Phase 2** — **group channels:** membership add/remove + leave, epoch
   re-keying, the inviter's share-history choice, and per-group permissions
-  (owner/admins/open) with owner/admin roles. **Implemented — see above.**
+  with owner/admin roles (admins share the owner's powers, can't remove the
+  owner). **Implemented — see above.**
 - **Phase 3** — hardening: CSP headers (theme-script hash) + background/PWA push.
 
 ---
@@ -182,10 +185,10 @@ a crypto seal→unseal→encrypt→decrypt round-trip; server boots and enforces
 - `friend_requests(id, from_user, to_user, created_at, UNIQUE(from_user,to_user))`.
 - `friends(user_id, friend_id, created_at, PK(user_id,friend_id))` — two rows
   per friendship for simple lookups.
-- `conversations(id, kind, created_by, created_at, dm_key UNIQUE,
-  manage_policy DEFAULT 'owner')` — `dm_key` is the sorted `min(uid):max(uid)`
-  pair for DMs (NULL for groups), giving one DM per pair via the UNIQUE index;
-  `manage_policy` (`owner`|`admins`|`open`) gates group membership management.
+- `conversations(id, kind, created_by, created_at, dm_key UNIQUE)` — `dm_key` is
+  the sorted `min(uid):max(uid)` pair for DMs (NULL for groups), giving one DM per
+  pair via the UNIQUE index. (A legacy `manage_policy` column from an earlier
+  design still exists but is unused — admins always manage.)
 - `conversation_members(conversation_id, user_id, sealed_key, epoch DEFAULT 0,
   last_read_seq DEFAULT 0, joined_at, role, PK(conversation_id,user_id))` —
   `sealed_key` = the current epoch's JSON `SealedKey`; `role` is
@@ -219,8 +222,8 @@ Group membership (Phase 2, all re-key-validated & permission-gated):
 everyone + joiner, `history: share|fresh`),
 `DELETE /api/conversations/:id/members/:userId` (remove, or leave when it's you;
 re-keys the remainder),
-`PATCH /api/conversations/:id` (owner sets `managePolicy`),
-`POST /api/conversations/:id/members/:userId/role` (owner grants/revokes admin).
+`POST /api/conversations/:id/members/:userId/role` (owner/admin grants/revokes
+admin; the owner's role is immutable).
 
 ### Realtime hub (`realtime.ts`)
 
@@ -253,15 +256,17 @@ REST; client→server frames are minimal (liveness is protocol ping/pong).
   many friends — one → a DM, many → a group. Members discover a new group the
   same way as a DM: the first `message` frame for an unknown conversation
   triggers a `loadConversations()`.
-- **Group membership** (`chat.addMember`/`removeMember`/`setManagePolicy`/
-  `setMemberRole`): the actor mints a new conv key, seals it to the post-change
-  member set, and (on a share-history add) seals every prior epoch key to the
-  joiner, then POSTs. `ManageMembersModal.vue` — opened from a members button on
-  the **right of the group header** — drives it: member list with owner/admin
-  badges, add-a-friend with a per-add share/start-fresh toggle, remove, leave,
-  and owner-only admin promotion + policy selector (gated on `canManageMembers`).
-  A `conversation-updated` frame triggers a `loadConversations()` (picks up new
-  members + epoch keys); `conversation-removed` drops the conversation.
+- **Group membership** (`chat.addMember`/`removeMember`/`setMemberRole`): the
+  actor mints a new conv key, seals it to the post-change member set, and (on a
+  share-history add) seals every prior epoch key to the joiner, then POSTs.
+  `ManageMembersDrawer.vue` — a slide-in drawer (the reusable `AppDrawer.vue`)
+  opened from a members button on the **right of the group header** — drives it:
+  member list with owner/admin badges, remove (X) and admin grant/revoke (gated
+  on `canManageMembers`), and **Leave**. An **Add friend** button at the top opens
+  `AddGroupMemberModal.vue` (the standard `AppModal` picker) with the per-add
+  share/start-fresh toggle. A `conversation-updated` frame triggers a
+  `loadConversations()` (picks up new members + epoch keys); `conversation-removed`
+  drops the conversation.
 - `chatSocket.ts` — reconnecting WS client (exponential backoff). `chat.ts`
   store wires frames to both the chat and friends stores and backfills on every
   (re)connect; `startChat()/stopChat()` are hooked to session unlock/lock.

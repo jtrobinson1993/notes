@@ -13,7 +13,6 @@ import type {
   MetaResponse,
   NoteVersionInfo,
   LinkPreview,
-  ManagePolicy,
   NotesSyncResponse,
   ProfileCipher,
   ProfileInfo,
@@ -201,8 +200,6 @@ export const api = {
   ) => req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/members`, body),
   conversationRemoveMember: (id: string, userId: string, body: { epoch: number; keys: SealedMemberKey[] }) =>
     req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, body),
-  conversationSetPolicy: (id: string, managePolicy: ManagePolicy) =>
-    req<Conversation>('PATCH', `/api/conversations/${encodeURIComponent(id)}`, { managePolicy }),
   conversationSetRole: (id: string, userId: string, role: 'admin' | 'member') =>
     req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}/role`, { role }),
   conversationMessages: (id: string, opts?: { before?: number; limit?: number }) => {

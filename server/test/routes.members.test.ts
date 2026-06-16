@@ -42,7 +42,6 @@ describe('group create roles', () => {
     const conv = await findConv(owner);
     expect(conv?.members.find((m) => m.userId === owner)?.role).toBe('owner');
     expect(conv?.members.find((m) => m.userId === a)?.role).toBe('member');
-    expect((await findConv(owner))?.managePolicy ?? 'owner').toBe('owner');
   });
 });
 
@@ -94,13 +93,13 @@ describe('add member', () => {
     expect((await inject('POST', `/api/conversations/${convId}/members`, ownerCookie, { ...addBody('share'), priorKeys: [] })).statusCode).toBe(400);
   });
 
-  it('a plain member cannot add under the default owner-only policy', async () => {
+  it('a plain member cannot add', async () => {
     const res = await inject('POST', `/api/conversations/${convId}/members`, authCookie(t.db, a), addBody('share'));
     expect(res.statusCode).toBe(403);
   });
 
-  it('a plain member CAN add once the policy is open', async () => {
-    await inject('PATCH', `/api/conversations/${convId}`, ownerCookie, { managePolicy: 'open' });
+  it('an admin can add (admins have owner-level powers)', async () => {
+    await inject('POST', `/api/conversations/${convId}/members/${a}/role`, ownerCookie, { role: 'admin' });
     makeFriends(t.db, a, c); // a adds their own friend
     const res = await inject('POST', `/api/conversations/${convId}/members`, authCookie(t.db, a), addBody('share'));
     expect(res.statusCode).toBe(200);
@@ -145,27 +144,27 @@ describe('remove / leave', () => {
   });
 });
 
-describe('policy & roles', () => {
-  it('only the owner can set the manage policy', async () => {
-    expect((await inject('PATCH', `/api/conversations/${convId}`, authCookie(t.db, a), { managePolicy: 'open' })).statusCode).toBe(403);
-    expect((await inject('PATCH', `/api/conversations/${convId}`, ownerCookie, { managePolicy: 'bogus' })).statusCode).toBe(400);
-    expect((await inject('PATCH', `/api/conversations/${convId}`, ownerCookie, { managePolicy: 'admins' })).statusCode).toBe(200);
-    expect((await findConv(owner))?.managePolicy).toBe('admins');
-  });
+const promote = (uid: string) =>
+  inject('POST', `/api/conversations/${convId}/members/${uid}/role`, ownerCookie, { role: 'admin' });
 
-  it('owner promotes an admin, who can then manage under the admins policy', async () => {
-    await inject('PATCH', `/api/conversations/${convId}`, ownerCookie, { managePolicy: 'admins' });
-    expect((await inject('POST', `/api/conversations/${convId}/members/${a}/role`, ownerCookie, { role: 'admin' })).statusCode).toBe(200);
-    expect((await findConv(owner))?.members.find((m) => m.userId === a)?.role).toBe('admin');
-    // The new admin can now add a friend (of theirs).
-    makeFriends(t.db, a, c);
-    const res = await inject('POST', `/api/conversations/${convId}/members`, authCookie(t.db, a), {
-      userId: c, epoch: 1, history: 'fresh', keys: keysFor([owner, a, b, c]),
-    });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it('non-owners cannot change roles', async () => {
+describe('roles', () => {
+  it('owner grants admin; a plain member cannot change roles but an admin can', async () => {
     expect((await inject('POST', `/api/conversations/${convId}/members/${b}/role`, authCookie(t.db, a), { role: 'admin' })).statusCode).toBe(403);
+    expect((await promote(a)).statusCode).toBe(200);
+    expect((await findConv(owner))?.members.find((m) => m.userId === a)?.role).toBe('admin');
+    // The admin can now promote another member.
+    expect((await inject('POST', `/api/conversations/${convId}/members/${b}/role`, authCookie(t.db, a), { role: 'admin' })).statusCode).toBe(200);
+  });
+
+  it("nobody can change the owner's role or their own", async () => {
+    await promote(a);
+    expect((await inject('POST', `/api/conversations/${convId}/members/${owner}/role`, authCookie(t.db, a), { role: 'member' })).statusCode).toBe(403);
+    expect((await inject('POST', `/api/conversations/${convId}/members/${a}/role`, authCookie(t.db, a), { role: 'member' })).statusCode).toBe(400);
+  });
+
+  it('an admin can remove a member but not the owner', async () => {
+    await promote(a);
+    expect((await inject('DELETE', `/api/conversations/${convId}/members/${b}`, authCookie(t.db, a), { epoch: 1, keys: keysFor([owner, a]) })).statusCode).toBe(200);
+    expect((await inject('DELETE', `/api/conversations/${convId}/members/${owner}`, authCookie(t.db, a), { epoch: 1, keys: keysFor([a, b]) })).statusCode).toBe(403);
   });
 });

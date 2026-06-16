@@ -191,21 +191,16 @@ export interface Friend {
 export type ConversationKind = 'dm' | 'group' | 'thread';
 
 /** A member's standing in a group. `owner` is the creator (exactly one);
- *  `admin` is a delegated manager; `member` is everyone else. DMs/threads are
- *  always plain `member`. */
+ *  `admin` is a delegated manager with the same powers as the owner (add/remove
+ *  members, grant/revoke admin) — except an admin can never remove the owner.
+ *  `member` is everyone else. DMs/threads are always plain `member`. */
 export type ConversationRole = 'owner' | 'admin' | 'member';
 
-/** Who may add/remove members in a group (set per conversation by the owner):
- *  `owner` only, owner + `admins`, or any member (`open`). */
-export type ManagePolicy = 'owner' | 'admins' | 'open';
-
 /** Pure authorization rule shared by client (UI affordances) and server
- *  (enforcement): can a member with `role` manage membership under `policy`? */
-export function canManageMembers(policy: ManagePolicy, role: ConversationRole): boolean {
-  if (role === 'owner') return true;
-  if (policy === 'open') return true;
-  if (policy === 'admins') return role === 'admin';
-  return false; // policy 'owner': only the owner
+ *  (enforcement): may a member with `role` manage membership? Owners and admins
+ *  can; plain members cannot. (Removing the owner is blocked separately.) */
+export function canManageMembers(role: ConversationRole): boolean {
+  return role === 'owner' || role === 'admin';
 }
 
 export interface ConversationMember {
@@ -242,8 +237,6 @@ export interface Conversation {
    *  current one). A group re-keys on each membership change; to decrypt the
    *  full back-scroll a client unseals all of these, keyed by epoch. */
   epochKeys: SealedEpochKey[];
-  /** group membership policy (groups only; 'owner' for DMs/threads) */
-  managePolicy: ManagePolicy;
   /** my role in this conversation */
   myRole: ConversationRole;
   /** highest message seq in the conversation (0 when empty) */

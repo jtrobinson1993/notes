@@ -147,7 +147,7 @@ describe('ConversationPage header', () => {
     }];
     return chat;
   }
-  const groupStubs = { ...stubs, ManageMembersModal: true };
+  const groupStubs = { ...stubs, ManageMembersDrawer: true };
 
   it('shows the members button (with count) in the visible header for a group', async () => {
     seedGroup();

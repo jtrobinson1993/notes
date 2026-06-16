@@ -9,7 +9,6 @@ import type {
   Friend,
   GifRef,
   LinkPreview,
-  ManagePolicy,
   MessagePayload,
   ReplyRef,
   SealedEpochKey,
@@ -305,12 +304,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** Owner sets who may manage membership. */
-  async function setManagePolicy(convId: string, policy: ManagePolicy): Promise<void> {
-    upsertConversation(await api.conversationSetPolicy(convId, policy));
-  }
-
-  /** Owner grants/revokes admin to another member. */
+  /** Owner/admin grants or revokes admin on another member. */
   async function setMemberRole(convId: string, userId: string, role: Exclude<ConversationRole, 'owner'>): Promise<void> {
     upsertConversation(await api.conversationSetRole(convId, userId, role));
   }
@@ -498,7 +492,6 @@ export const useChatStore = defineStore('chat', () => {
     threadFor,
     addMember,
     removeMember,
-    setManagePolicy,
     setMemberRole,
     loadHistory,
     sendMessage,

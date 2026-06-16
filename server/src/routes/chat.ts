@@ -8,7 +8,6 @@ import type {
   Friend,
   FriendInvite,
   FriendRequest,
-  ManagePolicy,
   ProfileInfo,
   ProfileView,
   SealedEpochKey,
@@ -143,7 +142,6 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
       sealedKey: JSON.parse(mine.sealed_key) as SealedKey,
       epoch: mine.epoch,
       epochKeys,
-      managePolicy: conv.manage_policy as ManagePolicy,
       myRole: mine.role as ConversationRole,
       lastSeq: db.getMaxSeq(conv.id),
       lastReadSeq: mine.last_read_seq,
@@ -600,10 +598,10 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
 
   // ---- Group membership management (v3 phase 2) ----------------------------
 
-  // Add a member. Permitted per the group's manage_policy. Adding mints a NEW
-  // epoch: the caller re-keys, sealing the new key to every current member + the
-  // joiner, and (when history='share') also seals every prior epoch key to the
-  // joiner so they can back-scroll. 'fresh' starts their unread at the latest seq.
+  // Add a member (owner or admin). Adding mints a NEW epoch: the caller re-keys,
+  // sealing the new key to every current member + the joiner, and (when
+  // history='share') also seals every prior epoch key to the joiner so they can
+  // back-scroll. 'fresh' starts their unread at the latest seq.
   app.post('/api/conversations/:id/members', { preHandler: requireAuth }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const me = request.user!.id;
@@ -612,7 +610,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
     const mine = db.getConversationMember(id, me);
     if (!mine) return reply.code(403).send({ error: 'not a member' });
-    if (!canManageMembers(conv.manage_policy as ManagePolicy, mine.role as ConversationRole)) {
+    if (!canManageMembers(mine.role as ConversationRole)) {
       return reply.code(403).send({ error: 'not allowed to add members' });
     }
 
@@ -680,9 +678,10 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
 
     const leaving = target === me;
     if (!leaving) {
-      if (!canManageMembers(conv.manage_policy as ManagePolicy, mine.role as ConversationRole)) {
+      if (!canManageMembers(mine.role as ConversationRole)) {
         return reply.code(403).send({ error: 'not allowed to remove members' });
       }
+      // Admins have owner-level powers — except they can never remove the owner.
       if (targetMember.role === 'owner') return reply.code(403).send({ error: 'cannot remove the owner' });
     }
 
@@ -709,25 +708,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     return { ok: true };
   });
 
-  // Owner sets who may manage membership (owner-only / admins / open).
-  app.patch('/api/conversations/:id', { preHandler: requireAuth }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const me = request.user!.id;
-    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
-    const conv = db.getConversation(id);
-    if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
-    const mine = db.getConversationMember(id, me);
-    if (!mine || mine.role !== 'owner') return reply.code(403).send({ error: 'owner only' });
-    const policy = (request.body as Record<string, unknown> | null)?.managePolicy;
-    if (policy !== 'owner' && policy !== 'admins' && policy !== 'open') {
-      return reply.code(400).send({ error: 'invalid policy' });
-    }
-    db.setConversationManagePolicy(id, policy);
-    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'conversation-updated', conversationId: id });
-    return toConversation(db.getConversation(id)!, me)!;
-  });
-
-  // Owner grants/revokes admin to another member.
+  // Grant/revoke admin to another member. Owners and admins can manage roles;
+  // the owner's role is immutable and you can't change your own.
   app.post('/api/conversations/:id/members/:userId/role', { preHandler: requireAuth }, async (request, reply) => {
     const { id, userId: target } = request.params as { id: string; userId: string };
     const me = request.user!.id;
@@ -735,9 +717,13 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     const conv = db.getConversation(id);
     if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
     const mine = db.getConversationMember(id, me);
-    if (!mine || mine.role !== 'owner') return reply.code(403).send({ error: 'owner only' });
+    if (!mine || !canManageMembers(mine.role as ConversationRole)) {
+      return reply.code(403).send({ error: 'not allowed to change roles' });
+    }
     if (target === me) return reply.code(400).send({ error: 'cannot change your own role' });
-    if (!db.getConversationMember(id, target)) return reply.code(404).send({ error: 'not a member' });
+    const targetMember = db.getConversationMember(id, target);
+    if (!targetMember) return reply.code(404).send({ error: 'not a member' });
+    if (targetMember.role === 'owner') return reply.code(403).send({ error: 'cannot change the owner' });
     const role = (request.body as Record<string, unknown> | null)?.role;
     if (role !== 'admin' && role !== 'member') return reply.code(400).send({ error: 'invalid role' });
     db.setConversationMemberRole(id, target, role);

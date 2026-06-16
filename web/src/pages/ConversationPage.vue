@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import ConversationView from '../components/ConversationView.vue';
-import ManageMembersModal from '../components/ManageMembersModal.vue';
+import ManageMembersDrawer from '../components/ManageMembersDrawer.vue';
 import { conversationTitle } from '../lib/convName';
 import { useChatStore } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
@@ -108,7 +108,7 @@ onBeforeUnmount(stopDrag);
           <span>{{ conversation.members.length }}</span>
         </button>
       </header>
-      <ManageMembersModal v-if="conversation && isGroup" v-model:open="showMembers" :conversation="conversation" />
+      <ManageMembersDrawer v-if="conversation && isGroup" v-model:open="showMembers" :conversation="conversation" />
 
       <div ref="region" class="relative flex min-h-0 flex-1">
         <div class="min-w-0 flex-1">

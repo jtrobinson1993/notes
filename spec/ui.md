@@ -105,7 +105,12 @@ shouldn't reach the rest of the app until they finish or cancel). It wraps
 reka-ui `Dialog` with an **overlay blur**, a **✕ close**, and optional
 title/description/footer slots. Layout is responsive: **centered with a fixed
 max-width and capped height on desktop, full-screen on mobile**. `ShareDialog`,
-`HistoryDialog`, and the new-chat modal are built on it.
+`HistoryDialog`, the new-chat modal, and the add-group-member modal are built on it.
+
+`AppDrawer.vue` is the same reka-ui `Dialog` foundation styled as a **slide-in
+drawer** anchored full-height to the right edge — for secondary, browsable panels
+(e.g. the group `ManageMembersDrawer`) where a centered modal would feel heavy.
+Same overlay/close/title/footer affordances; full-screen on mobile.
 
 `NewChatModal.vue` — the **New chat** modal: a search box, an **alphabetical
 friend list with a checkbox per friend** (select one or many), and Cancel /
