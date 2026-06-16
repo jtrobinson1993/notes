@@ -16,3 +16,15 @@ export function formatMime(type: string): string {
   const sub = type.split('/')[1] || type;
   return (sub.split('+')[0] || sub).replace(/^x-/, '').toUpperCase();
 }
+
+/**
+ * Rewrite a filename's extension to match `type`, dropping the original one —
+ * e.g. re-encoding `DSCF3984.jpeg` to WebP should yield `DSCF3984.webp`, not a
+ * `.jpeg` name that contradicts the actual format. Falls back to stripping the
+ * extension when the type has no usable subtype.
+ */
+export function nameForType(name: string, type: string): string {
+  const base = name.replace(/\.[^.]+$/, '');
+  const ext = formatMime(type).toLowerCase();
+  return ext ? `${base}.${ext}` : base;
+}

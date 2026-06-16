@@ -142,7 +142,9 @@ downscales to ≤2560px on the long edge, and re-encodes to WebP (q≈0.82) via
 and SVGs are skipped; a result that isn't smaller — or any failure — falls back
 to the original bytes, so an upload is never blocked. On by default with a
 Settings toggle (`notes:optimize-images`, device-local). The stored
-`AttachmentRef` type/size reflect the optimized bytes. The multi-file `attach()`
+`AttachmentRef` type/size reflect the optimized bytes, and when the format
+changes the **name extension is rewritten** to match (`photo.jpeg` → `photo.webp`
+via `nameForType`) so it never contradicts the actual bytes. The multi-file `attach()`
 loop is resilient: a client-side 32 MiB pre-check and per-file try/catch mean one
 bad file can't abort the batch or orphan earlier uploads; failures surface in a
 banner.

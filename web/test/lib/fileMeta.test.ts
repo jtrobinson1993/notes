@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatMime } from '../../src/lib/fileMeta';
+import { formatBytes, formatMime, nameForType } from '../../src/lib/fileMeta';
 
 describe('formatBytes', () => {
   it('uses B / KB / MB by magnitude', () => {
@@ -24,5 +24,20 @@ describe('formatMime', () => {
 
   it('falls back to the raw string when there is no subtype', () => {
     expect(formatMime('weird')).toBe('WEIRD');
+  });
+});
+
+describe('nameForType', () => {
+  it('swaps the extension to match the optimized type', () => {
+    expect(nameForType('DSCF3984.jpeg', 'image/webp')).toBe('DSCF3984.webp');
+    expect(nameForType('photo.PNG', 'image/webp')).toBe('photo.webp');
+  });
+
+  it('only drops the final extension segment', () => {
+    expect(nameForType('my.holiday.photo.jpg', 'image/webp')).toBe('my.holiday.photo.webp');
+  });
+
+  it('appends an extension when the name had none', () => {
+    expect(nameForType('screenshot', 'image/webp')).toBe('screenshot.webp');
   });
 });

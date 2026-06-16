@@ -3,6 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const api = vi.hoisted(() => ({ attachmentUpload: vi.fn() }));
 vi.mock('../../src/lib/api', () => ({ api }));
 
+// Stub the canvas-based optimizer (unavailable in jsdom). Defaults to a
+// passthrough; individual tests override it to simulate a re-encode.
+const optimize = vi.hoisted(() => ({
+  optimizeImage: vi.fn(async (data: Uint8Array, type: string) => ({ data, type })),
+}));
+vi.mock('../../src/lib/imageOptimize', () => optimize);
+
 import { encryptAndUploadFile, MAX_ATTACHMENT_BYTES } from '../../src/lib/attachments';
 import { decryptBlob } from '../../src/lib/crypto';
 
@@ -26,6 +33,17 @@ describe('encryptAndUploadFile', () => {
 
     const back = await decryptBlob(sent, ref.key, ref.iv);
     expect([...back]).toEqual([...plaintext]);
+  });
+
+  it('rewrites the name extension when optimization changes the format', async () => {
+    api.attachmentUpload.mockResolvedValue({ id: 'opt' });
+    const webp = new Uint8Array([7, 7, 7]);
+    optimize.optimizeImage.mockResolvedValueOnce({ data: webp, type: 'image/webp' });
+
+    const ref = await encryptAndUploadFile(file('DSCF3984.jpeg', 'image/jpeg', new Uint8Array(20)));
+
+    // The misleading `.jpeg` is dropped so the name matches the stored bytes.
+    expect(ref).toMatchObject({ name: 'DSCF3984.webp', type: 'image/webp', size: 3 });
   });
 
   it('rejects a file over the size cap before uploading', async () => {
