@@ -59,6 +59,8 @@ export interface ConversationRow {
   dm_key: string | null;
   parent_id: string | null;
   parent_seq: number | null;
+  /** group membership policy: 'owner' | 'admins' | 'open' */
+  manage_policy: string;
 }
 
 export interface ConversationMemberRow {
@@ -267,6 +269,18 @@ CREATE TABLE IF NOT EXISTS conversation_members (
   role TEXT NOT NULL DEFAULT 'member',
   PRIMARY KEY (conversation_id, user_id)
 );
+-- Per-(member, epoch) sealed conversation keys. conversation_members holds only
+-- the CURRENT epoch's sealed key; this keeps every earlier epoch a member is
+-- entitled to, so a re-keyed group's back-scroll survives a reload (the in-memory
+-- key cache is lost). A member's rows are deleted when they leave/are removed,
+-- which is what cryptographically revokes their future access.
+CREATE TABLE IF NOT EXISTS conversation_keys (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  epoch INTEGER NOT NULL,
+  sealed_key TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, user_id, epoch)
+);
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -356,6 +370,25 @@ export function openDb(dataDir: string) {
   }
   if (!convCols.some((c) => c.name === 'parent_seq')) {
     db.exec('ALTER TABLE conversations ADD COLUMN parent_seq INTEGER');
+  }
+  // Group membership policy (v3 phase 2). Default to owner-only.
+  if (!convCols.some((c) => c.name === 'manage_policy')) {
+    db.exec("ALTER TABLE conversations ADD COLUMN manage_policy TEXT NOT NULL DEFAULT 'owner'");
+    // The creator of an existing group becomes its owner (others stay members).
+    db.exec(
+      `UPDATE conversation_members SET role = 'owner'
+         WHERE user_id = (SELECT created_by FROM conversations c WHERE c.id = conversation_id)
+           AND (SELECT kind FROM conversations c WHERE c.id = conversation_id) = 'group'`,
+    );
+  }
+  // Backfill per-epoch keys from the current sealed_key for any conversation that
+  // predates the conversation_keys table, so existing back-scroll stays readable.
+  const hasKeyRows = db.prepare('SELECT 1 FROM conversation_keys LIMIT 1').get();
+  if (!hasKeyRows) {
+    db.exec(
+      `INSERT OR IGNORE INTO conversation_keys (conversation_id, user_id, epoch, sealed_key)
+         SELECT conversation_id, user_id, epoch, sealed_key FROM conversation_members`,
+    );
   }
   // One thread per (parent conversation, parent message). Partial index so NULL
   // parent_id (DMs/groups) is unconstrained.
@@ -816,11 +849,66 @@ export function openDb(dataDir: string) {
       sealedKey: string;
       epoch: number;
       role?: string;
+      /** start unread baseline at the join point (e.g. a fresh-history joiner) */
+      lastReadSeq?: number;
     }): void {
       db.prepare(
         `INSERT INTO conversation_members (conversation_id, user_id, sealed_key, epoch, last_read_seq, joined_at, role)
-         VALUES (?, ?, ?, ?, 0, ?, ?)`,
-      ).run(m.conversationId, m.userId, m.sealedKey, m.epoch, now(), m.role ?? 'member');
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(m.conversationId, m.userId, m.sealedKey, m.epoch, m.lastReadSeq ?? 0, now(), m.role ?? 'member');
+      // Mirror the current sealed key into the per-epoch store.
+      db.prepare(
+        `INSERT OR REPLACE INTO conversation_keys (conversation_id, user_id, epoch, sealed_key)
+         VALUES (?, ?, ?, ?)`,
+      ).run(m.conversationId, m.userId, m.epoch, m.sealedKey);
+    },
+    /** Remove a member and revoke all their sealed keys (future-access cut). */
+    removeConversationMember(conversationId: string, userId: string): void {
+      db.prepare('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?').run(conversationId, userId);
+      db.prepare('DELETE FROM conversation_keys WHERE conversation_id = ? AND user_id = ?').run(conversationId, userId);
+    },
+    /** The conversation's current epoch = the highest epoch any member holds. */
+    getConversationEpoch(conversationId: string): number {
+      const r = db
+        .prepare('SELECT MAX(epoch) AS e FROM conversation_members WHERE conversation_id = ?')
+        .get(conversationId) as { e: number | null };
+      return r.e ?? 0;
+    },
+    /** Re-key an existing member to a new epoch: update their current sealed key
+     *  and append the new per-epoch row (earlier epochs are retained). */
+    setMemberEpochKey(conversationId: string, userId: string, epoch: number, sealedKey: string): void {
+      db.prepare(
+        'UPDATE conversation_members SET epoch = ?, sealed_key = ? WHERE conversation_id = ? AND user_id = ?',
+      ).run(epoch, sealedKey, conversationId, userId);
+      db.prepare(
+        `INSERT OR REPLACE INTO conversation_keys (conversation_id, user_id, epoch, sealed_key)
+         VALUES (?, ?, ?, ?)`,
+      ).run(conversationId, userId, epoch, sealedKey);
+    },
+    /** Seal one prior-epoch key to a member (history shared to a new joiner). */
+    addConversationKey(conversationId: string, userId: string, epoch: number, sealedKey: string): void {
+      db.prepare(
+        `INSERT OR REPLACE INTO conversation_keys (conversation_id, user_id, epoch, sealed_key)
+         VALUES (?, ?, ?, ?)`,
+      ).run(conversationId, userId, epoch, sealedKey);
+    },
+    /** Every epoch key a member can read, ascending. */
+    listConversationKeysForUser(conversationId: string, userId: string): { epoch: number; sealed_key: string }[] {
+      return db
+        .prepare(
+          'SELECT epoch, sealed_key FROM conversation_keys WHERE conversation_id = ? AND user_id = ? ORDER BY epoch',
+        )
+        .all(conversationId, userId) as { epoch: number; sealed_key: string }[];
+    },
+    setConversationMemberRole(conversationId: string, userId: string, role: string): void {
+      db.prepare('UPDATE conversation_members SET role = ? WHERE conversation_id = ? AND user_id = ?').run(
+        role,
+        conversationId,
+        userId,
+      );
+    },
+    setConversationManagePolicy(conversationId: string, policy: string): void {
+      db.prepare('UPDATE conversations SET manage_policy = ? WHERE id = ?').run(policy, conversationId);
     },
     getConversationMember(conversationId: string, userId: string): ConversationMemberRow | undefined {
       return db

@@ -188,6 +188,24 @@ export interface Friend {
 
 export type ConversationKind = 'dm' | 'group' | 'thread';
 
+/** A member's standing in a group. `owner` is the creator (exactly one);
+ *  `admin` is a delegated manager; `member` is everyone else. DMs/threads are
+ *  always plain `member`. */
+export type ConversationRole = 'owner' | 'admin' | 'member';
+
+/** Who may add/remove members in a group (set per conversation by the owner):
+ *  `owner` only, owner + `admins`, or any member (`open`). */
+export type ManagePolicy = 'owner' | 'admins' | 'open';
+
+/** Pure authorization rule shared by client (UI affordances) and server
+ *  (enforcement): can a member with `role` manage membership under `policy`? */
+export function canManageMembers(policy: ManagePolicy, role: ConversationRole): boolean {
+  if (role === 'owner') return true;
+  if (policy === 'open') return true;
+  if (policy === 'admins') return role === 'admin';
+  return false; // policy 'owner': only the owner
+}
+
 export interface ConversationMember {
   userId: string;
   displayName: string;
@@ -198,6 +216,8 @@ export interface ConversationMember {
   /** whether this member has link previews enabled — a preview is only generated
    *  when EVERY member has it on. */
   linkPreviews: boolean;
+  /** standing in the group (owner/admin/member); always 'member' for DMs/threads */
+  role: ConversationRole;
 }
 
 /** Curated name-color palette: the `--brand-*` accents, each defined in CSS as a
@@ -216,6 +236,14 @@ export interface Conversation {
   /** the conversation key sealed to ME (current epoch) — unseal with my X25519 key */
   sealedKey: SealedKey;
   epoch: number;
+  /** EVERY epoch key sealed to me (one per epoch I can read, including the
+   *  current one). A group re-keys on each membership change; to decrypt the
+   *  full back-scroll a client unseals all of these, keyed by epoch. */
+  epochKeys: SealedEpochKey[];
+  /** group membership policy (groups only; 'owner' for DMs/threads) */
+  managePolicy: ManagePolicy;
+  /** my role in this conversation */
+  myRole: ConversationRole;
   /** highest message seq in the conversation (0 when empty) */
   lastSeq: number;
   /** my last-read seq; unread count = lastSeq - lastReadSeq */
@@ -344,9 +372,17 @@ export interface GifSearchResponse {
   next: string | null;
 }
 
-/** One member's sealed key when creating a conversation client-side. */
+/** One member's sealed key when creating a conversation or re-keying client-side. */
 export interface SealedMemberKey {
   userId: string;
+  sealedKey: SealedKey;
+}
+
+/** A conversation key for one epoch, sealed to a single recipient. Used to hand
+ *  a member their full set of readable epoch keys, and to share prior-epoch keys
+ *  to a joiner who's allowed back-scroll. */
+export interface SealedEpochKey {
+  epoch: number;
   sealedKey: SealedKey;
 }
 
@@ -407,6 +443,11 @@ export type ServerFrame =
   | { type: 'friend-request'; request: FriendRequest }
   | { type: 'friend-accepted'; friend: Friend }
   | { type: 'profile-updated'; userId: string }
+  // A group's membership/roles/policy or epoch changed — refetch it to pick up
+  // new members and any newly-sealed epoch keys.
+  | { type: 'conversation-updated'; conversationId: string }
+  // You were removed from (or left) a conversation — drop it locally.
+  | { type: 'conversation-removed'; conversationId: string }
   | { type: 'presence'; userId: string; online: boolean };
 
 /** Client -> server. Sends and read-markers go over REST; this stays minimal.

@@ -4,15 +4,18 @@ import type {
   ChatReaction,
   Conversation,
   ConversationMember,
+  ConversationRole,
   Friend,
   FriendInvite,
   FriendRequest,
+  ManagePolicy,
   ProfileInfo,
   ProfileView,
+  SealedEpochKey,
   SealedKey,
   SealedMemberKey,
 } from '@notes/shared';
-import { NAME_COLORS } from '@notes/shared';
+import { canManageMembers, NAME_COLORS } from '@notes/shared';
 import {
   effectiveDisplayName,
   type ConversationRow,
@@ -46,6 +49,41 @@ function validWrappedKey(s: unknown): boolean {
     typeof o.iv === 'string' && o.iv.length < 256 &&
     typeof o.ct === 'string' && o.ct.length < 1024
   );
+}
+
+/** Validate a re-key payload: `{userId, sealedKey}[]` that covers EXACTLY the
+ *  `expected` member set (no missing, extra, or duplicate). Returns the parsed
+ *  list, or null on any mismatch — so the server never half-applies a re-key. */
+function parseSealedMemberKeys(raw: unknown, expected: Set<string>): SealedMemberKey[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: SealedMemberKey[] = [];
+  const seen = new Set<string>();
+  for (const m of raw) {
+    if (typeof m !== 'object' || m === null) return null;
+    const mm = m as Record<string, unknown>;
+    if (typeof mm.userId !== 'string' || !validSealedKey(mm.sealedKey)) return null;
+    if (!expected.has(mm.userId) || seen.has(mm.userId)) return null;
+    seen.add(mm.userId);
+    out.push({ userId: mm.userId, sealedKey: mm.sealedKey });
+  }
+  return seen.size === expected.size ? out : null;
+}
+
+/** Validate prior-epoch keys for a share-history join: `{epoch, sealedKey}[]`
+ *  covering EXACTLY epochs 0..maxEpoch. Returns the parsed list, or null. */
+function parseSealedEpochKeys(raw: unknown, maxEpoch: number): SealedEpochKey[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: SealedEpochKey[] = [];
+  const seen = new Set<number>();
+  for (const k of raw) {
+    if (typeof k !== 'object' || k === null) return null;
+    const kk = k as Record<string, unknown>;
+    if (typeof kk.epoch !== 'number' || !Number.isInteger(kk.epoch) || !validSealedKey(kk.sealedKey)) return null;
+    if (kk.epoch < 0 || kk.epoch > maxEpoch || seen.has(kk.epoch)) return null;
+    seen.add(kk.epoch);
+    out.push({ epoch: kk.epoch, sealedKey: kk.sealedKey });
+  }
+  return seen.size === maxEpoch + 1 ? out : null;
 }
 
 function toMessage(m: MessageRow): ChatMessage {
@@ -85,6 +123,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
         publicKey: u?.public_key ?? null,
         nameColor: u?.name_color ?? null,
         linkPreviews: !!u && u.link_previews !== 0,
+        role: m.role as ConversationRole,
       };
     });
     // DM access requires current friendship — unfriending revokes access
@@ -94,12 +133,18 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
       const other = members.find((m) => m.userId !== userId);
       if (other && !db.areFriends(userId, other.userId)) return null;
     }
+    const epochKeys: SealedEpochKey[] = db
+      .listConversationKeysForUser(conv.id, userId)
+      .map((k) => ({ epoch: k.epoch, sealedKey: JSON.parse(k.sealed_key) as SealedKey }));
     return {
       id: conv.id,
       kind: conv.kind as Conversation['kind'],
       members,
       sealedKey: JSON.parse(mine.sealed_key) as SealedKey,
       epoch: mine.epoch,
+      epochKeys,
+      managePolicy: conv.manage_policy as ManagePolicy,
+      myRole: mine.role as ConversationRole,
       lastSeq: db.getMaxSeq(conv.id),
       lastReadSeq: mine.last_read_seq,
       createdAt: conv.created_at,
@@ -545,11 +590,159 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
           userId: mk.userId,
           sealedKey: JSON.stringify(mk.sealedKey),
           epoch: 0,
+          role: mk.userId === me ? 'owner' : 'member',
         });
       }
     });
     tx();
     return toConversation(db.getConversation(convId)!, me)!;
+  });
+
+  // ---- Group membership management (v3 phase 2) ----------------------------
+
+  // Add a member. Permitted per the group's manage_policy. Adding mints a NEW
+  // epoch: the caller re-keys, sealing the new key to every current member + the
+  // joiner, and (when history='share') also seals every prior epoch key to the
+  // joiner so they can back-scroll. 'fresh' starts their unread at the latest seq.
+  app.post('/api/conversations/:id/members', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
+    const conv = db.getConversation(id);
+    if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
+    const mine = db.getConversationMember(id, me);
+    if (!mine) return reply.code(403).send({ error: 'not a member' });
+    if (!canManageMembers(conv.manage_policy as ManagePolicy, mine.role as ConversationRole)) {
+      return reply.code(403).send({ error: 'not allowed to add members' });
+    }
+
+    const b = request.body as Record<string, unknown> | null;
+    const userId = b?.userId;
+    const history = b?.history;
+    const epoch = b?.epoch;
+    if (typeof userId !== 'string') return reply.code(400).send({ error: 'invalid userId' });
+    if (history !== 'share' && history !== 'fresh') return reply.code(400).send({ error: 'invalid history' });
+    if (userId === me || db.getConversationMember(id, userId)) {
+      return reply.code(409).send({ error: 'already a member' });
+    }
+    if (!db.areFriends(me, userId)) return reply.code(400).send({ error: 'not a friend' });
+
+    const current = db.getConversationEpoch(id);
+    if (epoch !== current + 1) return reply.code(409).send({ error: 'epoch mismatch' });
+
+    const expected = new Set([...db.listConversationMemberIds(id), userId]);
+    const sealed = parseSealedMemberKeys(b?.keys, expected);
+    if (!sealed) return reply.code(400).send({ error: 'keys must cover all members + the new member' });
+
+    let prior: SealedEpochKey[] = [];
+    if (history === 'share') {
+      const p = parseSealedEpochKeys(b?.priorKeys, current);
+      if (!p) return reply.code(400).send({ error: 'priorKeys must cover epochs 0..current' });
+      prior = p;
+    }
+
+    const lastSeq = db.getMaxSeq(id);
+    db.raw.transaction(() => {
+      for (const k of sealed) {
+        const sk = JSON.stringify(k.sealedKey);
+        if (k.userId === userId) {
+          db.addConversationMember({
+            conversationId: id,
+            userId,
+            sealedKey: sk,
+            epoch: epoch as number,
+            role: 'member',
+            lastReadSeq: history === 'fresh' ? lastSeq : 0,
+          });
+        } else {
+          db.setMemberEpochKey(id, k.userId, epoch as number, sk);
+        }
+      }
+      for (const p of prior) db.addConversationKey(id, userId, p.epoch, JSON.stringify(p.sealedKey));
+    })();
+    hub.sendToUsers([...expected], { type: 'conversation-updated', conversationId: id });
+    return toConversation(db.getConversation(id)!, me)!;
+  });
+
+  // Remove a member, or leave when :userId is yourself. Mints a new epoch sealed
+  // to the REMAINING members; the target's keys are deleted, so they keep read
+  // access up to removal (via keys already unsealed in memory) but nothing after.
+  app.delete('/api/conversations/:id/members/:userId', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, userId: target } = request.params as { id: string; userId: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
+    const conv = db.getConversation(id);
+    if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
+    const mine = db.getConversationMember(id, me);
+    if (!mine) return reply.code(403).send({ error: 'not a member' });
+    const targetMember = db.getConversationMember(id, target);
+    if (!targetMember) return reply.code(404).send({ error: 'not a member' });
+
+    const leaving = target === me;
+    if (!leaving) {
+      if (!canManageMembers(conv.manage_policy as ManagePolicy, mine.role as ConversationRole)) {
+        return reply.code(403).send({ error: 'not allowed to remove members' });
+      }
+      if (targetMember.role === 'owner') return reply.code(403).send({ error: 'cannot remove the owner' });
+    }
+
+    const remainingIds = db.listConversationMemberIds(id).filter((u) => u !== target);
+    if (remainingIds.length < 2) return reply.code(400).send({ error: 'a group needs at least 2 members' });
+
+    const current = db.getConversationEpoch(id);
+    const b = request.body as Record<string, unknown> | null;
+    if (b?.epoch !== current + 1) return reply.code(409).send({ error: 'epoch mismatch' });
+    const sealed = parseSealedMemberKeys(b?.keys, new Set(remainingIds));
+    if (!sealed) return reply.code(400).send({ error: 'keys must cover the remaining members' });
+
+    db.raw.transaction(() => {
+      // Owner leaving → ownership passes to the earliest-joined remaining member.
+      if (leaving && targetMember.role === 'owner') {
+        const heir = db.listConversationMembers(id).find((m) => m.user_id !== target);
+        if (heir) db.setConversationMemberRole(id, heir.user_id, 'owner');
+      }
+      db.removeConversationMember(id, target);
+      for (const k of sealed) db.setMemberEpochKey(id, k.userId, current + 1, JSON.stringify(k.sealedKey));
+    })();
+    hub.sendToUsers(remainingIds, { type: 'conversation-updated', conversationId: id });
+    hub.sendToUser(target, { type: 'conversation-removed', conversationId: id });
+    return { ok: true };
+  });
+
+  // Owner sets who may manage membership (owner-only / admins / open).
+  app.patch('/api/conversations/:id', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
+    const conv = db.getConversation(id);
+    if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
+    const mine = db.getConversationMember(id, me);
+    if (!mine || mine.role !== 'owner') return reply.code(403).send({ error: 'owner only' });
+    const policy = (request.body as Record<string, unknown> | null)?.managePolicy;
+    if (policy !== 'owner' && policy !== 'admins' && policy !== 'open') {
+      return reply.code(400).send({ error: 'invalid policy' });
+    }
+    db.setConversationManagePolicy(id, policy);
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'conversation-updated', conversationId: id });
+    return toConversation(db.getConversation(id)!, me)!;
+  });
+
+  // Owner grants/revokes admin to another member.
+  app.post('/api/conversations/:id/members/:userId/role', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, userId: target } = request.params as { id: string; userId: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
+    const conv = db.getConversation(id);
+    if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
+    const mine = db.getConversationMember(id, me);
+    if (!mine || mine.role !== 'owner') return reply.code(403).send({ error: 'owner only' });
+    if (target === me) return reply.code(400).send({ error: 'cannot change your own role' });
+    if (!db.getConversationMember(id, target)) return reply.code(404).send({ error: 'not a member' });
+    const role = (request.body as Record<string, unknown> | null)?.role;
+    if (role !== 'admin' && role !== 'member') return reply.code(400).send({ error: 'invalid role' });
+    db.setConversationMemberRole(id, target, role);
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'conversation-updated', conversationId: id });
+    return toConversation(db.getConversation(id)!, me)!;
   });
 
   // Create (or return) the thread rooted on a parent message. A thread is a
