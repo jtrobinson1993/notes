@@ -434,7 +434,7 @@ async function sendGif(gif: GifRef) {
                 class="italic opacity-70"
               >message could not be decrypted</span>
               <template v-else>
-                <MarkdownView v-if="row.msg.text" :source="row.msg.text" />
+                <MarkdownView v-if="row.msg.text" :source="row.msg.text" breaks />
                 <img
                   v-if="row.msg.gif"
                   :src="row.msg.gif.url"

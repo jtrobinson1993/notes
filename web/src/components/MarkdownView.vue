@@ -6,7 +6,7 @@ import { api } from '../lib/api';
 import { decryptBlob } from '../lib/crypto';
 import MdTokens from './MdTokens';
 
-const props = defineProps<{ source: string; attachments?: AttachmentRef[] }>();
+const props = defineProps<{ source: string; attachments?: AttachmentRef[]; breaks?: boolean }>();
 
 // Extended syntax shared with the live editor: ==highlight== and ||spoiler||.
 interface InlineToken extends Tokens.Generic {
@@ -39,8 +39,15 @@ marked.use({
 });
 
 // Token stream rendered straight to VNodes (MdTokens) — no HTML string, no
-// v-html, no sanitizer to bypass.
-const tokens = computed(() => marked.lexer(props.source));
+// v-html, no sanitizer to bypass. In `breaks` mode (chat messages) a single
+// newline becomes a hard break so multi-line messages keep their line breaks;
+// notes leave it off (standard markdown soft-wrap). The merge with
+// `marked.defaults` preserves the registered highlight/spoiler extensions.
+const tokens = computed(() =>
+  props.breaks
+    ? marked.lexer(props.source, { ...marked.defaults, breaks: true })
+    : marked.lexer(props.source),
+);
 
 // attachment images: decrypt to object URLs, cached per id
 const urlCache = new Map<string, Promise<string | null>>();
