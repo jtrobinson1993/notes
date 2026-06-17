@@ -282,6 +282,12 @@ protocol ping/pong).
   messages; it loads the text into the composer with an **Editing** banner
   (Enter saves, Esc / ✕ cancels). Pressing **↑ in an empty composer** starts
   editing your most recent editable message (MarkdownEditor emits `editLast`).
+- **Touch actions** (`MessageActionsSheet.vue`): on a **coarse pointer**,
+  long-pressing a message (~500 ms, cancelled by scroll/lift) opens a **slide-up
+  bottom sheet** with quick reactions + the emoji picker, Reply, Edit (own), and
+  Open thread. Gated on `pointerType === 'touch'` — **mouse/pen keep the hover
+  toolbar** at every screen size. The OS long-press callout is suppressed on
+  touch; the sheet is a bottom-anchored reka Dialog at `z-modal`.
 - **System notices.** Adding a member also posts an ordinary **encrypted message**
   carrying a `MessagePayload.system` event (`{kind:'member-joined', userId,
   phrase}`) at the new epoch — so the joiner can read it and the server never sees

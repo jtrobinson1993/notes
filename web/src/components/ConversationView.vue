@@ -7,6 +7,7 @@ import ProfileDialog from './ProfileDialog.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import ChatAttachment from './ChatAttachment.vue';
 import LinkPreviewCard from './LinkPreviewCard.vue';
+import MessageActionsSheet from './MessageActionsSheet.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
 import { resolveEmoji } from '../lib/emoji';
 import { api } from '../lib/api';
@@ -79,6 +80,54 @@ function editLast() {
       return;
     }
   }
+}
+
+// Touch long-press → bottom-sheet of actions. Mouse/pen keep the hover toolbar,
+// so this is gated on `pointerType === 'touch'` and cancelled by scroll/lift.
+const sheetMsg = ref<ChatMessageView | null>(null);
+const sheetOpen = computed({
+  get: () => sheetMsg.value !== null,
+  set: (v) => {
+    if (!v) sheetMsg.value = null;
+  },
+});
+let pressTimer: ReturnType<typeof setTimeout> | undefined;
+let pressOrigin: { x: number; y: number } | null = null;
+
+function onRowPointerDown(e: PointerEvent, m: ChatMessageView) {
+  if (e.pointerType !== 'touch') return;
+  pressOrigin = { x: e.clientX, y: e.clientY };
+  clearTimeout(pressTimer);
+  pressTimer = setTimeout(() => {
+    sheetMsg.value = m;
+    pressOrigin = null;
+  }, 500);
+}
+function onRowPointerMove(e: PointerEvent) {
+  // A drag past a small threshold is a scroll, not a press — cancel.
+  if (pressOrigin && Math.hypot(e.clientX - pressOrigin.x, e.clientY - pressOrigin.y) > 10) cancelPress();
+}
+function cancelPress() {
+  clearTimeout(pressTimer);
+  pressOrigin = null;
+}
+// Suppress the OS long-press menu on touch (we show our own sheet); leave the
+// desktop right-click menu alone.
+function onRowContextMenu(e: MouseEvent) {
+  if ((e as PointerEvent).pointerType === 'touch' || sheetOpen.value) e.preventDefault();
+}
+
+function sheetReact(emoji: string) {
+  if (sheetMsg.value) react(sheetMsg.value.seq, emoji);
+}
+function sheetReply() {
+  if (sheetMsg.value) startReply(sheetMsg.value);
+}
+function sheetEdit() {
+  if (sheetMsg.value) startEdit(sheetMsg.value);
+}
+function sheetThread() {
+  if (sheetMsg.value) openThreadFor(sheetMsg.value.seq);
 }
 
 const conversation = computed<Conversation | undefined>(() =>
@@ -462,8 +511,14 @@ async function sendGif(gif: GifRef) {
         <div
           v-else
           :data-seq="row.msg.seq"
-          class="group relative flex items-start gap-3 px-4 py-0.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+          class="group relative flex items-start gap-3 px-4 py-0.5 transition-colors [-webkit-touch-callout:none] hover:bg-black/5 dark:hover:bg-white/5"
           :class="row.isStart ? 'mt-3' : ''"
+          @pointerdown="onRowPointerDown($event, row.msg)"
+          @pointermove="onRowPointerMove"
+          @pointerup="cancelPress"
+          @pointercancel="cancelPress"
+          @pointerleave="cancelPress"
+          @contextmenu="onRowContextMenu"
         >
           <!-- Hover actions: react + reply + thread. Pulled up by half its
                height (only the bottom half overlays the message). Stays visible
@@ -686,6 +741,15 @@ async function sendGif(gif: GifRef) {
       </div>
 
       <ProfileDialog v-model:open="profileOpen" :user-id="profileUserId" />
+      <MessageActionsSheet
+        v-model:open="sheetOpen"
+        :can-edit="!!sheetMsg && canEdit(sheetMsg)"
+        :is-thread="isThread"
+        @react="sheetReact"
+        @reply="sheetReply"
+        @edit="sheetEdit"
+        @thread="sheetThread"
+      />
     </div>
 </template>
 
