@@ -215,6 +215,12 @@ async function newNote() {
   selectedId.value = await notes.create();
 }
 
+async function deleteNote(id: string, title: string) {
+  if (!window.confirm(`Delete note "${title || 'Untitled'}"? This can't be undone.`)) return;
+  if (selectedId.value === id) selectedId.value = null;
+  await notes.remove(id);
+}
+
 function excerpt(body: string): string {
   return toPlainText(body.slice(0, 500)).replace(/\s+/g, ' ').trim().slice(0, 80);
 }
@@ -332,34 +338,39 @@ function excerpt(body: string): string {
               </template>
 
               <!-- Note row. -->
-              <button
-                v-else
-                class="flex min-w-0 grow cursor-grab items-start gap-1.5 py-1.5 pr-3 text-left"
-                :style="{ paddingLeft: depthPad(row.depth) }"
-                draggable="true"
-                @click="selectedId = row.note!.id"
-                @dragstart.stop="draggingNote = row.note!.id"
-                @dragend="endDrag"
-                @dragover.prevent="noteDragOver($event, row.key)"
-                @drop.stop.prevent="onDropOnNote(row.note!)"
-              >
-                <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
-                <div class="min-w-0 grow">
-                  <p class="truncate text-sm" :class="selectedId === row.note!.id ? 'font-medium' : ''">
-                    <EmojiText :text="row.note!.payload.title || 'Untitled'" />
-                    <span v-if="row.note!.shared" class="text-xs font-normal text-violet-500">· {{ row.note!.shared.ownerDisplayName }}</span>
-                  </p>
-                  <div v-if="!compact" class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
-                    <span
-                      v-for="tag in row.note!.payload.tags"
-                      :key="tag"
-                      class="shrink-0 rounded-full px-1.5 py-px text-[10px] leading-tight"
-                      :style="{ background: tagColor(tag), color: tagTextColor(tagColor(tag)) }"
-                    >{{ tag }}</span>
-                    <span class="truncate">{{ excerpt(row.note!.payload.body) || 'Empty note' }}</span>
+              <template v-else>
+                <button
+                  class="flex min-w-0 grow cursor-grab items-start gap-1.5 py-1.5 pr-3 text-left"
+                  :style="{ paddingLeft: depthPad(row.depth) }"
+                  draggable="true"
+                  @click="selectedId = row.note!.id"
+                  @dragstart.stop="draggingNote = row.note!.id"
+                  @dragend="endDrag"
+                  @dragover.prevent="noteDragOver($event, row.key)"
+                  @drop.stop.prevent="onDropOnNote(row.note!)"
+                >
+                  <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
+                  <div class="min-w-0 grow">
+                    <p class="truncate text-sm" :class="selectedId === row.note!.id ? 'font-medium' : ''">
+                      <EmojiText :text="row.note!.payload.title || 'Untitled'" />
+                      <span v-if="row.note!.shared" class="text-xs font-normal text-violet-500">· {{ row.note!.shared.ownerDisplayName }}</span>
+                    </p>
+                    <div v-if="!compact" class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
+                      <span
+                        v-for="tag in row.note!.payload.tags"
+                        :key="tag"
+                        class="shrink-0 rounded-full px-1.5 py-px text-[10px] leading-tight"
+                        :style="{ background: tagColor(tag), color: tagTextColor(tagColor(tag)) }"
+                      >{{ tag }}</span>
+                      <span class="truncate">{{ excerpt(row.note!.payload.body) || 'Empty note' }}</span>
+                    </div>
                   </div>
+                </button>
+                <!-- Hover delete (owned notes only; shared-with-me notes can't be deleted). -->
+                <div v-if="!row.note!.shared" class="hidden shrink-0 items-center pr-1 group-hover:flex">
+                  <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete note" @click.stop="deleteNote(row.note!.id, row.note!.payload.title)"><IconTrash class="h-3.5 w-3.5" /></button>
                 </div>
-              </button>
+              </template>
             </li>
             <li v-if="notes.loaded && treeRows.length === 0" class="p-4 text-center text-sm text-zinc-400">
               No notes yet
