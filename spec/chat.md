@@ -671,7 +671,9 @@ refetch the channel list after a create/rename/reorder/delete.
   Channel actions (`createChannel`/`renameChannel`/`reorderChannels`/
   `deleteChannel`) plus an `activeChannelId` for reconnect backfill.
 - `ConversationView` takes a `channelId` prop (default = general) and
-  re-activates when the channel changes.
+  re-activates when the channel changes. The active channel lives in the **route**
+  (`/chat/:id` = general, `/chat/:id/:channelId` = an extra channel), so a refresh
+  keeps you in the channel; a stale/deleted channel id redirects to general.
 - `ChatSidebar` is a **unified tree** (like the notes tree): collapsible with a
   persisted open/closed state (`localStorage` `chat:channels:open`) and a toggle
   at the top. It lists **channels** (groups; per-channel unread badges; voice

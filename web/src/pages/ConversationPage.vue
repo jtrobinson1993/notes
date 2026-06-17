@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import ConversationView from '../components/ConversationView.vue';
 import ChatSidebar from '../components/ChatSidebar.vue';
@@ -18,6 +18,7 @@ import IconNote from '~icons/mynaui/file-text';
 import IconX from '~icons/mynaui/x';
 
 const route = useRoute();
+const router = useRouter();
 const chat = useChatStore();
 const notes = useNotesStore();
 const org = useOrgStore();
@@ -42,16 +43,23 @@ const openNote = computed(() => (openNoteId.value ? (notes.notes.get(openNoteId.
 
 const convId = computed(() => String(route.params.id));
 
-// The channel currently being viewed. Defaults to the general channel (whose id
-// is the conversation id). Reset when switching conversations.
-const activeChannelId = ref<string>(convId.value);
-watch(convId, (id) => {
-  activeChannelId.value = id;
-  openNoteId.value = null;
+// The channel currently being viewed comes from the route, so a refresh keeps
+// you in the channel. The general channel is the bare `/chat/:id` (no segment);
+// an extra channel is `/chat/:id/:channelId`.
+const activeChannelId = computed(() => {
+  const ch = route.params.channelId;
+  return typeof ch === 'string' && ch ? ch : convId.value;
 });
+function selectChannel(channelId: string) {
+  void router.push(channelId === convId.value ? `/chat/${convId.value}` : `/chat/${convId.value}/${channelId}`);
+}
 const activeChannel = computed(() =>
   conversation.value?.channels?.find((c) => c.id === activeChannelId.value),
 );
+// Switching conversations closes any open note overlay.
+watch(convId, () => {
+  openNoteId.value = null;
+});
 
 // The conversation name shown in the shared header above both panes. This header
 // is the visible one (the inner ConversationView is rendered with `hide-header`),
@@ -61,6 +69,18 @@ const parentTitle = computed(() =>
   conversation.value ? conversationTitle(conversation.value, session.user?.id) : 'Conversation',
 );
 const isGroup = computed(() => conversation.value?.kind === 'group');
+
+// If the route points at a channel that doesn't exist (deleted / stale link),
+// fall back to the general channel once the conversation's channels are known.
+watch(
+  [() => conversation.value?.channels, activeChannelId],
+  ([channels]) => {
+    if (channels && activeChannelId.value !== convId.value && !channels.some((c) => c.id === activeChannelId.value)) {
+      void router.replace(`/chat/${convId.value}`);
+    }
+  },
+  { immediate: true },
+);
 const showMembers = ref(false);
 // The thread shown in the side panel (a thread is itself a conversation id).
 const activeThread = ref<string | null>(null);
@@ -134,7 +154,7 @@ onBeforeUnmount(stopDrag);
         v-if="conversation && conversation.kind !== 'thread'"
         :conversation="conversation"
         :active-channel-id="activeChannelId"
-        @select="activeChannelId = $event"
+        @select="selectChannel($event)"
         @open-note="openNoteId = $event"
       />
 
