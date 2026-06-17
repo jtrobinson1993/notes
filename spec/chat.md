@@ -280,7 +280,8 @@ protocol ping/pong).
   advances unread); the bubble shows a muted **"(edited)"** marker. The hover
   toolbar shows an **Edit** (pencil) action on your **own** decryptable text
   messages; it loads the text into the composer with an **Editing** banner
-  (Enter saves, Esc / ✕ cancels).
+  (Enter saves, Esc / ✕ cancels). Pressing **↑ in an empty composer** starts
+  editing your most recent editable message (MarkdownEditor emits `editLast`).
 - **System notices.** Adding a member also posts an ordinary **encrypted message**
   carrying a `MessagePayload.system` event (`{kind:'member-joined', userId,
   phrase}`) at the new epoch — so the joiner can read it and the server never sees

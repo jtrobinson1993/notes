@@ -15,6 +15,10 @@ function pressEnter(w: VueWrapper, shift = false) {
   const content = w.element.querySelector('.cm-content') as HTMLElement;
   content.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: shift, bubbles: true }));
 }
+function pressKey(w: VueWrapper, key: string) {
+  const content = w.element.querySelector('.cm-content') as HTMLElement;
+  content.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+}
 
 afterEach(() => {
   for (const w of wrappers.splice(0)) w.unmount();
@@ -41,5 +45,17 @@ describe('MarkdownEditor composer mode', () => {
     const w = makeComposer({ submitOnEnter: false, modelValue: 'hi' });
     pressEnter(w);
     expect(w.emitted('submit')).toBeUndefined();
+  });
+
+  it('emits editLast on ↑ when the composer is empty', () => {
+    const w = makeComposer({ modelValue: '' });
+    pressKey(w, 'ArrowUp');
+    expect(w.emitted('editLast')).toHaveLength(1);
+  });
+
+  it('does not emit editLast on ↑ when the composer has text', () => {
+    const w = makeComposer({ modelValue: 'typing' });
+    pressKey(w, 'ArrowUp');
+    expect(w.emitted('editLast')).toBeUndefined();
   });
 });

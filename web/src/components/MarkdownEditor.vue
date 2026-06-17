@@ -47,6 +47,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [string];
   submit: [];
+  /** composer-only: ↑ pressed while empty (edit your last message) */
+  editLast: [];
   /** composer-only: Esc pressed (e.g. cancel an in-progress edit) */
   escape: [];
 }>();
@@ -108,6 +110,17 @@ const submitKeymap = keymap.of([
     },
   },
   { key: 'Shift-Enter', run: insertNewlineAndIndent },
+  // ↑ on an empty composer edits your last message; otherwise normal cursor up.
+  {
+    key: 'ArrowUp',
+    run: (v) => {
+      if (v.state.doc.length === 0) {
+        emit('editLast');
+        return true;
+      }
+      return false;
+    },
+  },
   // Esc bubbles up (e.g. to cancel an edit); doesn't block other Esc handling.
   { key: 'Escape', run: () => (emit('escape'), false) },
 ]);

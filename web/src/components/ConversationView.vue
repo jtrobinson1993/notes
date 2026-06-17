@@ -69,6 +69,18 @@ function cancelEdit() {
   text.value = '';
 }
 
+// ↑ on an empty composer edits your most recent editable message.
+function editLast() {
+  if (editing.value) return;
+  const list = chat.messages[convId.value] ?? [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (canEdit(list[i]!)) {
+      startEdit(list[i]!);
+      return;
+    }
+  }
+}
+
 const conversation = computed<Conversation | undefined>(() =>
   chat.conversations.find((c) => c.id === convId.value),
 );
@@ -656,6 +668,7 @@ async function sendGif(gif: GifRef) {
               submit-on-enter
               :placeholder="editing ? 'Edit message…' : 'Message…'"
               @submit="send"
+              @edit-last="editLast"
               @escape="cancelEdit"
             />
           </div>
