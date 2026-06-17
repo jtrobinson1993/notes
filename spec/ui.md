@@ -69,6 +69,9 @@ returns. Top to bottom:
     display-name first character, expanded name = members' display names listed
     out ("Alice, Bob, Carol").
 - The **Notes** item — directly **below the chats** (in flow, not pinned).
+
+The item for the **current route** carries a highlighted background — both a
+conversation when its `/chat/:id` is open and the **Notes** item when on `/`.
 - **Bottom (fixed, separated by a top border):** the expand / collapse toggle,
   then **Lock** (when unlocked), **Settings**, and **Sign out**. There is **no
   top app header** — these live in the sidebar. The conversation/note list above
