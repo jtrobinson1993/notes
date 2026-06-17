@@ -18,6 +18,8 @@ import { optimizeImage } from '../lib/imageOptimize';
 import { optimizeImages } from '../lib/privacy';
 import { clearTagColor, setTagColor, tagColor, tagTextColor } from '../lib/tagColors';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
+import { useOrgStore } from '../stores/organization';
+import IconFolder from '~icons/mynaui/folder';
 import ColorPalette from './ColorPalette.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import MarkdownView from './MarkdownView.vue';
@@ -28,6 +30,13 @@ const props = defineProps<{ note: DecryptedNote }>();
 const emit = defineEmits<{ deleted: [] }>();
 
 const notes = useNotesStore();
+const org = useOrgStore();
+// The note's folder is personal organization (org store), not part of the note
+// payload — so it also applies to notes shared with me.
+const noteFolderId = computed({
+  get: () => org.folderOf(props.note.id) ?? '',
+  set: (v: string) => org.setNoteFolder(props.note.id, v || null),
+});
 const title = ref(props.note.payload.title);
 const body = ref(props.note.payload.body);
 const tags = ref<string[]>([...props.note.payload.tags]);
@@ -298,6 +307,17 @@ function fmtSize(bytes: number): string {
     </div>
 
     <div class="mb-2 flex flex-wrap items-center gap-1.5">
+      <!-- Folder (personal organization; applies to shared notes too). -->
+      <label
+        class="flex items-center gap-1 rounded-full border border-zinc-300 px-2 py-0.5 text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400"
+        title="Folder"
+      >
+        <IconFolder class="h-3 w-3 shrink-0" />
+        <select v-model="noteFolderId" class="max-w-[8rem] bg-transparent text-xs outline-none">
+          <option value="">No folder</option>
+          <option v-for="f in org.sortedFolders" :key="f.id" :value="f.id">{{ f.name }}</option>
+        </select>
+      </label>
       <span
         v-for="tag in tags"
         :key="tag"

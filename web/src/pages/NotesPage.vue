@@ -6,14 +6,44 @@ import NoteEditor from '../components/NoteEditor.vue';
 import { loadTagColors, tagColor, tagTextColor } from '../lib/tagColors';
 import { toPlainText } from '../lib/transfer';
 import { useNotesStore } from '../stores/notes';
+import { useOrgStore } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
+import IconFolder from '~icons/mynaui/folder';
+import IconFolderPlus from '~icons/mynaui/folder-plus';
+import IconPencil from '~icons/mynaui/pencil';
+import IconTrash from '~icons/mynaui/trash';
 
 const session = useSessionStore();
 const notes = useNotesStore();
+const org = useOrgStore();
 
 const search = ref('');
 const activeTag = ref<string | null>(null);
 const selectedId = ref<string | null>(null);
+// Folder filter: null = all notes, 'unfiled' = notes with no folder, else a folder id.
+const activeFolder = ref<string | null | 'unfiled'>(null);
+
+function notesInFolder(folderId: string): number {
+  return notes.sorted.filter((n) => org.folderOf(n.id) === folderId).length;
+}
+const unfiledCount = computed(() => notes.sorted.filter((n) => org.folderOf(n.id) === null).length);
+
+function createFolder() {
+  const name = window.prompt('New folder name')?.trim();
+  if (name) {
+    const id = org.createFolder(name);
+    activeFolder.value = id;
+  }
+}
+function renameFolder(id: string, current: string) {
+  const name = window.prompt('Rename folder', current)?.trim();
+  if (name) org.renameFolder(id, name);
+}
+function deleteFolder(id: string, name: string) {
+  if (!window.confirm(`Delete folder "${name}"? Its notes stay, but become unfiled.`)) return;
+  if (activeFolder.value === id) activeFolder.value = null;
+  org.deleteFolder(id);
+}
 
 // Open the most recently edited note once notes are ready (or a fresh note if
 // there are none). Desktop only: on mobile the list is the landing view.
@@ -48,6 +78,7 @@ watch(
       await notes.loadFromCache();
       await notes.sync();
       void loadTagColors();
+      void org.load();
       await autoOpen();
     }
   },
@@ -58,6 +89,9 @@ const filtered = computed(() => {
   const q = search.value.trim().toLowerCase();
   return notes.sorted.filter((n) => {
     if (activeTag.value && !n.payload.tags.includes(activeTag.value)) return false;
+    const folder = org.folderOf(n.id);
+    if (activeFolder.value === 'unfiled' && folder !== null) return false;
+    if (activeFolder.value && activeFolder.value !== 'unfiled' && folder !== activeFolder.value) return false;
     if (q && !n.payload.title.toLowerCase().includes(q) && !n.payload.body.toLowerCase().includes(q)) return false;
     return true;
   });
@@ -94,6 +128,57 @@ function excerpt(body: string): string {
           >
             New
           </button>
+        </div>
+
+        <!-- Folders (personal organization). -->
+        <div class="px-3 pb-2">
+          <div class="mb-1 flex items-center justify-between">
+            <span class="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Folders</span>
+            <button
+              class="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+              title="New folder"
+              @click="createFolder"
+            >
+              <IconFolderPlus class="h-4 w-4" />
+            </button>
+          </div>
+          <ul class="space-y-0.5 text-sm">
+            <li>
+              <button
+                class="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left"
+                :class="activeFolder === null ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
+                @click="activeFolder = null"
+              >
+                <IconFolder class="h-3.5 w-3.5 shrink-0 opacity-60" />
+                <span class="grow truncate">All notes</span>
+                <span class="text-xs text-zinc-400">{{ notes.sorted.length }}</span>
+              </button>
+            </li>
+            <li v-for="f in org.sortedFolders" :key="f.id" class="group/folder flex items-center gap-0.5">
+              <button
+                class="flex min-w-0 grow items-center gap-1.5 rounded-md px-2 py-1 text-left"
+                :class="activeFolder === f.id ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
+                @click="activeFolder = f.id"
+              >
+                <IconFolder class="h-3.5 w-3.5 shrink-0 opacity-60" />
+                <span class="min-w-0 grow truncate">{{ f.name }}</span>
+                <span class="text-xs text-zinc-400">{{ notesInFolder(f.id) }}</span>
+              </button>
+              <button class="hidden rounded p-1 text-zinc-400 hover:text-zinc-700 group-hover/folder:block dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(f.id, f.name)"><IconPencil class="h-3 w-3" /></button>
+              <button class="hidden rounded p-1 text-zinc-400 hover:text-red-600 group-hover/folder:block dark:hover:text-red-400" title="Delete folder" @click="deleteFolder(f.id, f.name)"><IconTrash class="h-3 w-3" /></button>
+            </li>
+            <li v-if="unfiledCount > 0 && org.sortedFolders.length">
+              <button
+                class="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left"
+                :class="activeFolder === 'unfiled' ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
+                @click="activeFolder = 'unfiled'"
+              >
+                <IconFolder class="h-3.5 w-3.5 shrink-0 opacity-40" />
+                <span class="grow truncate text-zinc-500">Unfiled</span>
+                <span class="text-xs text-zinc-400">{{ unfiledCount }}</span>
+              </button>
+            </li>
+          </ul>
         </div>
 
         <div v-if="notes.allTags.length" class="flex flex-wrap gap-1 px-3 pb-2">
