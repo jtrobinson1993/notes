@@ -124,9 +124,14 @@ function deleteFolder(id: string, name: string) {
 // ---- Drag & drop: nest folders, move/reorder notes ----
 const draggingFolder = ref<string | null>(null);
 const draggingNote = ref<string | null>(null);
-// The row currently dragged over: `into` = drop inside a folder (ring), else an
-// insertion line before the row. Absolutely positioned, so no layout shift.
-const dragOver = ref<{ key: string; into: boolean } | null>(null);
+// The row currently dragged over: `into` = drop inside a folder (ring); otherwise
+// an insertion line before (`after:false`) or after (`after:true`) the row, based
+// on which half the cursor is over. Absolutely positioned, so no layout shift.
+const dragOver = ref<{ key: string; into: boolean; after?: boolean } | null>(null);
+function noteDragOver(e: DragEvent, key: string) {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  dragOver.value = { key, into: false, after: e.clientY > r.top + r.height / 2 };
+}
 function endDrag() {
   draggingFolder.value = null;
   draggingNote.value = null;
@@ -142,6 +147,7 @@ function onDropOnFolder(folderId: string) {
 // Drop a note onto another note: move it into that note's folder, just before it.
 function onDropOnNote(target: DecryptedNote) {
   const dragged = draggingNote.value;
+  const after = dragOver.value?.after ?? false;
   if (!dragged || dragged === target.id) {
     endDrag();
     return;
@@ -151,8 +157,8 @@ function onDropOnNote(target: DecryptedNote) {
   const ids = notesOf(folderId)
     .map((n) => n.id)
     .filter((id) => id !== dragged);
-  const idx = ids.indexOf(target.id);
-  ids.splice(idx < 0 ? ids.length : idx, 0, dragged);
+  const at = ids.indexOf(target.id);
+  ids.splice(at < 0 ? ids.length : at + (after ? 1 : 0), 0, dragged);
   org.setNoteOrder(folderId, ids);
   endDrag();
 }
@@ -292,8 +298,12 @@ function excerpt(body: string): string {
                 dragOver?.key === row.key && dragOver.into ? 'ring-2 ring-inset ring-blue-500' : '',
               ]"
             >
-              <!-- Drop indicator: an insertion line before this row (no layout shift). -->
-              <div v-if="dragOver?.key === row.key && !dragOver.into" class="pointer-events-none absolute inset-x-0 -top-px z-10 h-0.5 bg-blue-500"></div>
+              <!-- Drop indicator: an insertion line above/below this row (no layout shift). -->
+              <div
+                v-if="dragOver?.key === row.key && !dragOver.into"
+                class="pointer-events-none absolute inset-x-0 z-10 h-0.5 bg-blue-500"
+                :class="dragOver.after ? '-bottom-px' : '-top-px'"
+              ></div>
 
               <!-- Folder row: clicking anywhere on the row toggles collapse; the
                    hover buttons act on their own. The row is the drag handle + a
@@ -330,7 +340,7 @@ function excerpt(body: string): string {
                 @click="selectedId = row.note!.id"
                 @dragstart.stop="draggingNote = row.note!.id"
                 @dragend="endDrag"
-                @dragover.prevent="dragOver = { key: row.key, into: false }"
+                @dragover.prevent="noteDragOver($event, row.key)"
                 @drop.stop.prevent="onDropOnNote(row.note!)"
               >
                 <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />

@@ -139,4 +139,17 @@ describe('ChatSidebar (unified tree)', () => {
     // alpha moved before general in the personal root order.
     expect(org.orderedChatItems('g1', null, [chKey('g1'), chKey('a')])).toEqual([chKey('a'), chKey('g1')]);
   });
+
+  it('drops after a row when dragged over its lower half (reach the bottom)', async () => {
+    const org = useOrgStore();
+    const conv = group('owner', [channel({ id: 'a', name: 'alpha', position: 1 })]);
+    const w = mount(ChatSidebar, { props: { conversation: conv, activeChannelId: 'g1' }, global: { stubs } });
+    const btns = w.findAll('ul button');
+    const alpha = btns.find((b) => b.text().includes('alpha'))!;
+    const general = btns.find((b) => b.text().includes('general'))!;
+    await alpha.trigger('dragstart');
+    await general.trigger('dragover', { clientY: 9999 }); // lower half → insert after
+    await general.trigger('drop');
+    expect(org.orderedChatItems('g1', null, [chKey('g1'), chKey('a')])).toEqual([chKey('g1'), chKey('a')]);
+  });
 });

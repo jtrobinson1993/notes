@@ -163,9 +163,14 @@ function unpinNote(noteId: string) {
 // ---- Drag & drop (personal arrangement) ----
 const draggingItem = ref<string | null>(null);
 const draggingFolder = ref<string | null>(null);
-// The row currently dragged over: `into` = drop inside a folder (ring), else an
-// insertion line before the row. Absolutely positioned, so no layout shift.
-const dragOver = ref<{ key: string; into: boolean } | null>(null);
+// The row currently dragged over: `into` = drop inside a folder (ring); otherwise
+// an insertion line before (`after:false`) or after (`after:true`) the row, based
+// on which half the cursor is over. Absolutely positioned, so no layout shift.
+const dragOver = ref<{ key: string; into: boolean; after?: boolean } | null>(null);
+function itemDragOver(e: DragEvent, key: string) {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  dragOver.value = { key, into: false, after: e.clientY > r.top + r.height / 2 };
+}
 function clearDrag() {
   draggingItem.value = null;
   draggingFolder.value = null;
@@ -178,14 +183,18 @@ function onDropOnFolder(folderId: string) {
 }
 function onDropOnItem(target: Item) {
   const dragged = draggingItem.value;
-  clearDrag();
-  if (!dragged || dragged === target.key) return;
+  const after = dragOver.value?.after ?? false;
+  if (!dragged || dragged === target.key) {
+    clearDrag();
+    return;
+  }
   const folderId = org.chatItemFolderOf(convId.value, target.key);
   org.setChatItemFolder(convId.value, dragged, folderId);
   const keys = itemsInFolder(folderId).map((i) => i.key).filter((k) => k !== dragged);
-  const idx = keys.indexOf(target.key);
-  keys.splice(idx < 0 ? keys.length : idx, 0, dragged);
+  const at = keys.indexOf(target.key);
+  keys.splice(at < 0 ? keys.length : at + (after ? 1 : 0), 0, dragged);
   org.setChatItemOrder(convId.value, folderId, keys);
+  clearDrag();
 }
 function onDropOnRoot() {
   if (draggingItem.value) org.setChatItemFolder(convId.value, draggingItem.value, null);
@@ -264,8 +273,12 @@ function onDropOnRoot() {
           dragOver?.key === row.key && dragOver.into ? 'ring-2 ring-inset ring-blue-500' : '',
         ]"
       >
-        <!-- Drop indicator: an insertion line before this row (no layout shift). -->
-        <div v-if="dragOver?.key === row.key && !dragOver.into" class="pointer-events-none absolute inset-x-0 -top-px z-10 h-0.5 bg-blue-500"></div>
+        <!-- Drop indicator: an insertion line above/below this row (no layout shift). -->
+        <div
+          v-if="dragOver?.key === row.key && !dragOver.into"
+          class="pointer-events-none absolute inset-x-0 z-10 h-0.5 bg-blue-500"
+          :class="dragOver.after ? '-bottom-px' : '-top-px'"
+        ></div>
 
         <!-- Folder row: clicking anywhere on the row toggles collapse; the hover
              buttons act on their own. The row is the drag handle + drop target. -->
@@ -304,7 +317,7 @@ function onDropOnRoot() {
             @click="selectItem(row.item!)"
             @dragstart.stop="draggingItem = row.item!.key"
             @dragend="clearDrag"
-            @dragover.prevent="dragOver = { key: row.key, into: false }"
+            @dragover.prevent="itemDragOver($event, row.key)"
             @drop.stop.prevent="onDropOnItem(row.item!)"
           >
             <template v-if="row.item!.kind === 'channel'">
