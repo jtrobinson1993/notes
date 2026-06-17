@@ -33,6 +33,14 @@ describe('inlineScriptHashes', () => {
   it('returns [] when there are no inline scripts', () => {
     expect(inlineScriptHashes('<script src="/a.js"></script>')).toEqual([]);
   });
+
+  it('handles end tags with trailing whitespace/garbage before > (js/bad-tag-filter)', () => {
+    const body = `doThing();`;
+    const expected = `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`;
+    // HTML treats `</script foo\n>` as a valid close; the body must not bleed past it.
+    expect(inlineScriptHashes(`<script>${body}</script foo\n>`)).toEqual([expected]);
+    expect(inlineScriptHashes(`<script>${body}</script\t>`)).toEqual([expected]);
+  });
 });
 
 describe('buildCsp', () => {

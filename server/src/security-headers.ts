@@ -15,7 +15,10 @@ import type { Config } from './config.js';
  * (which is the point — a tampered/injected script won't match). */
 export function inlineScriptHashes(html: string): string[] {
   const hashes: string[] = [];
-  const re = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+  // The end tag must allow anything up to `>` after `script` (HTML treats
+  // `</script foo\t>` as a valid close), not just whitespace — a `\s*` here
+  // would mis-detect script boundaries (CodeQL js/bad-tag-filter).
+  const re = /<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(html))) {
     const attrs = m[1] ?? '';
