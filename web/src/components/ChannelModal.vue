@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
+import EmojiInput from './EmojiInput.vue';
 import IconHash from '~icons/mynaui/hash';
 import IconVolume from '~icons/mynaui/volume-high';
 import { CHANNEL_NAME_MAX, type ChannelType } from '@notes/shared';
@@ -57,12 +58,12 @@ function submit() {
       </div>
       <label class="block">
         <span class="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">Channel name</span>
-        <input
+        <EmojiInput
           v-model="name"
           autofocus
           :maxlength="CHANNEL_NAME_MAX"
-          placeholder="e.g. random"
-          class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
+          placeholder="e.g. random or :tada:"
+          input-class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
         />
       </label>
       <p v-if="type === 'voice' && mode === 'create'" class="text-xs text-zinc-400">

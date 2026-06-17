@@ -21,6 +21,7 @@ import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import { useOrgStore } from '../stores/organization';
 import IconFolder from '~icons/mynaui/folder';
 import ColorPalette from './ColorPalette.vue';
+import EmojiInput from './EmojiInput.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import MarkdownView from './MarkdownView.vue';
 import ShareDialog from './ShareDialog.vue';
@@ -245,11 +246,12 @@ function fmtSize(bytes: number): string {
 <template>
   <div class="flex h-full flex-col p-4">
     <div class="mb-2 flex items-center gap-1">
-      <input
+      <EmojiInput
         v-model="title"
         placeholder="Untitled"
         :readonly="readonly"
-        class="min-w-0 grow bg-transparent text-xl font-semibold outline-none placeholder:text-zinc-400"
+        wrapper-class="min-w-0 grow"
+        input-class="w-full bg-transparent text-xl font-semibold outline-none placeholder:text-zinc-400"
       />
       <span v-if="note.shared" class="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700 dark:bg-violet-950 dark:text-violet-300">
         {{ note.shared.ownerDisplayName }} · {{ note.shared.access === 'read' ? 'read-only' : 'can edit' }}
