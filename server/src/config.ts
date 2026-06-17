@@ -11,6 +11,9 @@ export interface Config {
   webDist: string | null;
   /** KLIPY API key for the server-side GIF-search proxy; null disables GIF search */
   klipyApiKey: string | null;
+  /** Per-IP request ceiling per minute for the global rate limiter. Liberal by
+   *  default so normal use is never throttled; tests raise it out of the way. */
+  rateLimitMax: number;
 }
 
 export function loadConfig(): Config {
@@ -31,5 +34,6 @@ export function loadConfig(): Config {
     appName: process.env.APP_NAME ?? 'Notes',
     webDist: process.env.WEB_DIST === 'off' ? null : (process.env.WEB_DIST ?? null),
     klipyApiKey: process.env.KLIPY_API_KEY?.trim() || null,
+    rateLimitMax: Number(process.env.RATE_LIMIT_MAX ?? 600),
   };
 }

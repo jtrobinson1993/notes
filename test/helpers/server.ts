@@ -24,6 +24,9 @@ export function makeConfig(dataDir: string, overrides: Partial<Config> = {}): Co
     appName: 'Notes',
     webDist: FIXTURE_WEBDIST,
     klipyApiKey: null,
+    // Effectively unlimited so the rate limiter never interferes with a suite
+    // that fires many requests; rate-limit behavior is covered explicitly.
+    rateLimitMax: 1_000_000,
     ...overrides,
   };
 }

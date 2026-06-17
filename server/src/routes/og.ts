@@ -1,5 +1,7 @@
 import dns from 'node:dns/promises';
+import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
 import net from 'node:net';
+import { Agent } from 'undici';
 import type { FastifyInstance } from 'fastify';
 import type { LinkPreview } from '@notes/shared';
 import { requireAuth } from '../session.js';
@@ -50,8 +52,10 @@ function isPrivateIp(ip: string): boolean {
 }
 
 /** Throw unless every resolved address for the host is a public, routable IP.
- *  (Residual DNS-rebinding risk between this check and the fetch is accepted for
- *  a small self-hosted deployment.) */
+ *  This is a fast pre-check; the authoritative guard is `publicOnlyLookup`,
+ *  which re-validates the IP the socket actually connects to (so a host that
+ *  rebinds to a private address between this check and the fetch is still
+ *  blocked — see the dispatcher below). */
 async function assertPublicHost(hostname: string): Promise<void> {
   if (net.isIP(hostname)) {
     if (isPrivateIp(hostname)) throw new Error('blocked address');
@@ -70,6 +74,26 @@ async function assertPublicHost(hostname: string): Promise<void> {
   if (!records.length) throw new Error('no address');
   for (const r of records) if (isPrivateIp(r.address)) throw new Error('blocked address');
 }
+
+// undici invokes this for every outbound connection the fetch makes, so the IP
+// the socket *actually* connects to is validated at connect time. That closes
+// the DNS-rebinding TOCTOU: a host can't pass assertPublicHost() with a public
+// record and then resolve to 127.0.0.1 / 169.254.169.254 for the real request.
+// TLS SNI is preserved (undici still uses the hostname), so HTTPS works.
+type LookupCb = (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void;
+export function publicOnlyLookup(hostname: string, options: { all?: boolean }, callback: LookupCb): void {
+  dnsLookup(hostname, { all: true }, (err, addresses) => {
+    if (err) return callback(err, '', 0);
+    if (!addresses.length) return callback(new Error('no address') as NodeJS.ErrnoException, '', 0);
+    for (const a of addresses) {
+      if (isPrivateIp(a.address)) return callback(new Error('blocked address') as NodeJS.ErrnoException, '', 0);
+    }
+    if (options?.all) return callback(null, addresses);
+    callback(null, addresses[0]!.address, addresses[0]!.family);
+  });
+}
+
+const ssrfSafeAgent = new Agent({ connect: { lookup: publicOnlyLookup } });
 
 async function readCapped(res: Response, max: number): Promise<string> {
   const reader = res.body?.getReader();
@@ -97,11 +121,15 @@ async function fetchHtml(initialUrl: string): Promise<{ html: string; finalUrl: 
     const u = new URL(url);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('bad protocol');
     await assertPublicHost(u.hostname);
-    const res = await fetch(url, {
+    const init: RequestInit = {
       redirect: 'manual',
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: { 'user-agent': 'NotesLinkPreview/1.0 (+link-preview)', accept: 'text/html,application/xhtml+xml' },
-    });
+    };
+    // Node's fetch honors an undici dispatcher even though the DOM RequestInit
+    // type omits it; this is what routes the request through publicOnlyLookup.
+    (init as RequestInit & { dispatcher: Agent }).dispatcher = ssrfSafeAgent;
+    const res = await fetch(url, init);
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get('location');
       if (!loc) throw new Error('redirect without location');

@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
+import fastifyRateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { existsSync } from 'node:fs';
@@ -24,6 +25,15 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
 
   await app.register(fastifyCookie);
+  // Global per-IP rate limit. Deliberately liberal so normal use is never
+  // throttled — it exists to cap abuse (credential guessing, proxy/upload
+  // hammering) rather than to police real traffic. Routes that want a tighter
+  // ceiling (e.g. the auth ceremony) set `config.rateLimit` per route.
+  await app.register(fastifyRateLimit, {
+    global: true,
+    max: config.rateLimitMax,
+    timeWindow: '1 minute',
+  });
   await app.register(fastifyWebsocket, { options: { maxPayload: WS_MAX_PAYLOAD } });
   registerSessionHooks(app, db, config);
 

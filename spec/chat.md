@@ -584,8 +584,9 @@ CGNAT/cloud-metadata/multicast all blocked, IPv4 + IPv6); redirects are followed
 time-capped** and must be HTML. OG/`<meta>` tags are parsed from the `<head>`
 with no HTML execution, and HTML entities are decoded in a **single pass** so
 escaped markup (e.g. `&amp;lt;`) can't be double-unescaped back into live tags.
-Residual DNS-rebinding between resolve and fetch is accepted for a small
-self-hosted deployment.
+DNS rebinding is closed at the socket layer — the fetch uses an undici
+dispatcher whose lookup re-validates the resolved IP at connect time, so a host
+can't pass the pre-check and then connect to a private address.
 
 ### Custom (encrypted) per-user emoji
 
