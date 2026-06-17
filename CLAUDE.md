@@ -2,6 +2,23 @@
 
 Working rules for this repo. See the **`spec-and-tests`** skill for the how/when.
 
+## Security comes first
+
+- **Never ignore a security issue.** If you spot a vulnerability, weakness, or
+  questionable security tradeoff — at any point, even incidental to the task —
+  surface it. Don't quietly skip it, defer it silently, or bury it in a summary.
+- **Default to hardening.** When making the app more secure is just *more work*
+  (no real downside, no behavior tradeoff, no product decision), do it without
+  asking — that's the expected path, not a detour.
+- **Escalate genuine decisions.** If closing an issue needs a judgment call
+  (a UX/functionality tradeoff, a breaking change, picking between mitigations
+  with real costs), stop and check with me first — describe the issue, the
+  options, and your recommendation clearly.
+- **Never regress security.** Do not make the app less secure, weaken an existing
+  guard, or introduce/accept a vulnerability without first asking me and clearly
+  describing the risk. "CodeQL says it's only a warning" / "it's probably a false
+  positive" is not a reason to skip this.
+
 ## On every change
 
 - **Test business logic.** Anything with rules/decisions — crypto & key
