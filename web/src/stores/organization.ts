@@ -38,7 +38,29 @@ interface OrgData {
   /** folder key ('' = unfiled/root) → manually-ordered note ids. Notes in a
    *  folder but absent here fall back to recency order, appended after. */
   noteOrder: Record<string, string[]>;
+  /** Per-conversation chat-sidebar organization (folders that group channels +
+   *  pinned notes). Distinct from note folders, and personal (like pins). */
+  chat: Record<string, ChatOrg>;
 }
+
+/** A chat-sidebar folder — a separate namespace from note folders. */
+export interface ChatFolder {
+  id: string;
+  name: string;
+  position: number;
+  parentId: string | null;
+}
+export interface ChatOrg {
+  folders: ChatFolder[];
+  /** item key ('c:'+channelId | 'n:'+noteId) → chat folder id (absent = root). */
+  itemFolder: Record<string, string>;
+  /** folder key ('' = root) → manually-ordered item keys. */
+  itemOrder: Record<string, string[]>;
+}
+
+/** Item keys used in the chat tree (channels and pinned notes share one space). */
+export const chKey = (channelId: string): string => `c:${channelId}`;
+export const noteItemKey = (noteId: string): string => `n:${noteId}`;
 
 /** A note's folder, as a stable key for the noteOrder map. */
 export function folderKey(folderId: string | null): string {
@@ -46,7 +68,7 @@ export function folderKey(folderId: string | null): string {
 }
 
 function empty(): OrgData {
-  return { folders: [], noteFolders: {}, pins: {}, noteOrder: {} };
+  return { folders: [], noteFolders: {}, pins: {}, noteOrder: {}, chat: {} };
 }
 
 function loadLocal(): OrgData {
@@ -65,6 +87,7 @@ export const useOrgStore = defineStore('organization', () => {
   const noteFolders = ref<Record<string, string>>({});
   const pins = ref<Record<string, OrgPin[]>>({});
   const noteOrder = ref<Record<string, string[]>>({});
+  const chat = ref<Record<string, ChatOrg>>({});
   const loaded = ref(false);
 
   // Hydrate from the local cache immediately (instant; corrected by load()).
@@ -74,6 +97,7 @@ export const useOrgStore = defineStore('organization', () => {
     noteFolders.value = d.noteFolders;
     pins.value = d.pins;
     noteOrder.value = d.noteOrder ?? {};
+    chat.value = d.chat ?? {};
   }
   hydrateLocal();
 
@@ -93,7 +117,13 @@ export const useOrgStore = defineStore('organization', () => {
   }
 
   function snapshot(): OrgData {
-    return { folders: folders.value, noteFolders: noteFolders.value, pins: pins.value, noteOrder: noteOrder.value };
+    return {
+      folders: folders.value,
+      noteFolders: noteFolders.value,
+      pins: pins.value,
+      noteOrder: noteOrder.value,
+      chat: chat.value,
+    };
   }
 
   /** Order a folder's candidate notes by the manual order, recency for the rest.
@@ -144,6 +174,7 @@ export const useOrgStore = defineStore('organization', () => {
       noteFolders.value = d.noteFolders;
       pins.value = d.pins;
       noteOrder.value = d.noteOrder ?? {};
+      chat.value = d.chat ?? {};
       localStorage.setItem(LOCAL_KEY, JSON.stringify(snapshot()));
     } catch {
       loaded.value = false; // transient: retry next call
@@ -232,11 +263,90 @@ export const useOrgStore = defineStore('organization', () => {
     persist();
   }
 
+  // ---- Chat-sidebar folders (per conversation; personal; channels + notes) ----
+  function chatOf(convId: string): ChatOrg {
+    return chat.value[convId] ?? { folders: [], itemFolder: {}, itemOrder: {} };
+  }
+  function mutateChat(convId: string, fn: (rec: ChatOrg) => void): void {
+    const cur = chatOf(convId);
+    const rec: ChatOrg = {
+      folders: [...cur.folders],
+      itemFolder: { ...cur.itemFolder },
+      itemOrder: { ...cur.itemOrder },
+    };
+    fn(rec);
+    chat.value = { ...chat.value, [convId]: rec };
+    persist();
+  }
+  function chatFolders(convId: string): ChatFolder[] {
+    return [...chatOf(convId).folders].sort((a, b) => a.position - b.position);
+  }
+  function chatChildFolders(convId: string, parentId: string | null): ChatFolder[] {
+    return chatFolders(convId).filter((f) => (f.parentId ?? null) === parentId);
+  }
+  function chatDescendantIds(convId: string, id: string): string[] {
+    const out = [id];
+    const all = chatOf(convId).folders;
+    for (let i = 0; i < out.length; i++) {
+      for (const f of all) if ((f.parentId ?? null) === out[i]) out.push(f.id);
+    }
+    return out;
+  }
+  function createChatFolder(convId: string, name: string, parentId: string | null = null): string {
+    const id = crypto.randomUUID();
+    mutateChat(convId, (rec) => {
+      const position = rec.folders.reduce((m, f) => Math.max(m, f.position), -1) + 1;
+      rec.folders.push({ id, name: name.trim(), position, parentId });
+    });
+    return id;
+  }
+  function renameChatFolder(convId: string, id: string, name: string): void {
+    mutateChat(convId, (rec) => {
+      rec.folders = rec.folders.map((f) => (f.id === id ? { ...f, name: name.trim() } : f));
+    });
+  }
+  function setChatFolderParent(convId: string, id: string, parentId: string | null): void {
+    if (id === parentId) return;
+    if (parentId !== null && chatDescendantIds(convId, id).includes(parentId)) return;
+    mutateChat(convId, (rec) => {
+      rec.folders = rec.folders.map((f) => (f.id === id ? { ...f, parentId } : f));
+    });
+  }
+  function deleteChatFolder(convId: string, id: string): void {
+    mutateChat(convId, (rec) => {
+      const parent = rec.folders.find((f) => f.id === id)?.parentId ?? null;
+      rec.folders = rec.folders.filter((f) => f.id !== id).map((f) => ((f.parentId ?? null) === id ? { ...f, parentId: parent } : f));
+      for (const [k, fid] of Object.entries(rec.itemFolder)) if (fid === id) delete rec.itemFolder[k];
+      delete rec.itemOrder[id];
+    });
+  }
+  function chatItemFolderOf(convId: string, itemKey: string): string | null {
+    return chatOf(convId).itemFolder[itemKey] ?? null;
+  }
+  function setChatItemFolder(convId: string, itemKey: string, folderId: string | null): void {
+    mutateChat(convId, (rec) => {
+      if (folderId) rec.itemFolder[itemKey] = folderId;
+      else delete rec.itemFolder[itemKey];
+      for (const k of Object.keys(rec.itemOrder)) rec.itemOrder[k] = rec.itemOrder[k]!.filter((x) => x !== itemKey);
+    });
+  }
+  function orderedChatItems(convId: string, folderId: string | null, candidates: string[]): string[] {
+    const manual = chatOf(convId).itemOrder[folderKey(folderId)] ?? [];
+    const inManual = manual.filter((k) => candidates.includes(k));
+    return [...inManual, ...candidates.filter((k) => !inManual.includes(k))];
+  }
+  function setChatItemOrder(convId: string, folderId: string | null, keys: string[]): void {
+    mutateChat(convId, (rec) => {
+      rec.itemOrder[folderKey(folderId)] = keys;
+    });
+  }
+
   function reset(): void {
     folders.value = [];
     noteFolders.value = {};
     pins.value = {};
     noteOrder.value = {};
+    chat.value = {};
     loaded.value = false;
   }
 
@@ -262,6 +372,18 @@ export const useOrgStore = defineStore('organization', () => {
     pin,
     unpin,
     forgetNote,
+    // chat-sidebar folders
+    chatFolders,
+    chatChildFolders,
+    chatDescendantIds,
+    createChatFolder,
+    renameChatFolder,
+    setChatFolderParent,
+    deleteChatFolder,
+    chatItemFolderOf,
+    setChatItemFolder,
+    orderedChatItems,
+    setChatItemOrder,
     reset,
   };
 });

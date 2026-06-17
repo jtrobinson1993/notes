@@ -189,14 +189,20 @@ UI:
 
 - **NotesPage** — a single **file tree**: folders (full-width, borderless rows,
   depth-indented) with their notes nested directly beneath, unfiled notes at the
-  root. Everything is drag-and-drop: drag a folder onto another to nest it (or
-  onto empty space to move it to the top level); drag a note onto a folder to
-  move it there, onto another note to reorder/move before it, or onto empty
-  space to unfile it. A **compact** toggle (beside the new-folder button) shows
-  note rows as name-only; otherwise rows show tags + a preview. Searching or
-  filtering by a tag swaps the tree for a flat result list.
+  root. Clicking a folder's **icon collapses/expands** it (shared
+  `folderCollapse` store, persisted). Everything is drag-and-drop: drag a folder
+  onto another to nest it (or onto empty space to move it to the top level); drag
+  a note onto a folder to move it there, onto another note to reorder/move before
+  it, or onto empty space to unfile it. A **compact** toggle (beside the
+  new-folder button) shows note rows as name-only; otherwise rows show tags + a
+  preview. Searching or filtering by a tag swaps the tree for a flat result list.
+  `:emoji:` shortcodes render in note titles and folder names (`EmojiText`).
 - **NoteEditor** — a folder picker (`<select>`, indented to show nesting) on each
   note.
+- **Chat sidebar** — pins individual **notes** (not note-folders) into a
+  conversation; grouping there uses the conversation's own **chat folders** (a
+  separate namespace — see [chat.md](chat.md#chat-folders--pins-v4--as-built)).
+  Clicking a pinned note opens it over the chat window.
 - **Chat sidebar** — a Pinned section + a pin picker that toggles pins for
   existing notes/folders or creates a new note/folder (which also appears in the
   notes view) and pins it. Opening a pinned item navigates to the notes view

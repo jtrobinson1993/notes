@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
+import { computed, ref } from 'vue';
 import ChannelModal from './ChannelModal.vue';
 import PinPickerModal from './PinPickerModal.vue';
 import EmojiText from './EmojiText.vue';
 import { useChatStore } from '../stores/chat';
 import { useNotesStore } from '../stores/notes';
-import { useOrgStore, type OrgPin } from '../stores/organization';
+import { useOrgStore, chKey, noteItemKey } from '../stores/organization';
+import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
 import { canManageMembers, type ChannelInfo, type ChannelType, type Conversation } from '@notes/shared';
 import IconHash from '~icons/mynaui/hash';
 import IconVolume from '~icons/mynaui/volume-high';
@@ -14,151 +14,180 @@ import IconPanelLeft from '~icons/mynaui/panel-left';
 import IconPlus from '~icons/mynaui/plus';
 import IconPencil from '~icons/mynaui/pencil';
 import IconTrash from '~icons/mynaui/trash';
-import IconEdit from '~icons/mynaui/edit-one';
-import IconChevronUp from '~icons/mynaui/chevron-up';
-import IconChevronDown from '~icons/mynaui/chevron-down';
-import IconCheck from '~icons/mynaui/check';
 import IconFolder from '~icons/mynaui/folder';
+import IconFolderPlus from '~icons/mynaui/folder-plus';
 import IconNote from '~icons/mynaui/file-text';
+import IconPin from '~icons/mynaui/pin';
 import IconX from '~icons/mynaui/x';
 
-// The per-conversation channel sidebar (groups). Collapsible with a persisted
-// open/closed state; an edit mode at the bottom turns the list into
-// rename/reorder/delete controls and exposes channel creation.
+// The per-conversation sidebar as a unified tree: chat folders (a namespace
+// distinct from note folders, personal like pins) group channels AND pinned
+// notes. Channel create/rename/delete are server-side (managers); the folder
+// arrangement, ordering, and pins are personal to each member.
 const props = defineProps<{ conversation: Conversation; activeChannelId: string }>();
 const emit = defineEmits<{ select: [channelId: string]; openNote: [noteId: string] }>();
 const chat = useChatStore();
 const notes = useNotesStore();
 const org = useOrgStore();
-const router = useRouter();
 
+const convId = computed(() => props.conversation.id);
 const isGroup = computed(() => props.conversation.kind === 'group');
+const canManage = computed(() => canManageMembers(props.conversation.myRole));
 
-// Open/closed state persists across sessions (one toggle for the chat sidebar).
 const STORAGE_KEY = 'chat:channels:open';
 const open = ref(localStorage.getItem(STORAGE_KEY) !== '0');
-watch(open, (o) => localStorage.setItem(STORAGE_KEY, o ? '1' : '0'));
-function toggle() {
+function toggleOpen() {
   open.value = !open.value;
-  if (!open.value) editing.value = false;
+  localStorage.setItem(STORAGE_KEY, open.value ? '1' : '0');
 }
 
-const canManage = computed(() => canManageMembers(props.conversation.myRole));
-const channels = computed<ChannelInfo[]>(() => [...(props.conversation.channels ?? [])].sort((a, b) => a.position - b.position));
-const extra = computed(() => channels.value.filter((c) => !c.isDefault));
+// ---- Items (channels + pinned notes) ----
+type Item =
+  | { key: string; kind: 'channel'; channel: ChannelInfo }
+  | { key: string; kind: 'note'; noteId: string; title: string };
 
-const editing = ref(false);
-const busy = ref(false);
+const allItems = computed<Item[]>(() => {
+  // DMs have only the general channel (the chat itself) — don't surface it as a
+  // row; their sidebar is pins-only. Groups list all channels.
+  const chans: Item[] = isGroup.value
+    ? (props.conversation.channels ?? []).map((ch) => ({ key: chKey(ch.id), kind: 'channel', channel: ch }))
+    : [];
+  const notePins: Item[] = org
+    .pinsFor(convId.value)
+    .filter((p) => p.kind === 'note')
+    .map((p) => ({ key: noteItemKey(p.id), kind: 'note', noteId: p.id, title: notes.notes.get(p.id)?.payload.title || 'Untitled' }));
+  return [...chans, ...notePins];
+});
+const itemByKey = computed(() => new Map(allItems.value.map((i) => [i.key, i])));
+function itemsInFolder(folderId: string | null): Item[] {
+  const keys = allItems.value.filter((i) => org.chatItemFolderOf(convId.value, i.key) === folderId).map((i) => i.key);
+  return org.orderedChatItems(convId.value, folderId, keys).map((k) => itemByKey.value.get(k)!).filter(Boolean);
+}
 
+interface Row {
+  key: string;
+  type: 'folder' | 'item';
+  depth: number;
+  folder?: { id: string; name: string };
+  item?: Item;
+}
+const treeRows = computed<Row[]>(() => {
+  const out: Row[] = [];
+  for (const it of itemsInFolder(null)) out.push({ key: `i:${it.key}`, type: 'item', depth: 0, item: it });
+  const walk = (parentId: string | null, depth: number) => {
+    for (const f of org.chatChildFolders(convId.value, parentId)) {
+      out.push({ key: `f:${f.id}`, type: 'folder', depth, folder: f });
+      if (isCollapsed(f.id)) continue;
+      for (const it of itemsInFolder(f.id)) out.push({ key: `i:${it.key}`, type: 'item', depth: depth + 1, item: it });
+      walk(f.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+});
+
+function depthPad(depth: number): string {
+  return `${depth * 14 + 8}px`;
+}
 function unread(ch: ChannelInfo): number {
   return Math.max(0, ch.lastSeq - ch.lastReadSeq);
 }
-function select(ch: ChannelInfo) {
-  if (ch.type === 'voice') return; // voice channels have no text stream yet (v6)
-  emit('select', ch.id);
+function selectItem(it: Item) {
+  if (it.kind === 'note') emit('openNote', it.noteId);
+  else if (it.channel.type !== 'voice') emit('select', it.channel.id); // voice has no text stream yet
 }
 
-// ---- Create / rename ----
-const modalOpen = ref(false);
-const modalMode = ref<'create' | 'rename'>('create');
-const renameTarget = ref<ChannelInfo | null>(null);
-
-function openCreate() {
-  modalMode.value = 'create';
-  renameTarget.value = null;
-  modalOpen.value = true;
+// ---- Channel create / rename / delete (server; managers) ----
+const channelModalOpen = ref(false);
+const channelMode = ref<'create' | 'rename'>('create');
+const renameChannelTarget = ref<ChannelInfo | null>(null);
+const busy = ref(false);
+function openChannelCreate() {
+  channelMode.value = 'create';
+  renameChannelTarget.value = null;
+  channelModalOpen.value = true;
 }
-function openRename(ch: ChannelInfo) {
-  modalMode.value = 'rename';
-  renameTarget.value = ch;
-  modalOpen.value = true;
+function openChannelRename(ch: ChannelInfo) {
+  channelMode.value = 'rename';
+  renameChannelTarget.value = ch;
+  channelModalOpen.value = true;
 }
-async function onModalSubmit(payload: { name: string; type: ChannelType }) {
+async function onChannelSubmit(payload: { name: string; type: ChannelType }) {
   busy.value = true;
   try {
-    if (modalMode.value === 'create') {
-      const id = await chat.createChannel(props.conversation.id, payload.name, payload.type);
-      modalOpen.value = false;
+    if (channelMode.value === 'create') {
+      const id = await chat.createChannel(convId.value, payload.name, payload.type);
+      channelModalOpen.value = false;
       if (payload.type === 'text') emit('select', id);
-    } else if (renameTarget.value) {
-      await chat.renameChannel(props.conversation.id, renameTarget.value.id, payload.name);
-      modalOpen.value = false;
+    } else if (renameChannelTarget.value) {
+      await chat.renameChannel(convId.value, renameChannelTarget.value.id, payload.name);
+      channelModalOpen.value = false;
     }
   } finally {
     busy.value = false;
   }
 }
-
-// ---- Reorder (drag, or up/down for a11y) + delete ----
-const draggingChannel = ref<string | null>(null);
-async function onChannelDrop(target: ChannelInfo) {
-  const dragged = draggingChannel.value;
-  draggingChannel.value = null;
-  if (!dragged || dragged === target.id || target.isDefault) return;
-  const ids = extra.value.map((c) => c.id);
-  const from = ids.indexOf(dragged);
-  const to = ids.indexOf(target.id);
-  if (from < 0 || to < 0) return;
-  ids.splice(from, 1);
-  ids.splice(to, 0, dragged);
-  busy.value = true;
-  try {
-    await chat.reorderChannels(props.conversation.id, ids);
-  } finally {
-    busy.value = false;
-  }
-}
-async function move(ch: ChannelInfo, dir: -1 | 1) {
-  const ids = extra.value.map((c) => c.id);
-  const i = ids.indexOf(ch.id);
-  const j = i + dir;
-  if (i < 0 || j < 0 || j >= ids.length) return;
-  [ids[i], ids[j]] = [ids[j]!, ids[i]!];
-  busy.value = true;
-  try {
-    await chat.reorderChannels(props.conversation.id, ids);
-  } finally {
-    busy.value = false;
-  }
-}
-async function remove(ch: ChannelInfo) {
+async function deleteChannel(ch: ChannelInfo) {
   if (!confirm(`Delete #${ch.name}? Its messages will be permanently removed.`)) return;
   busy.value = true;
   try {
-    if (props.activeChannelId === ch.id) emit('select', props.conversation.id);
-    await chat.deleteChannel(props.conversation.id, ch.id);
+    if (props.activeChannelId === ch.id) emit('select', convId.value);
+    await chat.deleteChannel(convId.value, ch.id);
   } finally {
     busy.value = false;
   }
 }
 
-// ---- Pinned notes / folders (personal; both groups and DMs) ----
+// ---- Chat folders + pins (personal) ----
 const pinPickerOpen = ref(false);
-const pins = computed<OrgPin[]>(() => org.pinsFor(props.conversation.id));
-function pinLabel(p: OrgPin): string {
-  if (p.kind === 'folder') return org.folders.find((f) => f.id === p.id)?.name ?? 'Folder';
-  return notes.notes.get(p.id)?.payload.title || 'Untitled';
+function createFolder() {
+  const name = window.prompt('New folder name')?.trim();
+  if (name) org.createChatFolder(convId.value, name);
 }
-function openPin(p: OrgPin) {
-  // A note opens over the chat window; a (note-)folder still navigates to the
-  // notes view since it has no in-chat representation.
-  if (p.kind === 'note') emit('openNote', p.id);
-  else router.push({ path: '/', query: { folder: p.id } });
+function createSubfolder(parentId: string) {
+  const name = window.prompt('New subfolder name')?.trim();
+  if (name) org.createChatFolder(convId.value, name, parentId);
 }
-function unpin(p: OrgPin) {
-  org.unpin(props.conversation.id, p.kind, p.id);
+function renameFolder(id: string, current: string) {
+  const name = window.prompt('Rename folder', current)?.trim();
+  if (name) org.renameChatFolder(convId.value, id, name);
 }
-function openNote(id: string) {
-  emit('openNote', id);
+function deleteFolder(id: string, name: string) {
+  if (!window.confirm(`Delete folder "${name}"? Its channels and notes move out; nothing is deleted.`)) return;
+  org.deleteChatFolder(convId.value, id);
+}
+function unpinNote(noteId: string) {
+  org.unpin(convId.value, 'note', noteId);
 }
 
-// If the active channel disappears (deleted elsewhere), fall back to general.
-watch(
-  () => channels.value.map((c) => c.id).join(','),
-  () => {
-    if (!channels.value.some((c) => c.id === props.activeChannelId)) emit('select', props.conversation.id);
-  },
-);
+// ---- Drag & drop (personal arrangement) ----
+const draggingItem = ref<string | null>(null);
+const draggingFolder = ref<string | null>(null);
+function clearDrag() {
+  draggingItem.value = null;
+  draggingFolder.value = null;
+}
+function onDropOnFolder(folderId: string) {
+  if (draggingItem.value) org.setChatItemFolder(convId.value, draggingItem.value, folderId);
+  else if (draggingFolder.value) org.setChatFolderParent(convId.value, draggingFolder.value, folderId);
+  clearDrag();
+}
+function onDropOnItem(target: Item) {
+  const dragged = draggingItem.value;
+  clearDrag();
+  if (!dragged || dragged === target.key) return;
+  const folderId = org.chatItemFolderOf(convId.value, target.key);
+  org.setChatItemFolder(convId.value, dragged, folderId);
+  const keys = itemsInFolder(folderId).map((i) => i.key).filter((k) => k !== dragged);
+  const idx = keys.indexOf(target.key);
+  keys.splice(idx < 0 ? keys.length : idx, 0, dragged);
+  org.setChatItemOrder(convId.value, folderId, keys);
+}
+function onDropOnRoot() {
+  if (draggingItem.value) org.setChatItemFolder(convId.value, draggingItem.value, null);
+  else if (draggingFolder.value) org.setChatFolderParent(convId.value, draggingFolder.value, null);
+  clearDrag();
+}
 </script>
 
 <template>
@@ -170,129 +199,142 @@ watch(
     <button
       class="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
       aria-label="Show channels"
-      title="Show channels"
-      @click="toggle"
+      title="Show sidebar"
+      @click="toggleOpen"
     >
       <IconPanelLeft class="h-5 w-5" />
     </button>
   </aside>
 
-  <!-- Open: the channel list. -->
+  <!-- Open: the unified channel/note tree. -->
   <aside
     v-else
     class="z-nav flex w-56 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
   >
-    <header class="flex items-center gap-1 px-2 py-2">
+    <header class="flex items-center gap-0.5 px-2 py-2">
       <button
         class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
         aria-label="Hide channels"
         title="Hide sidebar"
-        @click="toggle"
+        @click="toggleOpen"
       >
         <IconPanelLeft class="h-5 w-5" />
       </button>
+      <span class="grow" />
+      <button
+        class="flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+        aria-label="Pin a note"
+        title="Pin a note"
+        @click="pinPickerOpen = true"
+      >
+        <IconPin class="h-4 w-4" />
+      </button>
+      <button
+        class="flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+        aria-label="New folder"
+        title="New folder"
+        @click="createFolder"
+      >
+        <IconFolderPlus class="h-4 w-4" />
+      </button>
+      <button
+        v-if="canManage"
+        class="flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+        aria-label="New channel"
+        title="New channel"
+        @click="openChannelCreate"
+      >
+        <IconPlus class="h-4 w-4" />
+      </button>
     </header>
 
-    <div class="min-h-0 grow overflow-y-auto pb-2">
-      <!-- Channels (groups only). -->
-      <template v-if="isGroup">
-        <div class="mb-1 flex items-center justify-between px-3">
-          <span class="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Channels</span>
-          <button
-            v-if="canManage"
-            class="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-            aria-label="Create channel"
-            title="Create channel"
-            @click="openCreate"
-          >
-            <IconPlus class="h-4 w-4" />
-          </button>
-        </div>
-        <ul class="mb-3 space-y-0.5 px-2">
-          <li v-for="ch in channels" :key="ch.id" class="flex items-center gap-1">
-            <button
-              class="flex min-w-0 grow items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm"
-              :class="[
-                ch.id === activeChannelId ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800/60',
-                ch.type === 'voice' ? 'cursor-default opacity-70' : '',
-                editing && !ch.isDefault ? 'cursor-grab' : '',
-              ]"
-              :aria-current="ch.id === activeChannelId ? 'true' : undefined"
-              :draggable="editing && !ch.isDefault"
-              @click="select(ch)"
-              @dragstart="draggingChannel = ch.id"
-              @dragend="draggingChannel = null"
-              @dragover.prevent
-              @drop.prevent="onChannelDrop(ch)"
-            >
-              <IconVolume v-if="ch.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
-              <IconHash v-else class="h-4 w-4 shrink-0 opacity-60" />
-              <span class="min-w-0 grow truncate"><EmojiText :text="ch.name" /></span>
-              <span
-                v-if="unread(ch) > 0 && ch.id !== activeChannelId"
-                class="ml-1 shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
-              >{{ unread(ch) > 99 ? '99+' : unread(ch) }}</span>
-            </button>
-
-            <!-- Edit-mode controls for an extra channel (general is fixed). -->
-            <template v-if="editing && !ch.isDefault">
-              <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 disabled:opacity-30 dark:hover:text-zinc-200" title="Move up" :disabled="busy" @click="move(ch, -1)"><IconChevronUp class="h-3.5 w-3.5" /></button>
-              <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 disabled:opacity-30 dark:hover:text-zinc-200" title="Move down" :disabled="busy" @click="move(ch, 1)"><IconChevronDown class="h-3.5 w-3.5" /></button>
-              <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename" :disabled="busy" @click="openRename(ch)"><IconPencil class="h-3.5 w-3.5" /></button>
-              <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete" :disabled="busy" @click="remove(ch)"><IconTrash class="h-3.5 w-3.5" /></button>
-            </template>
-          </li>
-        </ul>
-      </template>
-
-      <!-- Pinned notes/folders (groups + DMs). Personal; pinning doesn't share. -->
-      <div class="mb-1 flex items-center justify-between px-3">
-        <span class="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Pinned</span>
-        <button
-          class="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-          aria-label="Pin a note or folder"
-          title="Pin a note or folder"
-          @click="pinPickerOpen = true"
-        >
-          <IconPlus class="h-4 w-4" />
-        </button>
-      </div>
-      <ul class="space-y-0.5 px-2">
-        <li v-for="p in pins" :key="`${p.kind}:${p.id}`" class="group/pin flex items-center gap-1">
-          <button
-            class="flex min-w-0 grow items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800/60"
-            @click="openPin(p)"
-          >
-            <IconFolder v-if="p.kind === 'folder'" class="h-4 w-4 shrink-0 opacity-60" />
-            <IconNote v-else class="h-4 w-4 shrink-0 opacity-60" />
-            <span class="min-w-0 grow truncate"><EmojiText :text="pinLabel(p)" /></span>
-          </button>
-          <button class="hidden rounded p-1 text-zinc-400 hover:text-red-600 group-hover/pin:block dark:hover:text-red-400" title="Unpin" @click="unpin(p)"><IconX class="h-3.5 w-3.5" /></button>
-        </li>
-        <li v-if="pins.length === 0" class="px-2 py-2 text-xs text-zinc-400">Pin notes or folders here for quick access.</li>
-      </ul>
-    </div>
-
-    <!-- Bottom edit toggle (group managers only). -->
-    <footer v-if="isGroup && canManage" class="border-t border-zinc-200 p-2 dark:border-zinc-800">
-      <button
-        class="flex w-full items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium"
-        :class="editing ? 'bg-blue-600 text-white hover:bg-blue-700' : 'text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800'"
-        @click="editing = !editing"
+    <ul class="min-h-0 grow overflow-y-auto pb-2" @dragover.prevent @drop.prevent="onDropOnRoot">
+      <li
+        v-for="row in treeRows"
+        :key="row.key"
+        class="group flex items-center"
+        :class="
+          row.type === 'item' && row.item!.kind === 'channel' && row.item!.channel.id === activeChannelId
+            ? 'bg-zinc-200 dark:bg-zinc-800'
+            : 'hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60'
+        "
       >
-        <component :is="editing ? IconCheck : IconEdit" class="h-4 w-4" />
-        {{ editing ? 'Done' : 'Edit channels' }}
-      </button>
-    </footer>
+        <!-- Folder row: the folder icon toggles collapse; the name selects/drags. -->
+        <template v-if="row.type === 'folder'">
+          <div
+            class="flex min-w-0 grow items-center gap-1.5 py-1.5 pr-2 text-sm"
+            :style="{ paddingLeft: depthPad(row.depth) }"
+            @dragover.prevent
+            @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
+          >
+            <button class="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700" :title="isCollapsed(row.folder!.id) ? 'Expand' : 'Collapse'" @click.stop="toggleCollapsed(row.folder!.id)">
+              <IconFolder class="h-4 w-4" :class="isCollapsed(row.folder!.id) ? 'opacity-90' : 'opacity-50'" />
+            </button>
+            <button
+              class="min-w-0 grow cursor-grab truncate text-left font-medium text-zinc-500 uppercase tracking-wide"
+              draggable="true"
+              @dragstart.stop="draggingFolder = row.folder!.id"
+              @dragend="clearDrag"
+            >
+              <EmojiText :text="row.folder!.name" />
+            </button>
+          </div>
+          <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
+            <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(row.folder!.id)"><IconFolderPlus class="h-3.5 w-3.5" /></button>
+            <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(row.folder!.id, row.folder!.name)"><IconPencil class="h-3.5 w-3.5" /></button>
+            <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete folder" @click="deleteFolder(row.folder!.id, row.folder!.name)"><IconTrash class="h-3.5 w-3.5" /></button>
+          </div>
+        </template>
+
+        <!-- Item row: a channel or a pinned note. -->
+        <template v-else>
+          <button
+            class="flex min-w-0 grow cursor-grab items-center gap-1.5 py-1.5 pr-2 text-left text-sm"
+            :style="{ paddingLeft: depthPad(row.depth) }"
+            :class="[
+              row.item!.kind === 'channel' && row.item!.channel.id === activeChannelId ? 'font-medium' : 'text-zinc-600 dark:text-zinc-300',
+              row.item!.kind === 'channel' && row.item!.channel.type === 'voice' ? 'opacity-70' : '',
+            ]"
+            draggable="true"
+            @click="selectItem(row.item!)"
+            @dragstart.stop="draggingItem = row.item!.key"
+            @dragend="clearDrag"
+            @dragover.prevent
+            @drop.stop.prevent="onDropOnItem(row.item!)"
+          >
+            <template v-if="row.item!.kind === 'channel'">
+              <IconVolume v-if="row.item!.channel.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
+              <IconHash v-else class="h-4 w-4 shrink-0 opacity-60" />
+              <span class="min-w-0 grow truncate"><EmojiText :text="row.item!.channel.name" /></span>
+              <span
+                v-if="unread(row.item!.channel) > 0 && row.item!.channel.id !== activeChannelId"
+                class="ml-1 shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+              >{{ unread(row.item!.channel) > 99 ? '99+' : unread(row.item!.channel) }}</span>
+            </template>
+            <template v-else>
+              <IconNote class="h-4 w-4 shrink-0 opacity-50" />
+              <span class="min-w-0 grow truncate"><EmojiText :text="row.item!.title" /></span>
+            </template>
+          </button>
+          <!-- Hover actions: unpin a note, or manage a channel (managers, non-default). -->
+          <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
+            <button v-if="row.item!.kind === 'note'" class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Unpin" @click="unpinNote(row.item!.noteId)"><IconX class="h-3.5 w-3.5" /></button>
+            <template v-else-if="canManage && !row.item!.channel.isDefault">
+              <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename channel" @click="openChannelRename(row.item!.channel)"><IconPencil class="h-3.5 w-3.5" /></button>
+              <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete channel" @click="deleteChannel(row.item!.channel)"><IconTrash class="h-3.5 w-3.5" /></button>
+            </template>
+          </div>
+        </template>
+      </li>
+    </ul>
 
     <ChannelModal
-      v-if="isGroup"
-      v-model:open="modalOpen"
-      :mode="modalMode"
-      :initial-name="renameTarget?.name"
+      v-model:open="channelModalOpen"
+      :mode="channelMode"
+      :initial-name="renameChannelTarget?.name"
       :busy="busy"
-      @submit="onModalSubmit"
+      @submit="onChannelSubmit"
     />
-    <PinPickerModal v-model:open="pinPickerOpen" :conversation-id="conversation.id" @open-note="openNote" />
+    <PinPickerModal v-model:open="pinPickerOpen" :conversation-id="convId" @open-note="emit('openNote', $event)" />
   </aside>
 </template>

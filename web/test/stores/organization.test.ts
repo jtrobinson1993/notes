@@ -138,6 +138,33 @@ describe('organization store — pins', () => {
   });
 });
 
+describe('organization store — chat folders (per conversation)', () => {
+  it('creates/nests chat folders independently of note folders', () => {
+    const org = useOrgStore();
+    const noteF = org.createFolder('NoteFolder');
+    const cat = org.createChatFolder('conv1', 'Reference');
+    const sub = org.createChatFolder('conv1', 'Rules', cat);
+    expect(org.chatChildFolders('conv1', null).map((f) => f.name)).toEqual(['Reference']);
+    expect(org.chatChildFolders('conv1', cat).map((f) => f.name)).toEqual(['Rules']);
+    expect(org.chatDescendantIds('conv1', cat).sort()).toEqual([cat, sub].sort());
+    // Separate namespace + separate conversations.
+    expect(org.chatFolders('conv2')).toEqual([]);
+    expect(org.sortedFolders.map((f) => f.id)).toEqual([noteF]);
+  });
+
+  it('assigns items to chat folders and orders them; delete frees the items', () => {
+    const org = useOrgStore();
+    const cat = org.createChatFolder('conv1', 'Reference');
+    org.setChatItemFolder('conv1', 'c:chan', cat);
+    org.setChatItemFolder('conv1', 'n:note', cat);
+    expect(org.chatItemFolderOf('conv1', 'c:chan')).toBe(cat);
+    org.setChatItemOrder('conv1', cat, ['n:note', 'c:chan']);
+    expect(org.orderedChatItems('conv1', cat, ['c:chan', 'n:note'])).toEqual(['n:note', 'c:chan']);
+    org.deleteChatFolder('conv1', cat);
+    expect(org.chatItemFolderOf('conv1', 'c:chan')).toBeNull(); // back to root
+  });
+});
+
 describe('organization store — encrypted persistence', () => {
   it('round-trips through the master-key-encrypted settings blob', async () => {
     const org1 = useOrgStore();

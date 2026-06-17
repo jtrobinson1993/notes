@@ -672,20 +672,35 @@ refetch the channel list after a create/rename/reorder/delete.
   `deleteChannel`) plus an `activeChannelId` for reconnect backfill.
 - `ConversationView` takes a `channelId` prop (default = general) and
   re-activates when the channel changes.
-- `ChatSidebar` (groups): a collapsible left sidebar with a persisted open/closed
-  state (`localStorage` `chat:channels:open`) and a toggle at the top; the
-  channel list with per-channel unread badges; and an "Edit channels" mode
-  (managers only) for rename / reorder / delete plus a create button. Reordering
-  is by drag-and-drop, with up/down arrows as an accessible fallback. Voice
-  channels are listed but not selectable yet.
+- `ChatSidebar` is a **unified tree** (like the notes tree): collapsible with a
+  persisted open/closed state (`localStorage` `chat:channels:open`) and a toggle
+  at the top. It lists **channels** (groups; per-channel unread badges; voice
+  channels listed but not selectable) and **pinned notes** as items, organized by
+  **chat folders**. Header buttons: pin a note, new folder, new channel
+  (managers). Channel rename/delete are inline hover actions (managers,
+  non-general). Everything is drag-and-drop — drag an item into a folder, onto
+  another item to reorder, or onto empty space to move it out; folders nest by
+  drag and collapse by clicking the folder icon. DMs show a **pins-only** tree
+  (their lone general channel isn't surfaced).
+- Clicking a pinned note **opens it over the chat window** (a `NoteEditor`
+  overlay with a close ✕), so notes — channel rules, D&D sheets, co-working docs
+  — live in the chat context. `ChatSidebar` emits `open-note`; `ConversationPage`
+  loads notes on unlock and renders the overlay.
 
-### Pins (v4) — as built
+### Chat folders + pins (v4) — as built
 
-The sidebar's **Pinned** section (in groups, and the **pins-only DM sidebar**)
-lets a user pin notes/folders for quick access; clicking one opens it in the
-notes view. Pins are **personal organization** — see
-[notes.md](notes.md#folders--organization-v4) — and pinning a note/folder into a
-chat sidebar does **not** share it (sharing is v5).
+Chat folders are a **separate namespace** from note folders, **per conversation**
+and **personal** (stored in the org blob under `chat[convId]` —
+folders/itemFolder/itemOrder), so they don't touch the shared channel list or
+note payloads. They group both channels and pinned notes. Channel
+**create/rename/delete** stay server-side (managers); the **arrangement**
+(folders, order) and **pins** are personal — pinning a note into a chat does
+**not** share it (sharing is v5). See
+[notes.md](notes.md#folders--organization-v4) for the shared org-blob mechanism.
+
+`:emoji:` shortcodes (the same custom/7TV set as chat) render in channel names,
+note titles, and folder names via the `EmojiText` component; unicode emoji typed
+as glyphs pass through.
 
 ### Not yet built (v4 follow-ups)
 
