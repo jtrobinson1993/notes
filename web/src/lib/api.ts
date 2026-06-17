@@ -214,6 +214,8 @@ export const api = {
   },
   messageSend: (id: string, body: { ciphertext: string; iv: string; epoch: number }) =>
     req<ChatMessage>('POST', `/api/conversations/${encodeURIComponent(id)}/messages`, body),
+  messageEdit: (id: string, seq: number, body: { ciphertext: string; iv: string }) =>
+    req<ChatMessage>('PATCH', `/api/conversations/${encodeURIComponent(id)}/messages/${seq}`, body),
   conversationRead: (id: string, seq: number) =>
     req<{ ok: true }>('POST', `/api/conversations/${encodeURIComponent(id)}/read`, { seq }),
   reactions: (id: string) =>

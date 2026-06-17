@@ -198,8 +198,10 @@ a crypto seal→unseal→encrypt→decrypt round-trip; server boots and enforces
   so back-scroll survives a re-key + reload); a member's rows are deleted when
   they leave/are removed, which cuts their future access.
 - `messages(id, conversation_id, sender_id, seq, epoch, ciphertext, iv,
-  created_at, UNIQUE(conversation_id,seq))` + `idx_messages_conv_seq`. `seq` is
-  assigned `MAX(seq)+1` inside a transaction.
+  created_at, edited_at, UNIQUE(conversation_id,seq))` + `idx_messages_conv_seq`.
+  `seq` is assigned `MAX(seq)+1` inside a transaction. `edited_at` is null until
+  the message is edited (`editMessage` updates ciphertext/iv + stamps it, guarded
+  by `sender_id` so only the author can edit).
 
 ### REST routes (`routes/chat.ts`, all `requireAuth`)
 
@@ -216,6 +218,9 @@ members — me plus 2+ friends; **not** idempotent, every other member must be a
 current friend of the creator; the creator is the `owner`),
 `GET /api/conversations/:id/messages?before=&limit=` (DESC, ≤100),
 `POST /api/conversations/:id/messages` (assigns seq, fans out), 
+`PATCH /api/conversations/:id/messages/:seq` (edit: re-encrypted ciphertext/iv
+under the message's own epoch; **sender-only**, 403 otherwise; stamps `edited_at`
+and fans out a `message-edited` frame),
 `POST /api/conversations/:id/read` (advances `last_read_seq`, fans out a receipt).
 Group membership (Phase 2, all re-key-validated & permission-gated):
 `POST /api/conversations/:id/members` (add a friend, mints a new epoch sealed to
@@ -234,9 +239,10 @@ frame, exceptUserId?), isOnline }`. The `/api/ws` upgrade authenticates via the
 `Map<userId, Set<socket>>`; on open sends `{type:'hello'}` and broadcasts
 presence to online friends; heartbeat every 30s (ping/`isAlive`); per-user cap 8
 (evict oldest); `maxPayload` 64 KiB. Server→client `ServerFrame`s: `hello`,
-`message`, `read`, `friend-request`, `friend-accepted`, `profile-updated`,
-`conversation-updated`, `conversation-removed`, `presence`. Send/read go over
-REST; client→server frames are minimal (liveness is protocol ping/pong).
+`message`, `message-edited`, `read`, `friend-request`, `friend-accepted`,
+`profile-updated`, `conversation-updated`, `conversation-removed`, `presence`.
+Send/read/edit go over REST; client→server frames are minimal (liveness is
+protocol ping/pong).
 
 ### Client crypto & state
 
@@ -267,6 +273,11 @@ REST; client→server frames are minimal (liveness is protocol ping/pong).
   share/start-fresh toggle. A `conversation-updated` frame triggers a
   `loadConversations()` (picks up new members + epoch keys); `conversation-removed`
   drops the conversation.
+- **Editing** (`chat.editMessage`): re-encrypts the new text under the message's
+  **own epoch key** (so the same recipients can read it) — preserving the original
+  non-text payload (gif/attachments/reply/preview) — and `PATCH`es it. The
+  inbound `message-edited` frame replaces the message in place by `seq` (never
+  advances unread); the bubble shows a muted **"(edited)"** marker.
 - **System notices.** Adding a member also posts an ordinary **encrypted message**
   carrying a `MessagePayload.system` event (`{kind:'member-joined', userId,
   phrase}`) at the new epoch — so the joiner can read it and the server never sees

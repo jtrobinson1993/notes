@@ -504,6 +504,11 @@ async function sendGif(gif: GifRef) {
                   :attachment="a"
                 />
                 <LinkPreviewCard v-if="row.msg.linkPreview" :preview="row.msg.linkPreview" />
+                <span
+                  v-if="row.msg.editedAt"
+                  class="ml-1 select-none align-baseline text-[11px] text-zinc-400 dark:text-zinc-500"
+                  :title="`Edited ${formatTime(row.msg.editedAt)}`"
+                >(edited)</span>
               </template>
             </div>
             <!-- Reaction pills: grouped by emoji; click toggles mine. A new pill

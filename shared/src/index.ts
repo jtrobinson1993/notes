@@ -263,6 +263,8 @@ export interface ChatMessage {
   iv: string;
   /** server-receipt time (metadata) */
   createdAt: number;
+  /** server time of the last edit (metadata); absent if never edited */
+  editedAt?: number;
 }
 
 /** One reaction on a message. The emoji is encrypted with the conversation key
@@ -446,6 +448,8 @@ export interface ProfileView {
 export type ServerFrame =
   | { type: 'hello'; userId: string }
   | { type: 'message'; message: ChatMessage }
+  // A message's ciphertext was edited in place (same seq) — replace it locally.
+  | { type: 'message-edited'; message: ChatMessage }
   | { type: 'reaction'; reaction: ChatReaction }
   | { type: 'reaction-removed'; conversationId: string; id: string }
   | { type: 'read'; conversationId: string; userId: string; seq: number }

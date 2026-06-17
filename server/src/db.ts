@@ -82,6 +82,7 @@ export interface MessageRow {
   ciphertext: string;
   iv: string;
   created_at: number;
+  edited_at: number | null;
 }
 
 export interface ReactionRow {
@@ -290,6 +291,7 @@ CREATE TABLE IF NOT EXISTS messages (
   ciphertext TEXT NOT NULL,
   iv TEXT NOT NULL,
   created_at INTEGER NOT NULL,
+  edited_at INTEGER,
   UNIQUE(conversation_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conversation_id, seq);
@@ -360,6 +362,12 @@ export function openDb(dataDir: string) {
   // Link previews: opt-in, default off.
   if (!userCols.some((c) => c.name === 'link_previews')) {
     db.exec('ALTER TABLE users ADD COLUMN link_previews INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Idempotent migration: add messages.edited_at (message editing).
+  const msgCols = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
+  if (!msgCols.some((c) => c.name === 'edited_at')) {
+    db.exec('ALTER TABLE messages ADD COLUMN edited_at INTEGER');
   }
 
   // Idempotent migration: add conversations.parent_id/parent_seq (threads).
@@ -979,9 +987,33 @@ export function openDb(dataDir: string) {
           ciphertext: m.ciphertext,
           iv: m.iv,
           created_at: createdAt,
+          edited_at: null,
         };
       });
       return tx();
+    },
+    /** Replace a message's ciphertext/iv and stamp edited_at — only for the
+     *  original sender (the `sender_id` guard enforces this at the DB level, so
+     *  a forged seq can't edit someone else's message). Returns the updated row,
+     *  or null if no such message by this sender. */
+    editMessage(m: {
+      conversationId: string;
+      seq: number;
+      senderId: string;
+      ciphertext: string;
+      iv: string;
+    }): MessageRow | null {
+      const editedAt = now();
+      const res = db
+        .prepare(
+          `UPDATE messages SET ciphertext = ?, iv = ?, edited_at = ?
+             WHERE conversation_id = ? AND seq = ? AND sender_id = ?`,
+        )
+        .run(m.ciphertext, m.iv, editedAt, m.conversationId, m.seq, m.senderId);
+      if (res.changes === 0) return null;
+      return db
+        .prepare('SELECT * FROM messages WHERE conversation_id = ? AND seq = ?')
+        .get(m.conversationId, m.seq) as MessageRow;
     },
     /** Messages DESC by seq, optionally before an exclusive seq, for pagination. */
     listMessages(conversationId: string, before: number | undefined, limit: number): MessageRow[] {

@@ -375,6 +375,26 @@ export const useChatStore = defineStore('chat', () => {
     bumpLastSeq(convId, sent.seq);
   }
 
+  /** Edit my own message's text in place. Re-encrypts under the message's own
+   *  epoch key (so the same recipients can read it) and preserves the original
+   *  non-text payload (gif/attachments/reply/preview). */
+  async function editMessage(convId: string, seq: number, text: string): Promise<void> {
+    const existing = (messages.value[convId] ?? []).find((m) => m.seq === seq);
+    if (!existing) throw new Error('message not found');
+    const key = keyForEpoch(convId, existing.epoch);
+    if (!key) throw new Error('no conversation key');
+    const payload: MessagePayload = { text, sentAt: existing.createdAt };
+    if (existing.gif) payload.gif = existing.gif;
+    if (existing.attachments?.length) payload.attachments = existing.attachments;
+    if (existing.replyTo) payload.replyTo = existing.replyTo;
+    if (existing.linkPreview) payload.linkPreview = existing.linkPreview;
+    const usedEmoji = customEmojiForText(text);
+    if (usedEmoji) payload.customEmoji = usedEmoji;
+    const { ciphertext, iv } = await encryptMessage(key, payload);
+    const updated = await api.messageEdit(convId, seq, { ciphertext, iv });
+    mergeMessages(convId, [{ ...existing, ...updated, text }]);
+  }
+
   async function decryptReactionOne(convId: string, r: ChatReaction): Promise<ChatReactionView> {
     // Reactions don't record their epoch, so try each held key (newest first) —
     // a reaction was sealed under whatever epoch was current when it was added.
@@ -452,6 +472,14 @@ export const useChatStore = defineStore('chat', () => {
         bumpLastSeq(m.conversationId, m.seq);
         break;
       }
+      case 'message-edited': {
+        const m = frame.message;
+        // Edits never advance unread; just replace the message in place (same
+        // seq). Skip if we can't decrypt this conversation yet.
+        if (!hasKey(m.conversationId)) break;
+        mergeMessages(m.conversationId, [await decryptOne(m.conversationId, m)]);
+        break;
+      }
       case 'reaction': {
         const r = frame.reaction;
         if (hasKey(r.conversationId)) upsertReaction(r.conversationId, await decryptReactionOne(r.conversationId, r));
@@ -516,6 +544,7 @@ export const useChatStore = defineStore('chat', () => {
     setMemberRole,
     loadHistory,
     sendMessage,
+    editMessage,
     loadReactions,
     toggleReaction,
     markRead,

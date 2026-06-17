@@ -94,6 +94,7 @@ function toMessage(m: MessageRow): ChatMessage {
     ciphertext: m.ciphertext,
     iv: m.iv,
     createdAt: m.created_at,
+    editedAt: m.edited_at ?? undefined,
   };
 }
 
@@ -844,6 +845,31 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     const message = toMessage(row);
     // Fan out to ALL members (including the sender's other sockets).
     hub.sendToUsers(db.listConversationMemberIds(id), { type: 'message', message });
+    return message;
+  });
+
+  // Edit a message in place: re-encrypt the new text client-side under the same
+  // epoch key, then PATCH the ciphertext. Only the original sender may edit (the
+  // DB accessor's sender_id guard enforces it — a 403 otherwise).
+  app.patch('/api/conversations/:id/messages/:seq', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, seq } = request.params as { id: string; seq: string };
+    const me = request.user!.id;
+    if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
+    if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
+    const seqNum = Number(seq);
+    if (!Number.isInteger(seqNum)) return reply.code(400).send({ error: 'invalid seq' });
+
+    const b = request.body as Record<string, unknown> | null;
+    if (
+      typeof b?.ciphertext !== 'string' || b.ciphertext.length < 1 || b.ciphertext.length > MAX_CIPHERTEXT ||
+      typeof b.iv !== 'string' || b.iv.length > 256
+    ) {
+      return reply.code(400).send({ error: 'invalid message payload' });
+    }
+    const row = db.editMessage({ conversationId: id, seq: seqNum, senderId: me, ciphertext: b.ciphertext, iv: b.iv });
+    if (!row) return reply.code(403).send({ error: 'not your message' });
+    const message = toMessage(row);
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'message-edited', message });
     return message;
   });
 
