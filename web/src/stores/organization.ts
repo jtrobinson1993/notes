@@ -35,10 +35,18 @@ interface OrgData {
   noteFolders: Record<string, string>;
   /** conversationId → pinned items (in order). */
   pins: Record<string, OrgPin[]>;
+  /** folder key ('' = unfiled/root) → manually-ordered note ids. Notes in a
+   *  folder but absent here fall back to recency order, appended after. */
+  noteOrder: Record<string, string[]>;
+}
+
+/** A note's folder, as a stable key for the noteOrder map. */
+export function folderKey(folderId: string | null): string {
+  return folderId ?? '';
 }
 
 function empty(): OrgData {
-  return { folders: [], noteFolders: {}, pins: {} };
+  return { folders: [], noteFolders: {}, pins: {}, noteOrder: {} };
 }
 
 function loadLocal(): OrgData {
@@ -56,6 +64,7 @@ export const useOrgStore = defineStore('organization', () => {
   const folders = ref<OrgFolder[]>([]);
   const noteFolders = ref<Record<string, string>>({});
   const pins = ref<Record<string, OrgPin[]>>({});
+  const noteOrder = ref<Record<string, string[]>>({});
   const loaded = ref(false);
 
   // Hydrate from the local cache immediately (instant; corrected by load()).
@@ -64,6 +73,7 @@ export const useOrgStore = defineStore('organization', () => {
     folders.value = d.folders;
     noteFolders.value = d.noteFolders;
     pins.value = d.pins;
+    noteOrder.value = d.noteOrder ?? {};
   }
   hydrateLocal();
 
@@ -83,7 +93,30 @@ export const useOrgStore = defineStore('organization', () => {
   }
 
   function snapshot(): OrgData {
-    return { folders: folders.value, noteFolders: noteFolders.value, pins: pins.value };
+    return { folders: folders.value, noteFolders: noteFolders.value, pins: pins.value, noteOrder: noteOrder.value };
+  }
+
+  /** Order a folder's candidate notes by the manual order, recency for the rest.
+   *  `candidates` are pre-sorted by recency (newest first). */
+  function orderedNoteIds(folderId: string | null, candidates: string[]): string[] {
+    const manual = noteOrder.value[folderKey(folderId)] ?? [];
+    const inManual = manual.filter((id) => candidates.includes(id));
+    const rest = candidates.filter((id) => !inManual.includes(id));
+    return [...inManual, ...rest];
+  }
+  function setNoteOrder(folderId: string | null, ids: string[]): void {
+    noteOrder.value = { ...noteOrder.value, [folderKey(folderId)]: ids };
+    persist();
+  }
+  function removeFromAllOrders(noteId: string): void {
+    const next: Record<string, string[]> = {};
+    let changed = false;
+    for (const [k, ids] of Object.entries(noteOrder.value)) {
+      const filtered = ids.filter((id) => id !== noteId);
+      if (filtered.length !== ids.length) changed = true;
+      next[k] = filtered;
+    }
+    if (changed) noteOrder.value = next;
   }
 
   let pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -110,6 +143,7 @@ export const useOrgStore = defineStore('organization', () => {
       folders.value = d.folders;
       noteFolders.value = d.noteFolders;
       pins.value = d.pins;
+      noteOrder.value = d.noteOrder ?? {};
       localStorage.setItem(LOCAL_KEY, JSON.stringify(snapshot()));
     } catch {
       loaded.value = false; // transient: retry next call
@@ -157,6 +191,8 @@ export const useOrgStore = defineStore('organization', () => {
     if (folderId) nf[noteId] = folderId;
     else delete nf[noteId];
     noteFolders.value = nf;
+    // Drop it from its old folder's manual order; it'll re-sort in the new one.
+    removeFromAllOrders(noteId);
     persist();
   }
 
@@ -191,6 +227,7 @@ export const useOrgStore = defineStore('organization', () => {
       delete nf[noteId];
       noteFolders.value = nf;
     }
+    removeFromAllOrders(noteId);
     removePinEverywhere('note', noteId);
     persist();
   }
@@ -199,6 +236,7 @@ export const useOrgStore = defineStore('organization', () => {
     folders.value = [];
     noteFolders.value = {};
     pins.value = {};
+    noteOrder.value = {};
     loaded.value = false;
   }
 
@@ -217,6 +255,8 @@ export const useOrgStore = defineStore('organization', () => {
     deleteFolder,
     folderOf,
     setNoteFolder,
+    orderedNoteIds,
+    setNoteOrder,
     pinsFor,
     isPinned,
     pin,

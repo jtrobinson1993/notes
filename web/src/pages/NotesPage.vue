@@ -6,13 +6,15 @@ import AppLayout from '../components/AppLayout.vue';
 import NoteEditor from '../components/NoteEditor.vue';
 import { loadTagColors, tagColor, tagTextColor } from '../lib/tagColors';
 import { toPlainText } from '../lib/transfer';
-import { useNotesStore } from '../stores/notes';
-import { useOrgStore } from '../stores/organization';
+import { useNotesStore, type DecryptedNote } from '../stores/notes';
+import { useOrgStore, type OrgFolder } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
 import IconFolder from '~icons/mynaui/folder';
 import IconFolderPlus from '~icons/mynaui/folder-plus';
+import IconNote from '~icons/mynaui/file-text';
 import IconPencil from '~icons/mynaui/pencil';
 import IconTrash from '~icons/mynaui/trash';
+import IconMenu from '~icons/mynaui/menu';
 
 const session = useSessionStore();
 const notes = useNotesStore();
@@ -23,38 +25,32 @@ const router = useRouter();
 const search = ref('');
 const activeTag = ref<string | null>(null);
 const selectedId = ref<string | null>(null);
-// Folder filter: null = all notes, 'unfiled' = notes with no folder, else a folder id.
-const activeFolder = ref<string | null | 'unfiled'>(null);
+// The highlighted folder (selection only — the tree shows notes inline, so it
+// doesn't filter). Set when opening a pinned folder from a chat sidebar.
+const activeFolderId = ref<string | null>(null);
+
+// Compact density: note rows show the name only (no tags/preview). Persisted.
+const compact = ref(localStorage.getItem('notes:compact') === '1');
+watch(compact, (c) => localStorage.setItem('notes:compact', c ? '1' : '0'));
 
 // Opening a pinned note/folder from a chat sidebar navigates here with a query.
 watch(
   () => route.query,
   (q) => {
-    if (typeof q.note === 'string') {
-      selectedId.value = q.note;
-      activeFolder.value = null;
-    } else if (typeof q.folder === 'string') {
-      activeFolder.value = q.folder;
-    } else {
-      return;
-    }
+    if (typeof q.note === 'string') selectedId.value = q.note;
+    else if (typeof q.folder === 'string') activeFolderId.value = q.folder;
+    else return;
     void router.replace({ path: '/', query: {} }); // consume it so a refresh is clean
   },
   { immediate: true },
 );
 
-// The folder tree flattened depth-first, each row carrying its nesting depth.
-const folderTree = computed(() => {
-  const out: { folder: (typeof org.folders)[number]; depth: number }[] = [];
-  const walk = (parentId: string | null, depth: number) => {
-    for (const f of org.childFolders(parentId)) {
-      out.push({ folder: f, depth });
-      walk(f.id, depth + 1);
-    }
-  };
-  walk(null, 0);
-  return out;
-});
+// Notes in a folder (null = unfiled), in manual drag order then recency.
+function notesOf(folderId: string | null): DecryptedNote[] {
+  const inFolder = notes.sorted.filter((n) => org.folderOf(n.id) === folderId);
+  const byId = new Map(inFolder.map((n) => [n.id, n]));
+  return org.orderedNoteIds(folderId, [...byId.keys()]).map((id) => byId.get(id)!);
+}
 
 // Counts include descendants, so a parent folder reflects everything under it.
 function notesInFolder(folderId: string): number {
@@ -64,18 +60,53 @@ function notesInFolder(folderId: string): number {
     return f !== null && ids.has(f);
   }).length;
 }
-const unfiledCount = computed(() => notes.sorted.filter((n) => org.folderOf(n.id) === null).length);
 
+// The unified file tree flattened depth-first: each folder, then its notes, then
+// its subfolders; unfiled notes sit at the root.
+interface TreeRow {
+  key: string;
+  type: 'folder' | 'note';
+  depth: number;
+  folder?: OrgFolder;
+  note?: DecryptedNote;
+}
+const treeRows = computed<TreeRow[]>(() => {
+  const out: TreeRow[] = [];
+  const walk = (parentId: string | null, depth: number) => {
+    for (const f of org.childFolders(parentId)) {
+      out.push({ key: `f:${f.id}`, type: 'folder', depth, folder: f });
+      for (const n of notesOf(f.id)) out.push({ key: `n:${n.id}`, type: 'note', depth: depth + 1, note: n });
+      walk(f.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  for (const n of notesOf(null)) out.push({ key: `n:${n.id}`, type: 'note', depth: 0, note: n });
+  return out;
+});
+
+// Search / tag active → a flat result list instead of the tree.
+const treeMode = computed(() => !search.value.trim() && !activeTag.value);
+const searchResults = computed(() => {
+  const q = search.value.trim().toLowerCase();
+  return notes.sorted.filter((n) => {
+    if (activeTag.value && !n.payload.tags.includes(activeTag.value)) return false;
+    if (q && !n.payload.title.toLowerCase().includes(q) && !n.payload.body.toLowerCase().includes(q)) return false;
+    return true;
+  });
+});
+
+function depthPad(depth: number): string {
+  return `${depth * 14 + 10}px`;
+}
+
+// ---- Folder CRUD ----
 function createFolder() {
   const name = window.prompt('New folder name')?.trim();
-  if (name) {
-    const id = org.createFolder(name);
-    activeFolder.value = id;
-  }
+  if (name) activeFolderId.value = org.createFolder(name);
 }
 function createSubfolder(parentId: string) {
   const name = window.prompt('New subfolder name')?.trim();
-  if (name) activeFolder.value = org.createFolder(name, parentId);
+  if (name) activeFolderId.value = org.createFolder(name, parentId);
 }
 function renameFolder(id: string, current: string) {
   const name = window.prompt('Rename folder', current)?.trim();
@@ -83,15 +114,41 @@ function renameFolder(id: string, current: string) {
 }
 function deleteFolder(id: string, name: string) {
   if (!window.confirm(`Delete folder "${name}"? Its notes become unfiled and any subfolders move up.`)) return;
-  if (activeFolder.value === id) activeFolder.value = null;
+  if (activeFolderId.value === id) activeFolderId.value = null;
   org.deleteFolder(id);
 }
 
-// Drag a folder onto another folder to nest it; onto "All notes" to move to root.
+// ---- Drag & drop: nest folders, move/reorder notes ----
 const draggingFolder = ref<string | null>(null);
-function onFolderDrop(targetParentId: string | null) {
-  if (draggingFolder.value) org.setFolderParent(draggingFolder.value, targetParentId);
+const draggingNote = ref<string | null>(null);
+
+// Drop onto a folder row: nest a dragged folder, or move a dragged note into it.
+function onDropOnFolder(folderId: string) {
+  if (draggingNote.value) org.setNoteFolder(draggingNote.value, folderId);
+  else if (draggingFolder.value) org.setFolderParent(draggingFolder.value, folderId);
   draggingFolder.value = null;
+  draggingNote.value = null;
+}
+// Drop a note onto another note: move it into that note's folder, just before it.
+function onDropOnNote(target: DecryptedNote) {
+  const dragged = draggingNote.value;
+  draggingNote.value = null;
+  if (!dragged || dragged === target.id) return;
+  const folderId = org.folderOf(target.id);
+  org.setNoteFolder(dragged, folderId);
+  const ids = notesOf(folderId)
+    .map((n) => n.id)
+    .filter((id) => id !== dragged);
+  const idx = ids.indexOf(target.id);
+  ids.splice(idx < 0 ? ids.length : idx, 0, dragged);
+  org.setNoteOrder(folderId, ids);
+}
+// Drop on empty tree space: move a note to unfiled / a folder to the top level.
+function onDropOnRoot() {
+  if (draggingNote.value) org.setNoteFolder(draggingNote.value, null);
+  else if (draggingFolder.value) org.setFolderParent(draggingFolder.value, null);
+  draggingFolder.value = null;
+  draggingNote.value = null;
 }
 
 // Open the most recently edited note once notes are ready (or a fresh note if
@@ -103,8 +160,7 @@ async function autoOpen() {
   selectedId.value = notes.sorted[0]?.id ?? (await notes.create());
 }
 
-// Instant load from the encrypted IndexedDB cache, then background sync
-// (Pinia Colada refetches on focus/reconnect).
+// Instant load from the encrypted IndexedDB cache, then background sync.
 useQuery({
   key: ['notes-sync'],
   query: async () => {
@@ -112,6 +168,7 @@ useQuery({
     if (!notes.loaded) await notes.loadFromCache();
     await notes.sync();
     void loadTagColors();
+    void org.load();
     await autoOpen();
     return notes.sorted.length;
   },
@@ -134,22 +191,6 @@ watch(
   { immediate: true },
 );
 
-const filtered = computed(() => {
-  const q = search.value.trim().toLowerCase();
-  return notes.sorted.filter((n) => {
-    if (activeTag.value && !n.payload.tags.includes(activeTag.value)) return false;
-    const folder = org.folderOf(n.id);
-    if (activeFolder.value === 'unfiled' && folder !== null) return false;
-    if (activeFolder.value && activeFolder.value !== 'unfiled') {
-      // Selecting a folder includes everything in it and its subfolders.
-      const ids = new Set(org.descendantFolderIds(activeFolder.value));
-      if (folder === null || !ids.has(folder)) return false;
-    }
-    if (q && !n.payload.title.toLowerCase().includes(q) && !n.payload.body.toLowerCase().includes(q)) return false;
-    return true;
-  });
-});
-
 const selected = computed(() => (selectedId.value ? (notes.notes.get(selectedId.value) ?? null) : null));
 
 async function newNote() {
@@ -157,7 +198,6 @@ async function newNote() {
 }
 
 function excerpt(body: string): string {
-  // strip markup from just enough of the body for an 80-char preview
   return toPlainText(body.slice(0, 500)).replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 </script>
@@ -183,10 +223,18 @@ function excerpt(body: string): string {
           </button>
         </div>
 
-        <!-- Folders (personal organization). -->
-        <div class="px-3 pb-2">
-          <div class="mb-1 flex items-center justify-between">
-            <span class="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Folders</span>
+        <!-- Folders header: label + compact toggle + create folder. -->
+        <div class="mb-1 flex items-center justify-between px-3">
+          <span class="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Folders</span>
+          <div class="flex items-center gap-0.5">
+            <button
+              class="flex h-6 w-6 items-center justify-center rounded-md"
+              :class="compact ? 'bg-blue-600 text-white hover:bg-blue-700' : 'text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200'"
+              title="Compact view (names only)"
+              @click="compact = !compact"
+            >
+              <IconMenu class="h-4 w-4" />
+            </button>
             <button
               class="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
               title="New folder"
@@ -195,54 +243,6 @@ function excerpt(body: string): string {
               <IconFolderPlus class="h-4 w-4" />
             </button>
           </div>
-          <ul class="space-y-0.5 text-sm">
-            <li>
-              <button
-                class="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left"
-                :class="activeFolder === null ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
-                title="Drop a folder here to move it to the top level"
-                @click="activeFolder = null"
-                @dragover.prevent
-                @drop.prevent="onFolderDrop(null)"
-              >
-                <IconFolder class="h-3.5 w-3.5 shrink-0 opacity-60" />
-                <span class="grow truncate">All notes</span>
-                <span class="text-xs text-zinc-400">{{ notes.sorted.length }}</span>
-              </button>
-            </li>
-            <!-- Folder tree: draggable rows; drop a folder onto another to nest it. -->
-            <li v-for="node in folderTree" :key="node.folder.id" class="group/folder flex items-center gap-0.5">
-              <button
-                class="flex min-w-0 grow items-center gap-1.5 rounded-md py-1 pr-2 text-left"
-                :class="activeFolder === node.folder.id ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
-                :style="{ paddingLeft: `${node.depth * 14 + 8}px` }"
-                draggable="true"
-                @click="activeFolder = node.folder.id"
-                @dragstart="draggingFolder = node.folder.id"
-                @dragend="draggingFolder = null"
-                @dragover.prevent
-                @drop.prevent="onFolderDrop(node.folder.id)"
-              >
-                <IconFolder class="h-3.5 w-3.5 shrink-0 opacity-60" />
-                <span class="min-w-0 grow truncate">{{ node.folder.name }}</span>
-                <span class="text-xs text-zinc-400">{{ notesInFolder(node.folder.id) }}</span>
-              </button>
-              <button class="hidden rounded p-1 text-zinc-400 hover:text-zinc-700 group-hover/folder:block dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(node.folder.id)"><IconFolderPlus class="h-3 w-3" /></button>
-              <button class="hidden rounded p-1 text-zinc-400 hover:text-zinc-700 group-hover/folder:block dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(node.folder.id, node.folder.name)"><IconPencil class="h-3 w-3" /></button>
-              <button class="hidden rounded p-1 text-zinc-400 hover:text-red-600 group-hover/folder:block dark:hover:text-red-400" title="Delete folder" @click="deleteFolder(node.folder.id, node.folder.name)"><IconTrash class="h-3 w-3" /></button>
-            </li>
-            <li v-if="unfiledCount > 0 && org.sortedFolders.length">
-              <button
-                class="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left"
-                :class="activeFolder === 'unfiled' ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
-                @click="activeFolder = 'unfiled'"
-              >
-                <IconFolder class="h-3.5 w-3.5 shrink-0 opacity-40" />
-                <span class="grow truncate text-zinc-500">Unfiled</span>
-                <span class="text-xs text-zinc-400">{{ unfiledCount }}</span>
-              </button>
-            </li>
-          </ul>
         </div>
 
         <div v-if="notes.allTags.length" class="flex flex-wrap gap-1 px-3 pb-2">
@@ -261,33 +261,113 @@ function excerpt(body: string): string {
           </button>
         </div>
 
-        <ul class="min-h-0 grow overflow-y-auto">
-          <li v-for="note in filtered" :key="note.id">
-            <button
-              class="w-full border-b border-zinc-100 px-3 py-2.5 text-left hover:bg-zinc-100 dark:border-zinc-900 dark:hover:bg-zinc-900"
-              :class="{ 'bg-zinc-100 dark:bg-zinc-900': selectedId === note.id }"
-              @click="selectedId = note.id"
+        <!-- The file tree (folders + nested notes); drop on empty space to unfile
+             a note / move a folder to the top level. Full-width, borderless rows. -->
+        <ul
+          class="min-h-0 grow overflow-y-auto pb-2"
+          @dragover.prevent
+          @drop.prevent="onDropOnRoot"
+        >
+          <template v-if="treeMode">
+            <li
+              v-for="row in treeRows"
+              :key="row.key"
+              class="group flex items-center"
+              :class="
+                (row.type === 'note' && selectedId === row.note!.id) || (row.type === 'folder' && activeFolderId === row.folder!.id)
+                  ? 'bg-zinc-100 dark:bg-zinc-800'
+                  : 'hover:bg-zinc-100 dark:hover:bg-zinc-800/60'
+              "
             >
-              <p class="truncate text-sm font-medium">
-                {{ note.payload.title || 'Untitled' }}
-                <span v-if="note.shared" class="text-xs font-normal text-violet-500">· from {{ note.shared.ownerDisplayName }}</span>
-              </p>
-              <div class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
-                <span
-                  v-for="tag in note.payload.tags"
-                  :key="tag"
-                  class="shrink-0 rounded-full px-1.5 py-px text-[10px] leading-tight"
-                  :style="{ background: tagColor(tag), color: tagTextColor(tagColor(tag)) }"
+              <!-- Folder row. -->
+              <template v-if="row.type === 'folder'">
+                <button
+                  class="flex min-w-0 grow cursor-grab items-center gap-1.5 py-1.5 pr-2 text-left text-sm"
+                  :style="{ paddingLeft: depthPad(row.depth) }"
+                  draggable="true"
+                  @click="activeFolderId = row.folder!.id"
+                  @dragstart.stop="draggingFolder = row.folder!.id"
+                  @dragend="draggingFolder = null"
+                  @dragover.prevent
+                  @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
                 >
-                  {{ tag }}
-                </span>
-                <span class="truncate">{{ excerpt(note.payload.body) || 'Empty note' }}</span>
-              </div>
-            </button>
-          </li>
-          <li v-if="notes.loaded && filtered.length === 0" class="p-4 text-center text-sm text-zinc-400">
-            No notes yet
-          </li>
+                  <IconFolder class="h-4 w-4 shrink-0 opacity-60" />
+                  <span class="min-w-0 grow truncate font-medium">{{ row.folder!.name }}</span>
+                  <span class="text-xs text-zinc-400">{{ notesInFolder(row.folder!.id) }}</span>
+                </button>
+                <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
+                  <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(row.folder!.id)"><IconFolderPlus class="h-3.5 w-3.5" /></button>
+                  <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(row.folder!.id, row.folder!.name)"><IconPencil class="h-3.5 w-3.5" /></button>
+                  <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete folder" @click="deleteFolder(row.folder!.id, row.folder!.name)"><IconTrash class="h-3.5 w-3.5" /></button>
+                </div>
+              </template>
+
+              <!-- Note row. -->
+              <button
+                v-else
+                class="flex min-w-0 grow cursor-grab items-start gap-1.5 py-1.5 pr-3 text-left"
+                :style="{ paddingLeft: depthPad(row.depth) }"
+                draggable="true"
+                @click="selectedId = row.note!.id"
+                @dragstart.stop="draggingNote = row.note!.id"
+                @dragend="draggingNote = null"
+                @dragover.prevent
+                @drop.stop.prevent="onDropOnNote(row.note!)"
+              >
+                <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
+                <div class="min-w-0 grow">
+                  <p class="truncate text-sm" :class="selectedId === row.note!.id ? 'font-medium' : ''">
+                    {{ row.note!.payload.title || 'Untitled' }}
+                    <span v-if="row.note!.shared" class="text-xs font-normal text-violet-500">· {{ row.note!.shared.ownerDisplayName }}</span>
+                  </p>
+                  <div v-if="!compact" class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
+                    <span
+                      v-for="tag in row.note!.payload.tags"
+                      :key="tag"
+                      class="shrink-0 rounded-full px-1.5 py-px text-[10px] leading-tight"
+                      :style="{ background: tagColor(tag), color: tagTextColor(tagColor(tag)) }"
+                    >{{ tag }}</span>
+                    <span class="truncate">{{ excerpt(row.note!.payload.body) || 'Empty note' }}</span>
+                  </div>
+                </div>
+              </button>
+            </li>
+            <li v-if="notes.loaded && treeRows.length === 0" class="p-4 text-center text-sm text-zinc-400">
+              No notes yet
+            </li>
+          </template>
+
+          <!-- Flat results when searching / filtering by tag. -->
+          <template v-else>
+            <li
+              v-for="note in searchResults"
+              :key="note.id"
+              class="flex"
+              :class="selectedId === note.id ? 'bg-zinc-100 dark:bg-zinc-800' : 'hover:bg-zinc-100 dark:hover:bg-zinc-800/60'"
+            >
+              <button class="flex min-w-0 grow items-start gap-1.5 py-1.5 pl-3 pr-3 text-left" @click="selectedId = note.id">
+                <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
+                <div class="min-w-0 grow">
+                  <p class="truncate text-sm" :class="selectedId === note.id ? 'font-medium' : ''">
+                    {{ note.payload.title || 'Untitled' }}
+                    <span v-if="note.shared" class="text-xs font-normal text-violet-500">· {{ note.shared.ownerDisplayName }}</span>
+                  </p>
+                  <div v-if="!compact" class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
+                    <span
+                      v-for="tag in note.payload.tags"
+                      :key="tag"
+                      class="shrink-0 rounded-full px-1.5 py-px text-[10px] leading-tight"
+                      :style="{ background: tagColor(tag), color: tagTextColor(tagColor(tag)) }"
+                    >{{ tag }}</span>
+                    <span class="truncate">{{ excerpt(note.payload.body) || 'Empty note' }}</span>
+                  </div>
+                </div>
+              </button>
+            </li>
+            <li v-if="notes.loaded && searchResults.length === 0" class="p-4 text-center text-sm text-zinc-400">
+              No matches
+            </li>
+          </template>
         </ul>
       </aside>
 

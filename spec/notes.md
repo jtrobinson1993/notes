@@ -179,18 +179,22 @@ Because it lives outside the (E2EE) note payload and the server note model:
 
 Model: `folders: {id, name, position, parentId}[]` (**nestable** — `parentId:
 null` is a root folder), `noteFolders: { noteId → folderId }` (absent =
-unfiled), `pins: { conversationId → {kind, id}[] }`. Re-parenting
-(`setFolderParent`) refuses cycles. Deleting a folder lifts its child folders to
-its parent, unfiles its notes, and drops its pins; deleting a note
-(`notes.remove`) calls `org.forgetNote` to clear its folder + pins.
+unfiled), `noteOrder: { folderKey → noteId[] }` (manual drag order within a
+folder; the rest fall back to recency), `pins: { conversationId → {kind, id}[]
+}`. Re-parenting (`setFolderParent`) refuses cycles. Deleting a folder lifts its
+child folders to its parent, unfiles its notes, and drops its pins; deleting a
+note (`notes.remove`) calls `org.forgetNote` to clear its folder + order + pins.
 
 UI:
 
-- **NotesPage** — a Folders **tree** rail (All notes / nested folders with
-  descendant-aware counts / Unfiled) that filters the list (a folder shows its
-  own notes plus those in its subfolders), plus create / subfolder / rename /
-  delete. Drag a folder onto another to nest it, or onto "All notes" to move it
-  to the top level.
+- **NotesPage** — a single **file tree**: folders (full-width, borderless rows,
+  depth-indented) with their notes nested directly beneath, unfiled notes at the
+  root. Everything is drag-and-drop: drag a folder onto another to nest it (or
+  onto empty space to move it to the top level); drag a note onto a folder to
+  move it there, onto another note to reorder/move before it, or onto empty
+  space to unfile it. A **compact** toggle (beside the new-folder button) shows
+  note rows as name-only; otherwise rows show tags + a preview. Searching or
+  filtering by a tag swaps the tree for a flat result list.
 - **NoteEditor** — a folder picker (`<select>`, indented to show nesting) on each
   note.
 - **Chat sidebar** — a Pinned section + a pin picker that toggles pins for

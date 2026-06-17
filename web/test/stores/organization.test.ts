@@ -92,6 +92,25 @@ describe('organization store — nesting', () => {
   });
 });
 
+describe('organization store — note ordering', () => {
+  it('applies a manual order, appends unknown notes by recency', () => {
+    const org = useOrgStore();
+    // candidates given newest-first; manual order pins b then a.
+    org.setNoteOrder(null, ['b', 'a']);
+    expect(org.orderedNoteIds(null, ['c', 'b', 'a'])).toEqual(['b', 'a', 'c']);
+  });
+
+  it('moving a note to another folder drops it from the old folder order', () => {
+    const org = useOrgStore();
+    const work = org.createFolder('Work');
+    org.setNoteFolder('n1', work);
+    org.setNoteOrder(work, ['n1', 'n2']);
+    org.setNoteFolder('n1', null); // move to unfiled
+    // n1 is no longer pinned in Work's order.
+    expect(org.orderedNoteIds(work, ['n2'])).toEqual(['n2']);
+  });
+});
+
 describe('organization store — pins', () => {
   it('pins/unpins notes and folders per conversation (idempotent)', () => {
     const org = useOrgStore();
