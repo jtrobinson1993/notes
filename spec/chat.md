@@ -529,6 +529,19 @@ before each (debounced) save. Keys are **source-tagged** (`7tv:`/`custom:`/
 7TV → unicode** in their natural order. Each result carries its insert text
 (`:shortcode:` or the glyph) and render data (image url or char).
 
+### `:` autocomplete (composer + note editor)
+
+`MarkdownEditor.vue` (the shared editor used by both the chat composer and the
+note editor) opens a **Discord-style inline completion** when you type `:abc`.
+The trigger (`lib/editor/emojiTrigger.ts`) requires the colon to start a line or
+follow whitespace and at least two name chars to follow — so `http://` and a
+bare `:` never pop it, and it's suppressed inside code. Results come from
+`rankEmoji` (most-used → custom → 7TV → unicode); the unicode set is lazy-loaded
+on first trigger. **↑/↓** move, **Enter/Tab** accept, **Esc** dismisses (a
+top-precedence keymap owns these only while the list is open, so Enter still
+sends/continues lists otherwise). Accepting replaces the typed `:abc` with the
+`:shortcode:` (or glyph) and **records a use**.
+
 ### Link previews (v3.4)
 
 **Opt-in, off by default**, and only generated when **every** member of the

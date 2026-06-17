@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui';
 import ColorPalette from './ColorPalette.vue';
 import { EditorView, keymap, placeholder } from '@codemirror/view';
-import { EditorState, Compartment } from '@codemirror/state';
+import { EditorState, Compartment, Prec } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, insertNewlineAndIndent } from '@codemirror/commands';
 import { insertNewlineContinueMarkup, markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
@@ -29,6 +29,9 @@ import {
   inListItem,
 } from '../lib/editor/commands';
 import { getLastColor, PRESET_COLORS, presetCss } from '../lib/editor/palette';
+import { detectEmojiTrigger } from '../lib/editor/emojiTrigger';
+import { loadUnicodeEmoji, type UnicodeEmoji } from '../lib/emoji/unicode';
+import { rankEmoji, recordEmojiUse, type EmojiCandidate } from '../lib/emoji/usage';
 
 const props = defineProps<{
   modelValue: string;
@@ -111,6 +114,107 @@ function modeExtensions(mode: 'live' | 'source') {
     : [md(), syntaxHighlighting(liveHighlight), livePreview(), codeBlocks()];
 }
 
+// ---- :emoji autocomplete ---------------------------------------------------
+// Discord-style inline completion: typing `:abc` opens a ranked list of
+// emotes/emoji (most-used first, then custom → 7TV → unicode). Works in the
+// chat composer and the note editor alike (both mount this component).
+
+const acOpen = ref(false);
+const acItems = shallowRef<EmojiCandidate[]>([]);
+const acIndex = ref(0);
+const acFrom = ref(0);
+const acPos = ref({ left: 0, top: 0 });
+// Unicode set is lazy-loaded the first time a trigger appears, then reused.
+let unicodeList: UnicodeEmoji[] | null = null;
+let unicodeLoading = false;
+
+function loadUnicodeForAc() {
+  if (unicodeList || unicodeLoading) return;
+  unicodeLoading = true;
+  void loadUnicodeEmoji().then((list) => {
+    unicodeList = list;
+    unicodeLoading = false;
+    updateAutocomplete(); // re-rank so unicode shows once available
+  });
+}
+
+function updateAutocomplete() {
+  if (!view || props.readonly) {
+    acOpen.value = false;
+    return;
+  }
+  const trig = detectEmojiTrigger(view.state);
+  if (!trig) {
+    acOpen.value = false;
+    return;
+  }
+  loadUnicodeForAc();
+  const items = rankEmoji(trig.query, unicodeList, 8);
+  if (!items.length) {
+    acOpen.value = false;
+    return;
+  }
+  const coords = view.coordsAtPos(trig.from);
+  const hostRect = host.value?.getBoundingClientRect();
+  if (!coords || !hostRect) {
+    acOpen.value = false;
+    return;
+  }
+  acItems.value = items;
+  acFrom.value = trig.from;
+  acIndex.value = 0;
+  acPos.value = { left: coords.left - hostRect.left, top: coords.bottom - hostRect.top };
+  acOpen.value = true;
+}
+
+function acceptAc(i = acIndex.value) {
+  const item = acItems.value[i];
+  if (!item || !view) return;
+  recordEmojiUse(item.key);
+  const to = view.state.selection.main.head;
+  view.dispatch({
+    changes: { from: acFrom.value, to, insert: item.insert },
+    selection: { anchor: acFrom.value + item.insert.length },
+    userEvent: 'input.complete',
+  });
+  acOpen.value = false;
+  view.focus();
+}
+
+// Captured ahead of every other binding (submit/Enter, default keymap) so the
+// list owns the arrows / Enter / Tab / Esc while it's open; otherwise these fall
+// through untouched.
+const autocompleteKeymap = Prec.highest(
+  keymap.of([
+    {
+      key: 'ArrowDown',
+      run: () => {
+        if (!acOpen.value) return false;
+        acIndex.value = (acIndex.value + 1) % acItems.value.length;
+        return true;
+      },
+    },
+    {
+      key: 'ArrowUp',
+      run: () => {
+        if (!acOpen.value) return false;
+        acIndex.value = (acIndex.value - 1 + acItems.value.length) % acItems.value.length;
+        return true;
+      },
+    },
+    { key: 'Enter', run: () => (acOpen.value ? (acceptAc(), true) : false) },
+    { key: 'Tab', run: () => (acOpen.value ? (acceptAc(), true) : false) },
+    {
+      key: 'Escape',
+      run: () => {
+        if (!acOpen.value) return false;
+        acOpen.value = false;
+        return true;
+      },
+    },
+  ]),
+);
+
 // ---- selection toolbar ----------------------------------------------------
 
 const isCoarse = matchMedia('(pointer: coarse)').matches;
@@ -191,6 +295,7 @@ onMounted(() => {
       doc: props.modelValue,
       extensions: [
         history(),
+        autocompleteKeymap,
         ...(props.submitOnEnter ? [submitKeymap] : []),
         keymap.of([...formattingKeymap, ...defaultKeymap, ...historyKeymap]),
         modeCompartment.of(modeExtensions(props.mode ?? 'live')),
@@ -202,7 +307,11 @@ onMounted(() => {
         EditorView.updateListener.of((update) => {
           if (update.docChanged) emit('update:modelValue', update.state.doc.toString());
           if (update.selectionSet || update.docChanged || update.geometryChanged) updateToolbar();
-          if (update.focusChanged) focused.value = update.view.hasFocus;
+          if (update.selectionSet || update.docChanged) updateAutocomplete();
+          if (update.focusChanged) {
+            focused.value = update.view.hasFocus;
+            if (!update.view.hasFocus) acOpen.value = false;
+          }
         }),
       ],
     }),
@@ -312,6 +421,43 @@ onBeforeUnmount(() => view?.destroy());
               </PopoverContent>
             </PopoverPortal>
           </PopoverRoot>
+        </PopoverContent>
+      </PopoverPortal>
+    </PopoverRoot>
+
+    <!-- :emoji autocomplete (Reka popover, portaled + collision-aware) -->
+    <PopoverRoot :open="acOpen">
+      <PopoverAnchor
+        class="pointer-events-none absolute h-px w-px"
+        :style="{ left: `${acPos.left}px`, top: `${acPos.top}px` }"
+      />
+      <PopoverPortal>
+        <PopoverContent
+          side="bottom"
+          align="start"
+          :side-offset="4"
+          :collision-padding="8"
+          class="z-popover w-64 overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+          @open-auto-focus.prevent
+          @close-auto-focus.prevent
+          @interact-outside.prevent
+          @mousedown.prevent
+        >
+          <ul class="max-h-56 overflow-y-auto text-sm">
+            <li v-for="(item, i) in acItems" :key="item.key">
+              <button
+                type="button"
+                class="flex w-full items-center gap-2 px-2 py-1 text-left"
+                :class="i === acIndex ? 'bg-zinc-100 dark:bg-zinc-700' : ''"
+                @mouseenter="acIndex = i"
+                @click="acceptAc(i)"
+              >
+                <img v-if="item.url" :src="item.url" :alt="item.label" class="h-5 w-5 shrink-0 object-contain" />
+                <span v-else class="w-5 shrink-0 text-center text-lg leading-none">{{ item.char }}</span>
+                <span class="min-w-0 truncate text-zinc-700 dark:text-zinc-200">{{ item.label }}</span>
+              </button>
+            </li>
+          </ul>
         </PopoverContent>
       </PopoverPortal>
     </PopoverRoot>
