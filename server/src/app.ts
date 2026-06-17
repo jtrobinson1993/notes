@@ -3,11 +3,12 @@ import fastifyCookie from '@fastify/cookie';
 import fastifyRateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Config } from './config.js';
 import type { DB } from './db.js';
+import { registerSecurityHeaders } from './security-headers.js';
 import { registerSessionHooks } from './session.js';
 import { authRoutes } from './routes/auth.js';
 import { adminRoutes } from './routes/admin.js';
@@ -19,12 +20,26 @@ import { linkRoutes } from './routes/link.js';
 import { gifRoutes } from './routes/gifs.js';
 import { emojiRoutes } from './routes/emoji.js';
 import { ogRoutes } from './routes/og.js';
+import { pushRoutes } from './routes/push.js';
 import { createRealtime, WS_MAX_PAYLOAD } from './realtime.js';
+import { createPush } from './push.js';
 
 export async function buildApp(db: DB, config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
 
   await app.register(fastifyCookie);
+
+  // Resolve the built SPA shell up front: its inline scripts feed the CSP
+  // script-src hashes, and its presence decides whether we serve static assets.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const webDist = config.webDist ?? resolve(here, '../../web/dist');
+  const indexPath = join(webDist, 'index.html');
+  const hasWebDist = existsSync(indexPath);
+  const indexHtml = hasWebDist ? readFileSync(indexPath, 'utf8') : null;
+
+  // CSP + hardening headers on every response (defense-in-depth).
+  registerSecurityHeaders(app, config, indexHtml);
+
   // Global per-IP rate limit. Deliberately liberal so normal use is never
   // throttled — it exists to cap abuse (credential guessing, proxy/upload
   // hammering) rather than to police real traffic. Routes that want a tighter
@@ -38,6 +53,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   registerSessionHooks(app, db, config);
 
   const realtime = createRealtime(db, config);
+  const push = createPush(db, config, realtime);
 
   app.get('/api/health', async () => ({ ok: true }));
   authRoutes(app, db, config);
@@ -45,18 +61,17 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   noteRoutes(app, db);
   attachmentRoutes(app, db, config);
   settingsRoutes(app, db);
-  chatRoutes(app, db, realtime);
+  chatRoutes(app, db, realtime, push);
   linkRoutes(app, db, config);
   gifRoutes(app, config);
   emojiRoutes(app, config);
   ogRoutes(app);
+  pushRoutes(app, db, push);
   realtime.register(app);
 
-  // Serve the built SPA. Default: web/dist relative to the repo layout
-  // (works both from source and inside the Docker image).
-  const here = dirname(fileURLToPath(import.meta.url));
-  const webDist = config.webDist ?? resolve(here, '../../web/dist');
-  if (existsSync(join(webDist, 'index.html'))) {
+  // Serve the built SPA (resolved above). Default: web/dist relative to the repo
+  // layout (works both from source and inside the Docker image).
+  if (hasWebDist) {
     await app.register(fastifyStatic, { root: webDist, wildcard: false });
     app.setNotFoundHandler((request, reply) => {
       if (request.method === 'GET' && !request.url.startsWith('/api/')) {

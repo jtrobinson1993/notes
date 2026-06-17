@@ -12,22 +12,16 @@ export default defineConfig({
     // time — no runtime CDN calls, only the icons actually imported ship.
     Icons({ compiler: 'vue3' }),
     VitePWA({
+      // Custom service worker (src/sw.ts) so we can host Web Push handlers, which
+      // the generated worker can't. It keeps the precache + emoji runtime cache.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       registerType: 'autoUpdate',
-      workbox: {
-        navigateFallbackDenylist: [/^\/api\//],
+      injectManifest: {
         // The default 7TV emoji set is hundreds of small files; don't bloat the
         // precache with them — cache on demand the first time one is rendered.
         globIgnores: ['**/emoji/**'],
-        runtimeCaching: [
-          {
-            urlPattern: ({ url }) => url.pathname.startsWith('/emoji/'),
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'emoji',
-              expiration: { maxEntries: 600, maxAgeSeconds: 60 * 60 * 24 * 30 },
-            },
-          },
-        ],
       },
       manifest: {
         name: 'Notes',

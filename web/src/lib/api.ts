@@ -17,6 +17,7 @@ import type {
   ProfileCipher,
   ProfileInfo,
   ProfileView,
+  PushSubscriptionInput,
   SealedEpochKey,
   SealedKey,
   SealedMemberKey,
@@ -231,4 +232,8 @@ export const api = {
   },
   gifTrending: (pos?: string) =>
     req<GifSearchResponse>('GET', `/api/gifs/trending${pos ? `?pos=${encodeURIComponent(pos)}` : ''}`),
+
+  pushKey: () => req<{ publicKey: string | null }>('GET', '/api/push/key'),
+  pushSubscribe: (sub: PushSubscriptionInput) => req<{ ok: true }>('POST', '/api/push/subscribe', sub),
+  pushUnsubscribe: (endpoint: string) => req<{ ok: true }>('POST', '/api/push/unsubscribe', { endpoint }),
 };

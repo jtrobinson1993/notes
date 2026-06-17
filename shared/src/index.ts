@@ -466,3 +466,19 @@ export type ServerFrame =
 /** Client -> server. Sends and read-markers go over REST; this stays minimal.
  * Liveness uses protocol-level ping/pong (browser auto-pongs), not app frames. */
 export type ClientFrame = { type: 'ping' };
+
+// ---- Web Push (PWA background notifications) ----
+
+/** A browser PushSubscription, as uploaded to the server. Stored verbatim to
+ * deliver content-free "new message" pings while the app is closed — it never
+ * carries plaintext, since the server can't read messages. */
+export interface PushSubscriptionInput {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}
+
+/** The content-free payload the server pushes; the client opens and decrypts. */
+export interface PushPayload {
+  type: 'message';
+  conversationId: string;
+}

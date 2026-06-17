@@ -336,6 +336,17 @@ CREATE TABLE IF NOT EXISTS profile_keys (
   sealed_key TEXT NOT NULL,
   PRIMARY KEY (owner_id, recipient_id)
 );
+-- Browser Web Push subscriptions, one per (user, device/endpoint). Used to send
+-- content-free "new message" pings when a recipient has no live socket. Carries
+-- no plaintext — the server can't read messages.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, endpoint)
+);
 `;
 
 export type DB = ReturnType<typeof openDb>;
@@ -642,6 +653,22 @@ export function openDb(dataDir: string) {
          ON CONFLICT(user_id, key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
       ).run(userId, key, data, ts);
       return ts;
+    },
+
+    // ---- Web Push subscriptions ----
+    addPushSubscription(s: { userId: string; endpoint: string; p256dh: string; auth: string }): void {
+      db.prepare(
+        `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth`,
+      ).run(s.userId, s.endpoint, s.p256dh, s.auth, now());
+    },
+    listPushSubscriptions(userId: string): { endpoint: string; p256dh: string; auth: string }[] {
+      return db
+        .prepare('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?')
+        .all(userId) as { endpoint: string; p256dh: string; auth: string }[];
+    },
+    deletePushSubscription(userId: string, endpoint: string): void {
+      db.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?').run(userId, endpoint);
     },
 
     putChallenge(c: { id: string; type: string; data: unknown }): void {
