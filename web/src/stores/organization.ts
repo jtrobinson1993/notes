@@ -21,6 +21,8 @@ export interface OrgFolder {
   id: string;
   name: string;
   position: number;
+  /** parent folder id for nesting; null/absent = a root folder. */
+  parentId: string | null;
 }
 /** A note or folder pinned into one conversation's sidebar (personal). */
 export interface OrgPin {
@@ -67,6 +69,19 @@ export const useOrgStore = defineStore('organization', () => {
 
   const sortedFolders = computed(() => [...folders.value].sort((a, b) => a.position - b.position));
 
+  /** Direct children of a folder (null = root folders), in position order. */
+  function childFolders(parentId: string | null): OrgFolder[] {
+    return sortedFolders.value.filter((f) => (f.parentId ?? null) === parentId);
+  }
+  /** A folder plus all of its descendants (for descendant-aware filtering). */
+  function descendantFolderIds(id: string): string[] {
+    const out: string[] = [id];
+    for (let i = 0; i < out.length; i++) {
+      for (const f of folders.value) if ((f.parentId ?? null) === out[i]) out.push(f.id);
+    }
+    return out;
+  }
+
   function snapshot(): OrgData {
     return { folders: folders.value, noteFolders: noteFolders.value, pins: pins.value };
   }
@@ -102,10 +117,10 @@ export const useOrgStore = defineStore('organization', () => {
   }
 
   // ---- Folders ----
-  function createFolder(name: string): string {
+  function createFolder(name: string, parentId: string | null = null): string {
     const id = crypto.randomUUID();
     const position = folders.value.reduce((m, f) => Math.max(m, f.position), -1) + 1;
-    folders.value = [...folders.value, { id, name: name.trim(), position }];
+    folders.value = [...folders.value, { id, name: name.trim(), position, parentId }];
     persist();
     return id;
   }
@@ -113,9 +128,21 @@ export const useOrgStore = defineStore('organization', () => {
     folders.value = folders.value.map((f) => (f.id === id ? { ...f, name: name.trim() } : f));
     persist();
   }
-  /** Delete a folder; its notes become unfiled, and it's unpinned everywhere. */
+  /** Re-parent a folder (drag-to-nest). No-ops on a cycle (can't nest a folder
+   *  inside itself or one of its own descendants). */
+  function setFolderParent(id: string, parentId: string | null): void {
+    if (id === parentId) return;
+    if (parentId !== null && descendantFolderIds(id).includes(parentId)) return;
+    folders.value = folders.value.map((f) => (f.id === id ? { ...f, parentId } : f));
+    persist();
+  }
+  /** Delete a folder; its child folders move up to its parent, its notes become
+   *  unfiled, and it's unpinned everywhere. */
   function deleteFolder(id: string): void {
-    folders.value = folders.value.filter((f) => f.id !== id);
+    const parent = folders.value.find((f) => f.id === id)?.parentId ?? null;
+    folders.value = folders.value
+      .filter((f) => f.id !== id)
+      .map((f) => ((f.parentId ?? null) === id ? { ...f, parentId: parent } : f));
     const nf = { ...noteFolders.value };
     for (const [noteId, folderId] of Object.entries(nf)) if (folderId === id) delete nf[noteId];
     noteFolders.value = nf;
@@ -182,8 +209,11 @@ export const useOrgStore = defineStore('organization', () => {
     pins,
     loaded,
     load,
+    childFolders,
+    descendantFolderIds,
     createFolder,
     renameFolder,
+    setFolderParent,
     deleteFolder,
     folderOf,
     setNoteFolder,

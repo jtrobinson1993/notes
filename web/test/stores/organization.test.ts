@@ -57,6 +57,41 @@ describe('organization store — folders', () => {
   });
 });
 
+describe('organization store — nesting', () => {
+  it('creates subfolders and reports children + descendants', () => {
+    const org = useOrgStore();
+    const work = org.createFolder('Work');
+    const proj = org.createFolder('Project', work);
+    const sub = org.createFolder('Subtask', proj);
+    org.createFolder('Personal'); // a root sibling
+    expect(org.childFolders(null).map((f) => f.name)).toEqual(['Work', 'Personal']);
+    expect(org.childFolders(work).map((f) => f.name)).toEqual(['Project']);
+    expect(org.descendantFolderIds(work).sort()).toEqual([work, proj, sub].sort());
+  });
+
+  it('re-parents a folder but refuses to create a cycle', () => {
+    const org = useOrgStore();
+    const a = org.createFolder('A');
+    const b = org.createFolder('B', a); // B under A
+    org.setFolderParent(a, b); // would make a cycle → ignored
+    expect(org.childFolders(null).map((f) => f.name)).toEqual(['A']);
+    const c = org.createFolder('C');
+    org.setFolderParent(a, c); // valid move
+    expect(org.childFolders(c).map((f) => f.name)).toEqual(['A']);
+  });
+
+  it('deleting a folder lifts its children to the grandparent', () => {
+    const org = useOrgStore();
+    const root = org.createFolder('Root');
+    const mid = org.createFolder('Mid', root);
+    const leaf = org.createFolder('Leaf', mid);
+    org.deleteFolder(mid);
+    // Leaf moves up under Root; Mid is gone.
+    expect(org.folders.find((f) => f.id === mid)).toBeUndefined();
+    expect(org.folders.find((f) => f.id === leaf)!.parentId).toBe(root);
+  });
+});
+
 describe('organization store — pins', () => {
   it('pins/unpins notes and folders per conversation (idempotent)', () => {
     const org = useOrgStore();

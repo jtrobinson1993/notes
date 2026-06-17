@@ -88,7 +88,25 @@ async function onModalSubmit(payload: { name: string; type: ChannelType }) {
   }
 }
 
-// ---- Reorder (up/down) + delete ----
+// ---- Reorder (drag, or up/down for a11y) + delete ----
+const draggingChannel = ref<string | null>(null);
+async function onChannelDrop(target: ChannelInfo) {
+  const dragged = draggingChannel.value;
+  draggingChannel.value = null;
+  if (!dragged || dragged === target.id || target.isDefault) return;
+  const ids = extra.value.map((c) => c.id);
+  const from = ids.indexOf(dragged);
+  const to = ids.indexOf(target.id);
+  if (from < 0 || to < 0) return;
+  ids.splice(from, 1);
+  ids.splice(to, 0, dragged);
+  busy.value = true;
+  try {
+    await chat.reorderChannels(props.conversation.id, ids);
+  } finally {
+    busy.value = false;
+  }
+}
 async function move(ch: ChannelInfo, dir: -1 | 1) {
   const ids = extra.value.map((c) => c.id);
   const i = ids.indexOf(ch.id);
@@ -193,9 +211,15 @@ watch(
               :class="[
                 ch.id === activeChannelId ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800/60',
                 ch.type === 'voice' ? 'cursor-default opacity-70' : '',
+                editing && !ch.isDefault ? 'cursor-grab' : '',
               ]"
               :aria-current="ch.id === activeChannelId ? 'true' : undefined"
+              :draggable="editing && !ch.isDefault"
               @click="select(ch)"
+              @dragstart="draggingChannel = ch.id"
+              @dragend="draggingChannel = null"
+              @dragover.prevent
+              @drop.prevent="onChannelDrop(ch)"
             >
               <IconVolume v-if="ch.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
               <IconHash v-else class="h-4 w-4 shrink-0 opacity-60" />

@@ -675,7 +675,8 @@ refetch the channel list after a create/rename/reorder/delete.
 - `ChatSidebar` (groups): a collapsible left sidebar with a persisted open/closed
   state (`localStorage` `chat:channels:open`) and a toggle at the top; the
   channel list with per-channel unread badges; and an "Edit channels" mode
-  (managers only) for rename / reorder / delete plus a create button. Voice
+  (managers only) for rename / reorder / delete plus a create button. Reordering
+  is by drag-and-drop, with up/down arrows as an accessible fallback. Voice
   channels are listed but not selectable yet.
 
 ### Pins (v4) — as built
@@ -688,5 +689,5 @@ chat sidebar does **not** share it (sharing is v5).
 
 ### Not yet built (v4 follow-ups)
 
-- Channel drag-reorder (reordering is via up/down arrows for now) and renaming
-  the general channel.
+- Renaming the general channel (extra channels rename/reorder/delete; the general
+  channel is fixed).

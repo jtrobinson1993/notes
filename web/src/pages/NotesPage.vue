@@ -43,8 +43,26 @@ watch(
   { immediate: true },
 );
 
+// The folder tree flattened depth-first, each row carrying its nesting depth.
+const folderTree = computed(() => {
+  const out: { folder: (typeof org.folders)[number]; depth: number }[] = [];
+  const walk = (parentId: string | null, depth: number) => {
+    for (const f of org.childFolders(parentId)) {
+      out.push({ folder: f, depth });
+      walk(f.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+});
+
+// Counts include descendants, so a parent folder reflects everything under it.
 function notesInFolder(folderId: string): number {
-  return notes.sorted.filter((n) => org.folderOf(n.id) === folderId).length;
+  const ids = new Set(org.descendantFolderIds(folderId));
+  return notes.sorted.filter((n) => {
+    const f = org.folderOf(n.id);
+    return f !== null && ids.has(f);
+  }).length;
 }
 const unfiledCount = computed(() => notes.sorted.filter((n) => org.folderOf(n.id) === null).length);
 
@@ -55,14 +73,25 @@ function createFolder() {
     activeFolder.value = id;
   }
 }
+function createSubfolder(parentId: string) {
+  const name = window.prompt('New subfolder name')?.trim();
+  if (name) activeFolder.value = org.createFolder(name, parentId);
+}
 function renameFolder(id: string, current: string) {
   const name = window.prompt('Rename folder', current)?.trim();
   if (name) org.renameFolder(id, name);
 }
 function deleteFolder(id: string, name: string) {
-  if (!window.confirm(`Delete folder "${name}"? Its notes stay, but become unfiled.`)) return;
+  if (!window.confirm(`Delete folder "${name}"? Its notes become unfiled and any subfolders move up.`)) return;
   if (activeFolder.value === id) activeFolder.value = null;
   org.deleteFolder(id);
+}
+
+// Drag a folder onto another folder to nest it; onto "All notes" to move to root.
+const draggingFolder = ref<string | null>(null);
+function onFolderDrop(targetParentId: string | null) {
+  if (draggingFolder.value) org.setFolderParent(draggingFolder.value, targetParentId);
+  draggingFolder.value = null;
 }
 
 // Open the most recently edited note once notes are ready (or a fresh note if
@@ -111,7 +140,11 @@ const filtered = computed(() => {
     if (activeTag.value && !n.payload.tags.includes(activeTag.value)) return false;
     const folder = org.folderOf(n.id);
     if (activeFolder.value === 'unfiled' && folder !== null) return false;
-    if (activeFolder.value && activeFolder.value !== 'unfiled' && folder !== activeFolder.value) return false;
+    if (activeFolder.value && activeFolder.value !== 'unfiled') {
+      // Selecting a folder includes everything in it and its subfolders.
+      const ids = new Set(org.descendantFolderIds(activeFolder.value));
+      if (folder === null || !ids.has(folder)) return false;
+    }
     if (q && !n.payload.title.toLowerCase().includes(q) && !n.payload.body.toLowerCase().includes(q)) return false;
     return true;
   });
@@ -167,25 +200,36 @@ function excerpt(body: string): string {
               <button
                 class="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left"
                 :class="activeFolder === null ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
+                title="Drop a folder here to move it to the top level"
                 @click="activeFolder = null"
+                @dragover.prevent
+                @drop.prevent="onFolderDrop(null)"
               >
                 <IconFolder class="h-3.5 w-3.5 shrink-0 opacity-60" />
                 <span class="grow truncate">All notes</span>
                 <span class="text-xs text-zinc-400">{{ notes.sorted.length }}</span>
               </button>
             </li>
-            <li v-for="f in org.sortedFolders" :key="f.id" class="group/folder flex items-center gap-0.5">
+            <!-- Folder tree: draggable rows; drop a folder onto another to nest it. -->
+            <li v-for="node in folderTree" :key="node.folder.id" class="group/folder flex items-center gap-0.5">
               <button
-                class="flex min-w-0 grow items-center gap-1.5 rounded-md px-2 py-1 text-left"
-                :class="activeFolder === f.id ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
-                @click="activeFolder = f.id"
+                class="flex min-w-0 grow items-center gap-1.5 rounded-md py-1 pr-2 text-left"
+                :class="activeFolder === node.folder.id ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
+                :style="{ paddingLeft: `${node.depth * 14 + 8}px` }"
+                draggable="true"
+                @click="activeFolder = node.folder.id"
+                @dragstart="draggingFolder = node.folder.id"
+                @dragend="draggingFolder = null"
+                @dragover.prevent
+                @drop.prevent="onFolderDrop(node.folder.id)"
               >
                 <IconFolder class="h-3.5 w-3.5 shrink-0 opacity-60" />
-                <span class="min-w-0 grow truncate">{{ f.name }}</span>
-                <span class="text-xs text-zinc-400">{{ notesInFolder(f.id) }}</span>
+                <span class="min-w-0 grow truncate">{{ node.folder.name }}</span>
+                <span class="text-xs text-zinc-400">{{ notesInFolder(node.folder.id) }}</span>
               </button>
-              <button class="hidden rounded p-1 text-zinc-400 hover:text-zinc-700 group-hover/folder:block dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(f.id, f.name)"><IconPencil class="h-3 w-3" /></button>
-              <button class="hidden rounded p-1 text-zinc-400 hover:text-red-600 group-hover/folder:block dark:hover:text-red-400" title="Delete folder" @click="deleteFolder(f.id, f.name)"><IconTrash class="h-3 w-3" /></button>
+              <button class="hidden rounded p-1 text-zinc-400 hover:text-zinc-700 group-hover/folder:block dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(node.folder.id)"><IconFolderPlus class="h-3 w-3" /></button>
+              <button class="hidden rounded p-1 text-zinc-400 hover:text-zinc-700 group-hover/folder:block dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(node.folder.id, node.folder.name)"><IconPencil class="h-3 w-3" /></button>
+              <button class="hidden rounded p-1 text-zinc-400 hover:text-red-600 group-hover/folder:block dark:hover:text-red-400" title="Delete folder" @click="deleteFolder(node.folder.id, node.folder.name)"><IconTrash class="h-3 w-3" /></button>
             </li>
             <li v-if="unfiledCount > 0 && org.sortedFolders.length">
               <button

@@ -118,8 +118,8 @@ Polish + bug fixes that shipped alongside the v3.2 profile work.
 - Collapsible; persist open/closed state. Collapse/open icon at the top.
   (implemented)
 - An edit button at the bottom of the open sidebar makes channels editable /
-  reorderable / deletable. (implemented — rename / reorder via up-down arrows /
-  delete; managers only)
+  reorderable / deletable. (implemented — rename / drag-reorder (up-down arrows
+  as an accessible fallback) / delete; managers only)
 - Ability to create "channels" à la Discord, with a type (text or voice). Voice
   channels are structural here; the voice functionality itself lands in v6.
   (implemented)
@@ -133,8 +133,8 @@ Polish + bug fixes that shipped alongside the v3.2 profile work.
 
 See [notes.md](notes.md#folders--organization-v4).
 
-- Organize notes into folders. (implemented — flat folders; a note is in at most
-  one folder)
+- Organize notes into folders. (implemented — nestable folders via drag-to-nest;
+  a note is in at most one folder)
 - Pin a note or note folder into the chat sidebar. (implemented — per
   conversation; the 1:1 DM sidebar is pins-only)
 - Create a new note / note folder from the chat sidebar; it also appears in your

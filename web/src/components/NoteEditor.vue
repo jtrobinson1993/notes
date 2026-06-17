@@ -37,6 +37,18 @@ const noteFolderId = computed({
   get: () => org.folderOf(props.note.id) ?? '',
   set: (v: string) => org.setNoteFolder(props.note.id, v || null),
 });
+// Folders flattened with depth, so the <select> conveys nesting (indented).
+const folderOptions = computed(() => {
+  const out: { id: string; label: string }[] = [];
+  const walk = (parentId: string | null, depth: number) => {
+    for (const f of org.childFolders(parentId)) {
+      out.push({ id: f.id, label: '  '.repeat(depth) + f.name });
+      walk(f.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+});
 const title = ref(props.note.payload.title);
 const body = ref(props.note.payload.body);
 const tags = ref<string[]>([...props.note.payload.tags]);
@@ -315,7 +327,7 @@ function fmtSize(bytes: number): string {
         <IconFolder class="h-3 w-3 shrink-0" />
         <select v-model="noteFolderId" class="max-w-[8rem] bg-transparent text-xs outline-none">
           <option value="">No folder</option>
-          <option v-for="f in org.sortedFolders" :key="f.id" :value="f.id">{{ f.name }}</option>
+          <option v-for="f in folderOptions" :key="f.id" :value="f.id">{{ f.label }}</option>
         </select>
       </label>
       <span

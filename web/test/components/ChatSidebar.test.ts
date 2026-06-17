@@ -142,6 +142,22 @@ describe('ChatSidebar', () => {
     expect(org.isPinned('g1', 'folder', fid)).toBe(false);
   });
 
+  it('reorders channels by drag-and-drop', async () => {
+    api.channelReorder.mockResolvedValue(group('owner'));
+    const conv = group('owner', [
+      channel({ id: 'a', name: 'alpha', position: 1 }),
+      channel({ id: 'b', name: 'bravo', position: 2 }),
+    ]);
+    const w = mount(ChatSidebar, { props: { conversation: conv, activeChannelId: 'g1' }, global: { stubs } });
+    await w.find('footer button').trigger('click'); // edit mode → channels draggable
+    const btns = w.findAll('ul button');
+    const alpha = btns.find((b) => b.text().includes('alpha'))!;
+    const bravo = btns.find((b) => b.text().includes('bravo'))!;
+    await alpha.trigger('dragstart');
+    await bravo.trigger('drop');
+    expect(api.channelReorder).toHaveBeenCalledWith('g1', ['b', 'a']);
+  });
+
   it('deletes a channel after confirmation', async () => {
     const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
     const conv = group('owner', [channel({ id: 'a', name: 'alpha', position: 1 })]);
