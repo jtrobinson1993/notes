@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useMutation, useQuery, useQueryCache } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
 import { api } from '../lib/api';
+import { disablePush, enablePush, pushState, type PushState } from '../lib/push';
 import { clickToLoadEmbeds, clickToLoadImages, optimizeImages, setClickToLoadEmbeds, setClickToLoadImages, setOptimizeImages } from '../lib/privacy';
 import { getPalette, getTheme, setPalette, setTheme, type Palette, type Theme } from '../lib/theme';
 import { exportNotesZip, parseImportFiles, type ExportFormat } from '../lib/transfer';
@@ -45,6 +46,21 @@ const newPasskeyName = ref('');
 const passkeyError = ref('');
 const newRecoveryCode = ref('');
 const copiedInvite = ref('');
+
+// Background push notifications (content-free; see lib/push.ts).
+const notif = ref<PushState>('unsupported');
+const notifBusy = ref(false);
+onMounted(async () => {
+  notif.value = await pushState();
+});
+async function toggleNotifications() {
+  notifBusy.value = true;
+  try {
+    notif.value = notif.value === 'on' ? await disablePush() : await enablePush();
+  } finally {
+    notifBusy.value = false;
+  }
+}
 
 // Custom emoji palette (encrypted; see lib/emoji/custom.ts).
 const emojiName = ref('');
@@ -504,6 +520,30 @@ async function importFiles(event: Event) {
             <option value="60">1 hour</option>
             <option value="0">Never</option>
           </select>
+        </div>
+
+        <h2 class="text-lg font-semibold">Notifications</h2>
+        <div class="flex items-center justify-between gap-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <div>
+            <p class="text-sm">New-message notifications</p>
+            <p class="text-xs text-zinc-500 dark:text-zinc-400">
+              Get a push when a message arrives while the app is closed. Notifications are
+              <strong>content-free</strong> — just “New message”, never the text or sender — because
+              the server can't read your encrypted messages.
+            </p>
+          </div>
+          <button
+            v-if="notif === 'on' || notif === 'off'"
+            :disabled="notifBusy"
+            class="shrink-0 rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            @click="toggleNotifications"
+          >
+            {{ notifBusy ? '…' : notif === 'on' ? 'Disable' : 'Enable' }}
+          </button>
+          <span v-else-if="notif === 'denied'" class="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+            Blocked in browser settings
+          </span>
+          <span v-else class="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">Not supported here</span>
         </div>
       </section>
 
