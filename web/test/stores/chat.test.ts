@@ -250,6 +250,23 @@ describe('editMessage', () => {
     expect(api.messageEdit.mock.calls[0][1]).toBe(1);
   });
 
+  it('is a no-op when the text is unchanged (no API call, stays unedited)', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 0 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
+    await store.sendMessage('c1', 'same');
+
+    await store.editMessage('c1', 1, 'same');
+    expect(api.messageEdit).not.toHaveBeenCalled();
+    expect(store.messages['c1']?.find((m) => m.seq === 1)?.editedAt).toBeUndefined();
+  });
+
   it('applies an inbound message-edited frame in place (same seq, editedAt set)', async () => {
     const kp = await myKeyPair();
     const serverKey = generateConversationKey();

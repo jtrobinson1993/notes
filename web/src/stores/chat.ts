@@ -381,6 +381,7 @@ export const useChatStore = defineStore('chat', () => {
   async function editMessage(convId: string, seq: number, text: string): Promise<void> {
     const existing = (messages.value[convId] ?? []).find((m) => m.seq === seq);
     if (!existing) throw new Error('message not found');
+    if (text === existing.text) return; // no change → no API call, stays unedited
     const key = keyForEpoch(convId, existing.epoch);
     if (!key) throw new Error('no conversation key');
     const payload: MessagePayload = { text, sentAt: existing.createdAt };

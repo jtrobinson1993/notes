@@ -49,7 +49,8 @@ const attaching = ref(false);
 const attachError = ref('');
 const replyingTo = ref<ReplyRef | null>(null);
 // When set, the composer is editing this message's text (not sending a new one).
-const editing = ref<{ seq: number } | null>(null);
+// `original` is the text as-sent, to detect a no-op save.
+const editing = ref<{ seq: number; original: string } | null>(null);
 
 // Only your own decryptable, non-system text messages can be edited.
 function canEdit(m: ChatMessageView): boolean {
@@ -58,7 +59,7 @@ function canEdit(m: ChatMessageView): boolean {
 
 function startEdit(m: ChatMessageView) {
   if (!canEdit(m)) return;
-  editing.value = { seq: m.seq };
+  editing.value = { seq: m.seq, original: m.text ?? '' };
   replyingTo.value = null;
   text.value = m.text ?? '';
   // Wait for the new text to flush into the editor, then place the caret at the end.
@@ -354,11 +355,18 @@ async function send() {
   // Editing path: re-encrypt the message in place (no attachments/preview flow).
   if (editing.value) {
     if (!body) return; // empty edit is a no-op; cancel via Esc / ✕
+    // Unchanged → just leave edit mode; no API call, no "edited" marker.
+    if (body === editing.value.original.trim()) {
+      cancelEdit();
+      return;
+    }
+    const wasAtBottom = atBottom();
     sending.value = true;
     try {
       await chat.editMessage(convId.value, editing.value.seq, body);
       editing.value = null;
       text.value = '';
+      if (wasAtBottom) await scrollToBottom();
     } finally {
       sending.value = false;
     }
