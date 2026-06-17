@@ -172,7 +172,9 @@ describe('organization store — encrypted persistence', () => {
     org1.setNoteFolder('n1', f);
     org1.pin('conv1', 'note', 'n1');
     // Flush the debounced push.
-    await vi.waitFor(() => expect(api.settingPut).toHaveBeenCalled());
+    // The remote push is debounced ~800ms; wait comfortably past it (the default
+    // 1s waitFor can race the debounce under full-suite load).
+    await vi.waitFor(() => expect(api.settingPut).toHaveBeenCalled(), { timeout: 3000 });
 
     // The persisted blob is ciphertext, not plaintext folder names.
     expect(store.get('notes-org')).not.toContain('Work');
