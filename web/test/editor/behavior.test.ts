@@ -4,6 +4,7 @@ import { EditorView } from '@codemirror/view';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { extendedSyntax } from '../../src/lib/editor/syntax';
 import { livePreview } from '../../src/lib/editor/livePreview';
+import { inListItem } from '../../src/lib/editor/commands';
 
 const md = () => markdown({ base: markdownLanguage, extensions: extendedSyntax });
 const views: EditorView[] = [];
@@ -47,6 +48,23 @@ describe('newline breakout', () => {
     const v = makeEditor('**bold**');
     v.dispatch({ changes: { from: 6, insert: '\n' }, userEvent: 'input' });
     expect(v.state.doc.toString()).toBe('**bold**\n');
+  });
+});
+
+describe('inListItem (chat composer Enter = continue list)', () => {
+  it('is true when the caret sits inside a bullet list item', () => {
+    const v = makeEditor('- one', 5); // caret at end of "- one"
+    expect(inListItem(v.state)).toBe(true);
+  });
+
+  it('is true inside an ordered list item', () => {
+    const v = makeEditor('1. one', 6);
+    expect(inListItem(v.state)).toBe(true);
+  });
+
+  it('is false in a plain paragraph', () => {
+    const v = makeEditor('just text', 4);
+    expect(inListItem(v.state)).toBe(false);
   });
 });
 

@@ -18,6 +18,16 @@ function findEnclosing(state: EditorState, name: string, from: number, to: numbe
   return null;
 }
 
+/** True when the caret sits inside a markdown list item (bullet or ordered).
+ *  Used by the chat composer so Enter continues the list instead of sending. */
+export function inListItem(state: EditorState): boolean {
+  const head = state.selection.main.head;
+  for (let n: SyntaxNode | null = syntaxTree(state).resolveInner(head, -1); n; n = n.parent) {
+    if (n.name === 'ListItem' || n.name === 'BulletList' || n.name === 'OrderedList') return true;
+  }
+  return false;
+}
+
 function markerChildren(node: SyntaxNode): SyntaxNode[] {
   const marks: SyntaxNode[] = [];
   for (let child = node.firstChild; child; child = child.nextSibling) {

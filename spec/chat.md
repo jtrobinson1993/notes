@@ -329,7 +329,9 @@ preview: code blocks, spoilers, colors, the selection toolbar), not a plain
 
 - **`submit-on-enter`** — binds **Enter → `submit`** (ahead of the default
   keymap) and **Shift+Enter → newline**; also switches sizing from "fill the
-  pane" to **auto-grow up to `max-height: 40vh`, then scroll**.
+  pane" to **auto-grow up to `max-height: 40vh`, then scroll**. Inside a list,
+  **Enter continues the list** (new item, via `insertNewlineContinueMarkup`)
+  instead of sending; **Cmd/Ctrl+Enter sends** regardless of list context.
 - **`placeholder`** — composer shows `Message…`.
 
 There is **no visible Send button** — Enter sends. An `sr-only` submit button

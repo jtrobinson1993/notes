@@ -5,7 +5,7 @@ import ColorPalette from './ColorPalette.vue';
 import { EditorView, keymap, placeholder } from '@codemirror/view';
 import { EditorState, Compartment } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, insertNewlineAndIndent } from '@codemirror/commands';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { insertNewlineContinueMarkup, markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
@@ -26,6 +26,7 @@ import {
   toggleSpoilerSyntax,
   toggleStrike,
   toggleUnderline,
+  inListItem,
 } from '../lib/editor/commands';
 import { getLastColor, PRESET_COLORS, presetCss } from '../lib/editor/palette';
 
@@ -84,10 +85,20 @@ const editorTheme = EditorView.theme({
   '.cm-cursor': { borderLeftColor: 'currentColor' },
 });
 
-// In composer mode, Enter submits and Shift+Enter inserts a newline. Bound ahead
-// of defaultKeymap so it wins for the bare Enter key.
+// In composer mode, Enter submits and Shift+Enter inserts a newline — except
+// inside a list, where Enter continues the list (new item) and Cmd/Ctrl+Enter
+// sends regardless of list context. Bound ahead of defaultKeymap so it wins for
+// the bare Enter key.
 const submitKeymap = keymap.of([
-  { key: 'Enter', run: () => (emit('submit'), true) },
+  { key: 'Mod-Enter', run: () => (emit('submit'), true) },
+  {
+    key: 'Enter',
+    run: (v) => {
+      if (inListItem(v.state)) return insertNewlineContinueMarkup(v);
+      emit('submit');
+      return true;
+    },
+  },
   { key: 'Shift-Enter', run: insertNewlineAndIndent },
 ]);
 
