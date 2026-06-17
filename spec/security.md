@@ -55,20 +55,49 @@ it's the brute-force surface; that's still ~30 login attempts/min, well above
 human use. Over-limit requests get `429`. Tests raise the ceiling out of the way
 (`rateLimitMax` in the app builder) so request-heavy suites aren't throttled.
 
-## Content-Security-Policy (lands with chat, phase 3)
+## Content-Security-Policy (v3 phase 3 — as built)
 
-A CSP response header as defense-in-depth: roughly `script-src 'self'` (only our
-bundled JS) and `frame-src` limited to the embed hosts. Even if a hostile message
-somehow injected a `<script>`, the browser refuses to run it.
+A strict CSP plus companion hardening headers are set on **every** response as
+defense-in-depth (`server/src/security-headers.ts`, wired in `buildApp`). Even if
+a hostile message somehow injected a `<script>`, the browser refuses to run it.
 
-`script-src 'self'` blocks **inline** scripts — but `index.html` has exactly one
-(the pre-paint theme applier that avoids a flash). We allow that one script by
-its **hash**: compute the SHA-256 of its exact text, base64 it, and add
-`script-src 'self' 'sha256-…'`. The browser runs the inline script only if the
-hash matches; change one character and it won't run — which is what stops an
-injected script. The hash is computed at build (Vite can emit it); a per-response
-**nonce** suits server-rendered pages, but a hash is the natural fit for a static
-file. Net: every inline script blocked except our one known-good theme script.
+**Inline scripts are allowed only by hash, never `'unsafe-inline'`.** The built
+`index.html` ships exactly one inline script (the pre-paint theme applier that
+avoids a flash; the vite-plugin-pwa service-worker registration is an *external*
+`/registerSW.js`, covered by `'self'`). At boot the server reads the served
+`index.html`, hashes the text of every inline (no-`src`) `<script>` with SHA-256,
+and folds `'sha256-…'` into `script-src`. Computing from the bytes on disk means
+the policy tracks whatever the build emits; change one character and the hash no
+longer matches — which is exactly what stops an injected script. (A hash is the
+natural fit for a static file; a per-response nonce suits server-rendered pages.)
+
+The directives:
+
+- `default-src 'self'`, `base-uri 'self'`, `form-action 'self'`, `object-src 'none'`
+- `script-src 'self' 'sha256-<theme>'`
+- `style-src 'self' 'unsafe-inline'` — Vue/reka-ui apply runtime styles via
+  injected `<style>`/style attributes; far lower-risk than inline *script*.
+- `img-src 'self' blob: data: https:` — `'self'` for the emoji proxy, `blob:`/
+  `data:` for decrypted attachments/avatars. `https:` is required because the
+  browser loads two image classes **cross-origin straight from source**: KLIPY
+  GIF-CDN images and **click-to-load** OG preview images (arbitrary hosts). This
+  is a deliberate relaxation — image loads can't execute code, and click-to-load
+  + no-referrer bound the privacy cost (see below). Tightening it would mean
+  proxying every preview image through our origin (a product change, not free).
+- `connect-src 'self' wss://<host>` — REST + the chat WebSocket. The `ws(s)`
+  origin is named explicitly because `'self'` is inconsistent for sockets across
+  browsers.
+- `worker-src 'self'`, `manifest-src 'self'` — the service worker + PWA manifest.
+- `media-src 'self' blob:`, `font-src 'self' data:`.
+- `frame-src 'none'`, `frame-ancestors 'none'` — we embed nothing and refuse to
+  be embedded (clickjacking).
+- `upgrade-insecure-requests` on https origins.
+
+Companion headers (also every response): `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer` (keeps our URLs out of the cross-origin GIF/OG
+image loads), `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`,
+`Cross-Origin-Resource-Policy: same-origin`, a locked-down `Permissions-Policy`,
+and `Strict-Transport-Security` on https.
 
 ## Threat model & metadata exposure
 

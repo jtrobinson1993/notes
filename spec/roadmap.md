@@ -7,7 +7,11 @@
 - **Phase 2** — group channels: membership add/remove + leave, epoch re-keying,
   the inviter's share-history choice, per-group permissions + owner/admin roles
   (implemented; see [chat.md](chat.md#conversation-keys--epochs)).
-- **Phase 3** — hardening: CSP headers (theme-script hash) + background/PWA push.
+- **Phase 3** — hardening: strict CSP (inline theme/PWA scripts allowed by hash)
+  + companion security headers, and content-free background/PWA push
+  (implemented; see
+  [security.md](security.md#content-security-policy-v3-phase-3--as-built) +
+  [notifications.md](notifications.md)).
 
 ## v3.1 — Chat polish
 

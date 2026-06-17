@@ -71,6 +71,16 @@ Two things to be deliberate about:
   tailnet can reach the app, and nothing is open to the internet. Great fit
   when only you and invited friends need access.
 
+### Push notifications
+
+Background "new message" push works out of the box once the app is served over
+HTTPS (which the Caddy setup above gives you). On first boot the server
+generates a VAPID keypair into the data volume (`DATA_DIR/vapid.json`); users
+opt in under **Settings → Security → Notifications**. To pin a keypair
+explicitly, set `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` (see `.env.example`).
+Notifications are content-free by design — see
+[spec/notifications.md](spec/notifications.md).
+
 ## 3. Releasing new versions
 
 Simplest loop that works:
