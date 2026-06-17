@@ -617,14 +617,14 @@ async function sendGif(gif: GifRef) {
 </template>
 
 <style scoped>
-/* A newly added reaction pill pops from 1.5x to its normal size (~0.15s).
+/* A newly added reaction pill pops from 1.25x to its normal size (~0.15s).
    TransitionGroup enter never runs on the initial render, so existing
    reactions don't animate when a conversation opens. */
 .pill-enter-active {
   transition: transform 0.15s ease-out;
 }
 .pill-enter-from {
-  transform: scale(1.5);
+  transform: scale(1.25);
 }
 
 /* When a reaction count changes, the number pops up and settles back. */
