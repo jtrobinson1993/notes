@@ -70,6 +70,19 @@ describe('links, quotes, lists, rules', () => {
     expect(v.dom.querySelector('.cm-live-bullet')).not.toBeNull();
   });
 
+  it('renders a bullet immediately for "- " on a line broken off a paragraph', () => {
+    // CommonMark won't let the empty item interrupt the paragraph, but the
+    // live editor shows the bullet right away (matching a fresh line).
+    const v = makeEditor('text\n- ');
+    const bullets = v.dom.querySelectorAll('.cm-live-bullet');
+    expect(bullets.length).toBe(1);
+  });
+
+  it('does not double-render a bullet for a real list item', () => {
+    const v = makeEditor('- item');
+    expect(v.dom.querySelectorAll('.cm-live-bullet').length).toBe(1);
+  });
+
   it('a horizontal rule renders an hr widget', () => {
     const v = makeEditor('---');
     expect(v.dom.querySelector('.cm-live-hr')).not.toBeNull();

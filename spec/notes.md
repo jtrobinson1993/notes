@@ -49,7 +49,10 @@ and export are unchanged.
   movement. Applies to headings, lists, quotes, links (URL hidden), inline code,
   strikethrough, highlight, spoilers, code fences. Typed whitespace just before
   a hidden closing marker relocates past it. Literal markers follow CommonMark
-  (intra-word `_` never italicizes; `\_` renders bare).
+  (intra-word `_` never italicizes; `\_` renders bare) — except that a `- ` at
+  the start of a line freshly broken off a paragraph (Shift+Enter then `- `)
+  shows its bullet **immediately**, even though CommonMark won't let the still-
+  empty item interrupt the paragraph until a character follows.
 - **Keyboard shortcuts** (Cmd / Ctrl), toggling on selection or at the caret:
   Bold `B`, Italic `I`, Underline `U`, Inline code `E`, Highlight `Shift+H`,
   Strikethrough `Shift+X`, Link `K` (prompt for URL), Heading `Shift+1..6` (same
