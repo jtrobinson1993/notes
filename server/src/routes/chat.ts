@@ -23,6 +23,7 @@ import {
   type ReactionRow,
 } from '../db.js';
 import type { Realtime } from '../realtime.js';
+import type { Push } from '../push.js';
 import { requireAuth } from '../session.js';
 import { newId, newToken, now } from '../util.js';
 
@@ -110,7 +111,7 @@ function toReaction(r: ReactionRow): ChatReaction {
   };
 }
 
-export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
+export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Push): void {
   // Build a Conversation for a given member, including their own sealed key.
   function toConversation(conv: ConversationRow, userId: string): Conversation | null {
     const mine = db.getConversationMember(conv.id, userId);
@@ -844,7 +845,10 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     });
     const message = toMessage(row);
     // Fan out to ALL members (including the sender's other sockets).
-    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'message', message });
+    const memberIds = db.listConversationMemberIds(id);
+    hub.sendToUsers(memberIds, { type: 'message', message });
+    // Background push to members with no live socket (content-free; see push.ts).
+    push.notifyNewMessage(id, me, memberIds);
     return message;
   });
 

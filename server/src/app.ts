@@ -20,7 +20,9 @@ import { linkRoutes } from './routes/link.js';
 import { gifRoutes } from './routes/gifs.js';
 import { emojiRoutes } from './routes/emoji.js';
 import { ogRoutes } from './routes/og.js';
+import { pushRoutes } from './routes/push.js';
 import { createRealtime, WS_MAX_PAYLOAD } from './realtime.js';
+import { createPush } from './push.js';
 
 export async function buildApp(db: DB, config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
@@ -51,6 +53,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   registerSessionHooks(app, db, config);
 
   const realtime = createRealtime(db, config);
+  const push = createPush(db, config, realtime);
 
   app.get('/api/health', async () => ({ ok: true }));
   authRoutes(app, db, config);
@@ -58,11 +61,12 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   noteRoutes(app, db);
   attachmentRoutes(app, db, config);
   settingsRoutes(app, db);
-  chatRoutes(app, db, realtime);
+  chatRoutes(app, db, realtime, push);
   linkRoutes(app, db, config);
   gifRoutes(app, config);
   emojiRoutes(app, config);
   ogRoutes(app);
+  pushRoutes(app, db, push);
   realtime.register(app);
 
   // Serve the built SPA (resolved above). Default: web/dist relative to the repo
