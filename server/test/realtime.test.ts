@@ -151,7 +151,7 @@ describe('fan-out', () => {
     t.db.createConversation({ id: 'c1', kind: 'dm', createdBy: a, dmKey: 'a:b' });
     t.db.addConversationMember({ conversationId: 'c1', userId: a, sealedKey: '{}', epoch: 0 });
     t.db.addConversationMember({ conversationId: 'c1', userId: b, sealedKey: '{}', epoch: 0 });
-    t.db.insertMessage({ id: 'm1', conversationId: 'c1', senderId: a, epoch: 0, ciphertext: 'orig', iv: 'i' });
+    t.db.insertMessage({ id: 'm1', conversationId: 'c1', channelId: 'c1', senderId: a, epoch: 0, ciphertext: 'orig', iv: 'i' });
 
     const ca = new Client(authCookie(t.db, a));
     const cb = new Client(authCookie(t.db, b));
@@ -183,7 +183,7 @@ describe('fan-out', () => {
     t.db.createConversation({ id: 'c1', kind: 'dm', createdBy: a, dmKey: 'a:b' });
     t.db.addConversationMember({ conversationId: 'c1', userId: a, sealedKey: '{}', epoch: 0 });
     t.db.addConversationMember({ conversationId: 'c1', userId: b, sealedKey: '{}', epoch: 0 });
-    t.db.insertMessage({ id: 'm1', conversationId: 'c1', senderId: a, epoch: 0, ciphertext: 'x', iv: 'i' });
+    t.db.insertMessage({ id: 'm1', conversationId: 'c1', channelId: 'c1', senderId: a, epoch: 0, ciphertext: 'x', iv: 'i' });
 
     const ca = new Client(authCookie(t.db, a));
     const cb = new Client(authCookie(t.db, b));
@@ -199,7 +199,7 @@ describe('fan-out', () => {
 
     // A (the other member) gets the read receipt for B.
     const read = await ca.waitFor((f) => f.type === 'read');
-    expect(read).toEqual({ type: 'read', conversationId: 'c1', userId: b, seq: 1 });
+    expect(read).toEqual({ type: 'read', conversationId: 'c1', channelId: 'c1', userId: b, seq: 1 });
     // B (the reader) is excluded — it never sees its own read frame.
     expect(cb.frames.some((f) => f.type === 'read')).toBe(false);
 

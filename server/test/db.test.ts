@@ -141,7 +141,7 @@ describe('messages — seq monotonicity', () => {
     const { conv, me } = setupConv();
     expect(t.db.getMaxSeq(conv)).toBe(0);
     const seqs = [0, 1, 2, 3].map((i) =>
-      t.db.insertMessage({ id: `m${i}`, conversationId: conv, senderId: me, epoch: 0, ciphertext: 'c', iv: 'i' }).seq,
+      t.db.insertMessage({ id: `m${i}`, conversationId: conv, channelId: conv, senderId: me, epoch: 0, ciphertext: 'c', iv: 'i' }).seq,
     );
     expect(seqs).toEqual([1, 2, 3, 4]);
     expect(t.db.getMaxSeq(conv)).toBe(4);
@@ -150,19 +150,19 @@ describe('messages — seq monotonicity', () => {
   it('rejects a duplicate (conversation, seq) pair', () => {
     const { conv, me } = setupConv();
     t.db.raw
-      .prepare('INSERT INTO messages (id,conversation_id,sender_id,seq,epoch,ciphertext,iv,created_at) VALUES (?,?,?,?,?,?,?,?)')
-      .run('x', conv, me, 5, 0, 'c', 'i', Date.now());
+      .prepare('INSERT INTO messages (id,conversation_id,channel_id,sender_id,seq,epoch,ciphertext,iv,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run('x', conv, conv, me, 5, 0, 'c', 'i', Date.now());
     expect(() =>
       t.db.raw
-        .prepare('INSERT INTO messages (id,conversation_id,sender_id,seq,epoch,ciphertext,iv,created_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run('y', conv, me, 5, 0, 'c', 'i', Date.now()),
+        .prepare('INSERT INTO messages (id,conversation_id,channel_id,sender_id,seq,epoch,ciphertext,iv,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run('y', conv, conv, me, 5, 0, 'c', 'i', Date.now()),
     ).toThrow();
   });
 
   it('listMessages paginates DESC with an exclusive before cursor', () => {
     const { conv, me } = setupConv();
     for (let i = 0; i < 5; i++) {
-      t.db.insertMessage({ id: `m${i}`, conversationId: conv, senderId: me, epoch: 0, ciphertext: 'c', iv: 'i' });
+      t.db.insertMessage({ id: `m${i}`, conversationId: conv, channelId: conv, senderId: me, epoch: 0, ciphertext: 'c', iv: 'i' });
     }
     const head = t.db.listMessages(conv, undefined, 2).map((m) => m.seq);
     expect(head).toEqual([5, 4]);
@@ -177,11 +177,11 @@ describe('last_read_seq never decreases', () => {
     t.db.createConversation({ id: 'c1', kind: 'dm', createdBy: me, dmKey: 'a:b' });
     t.db.addConversationMember({ conversationId: 'c1', userId: me, sealedKey: '{}', epoch: 0 });
 
-    t.db.setLastReadSeq('c1', me, 5);
+    t.db.setLastReadSeq('c1', 'c1', me, 5);
     expect(t.db.getConversationMember('c1', me)!.last_read_seq).toBe(5);
-    t.db.setLastReadSeq('c1', me, 3); // backward → ignored
+    t.db.setLastReadSeq('c1', 'c1', me, 3); // backward → ignored
     expect(t.db.getConversationMember('c1', me)!.last_read_seq).toBe(5);
-    t.db.setLastReadSeq('c1', me, 8); // forward → advances
+    t.db.setLastReadSeq('c1', 'c1', me, 8); // forward → advances
     expect(t.db.getConversationMember('c1', me)!.last_read_seq).toBe(8);
   });
 });

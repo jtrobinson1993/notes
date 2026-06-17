@@ -76,6 +76,7 @@ export interface ConversationMemberRow {
 export interface MessageRow {
   id: string;
   conversation_id: string;
+  channel_id: string;
   sender_id: string;
   seq: number;
   epoch: number;
@@ -88,10 +89,20 @@ export interface MessageRow {
 export interface ReactionRow {
   id: string;
   conversation_id: string;
+  channel_id: string;
   seq: number;
   user_id: string;
   ciphertext: string;
   iv: string;
+  created_at: number;
+}
+
+export interface ChannelRow {
+  id: string;
+  conversation_id: string;
+  name: string;
+  type: string;
+  position: number;
   created_at: number;
 }
 
@@ -282,9 +293,32 @@ CREATE TABLE IF NOT EXISTS conversation_keys (
   sealed_key TEXT NOT NULL,
   PRIMARY KEY (conversation_id, user_id, epoch)
 );
+-- Channels inside a conversation (v4). Only EXTRA channels live here; the
+-- "general" channel is virtual (its id equals the conversation id). All channels
+-- of a conversation share its key/epochs; a channel only partitions messages +
+-- read state. Voice channels are structural until v6.
+CREATE TABLE IF NOT EXISTS channels (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'text',
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_channels_conv ON channels(conversation_id, position);
+-- Per-(channel, member) read cursor for EXTRA channels (v4). The general
+-- channel's cursor stays on conversation_members.last_read_seq, so existing
+-- DM/thread read tracking is untouched.
+CREATE TABLE IF NOT EXISTS channel_reads (
+  channel_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  last_read_seq INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (channel_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  channel_id TEXT NOT NULL,
   sender_id TEXT NOT NULL,
   seq INTEGER NOT NULL,
   epoch INTEGER NOT NULL,
@@ -298,6 +332,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conversation_id, se
 CREATE TABLE IF NOT EXISTS message_reactions (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  channel_id TEXT NOT NULL,
   seq INTEGER NOT NULL,
   user_id TEXT NOT NULL,
   ciphertext TEXT NOT NULL,
@@ -380,6 +415,24 @@ export function openDb(dataDir: string) {
   if (!msgCols.some((c) => c.name === 'edited_at')) {
     db.exec('ALTER TABLE messages ADD COLUMN edited_at INTEGER');
   }
+  // Idempotent migration (v4): channels. Tag every existing message/reaction with
+  // its conversation's general channel (channel_id = conversation_id), so all
+  // prior history lands in the general channel and existing DMs/threads/groups
+  // keep working with zero behavior change.
+  if (!msgCols.some((c) => c.name === 'channel_id')) {
+    db.exec("ALTER TABLE messages ADD COLUMN channel_id TEXT NOT NULL DEFAULT ''");
+    db.exec('UPDATE messages SET channel_id = conversation_id');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages(channel_id, seq)');
+  }
+  const reactionCols = db.prepare('PRAGMA table_info(message_reactions)').all() as { name: string }[];
+  if (!reactionCols.some((c) => c.name === 'channel_id')) {
+    db.exec("ALTER TABLE message_reactions ADD COLUMN channel_id TEXT NOT NULL DEFAULT ''");
+    db.exec('UPDATE message_reactions SET channel_id = conversation_id');
+  }
+  // The per-channel indexes are created here (not in SCHEMA) so they exist on
+  // both fresh DBs and DBs whose channel_id column was just added above.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages(channel_id, seq)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_reactions_channel_seq ON message_reactions(channel_id, seq)');
 
   // Idempotent migration: add conversations.parent_id/parent_seq (threads).
   // Must precede the partial unique index, which references parent_id.
@@ -972,13 +1025,93 @@ export function openDb(dataDir: string) {
         }[]
       ).map((r) => r.user_id);
     },
-    setLastReadSeq(conversationId: string, userId: string, seq: number): void {
+    /** General channel's read cursor lives on the member row; extra channels use
+     *  the channel_reads table. (channelId === conversationId ⇒ general.) */
+    setLastReadSeq(conversationId: string, channelId: string, userId: string, seq: number): void {
+      if (channelId === conversationId) {
+        db.prepare(
+          'UPDATE conversation_members SET last_read_seq = MAX(last_read_seq, ?) WHERE conversation_id = ? AND user_id = ?',
+        ).run(seq, conversationId, userId);
+        return;
+      }
+      const prev = (
+        db.prepare('SELECT last_read_seq AS s FROM channel_reads WHERE channel_id = ? AND user_id = ?').get(
+          channelId,
+          userId,
+        ) as { s: number } | undefined
+      )?.s ?? 0;
       db.prepare(
-        'UPDATE conversation_members SET last_read_seq = MAX(last_read_seq, ?) WHERE conversation_id = ? AND user_id = ?',
-      ).run(seq, conversationId, userId);
+        `INSERT OR REPLACE INTO channel_reads (channel_id, user_id, last_read_seq) VALUES (?, ?, ?)`,
+      ).run(channelId, userId, Math.max(prev, seq));
+    },
+    /** A member's last-read seq in one channel (general falls back to the member row). */
+    getLastReadSeq(conversationId: string, channelId: string, userId: string): number {
+      if (channelId === conversationId) {
+        return (
+          db.prepare('SELECT last_read_seq AS s FROM conversation_members WHERE conversation_id = ? AND user_id = ?').get(
+            conversationId,
+            userId,
+          ) as { s: number } | undefined
+        )?.s ?? 0;
+      }
+      return (
+        db.prepare('SELECT last_read_seq AS s FROM channel_reads WHERE channel_id = ? AND user_id = ?').get(
+          channelId,
+          userId,
+        ) as { s: number } | undefined
+      )?.s ?? 0;
+    },
+
+    // ---- Channels (v4) ----
+    createChannel(c: { id: string; conversationId: string; name: string; type: string; position: number }): ChannelRow {
+      const createdAt = now();
+      db.prepare(
+        'INSERT INTO channels (id, conversation_id, name, type, position, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(c.id, c.conversationId, c.name, c.type, c.position, createdAt);
+      return { id: c.id, conversation_id: c.conversationId, name: c.name, type: c.type, position: c.position, created_at: createdAt };
+    },
+    getChannel(id: string): ChannelRow | undefined {
+      return db.prepare('SELECT * FROM channels WHERE id = ?').get(id) as ChannelRow | undefined;
+    },
+    listChannels(conversationId: string): ChannelRow[] {
+      return db
+        .prepare('SELECT * FROM channels WHERE conversation_id = ? ORDER BY position, created_at')
+        .all(conversationId) as ChannelRow[];
+    },
+    countChannels(conversationId: string): number {
+      return (
+        db.prepare('SELECT COUNT(*) AS c FROM channels WHERE conversation_id = ?').get(conversationId) as { c: number }
+      ).c;
+    },
+    /** Next position = one past the current max (general occupies 0). */
+    nextChannelPosition(conversationId: string): number {
+      const r = db
+        .prepare('SELECT COALESCE(MAX(position), 0) AS p FROM channels WHERE conversation_id = ?')
+        .get(conversationId) as { p: number };
+      return r.p + 1;
+    },
+    renameChannel(id: string, name: string): void {
+      db.prepare('UPDATE channels SET name = ? WHERE id = ?').run(name, id);
+    },
+    /** Apply a new ordering: positions 1..n in the given id order (general is 0). */
+    reorderChannels(conversationId: string, orderedIds: string[]): void {
+      const stmt = db.prepare('UPDATE channels SET position = ? WHERE id = ? AND conversation_id = ?');
+      db.transaction(() => {
+        orderedIds.forEach((id, i) => stmt.run(i + 1, id, conversationId));
+      })();
+    },
+    /** Delete a channel and all of its messages/reactions/read cursors. */
+    deleteChannel(id: string): void {
+      db.transaction(() => {
+        db.prepare('DELETE FROM messages WHERE channel_id = ?').run(id);
+        db.prepare('DELETE FROM message_reactions WHERE channel_id = ?').run(id);
+        db.prepare('DELETE FROM channel_reads WHERE channel_id = ?').run(id);
+        db.prepare('DELETE FROM channels WHERE id = ?').run(id);
+      })();
     },
 
     // ---- Messages ----
+    /** Conversation-wide max seq (the shared per-conversation sequence). */
     getMaxSeq(conversationId: string): number {
       return (
         db.prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM messages WHERE conversation_id = ?').get(conversationId) as {
@@ -986,10 +1119,20 @@ export function openDb(dataDir: string) {
         }
       ).s;
     },
-    /** Assign the next per-conversation seq and insert, atomically. */
+    /** Max seq within a single channel (0 when empty). */
+    getChannelMaxSeq(channelId: string): number {
+      return (
+        db.prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM messages WHERE channel_id = ?').get(channelId) as {
+          s: number;
+        }
+      ).s;
+    },
+    /** Assign the next per-CONVERSATION seq (shared across channels) and insert,
+     *  atomically, tagging the message with its channel. */
     insertMessage(m: {
       id: string;
       conversationId: string;
+      channelId: string;
       senderId: string;
       epoch: number;
       ciphertext: string;
@@ -1002,12 +1145,13 @@ export function openDb(dataDir: string) {
           ) as { s: number }).s;
         const createdAt = now();
         db.prepare(
-          `INSERT INTO messages (id, conversation_id, sender_id, seq, epoch, ciphertext, iv, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(m.id, m.conversationId, m.senderId, seq, m.epoch, m.ciphertext, m.iv, createdAt);
+          `INSERT INTO messages (id, conversation_id, channel_id, sender_id, seq, epoch, ciphertext, iv, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(m.id, m.conversationId, m.channelId, m.senderId, seq, m.epoch, m.ciphertext, m.iv, createdAt);
         return {
           id: m.id,
           conversation_id: m.conversationId,
+          channel_id: m.channelId,
           sender_id: m.senderId,
           seq,
           epoch: m.epoch,
@@ -1042,24 +1186,24 @@ export function openDb(dataDir: string) {
         .prepare('SELECT * FROM messages WHERE conversation_id = ? AND seq = ?')
         .get(m.conversationId, m.seq) as MessageRow;
     },
-    /** Messages DESC by seq, optionally before an exclusive seq, for pagination. */
-    listMessages(conversationId: string, before: number | undefined, limit: number): MessageRow[] {
+    /** A single channel's messages DESC by seq, optionally before an exclusive
+     *  seq, for pagination. */
+    listMessages(channelId: string, before: number | undefined, limit: number): MessageRow[] {
       if (before !== undefined) {
         return db
-          .prepare(
-            'SELECT * FROM messages WHERE conversation_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?',
-          )
-          .all(conversationId, before, limit) as MessageRow[];
+          .prepare('SELECT * FROM messages WHERE channel_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?')
+          .all(channelId, before, limit) as MessageRow[];
       }
       return db
-        .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT ?')
-        .all(conversationId, limit) as MessageRow[];
+        .prepare('SELECT * FROM messages WHERE channel_id = ? ORDER BY seq DESC LIMIT ?')
+        .all(channelId, limit) as MessageRow[];
     },
 
     // ---- Reactions (emoji encrypted with the conversation key) ----
     addReaction(r: {
       id: string;
       conversationId: string;
+      channelId: string;
       seq: number;
       userId: string;
       ciphertext: string;
@@ -1067,12 +1211,13 @@ export function openDb(dataDir: string) {
     }): ReactionRow {
       const createdAt = now();
       db.prepare(
-        `INSERT INTO message_reactions (id, conversation_id, seq, user_id, ciphertext, iv, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(r.id, r.conversationId, r.seq, r.userId, r.ciphertext, r.iv, createdAt);
+        `INSERT INTO message_reactions (id, conversation_id, channel_id, seq, user_id, ciphertext, iv, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(r.id, r.conversationId, r.channelId, r.seq, r.userId, r.ciphertext, r.iv, createdAt);
       return {
         id: r.id,
         conversation_id: r.conversationId,
+        channel_id: r.channelId,
         seq: r.seq,
         user_id: r.userId,
         ciphertext: r.ciphertext,
@@ -1083,16 +1228,22 @@ export function openDb(dataDir: string) {
     getReaction(id: string): ReactionRow | undefined {
       return db.prepare('SELECT * FROM message_reactions WHERE id = ?').get(id) as ReactionRow | undefined;
     },
+    /** A single message by its conversation-unique seq (to resolve its channel). */
+    getMessageBySeq(conversationId: string, seq: number): MessageRow | undefined {
+      return db
+        .prepare('SELECT * FROM messages WHERE conversation_id = ? AND seq = ?')
+        .get(conversationId, seq) as MessageRow | undefined;
+    },
     /** Delete a reaction only if it belongs to `userId`; returns true if removed. */
     removeReaction(id: string, userId: string): boolean {
       return (
         db.prepare('DELETE FROM message_reactions WHERE id = ? AND user_id = ?').run(id, userId).changes > 0
       );
     },
-    listReactions(conversationId: string, limit = 5000): ReactionRow[] {
+    listReactions(channelId: string, limit = 5000): ReactionRow[] {
       return db
-        .prepare('SELECT * FROM message_reactions WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?')
-        .all(conversationId, limit) as ReactionRow[];
+        .prepare('SELECT * FROM message_reactions WHERE channel_id = ? ORDER BY created_at ASC LIMIT ?')
+        .all(channelId, limit) as ReactionRow[];
     },
 
     // ---- Device links (cross-device onboarding) ----
