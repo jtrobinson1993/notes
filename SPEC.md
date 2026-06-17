@@ -6,7 +6,7 @@ The spec is split by app area under [`spec/`](spec/). Start at
 | File | Area |
 |---|---|
 | [spec/accounts-and-crypto.md](spec/accounts-and-crypto.md) | Accounts, passkeys, recovery, the crypto model, the sharing primitive |
-| [spec/notes.md](spec/notes.md) | Notes app + the Obsidian-style live editor |
+| [spec/notes.md](spec/notes.md) | Notes app + the Obsidian-style live editor + v4 folders/organization |
 | [spec/ui.md](spec/ui.md) | Theming + the app shell / sidebar |
 | [spec/chat.md](spec/chat.md) | v3 E2EE chat (friends, DMs, groups w/ membership + epoch re-keying) + v4 channels, as built |
 | [spec/profiles.md](spec/profiles.md) | v3.2 E2EE editable profiles (bio + avatar), visibility, key distribution |

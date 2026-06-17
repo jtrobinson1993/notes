@@ -129,12 +129,21 @@ Polish + bug fixes that shipped alongside the v3.2 profile work.
     channel. The general channel is virtual (`channelId === conversationId`), so
     DMs/threads are unchanged.
 
-### Note folders (organization) — not yet built
+### Note folders (organization) — implemented
 
-- Organize notes into folders.
-- Pin a note or note folder into the chat sidebar.
+See [notes.md](notes.md#folders--organization-v4).
+
+- Organize notes into folders. (implemented — flat folders; a note is in at most
+  one folder)
+- Pin a note or note folder into the chat sidebar. (implemented — per
+  conversation; the 1:1 DM sidebar is pins-only)
 - Create a new note / note folder from the chat sidebar; it also appears in your
-  notes view.
+  notes view. (implemented — via the pin picker)
+  - DECISION: folders + note→folder assignment + pins are **personal
+    organization**, stored as one master-key-encrypted settings blob (like tag
+    colors) — they never touch the E2EE note payloads or the server note model,
+    so they apply to shared-with-me notes too, and **pinning never shares** the
+    item (sharing is v5).
 
 (Sharing folders with chat participants and the associated permissions are their
 own crypto-heavy feature — see **v5**.)

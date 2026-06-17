@@ -678,7 +678,15 @@ refetch the channel list after a create/rename/reorder/delete.
   (managers only) for rename / reorder / delete plus a create button. Voice
   channels are listed but not selectable yet.
 
+### Pins (v4) — as built
+
+The sidebar's **Pinned** section (in groups, and the **pins-only DM sidebar**)
+lets a user pin notes/folders for quick access; clicking one opens it in the
+notes view. Pins are **personal organization** — see
+[notes.md](notes.md#folders--organization-v4) — and pinning a note/folder into a
+chat sidebar does **not** share it (sharing is v5).
+
 ### Not yet built (v4 follow-ups)
 
-- **Note folders + pinning** into the sidebar (PR2) — including the DM
-  "pins-only" sidebar; sharing pinned notes/folders is v5.
+- Channel drag-reorder (reordering is via up/down arrows for now) and renaming
+  the general channel.

@@ -157,3 +157,37 @@ bad file can't abort the batch or orphan earlier uploads; failures surface in a
 banner.
 
 No video uploads, no per-user storage quotas (deferred indefinitely).
+
+## Folders & organization (v4)
+
+Notes can be organized into **folders**, and notes/folders can be **pinned** into
+a chat sidebar (see [chat.md](chat.md#pins-v4--as-built)).
+
+This is all **personal organization**: folders, the note→folder assignment, and
+the per-conversation pins are stored as a single **master-key-encrypted settings
+blob** (`notes-org`, the same mechanism as tag colors / custom emoji), with a
+`localStorage` instant-load cache (`web/src/stores/organization.ts`). Folder
+names are as sensitive as tag names, so the whole blob is encrypted; the server
+only ever stores ciphertext.
+
+Because it lives outside the (E2EE) note payload and the server note model:
+
+- it applies to **notes shared with me** as well as my own (a shared note can go
+  in one of my folders);
+- pinning a note/folder into a chat sidebar **does not share it** — sharing
+  notes/folders with chat participants is its own crypto feature (**v5**).
+
+Model (flat — no nesting in v4): `folders: {id, name, position}[]`, `noteFolders:
+{ noteId → folderId }` (absent = unfiled), `pins: { conversationId → {kind, id}[]
+}`. Deleting a folder unfiles its notes and drops its pins; deleting a note
+(`notes.remove`) calls `org.forgetNote` to clear its folder + pins.
+
+UI:
+
+- **NotesPage** — a Folders rail (All notes / each folder with counts / Unfiled)
+  that filters the list, plus create / rename / delete.
+- **NoteEditor** — a folder picker (`<select>`) on each note.
+- **Chat sidebar** — a Pinned section + a pin picker that toggles pins for
+  existing notes/folders or creates a new note/folder (which also appears in the
+  notes view) and pins it. Opening a pinned item navigates to the notes view
+  (`/?note=` / `/?folder=`).

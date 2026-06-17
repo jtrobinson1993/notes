@@ -8,7 +8,7 @@ This spec is split by app area so you can load just the part you're working on:
 | File | Area |
 |---|---|
 | [accounts-and-crypto.md](accounts-and-crypto.md) | Accounts, passkeys, recovery, the master-key + X25519 crypto model, the sharing primitive |
-| [notes.md](notes.md) | The notes app and the Obsidian-style live editor (formatting, code blocks, tables/checkboxes, attachments, import/export, history, offline) |
+| [notes.md](notes.md) | The notes app and the Obsidian-style live editor (formatting, code blocks, tables/checkboxes, attachments, import/export, history, offline) + **v4 folders & chat-sidebar pins** |
 | [ui.md](ui.md) | Theming (brand / pastel / high-contrast) and the app shell / sidebar |
 | [chat.md](chat.md) | v3 E2EE chat — friends, DMs, groups, conversation keys/epochs, the WebSocket transport, **the phase-1 implementation as built**, and **v4 channels** |
 | [profiles.md](profiles.md) | v3.2 E2EE editable profiles — bio + avatar, the per-user profile key, visibility, distribution + rotation |
