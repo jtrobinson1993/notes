@@ -495,7 +495,9 @@ when `resolveEmoji(name)` matches; unknown shortcodes stay literal, and code
 spans/blocks are never substituted (so `` `:KEKW:` `` stays text). The set is
 global UI chrome, so notes render them too. `EmojiPicker.vue` is a searchable
 two-tab popover; picking inserts at the composer caret via the editor's exposed
-`insertText`.
+`insertText`. Picking from any tab **records a use** (see Most-used ranking
+below), and a **Frequently used** row sits at the top of the picker while not
+searching.
 
 ### Unicode emoji search (emojibase)
 

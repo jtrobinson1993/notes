@@ -6,6 +6,15 @@ import { api, ApiError } from '../lib/api';
 import { searchDefaultEmoji, emojiUrl, resolveEmoji } from '../lib/emoji';
 import { loadUnicodeEmoji, searchUnicode, type UnicodeEmoji } from '../lib/emoji/unicode';
 import { customEmoji } from '../lib/emoji/custom';
+import {
+  candidateForKey,
+  recordCustomUse,
+  recordEmojiUse,
+  recordSevenTvUse,
+  recordUnicodeUse,
+  topUsed,
+  type EmojiCandidate,
+} from '../lib/emoji/usage';
 import IconSmile from '~icons/mynaui/smile';
 import IconSmileSolid from '~icons/mynaui/smile-solid';
 
@@ -22,6 +31,33 @@ const tab = ref<Tab>('emotes');
 const query = ref('');
 
 const emoteResults = computed(() => searchDefaultEmoji(query.value));
+
+// "Frequently used" row (most-used tier), shown at the top when not searching.
+// Stale keys (custom emoji since removed) resolve to null and drop out.
+const mostUsed = computed<EmojiCandidate[]>(() =>
+  topUsed()
+    .map((e) => candidateForKey(e.key))
+    .filter((c): c is EmojiCandidate => !!c)
+    .slice(0, 24),
+);
+
+// Picking records a use (so the most-used tier reflects it) then inserts.
+function choose(candidate: EmojiCandidate): void {
+  recordEmojiUse(candidate.key);
+  emit('pick', candidate.insert);
+}
+function chooseEmote(name: string): void {
+  recordSevenTvUse(name);
+  emit('pick', `:${name}:`);
+}
+function chooseCustom(name: string): void {
+  recordCustomUse(name);
+  emit('pick', `:${name}:`);
+}
+function chooseUnicode(glyph: string): void {
+  recordUnicodeUse(glyph);
+  emit('pick', glyph);
+}
 
 const customResults = computed(() => {
   const q = query.value.trim().toLowerCase();
@@ -141,6 +177,23 @@ const tabClass = (t: Tab) =>
         />
 
         <div class="min-h-0 grow overflow-y-auto">
+          <!-- Frequently used (most-used tier), only while not searching and not on GIFs -->
+          <div v-if="!query && tab !== 'gifs' && mostUsed.length" class="mb-2">
+            <p class="px-1 pb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-400">Frequently used</p>
+            <div class="grid grid-cols-8 gap-1">
+              <button
+                v-for="c in mostUsed"
+                :key="c.key"
+                :title="c.label"
+                class="flex aspect-square items-center justify-center rounded text-xl hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                @click="choose(c)"
+              >
+                <img v-if="c.url" :src="c.url" :alt="c.label" class="max-h-7 max-w-7" loading="lazy" />
+                <template v-else>{{ c.char }}</template>
+              </button>
+            </div>
+          </div>
+
           <!-- Custom emotes (7TV) -->
           <template v-if="tab === 'emotes'">
             <p v-if="!emoteResults.length" class="px-1 py-4 text-center text-xs text-zinc-400">No emotes found.</p>
@@ -150,7 +203,7 @@ const tabClass = (t: Tab) =>
                 :key="e.name"
                 :title="`:${e.name}:`"
                 class="flex aspect-square items-center justify-center rounded hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                @click="emit('pick', `:${e.name}:`)"
+                @click="chooseEmote(e.name)"
               >
                 <img :src="emojiUrl(e.file)" :alt="`:${e.name}:`" class="max-h-7 max-w-7" loading="lazy" />
               </button>
@@ -168,7 +221,7 @@ const tabClass = (t: Tab) =>
                 :key="e.name"
                 :title="`:${e.name}:`"
                 class="flex aspect-square items-center justify-center rounded hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                @click="emit('pick', `:${e.name}:`)"
+                @click="chooseCustom(e.name)"
               >
                 <img v-if="e.url" :src="e.url" :alt="`:${e.name}:`" class="max-h-7 max-w-7" loading="lazy" />
               </button>
@@ -208,7 +261,7 @@ const tabClass = (t: Tab) =>
                 :key="e.unicode"
                 :title="e.label"
                 class="flex aspect-square items-center justify-center rounded text-xl hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                @click="emit('pick', e.unicode)"
+                @click="chooseUnicode(e.unicode)"
               >
                 {{ e.unicode }}
               </button>
