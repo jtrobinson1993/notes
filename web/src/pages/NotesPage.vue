@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router';
 import { useQuery } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import NoteEditor from '../components/NoteEditor.vue';
+import EmojiText from '../components/EmojiText.vue';
+import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
 import { loadTagColors, tagColor, tagTextColor } from '../lib/tagColors';
 import { toPlainText } from '../lib/transfer';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
@@ -75,6 +77,7 @@ const treeRows = computed<TreeRow[]>(() => {
   const walk = (parentId: string | null, depth: number) => {
     for (const f of org.childFolders(parentId)) {
       out.push({ key: `f:${f.id}`, type: 'folder', depth, folder: f });
+      if (isCollapsed(f.id)) continue; // hide a collapsed folder's contents
       for (const n of notesOf(f.id)) out.push({ key: `n:${n.id}`, type: 'note', depth: depth + 1, note: n });
       walk(f.id, depth + 1);
     }
@@ -279,22 +282,28 @@ function excerpt(body: string): string {
                   : 'hover:bg-zinc-100 dark:hover:bg-zinc-800/60'
               "
             >
-              <!-- Folder row. -->
+              <!-- Folder row: the folder icon toggles collapse; the name selects. -->
               <template v-if="row.type === 'folder'">
-                <button
-                  class="flex min-w-0 grow cursor-grab items-center gap-1.5 py-1.5 pr-2 text-left text-sm"
+                <div
+                  class="flex min-w-0 grow items-center gap-1.5 py-1.5 pr-2 text-sm"
                   :style="{ paddingLeft: depthPad(row.depth) }"
-                  draggable="true"
-                  @click="activeFolderId = row.folder!.id"
-                  @dragstart.stop="draggingFolder = row.folder!.id"
-                  @dragend="draggingFolder = null"
                   @dragover.prevent
                   @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
                 >
-                  <IconFolder class="h-4 w-4 shrink-0 opacity-60" />
-                  <span class="min-w-0 grow truncate font-medium">{{ row.folder!.name }}</span>
+                  <button class="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700" :title="isCollapsed(row.folder!.id) ? 'Expand' : 'Collapse'" @click.stop="toggleCollapsed(row.folder!.id)">
+                    <IconFolder class="h-4 w-4" :class="isCollapsed(row.folder!.id) ? 'opacity-90' : 'opacity-50'" />
+                  </button>
+                  <button
+                    class="min-w-0 grow cursor-grab truncate text-left font-medium"
+                    draggable="true"
+                    @click="activeFolderId = row.folder!.id"
+                    @dragstart.stop="draggingFolder = row.folder!.id"
+                    @dragend="draggingFolder = null"
+                  >
+                    <EmojiText :text="row.folder!.name" />
+                  </button>
                   <span class="text-xs text-zinc-400">{{ notesInFolder(row.folder!.id) }}</span>
-                </button>
+                </div>
                 <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
                   <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(row.folder!.id)"><IconFolderPlus class="h-3.5 w-3.5" /></button>
                   <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(row.folder!.id, row.folder!.name)"><IconPencil class="h-3.5 w-3.5" /></button>
@@ -317,7 +326,7 @@ function excerpt(body: string): string {
                 <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
                 <div class="min-w-0 grow">
                   <p class="truncate text-sm" :class="selectedId === row.note!.id ? 'font-medium' : ''">
-                    {{ row.note!.payload.title || 'Untitled' }}
+                    <EmojiText :text="row.note!.payload.title || 'Untitled'" />
                     <span v-if="row.note!.shared" class="text-xs font-normal text-violet-500">· {{ row.note!.shared.ownerDisplayName }}</span>
                   </p>
                   <div v-if="!compact" class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
@@ -349,7 +358,7 @@ function excerpt(body: string): string {
                 <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
                 <div class="min-w-0 grow">
                   <p class="truncate text-sm" :class="selectedId === note.id ? 'font-medium' : ''">
-                    {{ note.payload.title || 'Untitled' }}
+                    <EmojiText :text="note.payload.title || 'Untitled'" />
                     <span v-if="note.shared" class="text-xs font-normal text-violet-500">· {{ note.shared.ownerDisplayName }}</span>
                   </p>
                   <div v-if="!compact" class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">

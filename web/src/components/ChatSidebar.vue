@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import ChannelModal from './ChannelModal.vue';
 import PinPickerModal from './PinPickerModal.vue';
+import EmojiText from './EmojiText.vue';
 import { useChatStore } from '../stores/chat';
 import { useNotesStore } from '../stores/notes';
 import { useOrgStore, type OrgPin } from '../stores/organization';
@@ -25,7 +26,7 @@ import IconX from '~icons/mynaui/x';
 // open/closed state; an edit mode at the bottom turns the list into
 // rename/reorder/delete controls and exposes channel creation.
 const props = defineProps<{ conversation: Conversation; activeChannelId: string }>();
-const emit = defineEmits<{ select: [channelId: string] }>();
+const emit = defineEmits<{ select: [channelId: string]; openNote: [noteId: string] }>();
 const chat = useChatStore();
 const notes = useNotesStore();
 const org = useOrgStore();
@@ -139,13 +140,16 @@ function pinLabel(p: OrgPin): string {
   return notes.notes.get(p.id)?.payload.title || 'Untitled';
 }
 function openPin(p: OrgPin) {
-  router.push({ path: '/', query: p.kind === 'folder' ? { folder: p.id } : { note: p.id } });
+  // A note opens over the chat window; a (note-)folder still navigates to the
+  // notes view since it has no in-chat representation.
+  if (p.kind === 'note') emit('openNote', p.id);
+  else router.push({ path: '/', query: { folder: p.id } });
 }
 function unpin(p: OrgPin) {
   org.unpin(props.conversation.id, p.kind, p.id);
 }
 function openNote(id: string) {
-  router.push({ path: '/', query: { note: id } });
+  emit('openNote', id);
 }
 
 // If the active channel disappears (deleted elsewhere), fall back to general.
@@ -223,7 +227,7 @@ watch(
             >
               <IconVolume v-if="ch.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
               <IconHash v-else class="h-4 w-4 shrink-0 opacity-60" />
-              <span class="min-w-0 grow truncate">{{ ch.name }}</span>
+              <span class="min-w-0 grow truncate"><EmojiText :text="ch.name" /></span>
               <span
                 v-if="unread(ch) > 0 && ch.id !== activeChannelId"
                 class="ml-1 shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
@@ -261,7 +265,7 @@ watch(
           >
             <IconFolder v-if="p.kind === 'folder'" class="h-4 w-4 shrink-0 opacity-60" />
             <IconNote v-else class="h-4 w-4 shrink-0 opacity-60" />
-            <span class="min-w-0 grow truncate">{{ pinLabel(p) }}</span>
+            <span class="min-w-0 grow truncate"><EmojiText :text="pinLabel(p)" /></span>
           </button>
           <button class="hidden rounded p-1 text-zinc-400 hover:text-red-600 group-hover/pin:block dark:hover:text-red-400" title="Unpin" @click="unpin(p)"><IconX class="h-3.5 w-3.5" /></button>
         </li>

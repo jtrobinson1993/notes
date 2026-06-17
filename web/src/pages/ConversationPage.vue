@@ -4,22 +4,41 @@ import { useRoute } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import ConversationView from '../components/ConversationView.vue';
 import ChatSidebar from '../components/ChatSidebar.vue';
+import NoteEditor from '../components/NoteEditor.vue';
+import EmojiText from '../components/EmojiText.vue';
 import ManageMembersDrawer from '../components/ManageMembersDrawer.vue';
 import { conversationTitle } from '../lib/convName';
 import { useChatStore } from '../stores/chat';
+import { useNotesStore } from '../stores/notes';
 import { useOrgStore } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
 import IconUsers from '~icons/mynaui/users';
 import IconHash from '~icons/mynaui/hash';
+import IconNote from '~icons/mynaui/file-text';
+import IconX from '~icons/mynaui/x';
 
 const route = useRoute();
 const chat = useChatStore();
+const notes = useNotesStore();
 const org = useOrgStore();
 const session = useSessionStore();
 
-// Load personal organization (folders + pins) so the sidebar's Pinned section
-// works even when landing directly in a chat (idempotent; retries on unlock).
-watch(() => session.unlocked, (u) => { if (u) void org.load(); }, { immediate: true });
+// Load personal organization + notes so the sidebar's Pinned section and the
+// note overlay work even when landing directly in a chat (idempotent).
+watch(
+  () => session.unlocked,
+  async (u) => {
+    if (!u) return;
+    void org.load();
+    if (!notes.loaded) await notes.loadFromCache();
+    void notes.sync();
+  },
+  { immediate: true },
+);
+
+// A pinned note opened over the chat window (close ✕ in its header).
+const openNoteId = ref<string | null>(null);
+const openNote = computed(() => (openNoteId.value ? (notes.notes.get(openNoteId.value) ?? null) : null));
 
 const convId = computed(() => String(route.params.id));
 
@@ -28,6 +47,7 @@ const convId = computed(() => String(route.params.id));
 const activeChannelId = ref<string>(convId.value);
 watch(convId, (id) => {
   activeChannelId.value = id;
+  openNoteId.value = null;
 });
 const activeChannel = computed(() =>
   conversation.value?.channels?.find((c) => c.id === activeChannelId.value),
@@ -115,6 +135,7 @@ onBeforeUnmount(stopDrag);
         :conversation="conversation"
         :active-channel-id="activeChannelId"
         @select="activeChannelId = $event"
+        @open-note="openNoteId = $event"
       />
 
       <div class="flex h-full min-w-0 grow flex-col">
@@ -129,7 +150,7 @@ onBeforeUnmount(stopDrag);
           v-if="isGroup && activeChannel"
           class="flex min-w-0 items-center gap-0.5 truncate text-sm text-zinc-400"
         >
-          <IconHash class="h-3.5 w-3.5 shrink-0" />{{ activeChannel.name }}
+          <IconHash class="h-3.5 w-3.5 shrink-0" /><EmojiText :text="activeChannel.name" />
         </span>
         <!-- Group member management (groups only). -->
         <button
@@ -148,6 +169,23 @@ onBeforeUnmount(stopDrag);
         <div class="min-w-0 flex-1">
           <ConversationView :conv-id="convId" :channel-id="activeChannelId" hide-header @open-thread="onOpenThread" />
         </div>
+
+      <!-- A pinned note opened over the chat window (rules, character sheets,
+           co-working docs, …). Closes with the ✕; edits save to your notes. -->
+      <div v-if="openNote" class="absolute inset-0 z-modal flex flex-col bg-white dark:bg-zinc-900">
+        <div class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+          <IconNote class="h-4 w-4 shrink-0 text-zinc-400" />
+          <p class="min-w-0 grow truncate font-medium"><EmojiText :text="openNote.payload.title || 'Untitled'" /></p>
+          <button
+            class="ml-auto flex shrink-0 items-center rounded-lg p-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            title="Close note"
+            @click="openNoteId = null"
+          >
+            <IconX class="h-5 w-5" />
+          </button>
+        </div>
+        <div class="min-h-0 grow"><NoteEditor :note="openNote" @deleted="openNoteId = null" /></div>
+      </div>
 
       <template v-if="activeThread">
         <!-- Drag handle = the separating line (wide mode only). -->
