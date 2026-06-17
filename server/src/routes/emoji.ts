@@ -22,7 +22,13 @@ const MAX_BYTES = 1024 * 1024; // emote WebPs are a few KB; 1 MB is generous.
 export function emojiRoutes(app: FastifyInstance, config: Config): void {
   const cacheDir = join(config.dataDir, 'emoji-cache');
 
-  app.get('/emoji/7tv/:file', { preHandler: requireAuth }, async (request, reply) => {
+  // Explicit per-route limit: this handler hits the disk (and the 7TV CDN on a
+  // cache miss), so it gets its own bucket on top of the global limiter. Liberal
+  // — emote responses are immutable/long-cached by the browser, so steady-state
+  // a client barely touches this; the cap only bites on abusive bulk fetching.
+  const rateLimit = { rateLimit: { max: config.rateLimitMax, timeWindow: '1 minute' } };
+
+  app.get('/emoji/7tv/:file', { preHandler: requireAuth, config: rateLimit }, async (request, reply) => {
     const { file } = request.params as { file: string };
     const m = FILE_RE.exec(file);
     if (!m) return reply.code(400).send({ error: 'invalid emote id' });

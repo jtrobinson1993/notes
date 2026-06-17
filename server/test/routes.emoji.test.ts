@@ -70,4 +70,20 @@ describe('GET /emoji/7tv/:file — 7TV image proxy + cache', () => {
     const res = await inject(`/emoji/7tv/${ID}.webp`);
     expect(res.statusCode).toBe(502);
   });
+
+  it('rate-limits the proxy route (its own per-route bucket)', async () => {
+    const app2 = await makeApp({ rateLimitMax: 3 });
+    try {
+      const c = authCookie(app2.db, seedUser(app2.db));
+      vi.stubGlobal('fetch', vi.fn(webpResponse));
+      for (let i = 0; i < 3; i++) {
+        const r = await app2.app.inject({ method: 'GET', url: `/emoji/7tv/${ID}.webp`, headers: { cookie: c } });
+        expect(r.statusCode).toBe(200);
+      }
+      const blocked = await app2.app.inject({ method: 'GET', url: `/emoji/7tv/${ID}.webp`, headers: { cookie: c } });
+      expect(blocked.statusCode).toBe(429);
+    } finally {
+      await app2.cleanup();
+    }
+  });
 });
