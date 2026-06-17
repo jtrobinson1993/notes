@@ -7,13 +7,19 @@ import ChatSidebar from '../components/ChatSidebar.vue';
 import ManageMembersDrawer from '../components/ManageMembersDrawer.vue';
 import { conversationTitle } from '../lib/convName';
 import { useChatStore } from '../stores/chat';
+import { useOrgStore } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
 import IconUsers from '~icons/mynaui/users';
 import IconHash from '~icons/mynaui/hash';
 
 const route = useRoute();
 const chat = useChatStore();
+const org = useOrgStore();
 const session = useSessionStore();
+
+// Load personal organization (folders + pins) so the sidebar's Pinned section
+// works even when landing directly in a chat (idempotent; retries on unlock).
+watch(() => session.unlocked, (u) => { if (u) void org.load(); }, { immediate: true });
 
 const convId = computed(() => String(route.params.id));
 
