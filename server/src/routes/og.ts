@@ -116,15 +116,34 @@ async function fetchHtml(initialUrl: string): Promise<{ html: string; finalUrl: 
   throw new Error('too many redirects');
 }
 
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+};
+
+function fromCodePoint(code: number): string | undefined {
+  if (!Number.isInteger(code) || code < 0 || code > 0x10ffff) return undefined;
+  try {
+    return String.fromCodePoint(code);
+  } catch {
+    return undefined;
+  }
+}
+
+// Single-pass HTML-entity decode. Each entity is resolved exactly once and the
+// output is never re-scanned, so a payload like `&amp;lt;` decodes to the literal
+// `&lt;` rather than double-unescaping to `<` (CodeQL js/double-escaping).
 function decodeEntities(s: string): string {
-  return s
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#0*39;|&#x0*27;|&apos;/gi, "'")
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)));
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (match, body: string) => {
+    if (body[0] === '#') {
+      const code = body[1]?.toLowerCase() === 'x' ? parseInt(body.slice(2), 16) : Number(body.slice(1));
+      return fromCodePoint(code) ?? match;
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? match;
+  });
 }
 
 function clamp(s: string | undefined): string | undefined {

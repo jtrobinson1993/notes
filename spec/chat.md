@@ -582,8 +582,10 @@ only; the host must resolve to a **public** IP (loopback/private/link-local/
 CGNAT/cloud-metadata/multicast all blocked, IPv4 + IPv6); redirects are followed
 **manually and re-validated each hop**; the response is **size- and
 time-capped** and must be HTML. OG/`<meta>` tags are parsed from the `<head>`
-with no HTML execution. Residual DNS-rebinding between resolve and fetch is
-accepted for a small self-hosted deployment.
+with no HTML execution, and HTML entities are decoded in a **single pass** so
+escaped markup (e.g. `&amp;lt;`) can't be double-unescaped back into live tags.
+Residual DNS-rebinding between resolve and fetch is accepted for a small
+self-hosted deployment.
 
 ### Custom (encrypted) per-user emoji
 

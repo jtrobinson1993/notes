@@ -81,6 +81,24 @@ describe('GET /api/og — SSRF-guarded link-preview proxy', () => {
     });
   });
 
+  it('decodes entities in a single pass (no double-unescaping)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        htmlResponse(`<html><head>
+          <meta property="og:title" content="Tom &amp; Jerry &lt;3 &#39;quotes&#39;">
+          <meta property="og:description" content="&amp;lt;script&amp;gt; stays inert">
+        </head></html>`),
+      ),
+    );
+    const res = await inject(og(PUBLIC));
+    expect(res.statusCode).toBe(200);
+    // `&amp;` → `&`, `&lt;` → `<`, `&#39;` → `'` — each decoded once.
+    expect(res.json().title).toBe(`Tom & Jerry <3 'quotes'`);
+    // `&amp;lt;` must decode to the literal `&lt;`, NOT collapse to `<`.
+    expect(res.json().description).toBe('&lt;script&gt; stays inert');
+  });
+
   it('blocks a redirect to a private address (re-validates each hop)', async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/' } }));
     vi.stubGlobal('fetch', fetchMock);
