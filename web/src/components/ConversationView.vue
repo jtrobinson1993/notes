@@ -42,7 +42,7 @@ const reachedStart = ref(false);
 const text = ref('');
 const sending = ref(false);
 const scroller = ref<HTMLElement>();
-const composer = ref<{ insertText: (s: string) => void; focus: () => void }>();
+const composer = ref<{ insertText: (s: string) => void; focus: () => void; focusEnd: () => void }>();
 const fileInput = ref<HTMLInputElement>();
 const staged = ref<AttachmentRef[]>([]);
 const attaching = ref(false);
@@ -61,7 +61,8 @@ function startEdit(m: ChatMessageView) {
   editing.value = { seq: m.seq };
   replyingTo.value = null;
   text.value = m.text ?? '';
-  void nextTick(() => composer.value?.focus());
+  // Wait for the new text to flush into the editor, then place the caret at the end.
+  void nextTick(() => composer.value?.focusEnd());
 }
 
 function cancelEdit() {

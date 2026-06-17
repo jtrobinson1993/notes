@@ -377,8 +377,15 @@ function insertText(s: string): void {
 function focus(): void {
   view?.focus();
 }
+// Focus with the caret at the very end — used when prefilling the composer to
+// edit a message, so you're typing at the end rather than the start.
+function focusEnd(): void {
+  if (!view) return;
+  view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true });
+  view.focus();
+}
 
-defineExpose({ insertText, focus });
+defineExpose({ insertText, focus, focusEnd });
 
 onBeforeUnmount(() => view?.destroy());
 </script>
