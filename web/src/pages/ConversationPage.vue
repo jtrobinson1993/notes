@@ -103,9 +103,9 @@ onBeforeUnmount(stopDrag);
 <template>
   <AppLayout>
     <div class="flex h-full">
-      <!-- Channel sidebar (groups only); DMs get a pins sidebar in a later PR. -->
+      <!-- Sidebar: channels + pins for groups, pins only for DMs (threads: none). -->
       <ChatSidebar
-        v-if="isGroup && conversation"
+        v-if="conversation && conversation.kind !== 'thread'"
         :conversation="conversation"
         :active-channel-id="activeChannelId"
         @select="activeChannelId = $event"

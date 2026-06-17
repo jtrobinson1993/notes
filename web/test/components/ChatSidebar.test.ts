@@ -14,6 +14,23 @@ vi.mock('../../src/lib/api', () => ({ api }));
 
 import ChatSidebar from '../../src/components/ChatSidebar.vue';
 import { useChatStore } from '../../src/stores/chat';
+import { useOrgStore } from '../../src/stores/organization';
+
+function dm(): Conversation {
+  return {
+    id: 'd1',
+    kind: 'dm',
+    members: [],
+    sealedKey: { epk: '', iv: '', ct: '' },
+    epoch: 0,
+    epochKeys: [],
+    myRole: 'member',
+    channels: [channel({ id: 'd1', name: 'general', isDefault: true, position: 0 })],
+    lastSeq: 0,
+    lastReadSeq: 0,
+    createdAt: 0,
+  } as Conversation;
+}
 
 const channel = (over: Partial<ChannelInfo> & { id: string; name: string }): ChannelInfo => ({
   conversationId: 'g1',
@@ -44,7 +61,10 @@ function group(role: ConversationRole = 'owner', extra: ChannelInfo[] = []): Con
   } as Conversation;
 }
 
-const stubs = { ChannelModal: { props: ['open', 'mode', 'initialName', 'busy'], template: '<div class="channel-modal" />' } };
+const stubs = {
+  ChannelModal: { props: ['open', 'mode', 'initialName', 'busy'], template: '<div class="channel-modal" />' },
+  PinPickerModal: { props: ['open', 'conversationId'], template: '<div class="pin-picker" />' },
+};
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -103,6 +123,23 @@ describe('ChatSidebar', () => {
     await w.find('footer button').trigger('click'); // enter edit mode
     await w.find('[title="Move down"]').trigger('click'); // move alpha (first extra) down
     expect(api.channelReorder).toHaveBeenCalledWith('g1', ['b', 'a']);
+  });
+
+  it('a DM shows a pins-only sidebar — no channels or edit-channels', () => {
+    const w = mount(ChatSidebar, { props: { conversation: dm(), activeChannelId: 'd1' }, global: { stubs } });
+    expect(w.text()).toContain('Pinned');
+    expect(w.text()).not.toContain('Channels');
+    expect(w.text()).not.toContain('Edit channels');
+  });
+
+  it('renders pinned items and unpins one', async () => {
+    const org = useOrgStore();
+    const fid = org.createFolder('Specs');
+    org.pin('g1', 'folder', fid);
+    const w = mount(ChatSidebar, { props: { conversation: group('owner'), activeChannelId: 'g1' }, global: { stubs } });
+    expect(w.text()).toContain('Specs');
+    await w.find('[title="Unpin"]').trigger('click');
+    expect(org.isPinned('g1', 'folder', fid)).toBe(false);
   });
 
   it('deletes a channel after confirmation', async () => {

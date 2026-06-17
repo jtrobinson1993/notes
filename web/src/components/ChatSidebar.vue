@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import ChannelModal from './ChannelModal.vue';
+import PinPickerModal from './PinPickerModal.vue';
 import { useChatStore } from '../stores/chat';
+import { useNotesStore } from '../stores/notes';
+import { useOrgStore, type OrgPin } from '../stores/organization';
 import { canManageMembers, type ChannelInfo, type ChannelType, type Conversation } from '@notes/shared';
 import IconHash from '~icons/mynaui/hash';
 import IconVolume from '~icons/mynaui/volume-high';
@@ -13,6 +17,9 @@ import IconEdit from '~icons/mynaui/edit-one';
 import IconChevronUp from '~icons/mynaui/chevron-up';
 import IconChevronDown from '~icons/mynaui/chevron-down';
 import IconCheck from '~icons/mynaui/check';
+import IconFolder from '~icons/mynaui/folder';
+import IconNote from '~icons/mynaui/file-text';
+import IconX from '~icons/mynaui/x';
 
 // The per-conversation channel sidebar (groups). Collapsible with a persisted
 // open/closed state; an edit mode at the bottom turns the list into
@@ -20,6 +27,11 @@ import IconCheck from '~icons/mynaui/check';
 const props = defineProps<{ conversation: Conversation; activeChannelId: string }>();
 const emit = defineEmits<{ select: [channelId: string] }>();
 const chat = useChatStore();
+const notes = useNotesStore();
+const org = useOrgStore();
+const router = useRouter();
+
+const isGroup = computed(() => props.conversation.kind === 'group');
 
 // Open/closed state persists across sessions (one toggle for the chat sidebar).
 const STORAGE_KEY = 'chat:channels:open';
@@ -101,6 +113,23 @@ async function remove(ch: ChannelInfo) {
   }
 }
 
+// ---- Pinned notes / folders (personal; both groups and DMs) ----
+const pinPickerOpen = ref(false);
+const pins = computed<OrgPin[]>(() => org.pinsFor(props.conversation.id));
+function pinLabel(p: OrgPin): string {
+  if (p.kind === 'folder') return org.folders.find((f) => f.id === p.id)?.name ?? 'Folder';
+  return notes.notes.get(p.id)?.payload.title || 'Untitled';
+}
+function openPin(p: OrgPin) {
+  router.push({ path: '/', query: p.kind === 'folder' ? { folder: p.id } : { note: p.id } });
+}
+function unpin(p: OrgPin) {
+  org.unpin(props.conversation.id, p.kind, p.id);
+}
+function openNote(id: string) {
+  router.push({ path: '/', query: { note: id } });
+}
+
 // If the active channel disappears (deleted elsewhere), fall back to general.
 watch(
   () => channels.value.map((c) => c.id).join(','),
@@ -135,55 +164,89 @@ watch(
       <button
         class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
         aria-label="Hide channels"
-        title="Hide channels"
+        title="Hide sidebar"
         @click="toggle"
       >
         <IconPanelLeft class="h-5 w-5" />
       </button>
-      <span class="min-w-0 grow truncate px-1 text-xs font-semibold uppercase tracking-wide text-zinc-400">Channels</span>
-      <button
-        v-if="canManage"
-        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
-        aria-label="Create channel"
-        title="Create channel"
-        @click="openCreate"
-      >
-        <IconPlus class="h-4 w-4" />
-      </button>
     </header>
 
-    <ul class="min-h-0 grow space-y-0.5 overflow-y-auto px-2 pb-2">
-      <li v-for="ch in channels" :key="ch.id" class="flex items-center gap-1">
+    <div class="min-h-0 grow overflow-y-auto pb-2">
+      <!-- Channels (groups only). -->
+      <template v-if="isGroup">
+        <div class="mb-1 flex items-center justify-between px-3">
+          <span class="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Channels</span>
+          <button
+            v-if="canManage"
+            class="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+            aria-label="Create channel"
+            title="Create channel"
+            @click="openCreate"
+          >
+            <IconPlus class="h-4 w-4" />
+          </button>
+        </div>
+        <ul class="mb-3 space-y-0.5 px-2">
+          <li v-for="ch in channels" :key="ch.id" class="flex items-center gap-1">
+            <button
+              class="flex min-w-0 grow items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm"
+              :class="[
+                ch.id === activeChannelId ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800/60',
+                ch.type === 'voice' ? 'cursor-default opacity-70' : '',
+              ]"
+              :aria-current="ch.id === activeChannelId ? 'true' : undefined"
+              @click="select(ch)"
+            >
+              <IconVolume v-if="ch.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
+              <IconHash v-else class="h-4 w-4 shrink-0 opacity-60" />
+              <span class="min-w-0 grow truncate">{{ ch.name }}</span>
+              <span
+                v-if="unread(ch) > 0 && ch.id !== activeChannelId"
+                class="ml-1 shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+              >{{ unread(ch) > 99 ? '99+' : unread(ch) }}</span>
+            </button>
+
+            <!-- Edit-mode controls for an extra channel (general is fixed). -->
+            <template v-if="editing && !ch.isDefault">
+              <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 disabled:opacity-30 dark:hover:text-zinc-200" title="Move up" :disabled="busy" @click="move(ch, -1)"><IconChevronUp class="h-3.5 w-3.5" /></button>
+              <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 disabled:opacity-30 dark:hover:text-zinc-200" title="Move down" :disabled="busy" @click="move(ch, 1)"><IconChevronDown class="h-3.5 w-3.5" /></button>
+              <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename" :disabled="busy" @click="openRename(ch)"><IconPencil class="h-3.5 w-3.5" /></button>
+              <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete" :disabled="busy" @click="remove(ch)"><IconTrash class="h-3.5 w-3.5" /></button>
+            </template>
+          </li>
+        </ul>
+      </template>
+
+      <!-- Pinned notes/folders (groups + DMs). Personal; pinning doesn't share. -->
+      <div class="mb-1 flex items-center justify-between px-3">
+        <span class="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Pinned</span>
         <button
-          class="flex min-w-0 grow items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm"
-          :class="[
-            ch.id === activeChannelId ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800/60',
-            ch.type === 'voice' ? 'cursor-default opacity-70' : '',
-          ]"
-          :aria-current="ch.id === activeChannelId ? 'true' : undefined"
-          @click="select(ch)"
+          class="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+          aria-label="Pin a note or folder"
+          title="Pin a note or folder"
+          @click="pinPickerOpen = true"
         >
-          <IconVolume v-if="ch.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
-          <IconHash v-else class="h-4 w-4 shrink-0 opacity-60" />
-          <span class="min-w-0 grow truncate">{{ ch.name }}</span>
-          <span
-            v-if="unread(ch) > 0 && ch.id !== activeChannelId"
-            class="ml-1 shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
-          >{{ unread(ch) > 99 ? '99+' : unread(ch) }}</span>
+          <IconPlus class="h-4 w-4" />
         </button>
+      </div>
+      <ul class="space-y-0.5 px-2">
+        <li v-for="p in pins" :key="`${p.kind}:${p.id}`" class="group/pin flex items-center gap-1">
+          <button
+            class="flex min-w-0 grow items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800/60"
+            @click="openPin(p)"
+          >
+            <IconFolder v-if="p.kind === 'folder'" class="h-4 w-4 shrink-0 opacity-60" />
+            <IconNote v-else class="h-4 w-4 shrink-0 opacity-60" />
+            <span class="min-w-0 grow truncate">{{ pinLabel(p) }}</span>
+          </button>
+          <button class="hidden rounded p-1 text-zinc-400 hover:text-red-600 group-hover/pin:block dark:hover:text-red-400" title="Unpin" @click="unpin(p)"><IconX class="h-3.5 w-3.5" /></button>
+        </li>
+        <li v-if="pins.length === 0" class="px-2 py-2 text-xs text-zinc-400">Pin notes or folders here for quick access.</li>
+      </ul>
+    </div>
 
-        <!-- Edit-mode controls for an extra channel (general is fixed). -->
-        <template v-if="editing && !ch.isDefault">
-          <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 disabled:opacity-30 dark:hover:text-zinc-200" title="Move up" :disabled="busy" @click="move(ch, -1)"><IconChevronUp class="h-3.5 w-3.5" /></button>
-          <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 disabled:opacity-30 dark:hover:text-zinc-200" title="Move down" :disabled="busy" @click="move(ch, 1)"><IconChevronDown class="h-3.5 w-3.5" /></button>
-          <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename" :disabled="busy" @click="openRename(ch)"><IconPencil class="h-3.5 w-3.5" /></button>
-          <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete" :disabled="busy" @click="remove(ch)"><IconTrash class="h-3.5 w-3.5" /></button>
-        </template>
-      </li>
-    </ul>
-
-    <!-- Bottom edit toggle (managers only). -->
-    <footer v-if="canManage" class="border-t border-zinc-200 p-2 dark:border-zinc-800">
+    <!-- Bottom edit toggle (group managers only). -->
+    <footer v-if="isGroup && canManage" class="border-t border-zinc-200 p-2 dark:border-zinc-800">
       <button
         class="flex w-full items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium"
         :class="editing ? 'bg-blue-600 text-white hover:bg-blue-700' : 'text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800'"
@@ -195,11 +258,13 @@ watch(
     </footer>
 
     <ChannelModal
+      v-if="isGroup"
       v-model:open="modalOpen"
       :mode="modalMode"
       :initial-name="renameTarget?.name"
       :busy="busy"
       @submit="onModalSubmit"
     />
+    <PinPickerModal v-model:open="pinPickerOpen" :conversation-id="conversation.id" @open-note="openNote" />
   </aside>
 </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { useQuery } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import NoteEditor from '../components/NoteEditor.vue';
@@ -16,12 +17,31 @@ import IconTrash from '~icons/mynaui/trash';
 const session = useSessionStore();
 const notes = useNotesStore();
 const org = useOrgStore();
+const route = useRoute();
+const router = useRouter();
 
 const search = ref('');
 const activeTag = ref<string | null>(null);
 const selectedId = ref<string | null>(null);
 // Folder filter: null = all notes, 'unfiled' = notes with no folder, else a folder id.
 const activeFolder = ref<string | null | 'unfiled'>(null);
+
+// Opening a pinned note/folder from a chat sidebar navigates here with a query.
+watch(
+  () => route.query,
+  (q) => {
+    if (typeof q.note === 'string') {
+      selectedId.value = q.note;
+      activeFolder.value = null;
+    } else if (typeof q.folder === 'string') {
+      activeFolder.value = q.folder;
+    } else {
+      return;
+    }
+    void router.replace({ path: '/', query: {} }); // consume it so a refresh is clean
+  },
+  { immediate: true },
+);
 
 function notesInFolder(folderId: string): number {
   return notes.sorted.filter((n) => org.folderOf(n.id) === folderId).length;
