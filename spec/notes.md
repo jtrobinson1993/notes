@@ -11,9 +11,13 @@ See [accounts-and-crypto.md](accounts-and-crypto.md) for the key model,
 - Tags (no folders); client-side full-text search over decrypted titles+bodies.
 - **Encrypted local cache** (IndexedDB stores ciphertext only): instant load,
   background sync via Pinia Colada, offline reading.
-- **Sharing** notes between users: the note key is sealed to the recipient's
-  X25519 key (read or write access, revocable) — see the sealing primitive in
-  [accounts-and-crypto.md](accounts-and-crypto.md).
+- **Sharing** notes — **with friends only**: the note key is sealed to the
+  recipient's X25519 key (read or write access, revocable) — see the sealing
+  primitive in [accounts-and-crypto.md](accounts-and-crypto.md). The server
+  enforces friendship on `POST /api/notes/:id/shares` (non-friend → 403), and the
+  picker (`/api/members`, `ShareDialog.vue`) lists only the caller's friends. All
+  three surfaces — the picker, the recipient list, and the "shared by" label —
+  show **display names, never usernames** (matching the chat rule).
 - **Encrypted attachments** — a per-attachment key stored *inside* the encrypted
   note payload (so sharing a note shares its attachments); images embed via
   `attachment:` URLs. 32 MiB cap.
@@ -45,7 +49,10 @@ and export are unchanged.
   movement. Applies to headings, lists, quotes, links (URL hidden), inline code,
   strikethrough, highlight, spoilers, code fences. Typed whitespace just before
   a hidden closing marker relocates past it. Literal markers follow CommonMark
-  (intra-word `_` never italicizes; `\_` renders bare).
+  (intra-word `_` never italicizes; `\_` renders bare) — except that a `- ` at
+  the start of a line freshly broken off a paragraph (Shift+Enter then `- `)
+  shows its bullet **immediately**, even though CommonMark won't let the still-
+  empty item interrupt the paragraph until a character follows.
 - **Keyboard shortcuts** (Cmd / Ctrl), toggling on selection or at the caret:
   Bold `B`, Italic `I`, Underline `U`, Inline code `E`, Highlight `Shift+H`,
   Strikethrough `Shift+X`, Link `K` (prompt for URL), Heading `Shift+1..6` (same
@@ -142,7 +149,9 @@ downscales to ≤2560px on the long edge, and re-encodes to WebP (q≈0.82) via
 and SVGs are skipped; a result that isn't smaller — or any failure — falls back
 to the original bytes, so an upload is never blocked. On by default with a
 Settings toggle (`notes:optimize-images`, device-local). The stored
-`AttachmentRef` type/size reflect the optimized bytes. The multi-file `attach()`
+`AttachmentRef` type/size reflect the optimized bytes, and when the format
+changes the **name extension is rewritten** to match (`photo.jpeg` → `photo.webp`
+via `nameForType`) so it never contradicts the actual bytes. The multi-file `attach()`
 loop is resilient: a client-side 32 MiB pre-check and per-file try/catch mean one
 bad file can't abort the batch or orphan earlier uploads; failures surface in a
 banner.

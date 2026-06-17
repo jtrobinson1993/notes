@@ -8,8 +8,10 @@ export interface DefaultEmoji {
   animated: boolean;
 }
 
-/** Default 7TV emote set, in 7TV popularity order (most-used first). Self-hosted
- *  under /emoji/7tv/ — see scripts/fetch-emojis.mjs. */
+/** Default 7TV emote set, in 7TV popularity order (most-used first). The bundled
+ *  manifest is metadata only (names → 7TV ids); the images are fetched from 7TV
+ *  and cached by our server, served from `/emoji/7tv/` (see server/routes/emoji
+ *  and scripts/fetch-emojis.mjs, which refreshes this manifest from the API). */
 export const defaultEmoji = manifest as DefaultEmoji[];
 
 export function emojiUrl(file: string): string {

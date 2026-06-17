@@ -15,6 +15,7 @@ import IconMessagePlus from '~icons/mynaui/message-plus';
 import IconPen from '~icons/mynaui/pen';
 import IconLock from '~icons/mynaui/lock';
 import IconCog from '~icons/mynaui/cog';
+import IconUsers from '~icons/mynaui/users';
 import IconLogout from '~icons/mynaui/logout';
 
 const session = useSessionStore();
@@ -55,6 +56,8 @@ const activeConvId = computed(() => {
   const m = /^\/chat\/(.+)$/.exec(router.currentRoute.value.path);
   return m ? m[1] : null;
 });
+
+const isNotesActive = computed(() => router.currentRoute.value.path === '/');
 </script>
 
 <template>
@@ -122,8 +125,13 @@ const activeConvId = computed(() => {
           <RouterLink
             to="/"
             aria-label="Notes"
-            class="mt-1 flex items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-700 dark:text-zinc-200"
-            :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
+            class="mt-1 flex items-center gap-2 rounded-lg px-2 py-2 text-sm"
+            :class="[
+              expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center',
+              isNotesActive
+                ? 'bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
+                : 'text-zinc-700 dark:text-zinc-200',
+            ]"
           >
             <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-200 dark:bg-zinc-800">
               <IconPen class="h-4 w-4" />
@@ -166,6 +174,17 @@ const activeConvId = computed(() => {
             <IconLock class="h-5 w-5 shrink-0" />
             <span v-if="expanded" class="truncate">Lock</span>
           </button>
+        </SidebarTooltip>
+        <SidebarTooltip label="Friends" :disabled="expanded">
+          <RouterLink
+            to="/friends"
+            aria-label="Friends"
+            class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
+            :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
+          >
+            <IconUsers class="h-5 w-5 shrink-0" />
+            <span v-if="expanded" class="truncate">Friends</span>
+          </RouterLink>
         </SidebarTooltip>
         <SidebarTooltip label="Settings" :disabled="expanded">
           <RouterLink

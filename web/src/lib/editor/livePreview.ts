@@ -486,6 +486,31 @@ function buildDecorations(view: EditorView): BuiltDecorations {
     });
   }
 
+  // List-start after a hard newline: CommonMark won't let an *empty* bullet
+  // item ("- ") interrupt a paragraph, so on a freshly Shift+Enter-broken line
+  // the marker stays literal until the first character is typed. Render the
+  // bullet anyway so the list starts immediately, matching a fresh line. Only
+  // fires when the parser hasn't already made the line a list item (a real list
+  // is handled by the ListMark branch above) and we're not inside code.
+  const tree = syntaxTree(state);
+  for (const { from, to } of view.visibleRanges) {
+    const lastLine = state.doc.lineAt(to).number;
+    for (let lineNo = state.doc.lineAt(from).number; lineNo <= lastLine; lineNo++) {
+      const line = state.doc.line(lineNo);
+      const m = /^(\s*)[-*+]\s/.exec(line.text);
+      if (!m) continue;
+      const markerPos = line.from + m[1]!.length;
+      let skip = false;
+      for (let n: SyntaxNode | null = tree.resolveInner(markerPos, 1); n; n = n.parent) {
+        if (n.name === 'ListItem' || n.name === 'BulletList' || n.name === 'FencedCode' || n.name === 'CodeBlock') {
+          skip = true;
+          break;
+        }
+      }
+      if (!skip) conceal(markerPos, markerPos + 1, Decoration.replace({ widget: bulletWidget }));
+    }
+  }
+
   // RangeSet.of needs ranges ordered by from, then startSide — same-position
   // pairs with mismatched sides (e.g. a style mark and a concealment over an
   // identical range) throw otherwise, which kills the whole plugin

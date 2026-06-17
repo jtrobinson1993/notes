@@ -45,6 +45,27 @@ describe('MarkdownView — well-formed markdown still renders', () => {
   });
 });
 
+describe('MarkdownView — breaks mode (chat messages)', () => {
+  it('collapses a single newline by default (notes soft-wrap)', () => {
+    const w = mount(MarkdownView, { props: { source: 'line one\nline two' } });
+    expect(w.find('br').exists()).toBe(false);
+  });
+
+  it('preserves a single newline as a hard break when breaks is set', () => {
+    const w = mount(MarkdownView, { props: { source: 'line one\nline two', breaks: true } });
+    expect(w.find('br').exists()).toBe(true);
+    expect(w.text()).toContain('line one');
+    expect(w.text()).toContain('line two');
+  });
+
+  it('keeps highlight/spoiler extensions working with breaks on', () => {
+    const w = mount(MarkdownView, { props: { source: '==hi==\n||secret||', breaks: true } });
+    expect(w.find('mark').exists()).toBe(true);
+    expect(w.find('.spoiler').exists()).toBe(true);
+    expect(w.find('br').exists()).toBe(true);
+  });
+});
+
 describe('MarkdownView — custom emoji shortcodes', () => {
   const known = defaultEmoji[0]!;
 

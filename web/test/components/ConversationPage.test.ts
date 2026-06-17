@@ -133,6 +133,41 @@ describe('ConversationPage messages', () => {
   });
 });
 
+describe('ConversationPage header', () => {
+  const gmember = (userId: string, displayName: string, role: 'owner' | 'admin' | 'member') => ({
+    userId, displayName, publicKey: null, nameColor: null, linkPreviews: false, role,
+  });
+  function seedGroup() {
+    const chat = useChatStore();
+    chat.conversations = [{
+      id: 'c1', kind: 'group',
+      members: [gmember('me', 'Me', 'owner'), gmember('friend', 'Friend', 'member'), gmember('pat', 'Pat', 'member')],
+      sealedKey: { epk: '', iv: '', ct: '' }, epoch: 0, epochKeys: [], managePolicy: 'owner', myRole: 'owner',
+      lastSeq: 0, lastReadSeq: 0, createdAt: 0,
+    }];
+    return chat;
+  }
+  const groupStubs = { ...stubs, ManageMembersDrawer: true };
+
+  it('shows the members button (with count) in the visible header for a group', async () => {
+    seedGroup();
+    const w = mount(ConversationPage, { global: { stubs: groupStubs } });
+    await flush();
+    const btn = w.find('button[title="Members"]');
+    expect(btn.exists()).toBe(true);
+    expect(btn.text()).toContain('3'); // member count
+    // Header title joins ALL other members, not just the first.
+    expect(w.text()).toContain('Friend, Pat');
+  });
+
+  it('shows no members button for a DM', async () => {
+    seedConversation();
+    const w = mount(ConversationPage, { global: { stubs } });
+    await flush();
+    expect(w.find('button[title="Members"]').exists()).toBe(false);
+  });
+});
+
 async function flush() {
   await new Promise((r) => setTimeout(r, 0));
 }

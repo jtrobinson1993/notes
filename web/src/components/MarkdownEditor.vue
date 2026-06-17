@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui';
 import ColorPalette from './ColorPalette.vue';
 import { EditorView, keymap, placeholder } from '@codemirror/view';
-import { EditorState, Compartment } from '@codemirror/state';
+import { EditorState, Compartment, Prec } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, insertNewlineAndIndent } from '@codemirror/commands';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { insertNewlineContinueMarkup, markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
@@ -26,8 +26,12 @@ import {
   toggleSpoilerSyntax,
   toggleStrike,
   toggleUnderline,
+  inListItem,
 } from '../lib/editor/commands';
 import { getLastColor, PRESET_COLORS, presetCss } from '../lib/editor/palette';
+import { detectEmojiTrigger } from '../lib/editor/emojiTrigger';
+import { loadUnicodeEmoji, type UnicodeEmoji } from '../lib/emoji/unicode';
+import { rankEmoji, recordEmojiUse, type EmojiCandidate } from '../lib/emoji/usage';
 
 const props = defineProps<{
   modelValue: string;
@@ -40,7 +44,14 @@ const props = defineProps<{
    *  auto-grows to a cap instead of filling the parent. */
   submitOnEnter?: boolean;
 }>();
-const emit = defineEmits<{ 'update:modelValue': [string]; submit: [] }>();
+const emit = defineEmits<{
+  'update:modelValue': [string];
+  submit: [];
+  /** composer-only: ↑ pressed while empty (edit your last message) */
+  editLast: [];
+  /** composer-only: Esc pressed (e.g. cancel an in-progress edit) */
+  escape: [];
+}>();
 
 const host = ref<HTMLDivElement>();
 let view: EditorView | null = null;
@@ -84,11 +95,34 @@ const editorTheme = EditorView.theme({
   '.cm-cursor': { borderLeftColor: 'currentColor' },
 });
 
-// In composer mode, Enter submits and Shift+Enter inserts a newline. Bound ahead
-// of defaultKeymap so it wins for the bare Enter key.
+// In composer mode, Enter submits and Shift+Enter inserts a newline — except
+// inside a list, where Enter continues the list (new item) and Cmd/Ctrl+Enter
+// sends regardless of list context. Bound ahead of defaultKeymap so it wins for
+// the bare Enter key.
 const submitKeymap = keymap.of([
-  { key: 'Enter', run: () => (emit('submit'), true) },
+  { key: 'Mod-Enter', run: () => (emit('submit'), true) },
+  {
+    key: 'Enter',
+    run: (v) => {
+      if (inListItem(v.state)) return insertNewlineContinueMarkup(v);
+      emit('submit');
+      return true;
+    },
+  },
   { key: 'Shift-Enter', run: insertNewlineAndIndent },
+  // ↑ on an empty composer edits your last message; otherwise normal cursor up.
+  {
+    key: 'ArrowUp',
+    run: (v) => {
+      if (v.state.doc.length === 0) {
+        emit('editLast');
+        return true;
+      }
+      return false;
+    },
+  },
+  // Esc bubbles up (e.g. to cancel an edit); doesn't block other Esc handling.
+  { key: 'Escape', run: () => (emit('escape'), false) },
 ]);
 
 const md = () =>
@@ -99,6 +133,113 @@ function modeExtensions(mode: 'live' | 'source') {
     ? [md(), syntaxHighlighting(sourceHighlight)]
     : [md(), syntaxHighlighting(liveHighlight), livePreview(), codeBlocks()];
 }
+
+// ---- :emoji autocomplete ---------------------------------------------------
+// Discord-style inline completion: typing `:abc` opens a ranked list of
+// emotes/emoji (most-used first, then custom → 7TV → unicode). Works in the
+// chat composer and the note editor alike (both mount this component).
+
+const acOpen = ref(false);
+const acItems = shallowRef<EmojiCandidate[]>([]);
+const acIndex = ref(0);
+const acFrom = ref(0);
+// Anchor spans the trigger's whole text line (top..bottom) so the popover sits
+// clear of the line being typed — above it in the composer, below it in notes.
+const acPos = ref({ left: 0, top: 0, height: 0 });
+// Unicode set is lazy-loaded the first time a trigger appears, then reused.
+let unicodeList: UnicodeEmoji[] | null = null;
+let unicodeLoading = false;
+
+function loadUnicodeForAc() {
+  if (unicodeList || unicodeLoading) return;
+  unicodeLoading = true;
+  void loadUnicodeEmoji().then((list) => {
+    unicodeList = list;
+    unicodeLoading = false;
+    updateAutocomplete(); // re-rank so unicode shows once available
+  });
+}
+
+function updateAutocomplete() {
+  if (!view || props.readonly) {
+    acOpen.value = false;
+    return;
+  }
+  const trig = detectEmojiTrigger(view.state);
+  if (!trig) {
+    acOpen.value = false;
+    return;
+  }
+  loadUnicodeForAc();
+  const items = rankEmoji(trig.query, unicodeList, 8);
+  if (!items.length) {
+    acOpen.value = false;
+    return;
+  }
+  const coords = view.coordsAtPos(trig.from);
+  const hostRect = host.value?.getBoundingClientRect();
+  if (!coords || !hostRect) {
+    acOpen.value = false;
+    return;
+  }
+  acItems.value = items;
+  acFrom.value = trig.from;
+  acIndex.value = 0;
+  acPos.value = {
+    left: coords.left - hostRect.left,
+    top: coords.top - hostRect.top,
+    height: coords.bottom - coords.top,
+  };
+  acOpen.value = true;
+}
+
+function acceptAc(i = acIndex.value) {
+  const item = acItems.value[i];
+  if (!item || !view) return;
+  recordEmojiUse(item.key);
+  const to = view.state.selection.main.head;
+  view.dispatch({
+    changes: { from: acFrom.value, to, insert: item.insert },
+    selection: { anchor: acFrom.value + item.insert.length },
+    userEvent: 'input.complete',
+  });
+  acOpen.value = false;
+  view.focus();
+}
+
+// Captured ahead of every other binding (submit/Enter, default keymap) so the
+// list owns the arrows / Enter / Tab / Esc while it's open; otherwise these fall
+// through untouched.
+const autocompleteKeymap = Prec.highest(
+  keymap.of([
+    {
+      key: 'ArrowDown',
+      run: () => {
+        if (!acOpen.value) return false;
+        acIndex.value = (acIndex.value + 1) % acItems.value.length;
+        return true;
+      },
+    },
+    {
+      key: 'ArrowUp',
+      run: () => {
+        if (!acOpen.value) return false;
+        acIndex.value = (acIndex.value - 1 + acItems.value.length) % acItems.value.length;
+        return true;
+      },
+    },
+    { key: 'Enter', run: () => (acOpen.value ? (acceptAc(), true) : false) },
+    { key: 'Tab', run: () => (acOpen.value ? (acceptAc(), true) : false) },
+    {
+      key: 'Escape',
+      run: () => {
+        if (!acOpen.value) return false;
+        acOpen.value = false;
+        return true;
+      },
+    },
+  ]),
+);
 
 // ---- selection toolbar ----------------------------------------------------
 
@@ -180,6 +321,7 @@ onMounted(() => {
       doc: props.modelValue,
       extensions: [
         history(),
+        autocompleteKeymap,
         ...(props.submitOnEnter ? [submitKeymap] : []),
         keymap.of([...formattingKeymap, ...defaultKeymap, ...historyKeymap]),
         modeCompartment.of(modeExtensions(props.mode ?? 'live')),
@@ -191,7 +333,11 @@ onMounted(() => {
         EditorView.updateListener.of((update) => {
           if (update.docChanged) emit('update:modelValue', update.state.doc.toString());
           if (update.selectionSet || update.docChanged || update.geometryChanged) updateToolbar();
-          if (update.focusChanged) focused.value = update.view.hasFocus;
+          if (update.selectionSet || update.docChanged) updateAutocomplete();
+          if (update.focusChanged) {
+            focused.value = update.view.hasFocus;
+            if (!update.view.hasFocus) acOpen.value = false;
+          }
         }),
       ],
     }),
@@ -228,7 +374,18 @@ function insertText(s: string): void {
   view.dispatch({ changes: { from, to, insert: s }, selection: { anchor: from + s.length } });
   view.focus();
 }
-defineExpose({ insertText });
+function focus(): void {
+  view?.focus();
+}
+// Focus with the caret at the very end — used when prefilling the composer to
+// edit a message, so you're typing at the end rather than the start.
+function focusEnd(): void {
+  if (!view) return;
+  view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true });
+  view.focus();
+}
+
+defineExpose({ insertText, focus, focusEnd });
 
 onBeforeUnmount(() => view?.destroy());
 </script>
@@ -249,7 +406,7 @@ onBeforeUnmount(() => view?.destroy());
           align="start"
           :side-offset="6"
           :collision-padding="8"
-          class="z-20 flex items-center gap-0.5 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+          class="z-popover flex items-center gap-0.5 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
           @open-auto-focus.prevent
           @close-auto-focus.prevent
           @interact-outside.prevent
@@ -288,7 +445,7 @@ onBeforeUnmount(() => view?.destroy());
                 align="start"
                 :side-offset="6"
                 :collision-padding="8"
-                class="z-30 w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+                class="z-popover w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
                 @open-auto-focus.prevent
                 @close-auto-focus.prevent
                 @mousedown.prevent
@@ -301,10 +458,47 @@ onBeforeUnmount(() => view?.destroy());
       </PopoverPortal>
     </PopoverRoot>
 
+    <!-- :emoji autocomplete (Reka popover, portaled + collision-aware) -->
+    <PopoverRoot :open="acOpen">
+      <PopoverAnchor
+        class="pointer-events-none absolute w-px"
+        :style="{ left: `${acPos.left}px`, top: `${acPos.top}px`, height: `${acPos.height}px` }"
+      />
+      <PopoverPortal>
+        <PopoverContent
+          :side="submitOnEnter ? 'top' : 'bottom'"
+          align="start"
+          :side-offset="4"
+          :collision-padding="8"
+          class="z-popover w-64 overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+          @open-auto-focus.prevent
+          @close-auto-focus.prevent
+          @interact-outside.prevent
+          @mousedown.prevent
+        >
+          <ul class="max-h-56 overflow-y-auto text-sm">
+            <li v-for="(item, i) in acItems" :key="item.key">
+              <button
+                type="button"
+                class="flex w-full items-center gap-2 px-2 py-1 text-left"
+                :class="i === acIndex ? 'bg-zinc-100 dark:bg-zinc-700' : ''"
+                @mouseenter="acIndex = i"
+                @click="acceptAc(i)"
+              >
+                <img v-if="item.url" :src="item.url" :alt="item.label" class="h-5 w-5 shrink-0 object-contain" />
+                <span v-else class="w-5 shrink-0 text-center text-lg leading-none">{{ item.char }}</span>
+                <span class="min-w-0 truncate text-zinc-700 dark:text-zinc-200">{{ item.label }}</span>
+              </button>
+            </li>
+          </ul>
+        </PopoverContent>
+      </PopoverPortal>
+    </PopoverRoot>
+
     <!-- mobile formatting bar -->
     <div
       v-if="isCoarse && !readonly && focused && (mode ?? 'live') === 'live'"
-      class="absolute inset-x-0 bottom-0 z-20 flex items-center gap-1 overflow-x-auto border-t border-zinc-200 bg-white/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95"
+      class="absolute inset-x-0 bottom-0 z-nav flex items-center gap-1 overflow-x-auto border-t border-zinc-200 bg-white/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95"
       @mousedown.prevent
       @touchstart.stop
     >

@@ -1,5 +1,6 @@
 import type { AttachmentRef } from '@notes/shared';
 import { encryptBlob } from './crypto';
+import { nameForType } from './fileMeta';
 import { optimizeImage } from './imageOptimize';
 import { optimizeImages } from './privacy';
 import { api } from './api';
@@ -14,8 +15,12 @@ export const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 export async function encryptAndUploadFile(file: File): Promise<AttachmentRef> {
   let data: Uint8Array = new Uint8Array(await file.arrayBuffer());
   let type = file.type || 'application/octet-stream';
+  let name = file.name;
   if (optimizeImages.value) {
     const optimized = await optimizeImage(data, type);
+    // Re-encoding changed the format → drop the now-misleading original
+    // extension so the name matches the bytes (e.g. `photo.jpeg` → `photo.webp`).
+    if (optimized.type !== type) name = nameForType(name, optimized.type);
     data = optimized.data;
     type = optimized.type;
   }
@@ -24,5 +29,5 @@ export async function encryptAndUploadFile(file: File): Promise<AttachmentRef> {
   }
   const { ciphertext, key, iv } = await encryptBlob(data);
   const { id } = await api.attachmentUpload(ciphertext);
-  return { id, name: file.name, type, size: data.length, key, iv };
+  return { id, name, type, size: data.length, key, iv };
 }

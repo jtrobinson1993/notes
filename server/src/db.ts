@@ -16,6 +16,8 @@ export interface UserRow {
   name_color: string | null;
   /** 1 = only friends may receive the encrypted profile (default). */
   profile_friends_only: number;
+  /** 1 = link previews enabled for this user (default 0 / off). */
+  link_previews: number;
   created_at: number;
 }
 
@@ -57,6 +59,8 @@ export interface ConversationRow {
   dm_key: string | null;
   parent_id: string | null;
   parent_seq: number | null;
+  /** group membership policy: 'owner' | 'admins' | 'open' */
+  manage_policy: string;
 }
 
 export interface ConversationMemberRow {
@@ -78,6 +82,7 @@ export interface MessageRow {
   ciphertext: string;
   iv: string;
   created_at: number;
+  edited_at: number | null;
 }
 
 export interface ReactionRow {
@@ -265,6 +270,18 @@ CREATE TABLE IF NOT EXISTS conversation_members (
   role TEXT NOT NULL DEFAULT 'member',
   PRIMARY KEY (conversation_id, user_id)
 );
+-- Per-(member, epoch) sealed conversation keys. conversation_members holds only
+-- the CURRENT epoch's sealed key; this keeps every earlier epoch a member is
+-- entitled to, so a re-keyed group's back-scroll survives a reload (the in-memory
+-- key cache is lost). A member's rows are deleted when they leave/are removed,
+-- which is what cryptographically revokes their future access.
+CREATE TABLE IF NOT EXISTS conversation_keys (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  epoch INTEGER NOT NULL,
+  sealed_key TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, user_id, epoch)
+);
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -274,6 +291,7 @@ CREATE TABLE IF NOT EXISTS messages (
   ciphertext TEXT NOT NULL,
   iv TEXT NOT NULL,
   created_at INTEGER NOT NULL,
+  edited_at INTEGER,
   UNIQUE(conversation_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conversation_id, seq);
@@ -341,6 +359,16 @@ export function openDb(dataDir: string) {
   if (!userCols.some((c) => c.name === 'profile_friends_only')) {
     db.exec('ALTER TABLE users ADD COLUMN profile_friends_only INTEGER NOT NULL DEFAULT 1');
   }
+  // Link previews: opt-in, default off.
+  if (!userCols.some((c) => c.name === 'link_previews')) {
+    db.exec('ALTER TABLE users ADD COLUMN link_previews INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Idempotent migration: add messages.edited_at (message editing).
+  const msgCols = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
+  if (!msgCols.some((c) => c.name === 'edited_at')) {
+    db.exec('ALTER TABLE messages ADD COLUMN edited_at INTEGER');
+  }
 
   // Idempotent migration: add conversations.parent_id/parent_seq (threads).
   // Must precede the partial unique index, which references parent_id.
@@ -350,6 +378,25 @@ export function openDb(dataDir: string) {
   }
   if (!convCols.some((c) => c.name === 'parent_seq')) {
     db.exec('ALTER TABLE conversations ADD COLUMN parent_seq INTEGER');
+  }
+  // Group membership policy (v3 phase 2). Default to owner-only.
+  if (!convCols.some((c) => c.name === 'manage_policy')) {
+    db.exec("ALTER TABLE conversations ADD COLUMN manage_policy TEXT NOT NULL DEFAULT 'owner'");
+    // The creator of an existing group becomes its owner (others stay members).
+    db.exec(
+      `UPDATE conversation_members SET role = 'owner'
+         WHERE user_id = (SELECT created_by FROM conversations c WHERE c.id = conversation_id)
+           AND (SELECT kind FROM conversations c WHERE c.id = conversation_id) = 'group'`,
+    );
+  }
+  // Backfill per-epoch keys from the current sealed_key for any conversation that
+  // predates the conversation_keys table, so existing back-scroll stays readable.
+  const hasKeyRows = db.prepare('SELECT 1 FROM conversation_keys LIMIT 1').get();
+  if (!hasKeyRows) {
+    db.exec(
+      `INSERT OR IGNORE INTO conversation_keys (conversation_id, user_id, epoch, sealed_key)
+         SELECT conversation_id, user_id, epoch, sealed_key FROM conversation_members`,
+    );
   }
   // One thread per (parent conversation, parent message). Partial index so NULL
   // parent_id (DMs/groups) is unconstrained.
@@ -514,13 +561,13 @@ export function openDb(dataDir: string) {
     listShares(noteId: string) {
       return db
         .prepare(
-          `SELECT s.*, u.username AS recipient_username FROM note_shares s
+          `SELECT s.*, u.display_name AS recipient_display_name FROM note_shares s
            JOIN users u ON u.id = s.recipient_id WHERE s.note_id = ?`,
         )
         .all(noteId) as {
         note_id: string;
         recipient_id: string;
-        recipient_username: string;
+        recipient_display_name: string | null;
         sealed_key: string;
         access: string;
         created_at: number;
@@ -532,7 +579,8 @@ export function openDb(dataDir: string) {
     listSharedWith(recipientId: string) {
       return db
         .prepare(
-          `SELECT n.id, n.ciphertext, n.iv, n.created_at, n.updated_at, s.sealed_key, s.access, u.username AS owner_username
+          `SELECT n.id, n.ciphertext, n.iv, n.created_at, n.updated_at, s.sealed_key, s.access,
+                  n.user_id AS owner_id, u.display_name AS owner_display_name
            FROM note_shares s
            JOIN notes n ON n.id = s.note_id AND n.deleted = 0
            JOIN users u ON u.id = n.user_id
@@ -546,7 +594,8 @@ export function openDb(dataDir: string) {
         updated_at: number;
         sealed_key: string;
         access: string;
-        owner_username: string;
+        owner_id: string;
+        owner_display_name: string | null;
       }[];
     },
 
@@ -570,6 +619,15 @@ export function openDb(dataDir: string) {
         username: string;
         public_key: string | null;
       }[];
+    },
+    /** A user's friends (the only people they can share a note with). */
+    listFriendMembers(userId: string): { id: string; display_name: string | null; public_key: string | null }[] {
+      return db
+        .prepare(
+          `SELECT u.id, u.display_name, u.public_key FROM friends f
+           JOIN users u ON u.id = f.friend_id WHERE f.user_id = ? ORDER BY u.display_name`,
+        )
+        .all(userId) as { id: string; display_name: string | null; public_key: string | null }[];
     },
 
     getUserSetting(userId: string, key: string) {
@@ -610,6 +668,9 @@ export function openDb(dataDir: string) {
     // ---- Profiles (E2EE bio + avatar) ----
     setProfileVisibility(userId: string, friendsOnly: boolean): void {
       db.prepare('UPDATE users SET profile_friends_only = ? WHERE id = ?').run(friendsOnly ? 1 : 0, userId);
+    },
+    setLinkPreviews(userId: string, enabled: boolean): void {
+      db.prepare('UPDATE users SET link_previews = ? WHERE id = ?').run(enabled ? 1 : 0, userId);
     },
     getProfile(ownerId: string): ProfileRow | undefined {
       return db.prepare('SELECT * FROM profiles WHERE owner_id = ?').get(ownerId) as ProfileRow | undefined;
@@ -807,11 +868,63 @@ export function openDb(dataDir: string) {
       sealedKey: string;
       epoch: number;
       role?: string;
+      /** start unread baseline at the join point (e.g. a fresh-history joiner) */
+      lastReadSeq?: number;
     }): void {
       db.prepare(
         `INSERT INTO conversation_members (conversation_id, user_id, sealed_key, epoch, last_read_seq, joined_at, role)
-         VALUES (?, ?, ?, ?, 0, ?, ?)`,
-      ).run(m.conversationId, m.userId, m.sealedKey, m.epoch, now(), m.role ?? 'member');
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(m.conversationId, m.userId, m.sealedKey, m.epoch, m.lastReadSeq ?? 0, now(), m.role ?? 'member');
+      // Mirror the current sealed key into the per-epoch store.
+      db.prepare(
+        `INSERT OR REPLACE INTO conversation_keys (conversation_id, user_id, epoch, sealed_key)
+         VALUES (?, ?, ?, ?)`,
+      ).run(m.conversationId, m.userId, m.epoch, m.sealedKey);
+    },
+    /** Remove a member and revoke all their sealed keys (future-access cut). */
+    removeConversationMember(conversationId: string, userId: string): void {
+      db.prepare('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?').run(conversationId, userId);
+      db.prepare('DELETE FROM conversation_keys WHERE conversation_id = ? AND user_id = ?').run(conversationId, userId);
+    },
+    /** The conversation's current epoch = the highest epoch any member holds. */
+    getConversationEpoch(conversationId: string): number {
+      const r = db
+        .prepare('SELECT MAX(epoch) AS e FROM conversation_members WHERE conversation_id = ?')
+        .get(conversationId) as { e: number | null };
+      return r.e ?? 0;
+    },
+    /** Re-key an existing member to a new epoch: update their current sealed key
+     *  and append the new per-epoch row (earlier epochs are retained). */
+    setMemberEpochKey(conversationId: string, userId: string, epoch: number, sealedKey: string): void {
+      db.prepare(
+        'UPDATE conversation_members SET epoch = ?, sealed_key = ? WHERE conversation_id = ? AND user_id = ?',
+      ).run(epoch, sealedKey, conversationId, userId);
+      db.prepare(
+        `INSERT OR REPLACE INTO conversation_keys (conversation_id, user_id, epoch, sealed_key)
+         VALUES (?, ?, ?, ?)`,
+      ).run(conversationId, userId, epoch, sealedKey);
+    },
+    /** Seal one prior-epoch key to a member (history shared to a new joiner). */
+    addConversationKey(conversationId: string, userId: string, epoch: number, sealedKey: string): void {
+      db.prepare(
+        `INSERT OR REPLACE INTO conversation_keys (conversation_id, user_id, epoch, sealed_key)
+         VALUES (?, ?, ?, ?)`,
+      ).run(conversationId, userId, epoch, sealedKey);
+    },
+    /** Every epoch key a member can read, ascending. */
+    listConversationKeysForUser(conversationId: string, userId: string): { epoch: number; sealed_key: string }[] {
+      return db
+        .prepare(
+          'SELECT epoch, sealed_key FROM conversation_keys WHERE conversation_id = ? AND user_id = ? ORDER BY epoch',
+        )
+        .all(conversationId, userId) as { epoch: number; sealed_key: string }[];
+    },
+    setConversationMemberRole(conversationId: string, userId: string, role: string): void {
+      db.prepare('UPDATE conversation_members SET role = ? WHERE conversation_id = ? AND user_id = ?').run(
+        role,
+        conversationId,
+        userId,
+      );
     },
     getConversationMember(conversationId: string, userId: string): ConversationMemberRow | undefined {
       return db
@@ -819,8 +932,10 @@ export function openDb(dataDir: string) {
         .get(conversationId, userId) as ConversationMemberRow | undefined;
     },
     listConversationMembers(conversationId: string): ConversationMemberRow[] {
+      // `user_id` tiebreaks members that joined in the same transaction (equal
+      // joined_at), so ordering — and owner-succession on a leave — is stable.
       return db
-        .prepare('SELECT * FROM conversation_members WHERE conversation_id = ? ORDER BY joined_at')
+        .prepare('SELECT * FROM conversation_members WHERE conversation_id = ? ORDER BY joined_at, user_id')
         .all(conversationId) as ConversationMemberRow[];
     },
     listConversationMemberIds(conversationId: string): string[] {
@@ -872,9 +987,33 @@ export function openDb(dataDir: string) {
           ciphertext: m.ciphertext,
           iv: m.iv,
           created_at: createdAt,
+          edited_at: null,
         };
       });
       return tx();
+    },
+    /** Replace a message's ciphertext/iv and stamp edited_at — only for the
+     *  original sender (the `sender_id` guard enforces this at the DB level, so
+     *  a forged seq can't edit someone else's message). Returns the updated row,
+     *  or null if no such message by this sender. */
+    editMessage(m: {
+      conversationId: string;
+      seq: number;
+      senderId: string;
+      ciphertext: string;
+      iv: string;
+    }): MessageRow | null {
+      const editedAt = now();
+      const res = db
+        .prepare(
+          `UPDATE messages SET ciphertext = ?, iv = ?, edited_at = ?
+             WHERE conversation_id = ? AND seq = ? AND sender_id = ?`,
+        )
+        .run(m.ciphertext, m.iv, editedAt, m.conversationId, m.seq, m.senderId);
+      if (res.changes === 0) return null;
+      return db
+        .prepare('SELECT * FROM messages WHERE conversation_id = ? AND seq = ?')
+        .get(m.conversationId, m.seq) as MessageRow;
     },
     /** Messages DESC by seq, optionally before an exclusive seq, for pagination. */
     listMessages(conversationId: string, before: number | undefined, limit: number): MessageRow[] {

@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { AttachmentRef } from '@notes/shared';
 import { api } from '../lib/api';
 import { decryptBlob } from '../lib/crypto';
+import { formatBytes } from '../lib/fileMeta';
+import { withViewTransition } from '../lib/viewTransition';
+import ImageLightbox from './ImageLightbox.vue';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import IconDanger from '~icons/mynaui/danger-triangle';
 
@@ -11,13 +14,32 @@ const props = defineProps<{ attachment: AttachmentRef }>();
 const isImage = props.attachment.type.startsWith('image/');
 const imgUrl = ref<string | null>(null);
 const failed = ref(false);
+const lightboxOpen = ref(false);
 let objectUrl: string | null = null;
 let blobData: Uint8Array | null = null;
 
-function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+// Shared `view-transition-name` so the thumbnail morphs into (and back out of)
+// the lightbox image. Only assigned while a transition is in flight so static
+// images add no snapshot overhead; the thumbnail carries it when closed and the
+// modal image when open (see the gated bindings below). Sanitised to a valid
+// CSS custom-ident.
+const vtName = `chat-img-${props.attachment.id}`.replace(/[^\w-]/g, '-');
+const morphing = ref(false);
+
+/** Toggle the lightbox, morphing the thumbnail ⇄ modal image when supported. */
+async function setOpen(open: boolean) {
+  morphing.value = true;
+  await nextTick(); // assign the name to the source element before snapshotting
+  await withViewTransition(
+    async () => {
+      lightboxOpen.value = open;
+      await nextTick(); // let the target element mount/unmount before the new snapshot
+    },
+    {},
+    // Morph only the image; the lightbox backdrop and chrome animate via CSS.
+    { excludeRoot: true },
+  );
+  morphing.value = false;
 }
 
 /** Decrypt the blob once; cached for both inline display and download. */
@@ -59,13 +81,32 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- Decrypted locally → no remote fetch, so no IP leak (see spec/security.md). -->
-  <img
-    v-if="isImage && imgUrl"
-    :src="imgUrl"
-    :alt="attachment.name"
-    class="mt-1 max-h-80 max-w-[320px] rounded-lg"
-    loading="lazy"
-  />
+  <template v-if="isImage && imgUrl">
+    <button
+      type="button"
+      class="mt-1 block cursor-zoom-in rounded-lg"
+      :title="`View ${attachment.name}`"
+      @click="setOpen(true)"
+    >
+      <img
+        :src="imgUrl"
+        :alt="attachment.name"
+        class="max-h-80 max-w-[320px] rounded-lg"
+        loading="lazy"
+        :style="{ viewTransitionName: morphing && !lightboxOpen ? vtName : undefined }"
+      />
+    </button>
+    <ImageLightbox
+      :open="lightboxOpen"
+      :src="imgUrl"
+      :alt="attachment.name"
+      :name="attachment.name"
+      :size="attachment.size"
+      :type="attachment.type"
+      :view-transition-name="morphing && lightboxOpen ? vtName : undefined"
+      @update:open="setOpen"
+    />
+  </template>
   <button
     v-else
     type="button"
@@ -77,7 +118,7 @@ onBeforeUnmount(() => {
     <IconPaperclip v-else class="h-5 w-5 shrink-0" />
     <span class="min-w-0">
       <span class="block truncate font-medium">{{ attachment.name }}</span>
-      <span class="block text-xs text-zinc-500">{{ failed ? 'could not decrypt' : fmtSize(attachment.size) }}</span>
+      <span class="block text-xs text-zinc-500">{{ failed ? 'could not decrypt' : formatBytes(attachment.size) }}</span>
     </span>
   </button>
 </template>

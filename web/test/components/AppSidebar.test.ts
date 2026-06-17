@@ -62,6 +62,11 @@ describe('AppSidebar collapse / expand', () => {
     const w = mount(AppSidebar, { global: { stubs } });
     expect(w.find('nav').classes()).toContain('w-56');
   });
+
+  it('links to the Friends page (the only entry to the add-friend flow)', () => {
+    const w = mount(AppSidebar, { global: { stubs } });
+    expect(w.find('a[href="/friends"]').exists()).toBe(true);
+  });
 });
 
 describe('AppSidebar unread badge', () => {

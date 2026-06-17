@@ -144,6 +144,38 @@ describe('fan-out', () => {
     cb.close();
   });
 
+  it('a message edit fans out a message-edited frame to both members', async () => {
+    const a = seedUser(t.db);
+    const b = seedUser(t.db);
+    makeFriends(t.db, a, b);
+    t.db.createConversation({ id: 'c1', kind: 'dm', createdBy: a, dmKey: 'a:b' });
+    t.db.addConversationMember({ conversationId: 'c1', userId: a, sealedKey: '{}', epoch: 0 });
+    t.db.addConversationMember({ conversationId: 'c1', userId: b, sealedKey: '{}', epoch: 0 });
+    t.db.insertMessage({ id: 'm1', conversationId: 'c1', senderId: a, epoch: 0, ciphertext: 'orig', iv: 'i' });
+
+    const ca = new Client(authCookie(t.db, a));
+    const cb = new Client(authCookie(t.db, b));
+    await ca.waitFor((f) => f.type === 'hello');
+    await cb.waitFor((f) => f.type === 'hello');
+
+    const res = await t.app.inject({
+      method: 'PATCH',
+      url: '/api/conversations/c1/messages/1',
+      headers: { cookie: authCookie(t.db, a) },
+      payload: { ciphertext: 'EDITED', iv: 'iv1' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const isEdit = (f: ServerFrame) => f.type === 'message-edited' && f.message.conversationId === 'c1';
+    const fa = await ca.waitFor(isEdit);
+    const fb = await cb.waitFor(isEdit);
+    expect(fa.type === 'message-edited' && fa.message.ciphertext).toBe('EDITED');
+    expect(fb.type === 'message-edited' && fb.message.editedAt).toBeTypeOf('number');
+
+    ca.close();
+    cb.close();
+  });
+
   it('read receipts fan out to the other member but not the reader', async () => {
     const a = seedUser(t.db);
     const b = seedUser(t.db);

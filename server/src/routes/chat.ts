@@ -4,15 +4,17 @@ import type {
   ChatReaction,
   Conversation,
   ConversationMember,
+  ConversationRole,
   Friend,
   FriendInvite,
   FriendRequest,
   ProfileInfo,
   ProfileView,
+  SealedEpochKey,
   SealedKey,
   SealedMemberKey,
 } from '@notes/shared';
-import { NAME_COLORS } from '@notes/shared';
+import { canManageMembers, NAME_COLORS } from '@notes/shared';
 import {
   effectiveDisplayName,
   type ConversationRow,
@@ -48,6 +50,41 @@ function validWrappedKey(s: unknown): boolean {
   );
 }
 
+/** Validate a re-key payload: `{userId, sealedKey}[]` that covers EXACTLY the
+ *  `expected` member set (no missing, extra, or duplicate). Returns the parsed
+ *  list, or null on any mismatch — so the server never half-applies a re-key. */
+function parseSealedMemberKeys(raw: unknown, expected: Set<string>): SealedMemberKey[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: SealedMemberKey[] = [];
+  const seen = new Set<string>();
+  for (const m of raw) {
+    if (typeof m !== 'object' || m === null) return null;
+    const mm = m as Record<string, unknown>;
+    if (typeof mm.userId !== 'string' || !validSealedKey(mm.sealedKey)) return null;
+    if (!expected.has(mm.userId) || seen.has(mm.userId)) return null;
+    seen.add(mm.userId);
+    out.push({ userId: mm.userId, sealedKey: mm.sealedKey });
+  }
+  return seen.size === expected.size ? out : null;
+}
+
+/** Validate prior-epoch keys for a share-history join: `{epoch, sealedKey}[]`
+ *  covering EXACTLY epochs 0..maxEpoch. Returns the parsed list, or null. */
+function parseSealedEpochKeys(raw: unknown, maxEpoch: number): SealedEpochKey[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: SealedEpochKey[] = [];
+  const seen = new Set<number>();
+  for (const k of raw) {
+    if (typeof k !== 'object' || k === null) return null;
+    const kk = k as Record<string, unknown>;
+    if (typeof kk.epoch !== 'number' || !Number.isInteger(kk.epoch) || !validSealedKey(kk.sealedKey)) return null;
+    if (kk.epoch < 0 || kk.epoch > maxEpoch || seen.has(kk.epoch)) return null;
+    seen.add(kk.epoch);
+    out.push({ epoch: kk.epoch, sealedKey: kk.sealedKey });
+  }
+  return seen.size === maxEpoch + 1 ? out : null;
+}
+
 function toMessage(m: MessageRow): ChatMessage {
   return {
     conversationId: m.conversation_id,
@@ -57,6 +94,7 @@ function toMessage(m: MessageRow): ChatMessage {
     ciphertext: m.ciphertext,
     iv: m.iv,
     createdAt: m.created_at,
+    editedAt: m.edited_at ?? undefined,
   };
 }
 
@@ -84,6 +122,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
         displayName: u ? effectiveDisplayName(u) : `User-${m.user_id.slice(0, 6)}`,
         publicKey: u?.public_key ?? null,
         nameColor: u?.name_color ?? null,
+        linkPreviews: !!u && u.link_previews !== 0,
+        role: m.role as ConversationRole,
       };
     });
     // DM access requires current friendship — unfriending revokes access
@@ -93,12 +133,17 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
       const other = members.find((m) => m.userId !== userId);
       if (other && !db.areFriends(userId, other.userId)) return null;
     }
+    const epochKeys: SealedEpochKey[] = db
+      .listConversationKeysForUser(conv.id, userId)
+      .map((k) => ({ epoch: k.epoch, sealedKey: JSON.parse(k.sealed_key) as SealedKey }));
     return {
       id: conv.id,
       kind: conv.kind as Conversation['kind'],
       members,
       sealedKey: JSON.parse(mine.sealed_key) as SealedKey,
       epoch: mine.epoch,
+      epochKeys,
+      myRole: mine.role as ConversationRole,
       lastSeq: db.getMaxSeq(conv.id),
       lastReadSeq: mine.last_read_seq,
       createdAt: conv.created_at,
@@ -257,11 +302,18 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
 
   // ---------------------------------------------------------------- Profile
 
-  function profileInfo(u: { id: string; display_name: string | null; name_color: string | null; profile_friends_only: number }): ProfileInfo {
+  function profileInfo(u: {
+    id: string;
+    display_name: string | null;
+    name_color: string | null;
+    profile_friends_only: number;
+    link_previews: number;
+  }): ProfileInfo {
     return {
       displayName: effectiveDisplayName(u),
       nameColor: u.name_color ?? null,
       friendsOnly: u.profile_friends_only !== 0,
+      linkPreviews: u.link_previews !== 0,
     };
   }
 
@@ -386,6 +438,16 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     if (typeof b?.friendsOnly !== 'boolean') return reply.code(400).send({ error: 'invalid friendsOnly' });
     db.setProfileVisibility(me, b.friendsOnly);
     if (b.friendsOnly) db.deleteNonFriendProfileKeys(me);
+    return profileInfo(db.getUser(me)!);
+  });
+
+  // Toggle link previews (opt-in, default off). The setting is exposed on each
+  // ConversationMember so the sender's client can gate previews on all-members.
+  app.put('/api/profile/link-previews', { preHandler: requireAuth }, async (request, reply) => {
+    const me = request.user!.id;
+    const b = request.body as Record<string, unknown> | null;
+    if (typeof b?.enabled !== 'boolean') return reply.code(400).send({ error: 'invalid enabled' });
+    db.setLinkPreviews(me, b.enabled);
     return profileInfo(db.getUser(me)!);
   });
 
@@ -527,11 +589,147 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
           userId: mk.userId,
           sealedKey: JSON.stringify(mk.sealedKey),
           epoch: 0,
+          role: mk.userId === me ? 'owner' : 'member',
         });
       }
     });
     tx();
     return toConversation(db.getConversation(convId)!, me)!;
+  });
+
+  // ---- Group membership management (v3 phase 2) ----------------------------
+
+  // Add a member (owner or admin). Adding mints a NEW epoch: the caller re-keys,
+  // sealing the new key to every current member + the joiner, and (when
+  // history='share') also seals every prior epoch key to the joiner so they can
+  // back-scroll. 'fresh' starts their unread at the latest seq.
+  app.post('/api/conversations/:id/members', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
+    const conv = db.getConversation(id);
+    if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
+    const mine = db.getConversationMember(id, me);
+    if (!mine) return reply.code(403).send({ error: 'not a member' });
+    if (!canManageMembers(mine.role as ConversationRole)) {
+      return reply.code(403).send({ error: 'not allowed to add members' });
+    }
+
+    const b = request.body as Record<string, unknown> | null;
+    const userId = b?.userId;
+    const history = b?.history;
+    const epoch = b?.epoch;
+    if (typeof userId !== 'string') return reply.code(400).send({ error: 'invalid userId' });
+    if (history !== 'share' && history !== 'fresh') return reply.code(400).send({ error: 'invalid history' });
+    if (userId === me || db.getConversationMember(id, userId)) {
+      return reply.code(409).send({ error: 'already a member' });
+    }
+    if (!db.areFriends(me, userId)) return reply.code(400).send({ error: 'not a friend' });
+
+    const current = db.getConversationEpoch(id);
+    if (epoch !== current + 1) return reply.code(409).send({ error: 'epoch mismatch' });
+
+    const expected = new Set([...db.listConversationMemberIds(id), userId]);
+    const sealed = parseSealedMemberKeys(b?.keys, expected);
+    if (!sealed) return reply.code(400).send({ error: 'keys must cover all members + the new member' });
+
+    let prior: SealedEpochKey[] = [];
+    if (history === 'share') {
+      const p = parseSealedEpochKeys(b?.priorKeys, current);
+      if (!p) return reply.code(400).send({ error: 'priorKeys must cover epochs 0..current' });
+      prior = p;
+    }
+
+    const lastSeq = db.getMaxSeq(id);
+    db.raw.transaction(() => {
+      for (const k of sealed) {
+        const sk = JSON.stringify(k.sealedKey);
+        if (k.userId === userId) {
+          db.addConversationMember({
+            conversationId: id,
+            userId,
+            sealedKey: sk,
+            epoch: epoch as number,
+            role: 'member',
+            lastReadSeq: history === 'fresh' ? lastSeq : 0,
+          });
+        } else {
+          db.setMemberEpochKey(id, k.userId, epoch as number, sk);
+        }
+      }
+      for (const p of prior) db.addConversationKey(id, userId, p.epoch, JSON.stringify(p.sealedKey));
+    })();
+    hub.sendToUsers([...expected], { type: 'conversation-updated', conversationId: id });
+    return toConversation(db.getConversation(id)!, me)!;
+  });
+
+  // Remove a member, or leave when :userId is yourself. Mints a new epoch sealed
+  // to the REMAINING members; the target's keys are deleted, so they keep read
+  // access up to removal (via keys already unsealed in memory) but nothing after.
+  app.delete('/api/conversations/:id/members/:userId', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, userId: target } = request.params as { id: string; userId: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
+    const conv = db.getConversation(id);
+    if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
+    const mine = db.getConversationMember(id, me);
+    if (!mine) return reply.code(403).send({ error: 'not a member' });
+    const targetMember = db.getConversationMember(id, target);
+    if (!targetMember) return reply.code(404).send({ error: 'not a member' });
+
+    const leaving = target === me;
+    if (!leaving) {
+      if (!canManageMembers(mine.role as ConversationRole)) {
+        return reply.code(403).send({ error: 'not allowed to remove members' });
+      }
+      // Admins have owner-level powers — except they can never remove the owner.
+      if (targetMember.role === 'owner') return reply.code(403).send({ error: 'cannot remove the owner' });
+    }
+
+    const remainingIds = db.listConversationMemberIds(id).filter((u) => u !== target);
+    if (remainingIds.length < 2) return reply.code(400).send({ error: 'a group needs at least 2 members' });
+
+    const current = db.getConversationEpoch(id);
+    const b = request.body as Record<string, unknown> | null;
+    if (b?.epoch !== current + 1) return reply.code(409).send({ error: 'epoch mismatch' });
+    const sealed = parseSealedMemberKeys(b?.keys, new Set(remainingIds));
+    if (!sealed) return reply.code(400).send({ error: 'keys must cover the remaining members' });
+
+    db.raw.transaction(() => {
+      // Owner leaving → ownership passes to the earliest-joined remaining member.
+      if (leaving && targetMember.role === 'owner') {
+        const heir = db.listConversationMembers(id).find((m) => m.user_id !== target);
+        if (heir) db.setConversationMemberRole(id, heir.user_id, 'owner');
+      }
+      db.removeConversationMember(id, target);
+      for (const k of sealed) db.setMemberEpochKey(id, k.userId, current + 1, JSON.stringify(k.sealedKey));
+    })();
+    hub.sendToUsers(remainingIds, { type: 'conversation-updated', conversationId: id });
+    hub.sendToUser(target, { type: 'conversation-removed', conversationId: id });
+    return { ok: true };
+  });
+
+  // Grant/revoke admin to another member. Owners and admins can manage roles;
+  // the owner's role is immutable and you can't change your own.
+  app.post('/api/conversations/:id/members/:userId/role', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, userId: target } = request.params as { id: string; userId: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
+    const conv = db.getConversation(id);
+    if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
+    const mine = db.getConversationMember(id, me);
+    if (!mine || !canManageMembers(mine.role as ConversationRole)) {
+      return reply.code(403).send({ error: 'not allowed to change roles' });
+    }
+    if (target === me) return reply.code(400).send({ error: 'cannot change your own role' });
+    const targetMember = db.getConversationMember(id, target);
+    if (!targetMember) return reply.code(404).send({ error: 'not a member' });
+    if (targetMember.role === 'owner') return reply.code(403).send({ error: 'cannot change the owner' });
+    const role = (request.body as Record<string, unknown> | null)?.role;
+    if (role !== 'admin' && role !== 'member') return reply.code(400).send({ error: 'invalid role' });
+    db.setConversationMemberRole(id, target, role);
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'conversation-updated', conversationId: id });
+    return toConversation(db.getConversation(id)!, me)!;
   });
 
   // Create (or return) the thread rooted on a parent message. A thread is a
@@ -647,6 +845,31 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime): void {
     const message = toMessage(row);
     // Fan out to ALL members (including the sender's other sockets).
     hub.sendToUsers(db.listConversationMemberIds(id), { type: 'message', message });
+    return message;
+  });
+
+  // Edit a message in place: re-encrypt the new text client-side under the same
+  // epoch key, then PATCH the ciphertext. Only the original sender may edit (the
+  // DB accessor's sender_id guard enforces it — a 403 otherwise).
+  app.patch('/api/conversations/:id/messages/:seq', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, seq } = request.params as { id: string; seq: string };
+    const me = request.user!.id;
+    if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
+    if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
+    const seqNum = Number(seq);
+    if (!Number.isInteger(seqNum)) return reply.code(400).send({ error: 'invalid seq' });
+
+    const b = request.body as Record<string, unknown> | null;
+    if (
+      typeof b?.ciphertext !== 'string' || b.ciphertext.length < 1 || b.ciphertext.length > MAX_CIPHERTEXT ||
+      typeof b.iv !== 'string' || b.iv.length > 256
+    ) {
+      return reply.code(400).send({ error: 'invalid message payload' });
+    }
+    const row = db.editMessage({ conversationId: id, seq: seqNum, senderId: me, ciphertext: b.ciphertext, iv: b.iv });
+    if (!row) return reply.code(403).send({ error: 'not your message' });
+    const message = toMessage(row);
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'message-edited', message });
     return message;
   });
 

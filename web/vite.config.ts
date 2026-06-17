@@ -50,6 +50,9 @@ export default defineConfig({
       // the string shorthand only REST is forwarded, so the socket fails to
       // connect and the client reconnect-churns (re-decrypting on each cycle).
       '/api': { target: 'http://localhost:3000', ws: true },
+      // Default emote images are proxied/cached by the backend (no longer
+      // committed static files), so forward /emoji in dev too.
+      '/emoji': { target: 'http://localhost:3000' },
     },
   },
 });

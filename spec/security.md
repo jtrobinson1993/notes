@@ -31,6 +31,30 @@ GIFs whose media host is `*.klipy.com` over HTTPS (`safeGif` in the chat store);
 anything else is dropped, so a hostile sender can't smuggle an arbitrary
 tracking URL past the click-to-load model above.
 
+**Link previews (SSRF surface, v3.4).** Previews are **opt-in, off by default**,
+and only generated when every chat member has them on. Generating one makes the
+**server** fetch a user-supplied URL (`GET /api/og`), so it's guarded against
+SSRF: http(s) only; the host must resolve to a **public** IP (loopback, private,
+link-local, CGNAT, cloud-metadata `169.254.169.254`, and multicast are blocked
+for both IPv4 and IPv6); redirects are followed **manually and re-validated each
+hop**; the response is size- and time-capped and must be HTML. The parsed OG
+fields are embedded in the **encrypted** message (the server only sees the URL at
+proxy time), and the preview image loads via click-to-load. DNS rebinding is
+closed at the socket layer: the fetch runs through an undici dispatcher whose
+custom lookup re-validates the resolved IP at **connect** time, so a host can't
+pass the pre-check with a public record and then connect to a private one.
+
+## Rate limiting
+
+A global per-IP limiter (`@fastify/rate-limit`, registered in `buildApp`) caps
+abuse without policing real traffic — the default ceiling is deliberately
+**liberal** (`RATE_LIMIT_MAX`, 600 req/min) so normal use is never throttled.
+The unauthenticated credential ceremony (register / login / recovery) gets a
+**tighter** per-route bucket (~1/10th the global limit, floored at 30/min) since
+it's the brute-force surface; that's still ~30 login attempts/min, well above
+human use. Over-limit requests get `429`. Tests raise the ceiling out of the way
+(`rateLimitMax` in the app builder) so request-heavy suites aren't throttled.
+
 ## Content-Security-Policy (lands with chat, phase 3)
 
 A CSP response header as defense-in-depth: roughly `script-src 'self'` (only our

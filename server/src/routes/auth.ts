@@ -39,6 +39,13 @@ function credentialForVerify(c: CredentialRow) {
 const recoveryAttempts = new Map<string, { count: number; resetAt: number }>();
 
 export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
+  // The unauthenticated credential ceremony (register / login / recovery) is the
+  // brute-force surface, so it gets a tighter ceiling than the global limit —
+  // still liberal (a real login is two requests, so ~30 attempts/min by default).
+  const authLimit = {
+    config: { rateLimit: { max: Math.max(30, Math.ceil(config.rateLimitMax / 10)), timeWindow: '1 minute' } },
+  };
+
   app.get('/api/meta', async () => ({
     needsSetup: db.userCount() === 0,
     appName: config.appName,
@@ -46,7 +53,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
 
   // ---- Registration (first-run setup or via invite) ----
 
-  app.post('/api/register/options', async (request, reply) => {
+  app.post('/api/register/options', authLimit, async (request, reply) => {
     const { username, inviteToken } = request.body as { username?: unknown; inviteToken?: unknown };
     if (!validUsername(username)) {
       return reply.code(400).send({ error: 'username must be 3-32 chars: letters, digits, - or _' });
@@ -82,7 +89,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     return { regId, options };
   });
 
-  app.post('/api/register/verify', async (request, reply) => {
+  app.post('/api/register/verify', authLimit, async (request, reply) => {
     const { regId, response, credentialName } = request.body as {
       regId?: unknown;
       response?: RegistrationResponseJSON;
@@ -138,7 +145,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
 
   // ---- Login (usernameless / discoverable) ----
 
-  app.post('/api/login/options', async () => {
+  app.post('/api/login/options', authLimit, async () => {
     const options = await generateAuthenticationOptions({
       rpID: config.rpId,
       userVerification: 'required',
@@ -148,7 +155,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     return { authId, options };
   });
 
-  app.post('/api/login/verify', async (request, reply) => {
+  app.post('/api/login/verify', authLimit, async (request, reply) => {
     const { authId, response } = request.body as { authId?: unknown; response?: AuthenticationResponseJSON };
     if (typeof authId !== 'string' || !response) {
       return reply.code(400).send({ error: 'missing authId or response' });
@@ -189,7 +196,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
 
   // ---- Recovery-code login ----
 
-  app.post('/api/recovery/login', async (request, reply) => {
+  app.post('/api/recovery/login', authLimit, async (request, reply) => {
     const { username, authKey } = request.body as { username?: unknown; authKey?: unknown };
     if (!validUsername(username) || typeof authKey !== 'string' || authKey.length > 256) {
       return reply.code(400).send({ error: 'missing username or authKey' });

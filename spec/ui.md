@@ -69,6 +69,9 @@ returns. Top to bottom:
     display-name first character, expanded name = members' display names listed
     out ("Alice, Bob, Carol").
 - The **Notes** item — directly **below the chats** (in flow, not pinned).
+
+The item for the **current route** carries a highlighted background — both a
+conversation when its `/chat/:id` is open and the **Notes** item when on `/`.
 - **Bottom (fixed, separated by a top border):** the expand / collapse toggle,
   then **Lock** (when unlocked), **Settings**, and **Sign out**. There is **no
   top app header** — these live in the sidebar. The conversation/note list above
@@ -105,7 +108,21 @@ shouldn't reach the rest of the app until they finish or cancel). It wraps
 reka-ui `Dialog` with an **overlay blur**, a **✕ close**, and optional
 title/description/footer slots. Layout is responsive: **centered with a fixed
 max-width and capped height on desktop, full-screen on mobile**. `ShareDialog`,
-`HistoryDialog`, and the new-chat modal are built on it.
+`HistoryDialog`, the new-chat modal, and the add-group-member modal are built on it.
+
+`AppDrawer.vue` is the same reka-ui `Dialog` foundation styled as a **slide-in
+drawer** anchored full-height to the right edge — for secondary, browsable panels
+(e.g. the group `ManageMembersDrawer`) where a centered modal would feel heavy.
+Same overlay/close/title/footer affordances; full-screen on mobile. Its scrim is
+a **light dim with no blur**, so the chat stays legible behind it.
+
+**Z-index layers.** One named scale is the single source of truth for stacking
+(`@theme` in `style.css` → `z-<name>` utilities; never raw `z-10`/`z-[40]`). Low
+→ high: `z-nav` (app chrome, sidebar, sticky headers, in-page side panels) <
+`z-drawer` (`AppDrawer`) < `z-modal` (`AppModal` — above drawers, so a modal
+opened *from* a drawer covers it) < `z-popover` (menus/dropdowns/editor toolbars
+— above modals so an in-modal menu isn't clipped) < `z-lightbox`
+(`ImageLightbox`) < `z-tooltip` (tooltips, toasts).
 
 `NewChatModal.vue` — the **New chat** modal: a search box, an **alphabetical
 friend list with a checkbox per friend** (select one or many), and Cancel /

@@ -12,10 +12,12 @@ import type {
   MemberInfo,
   MetaResponse,
   NoteVersionInfo,
+  LinkPreview,
   NotesSyncResponse,
   ProfileCipher,
   ProfileInfo,
   ProfileView,
+  SealedEpochKey,
   SealedKey,
   SealedMemberKey,
   SealedProfileKey,
@@ -175,8 +177,13 @@ export const api = {
     req<{ ok: true }>('POST', '/api/profile/keys', { epoch, keys }),
   profileVisibilitySet: (friendsOnly: boolean) =>
     req<ProfileInfo>('PUT', '/api/profile/visibility', { friendsOnly }),
+  linkPreviewsSet: (enabled: boolean) =>
+    req<ProfileInfo>('PUT', '/api/profile/link-previews', { enabled }),
   userProfileGet: (userId: string) =>
     req<ProfileView>('GET', `/api/users/${encodeURIComponent(userId)}/profile`),
+
+  // ---- v3.4: link previews (server-side OG proxy) ----
+  og: (url: string) => req<LinkPreview>('GET', `/api/og?url=${encodeURIComponent(url)}`),
 
   // ---- v3 chat: conversations + messages ----
   conversations: () => req<Conversation[]>('GET', '/api/conversations'),
@@ -186,6 +193,15 @@ export const api = {
     req<Conversation>('POST', '/api/conversations/group', { members }),
   threadCreate: (parentId: string, seq: number, members: SealedMemberKey[]) =>
     req<Conversation>('POST', `/api/conversations/${encodeURIComponent(parentId)}/messages/${seq}/thread`, { members }),
+  // ---- v3 phase 2: group membership management ----
+  conversationAddMember: (
+    id: string,
+    body: { userId: string; epoch: number; history: 'share' | 'fresh'; keys: SealedMemberKey[]; priorKeys?: SealedEpochKey[] },
+  ) => req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/members`, body),
+  conversationRemoveMember: (id: string, userId: string, body: { epoch: number; keys: SealedMemberKey[] }) =>
+    req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, body),
+  conversationSetRole: (id: string, userId: string, role: 'admin' | 'member') =>
+    req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}/role`, { role }),
   conversationMessages: (id: string, opts?: { before?: number; limit?: number }) => {
     const q = new URLSearchParams();
     if (opts?.before !== undefined) q.set('before', String(opts.before));
@@ -198,6 +214,8 @@ export const api = {
   },
   messageSend: (id: string, body: { ciphertext: string; iv: string; epoch: number }) =>
     req<ChatMessage>('POST', `/api/conversations/${encodeURIComponent(id)}/messages`, body),
+  messageEdit: (id: string, seq: number, body: { ciphertext: string; iv: string }) =>
+    req<ChatMessage>('PATCH', `/api/conversations/${encodeURIComponent(id)}/messages/${seq}`, body),
   conversationRead: (id: string, seq: number) =>
     req<{ ok: true }>('POST', `/api/conversations/${encodeURIComponent(id)}/read`, { seq }),
   reactions: (id: string) =>

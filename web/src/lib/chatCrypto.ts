@@ -1,4 +1,4 @@
-import type { MessagePayload, ReactionPayload, SealedKey } from '@notes/shared';
+import type { MessagePayload, ReactionPayload, SealedEpochKey, SealedKey, SealedMemberKey } from '@notes/shared';
 import { b64, ub64 } from './b64';
 import { randomBytes, sealKey, unsealKey } from './crypto';
 
@@ -13,6 +13,29 @@ export function generateConversationKey(): Uint8Array {
 /** Seal a conversation key to a member's X25519 public key (base64). */
 export function sealConversationKey(memberPublicKeyB64: string, convKey: Uint8Array): Promise<SealedKey> {
   return sealKey(ub64(memberPublicKeyB64), convKey);
+}
+
+/** Seal one conversation key to many members (a re-key). Returns a
+ *  `SealedMemberKey` per recipient, ready to POST. Members without a public key
+ *  are skipped by the caller before this point. */
+export async function sealConversationKeyToMembers(
+  members: { userId: string; publicKey: string }[],
+  convKey: Uint8Array,
+): Promise<SealedMemberKey[]> {
+  return Promise.all(
+    members.map(async (m) => ({ userId: m.userId, sealedKey: await sealConversationKey(m.publicKey, convKey) })),
+  );
+}
+
+/** Seal a set of (epoch, key) pairs to one recipient — used to hand a new joiner
+ *  every prior epoch key when the inviter chose to share history. */
+export async function sealEpochKeysTo(
+  recipientPublicKeyB64: string,
+  epochKeys: { epoch: number; key: Uint8Array }[],
+): Promise<SealedEpochKey[]> {
+  return Promise.all(
+    epochKeys.map(async (e) => ({ epoch: e.epoch, sealedKey: await sealConversationKey(recipientPublicKeyB64, e.key) })),
+  );
 }
 
 /** Unseal a conversation key sealed to me. Pure: caller passes the keypair

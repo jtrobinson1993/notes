@@ -73,7 +73,7 @@ describe('shared note decryption (sealKey / decryptSharedNotePayload)', () => {
     const { ciphertext, iv } = await encryptWithNoteKey(noteKey, payload);
     const sealedKey = await sealKey(recipient.publicKey, noteKey);
     const record: SharedNoteRecord = {
-      id: 's1', ciphertext, iv, sealedKey, ownerUsername: 'owner', access: 'read', createdAt: 0, updatedAt: 0,
+      id: 's1', ciphertext, iv, sealedKey, ownerDisplayName: 'Owner', access: 'read', createdAt: 0, updatedAt: 0,
     };
     const { payload: out, noteKeyRaw } = await decryptSharedNotePayload(recipient.privateKey, recipient.publicKey, record);
     expect(out).toEqual(payload);

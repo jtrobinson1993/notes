@@ -231,7 +231,7 @@ function fmtSize(bytes: number): string {
         class="min-w-0 grow bg-transparent text-xl font-semibold outline-none placeholder:text-zinc-400"
       />
       <span v-if="note.shared" class="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700 dark:bg-violet-950 dark:text-violet-300">
-        {{ note.shared.ownerUsername }} · {{ note.shared.access === 'read' ? 'read-only' : 'can edit' }}
+        {{ note.shared.ownerDisplayName }} · {{ note.shared.access === 'read' ? 'read-only' : 'can edit' }}
       </span>
       <div class="flex shrink-0 gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
         <button
@@ -259,7 +259,7 @@ function fmtSize(bytes: number): string {
           <DropdownMenuContent
             align="end"
             :side-offset="4"
-            class="z-30 min-w-44 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+            class="z-popover min-w-44 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
           >
             <DropdownMenuItem
               v-if="isOwner"
@@ -311,7 +311,7 @@ function fmtSize(bytes: number): string {
               side="bottom"
               align="start"
               :side-offset="6"
-              class="z-30 w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+              class="z-popover w-44 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
             >
               <ColorPalette removable remove-label="Reset color" @pick="pickTagColor(tag, $event)" @remove="resetTagColor(tag)" />
             </PopoverContent>

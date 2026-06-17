@@ -3,8 +3,11 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import ConversationView from '../components/ConversationView.vue';
+import ManageMembersDrawer from '../components/ManageMembersDrawer.vue';
+import { conversationTitle } from '../lib/convName';
 import { useChatStore } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
+import IconUsers from '~icons/mynaui/users';
 
 const route = useRoute();
 const chat = useChatStore();
@@ -12,13 +15,15 @@ const session = useSessionStore();
 
 const convId = computed(() => String(route.params.id));
 
-// The conversation name shown in the shared header above both panes.
+// The conversation name shown in the shared header above both panes. This header
+// is the visible one (the inner ConversationView is rendered with `hide-header`),
+// so group member-management lives here.
 const conversation = computed(() => chat.conversations.find((c) => c.id === convId.value));
-const otherMember = computed(() => {
-  const me = session.user?.id;
-  return conversation.value?.members.find((m) => m.userId !== me) ?? conversation.value?.members[0];
-});
-const parentTitle = computed(() => otherMember.value?.displayName || 'Conversation');
+const parentTitle = computed(() =>
+  conversation.value ? conversationTitle(conversation.value, session.user?.id) : 'Conversation',
+);
+const isGroup = computed(() => conversation.value?.kind === 'group');
+const showMembers = ref(false);
 // The thread shown in the side panel (a thread is itself a conversation id).
 const activeThread = ref<string | null>(null);
 
@@ -92,7 +97,18 @@ onBeforeUnmount(stopDrag);
           {{ (parentTitle.trim()[0] ?? '?').toUpperCase() }}
         </span>
         <p class="font-semibold">{{ parentTitle }}</p>
+        <!-- Group member management (groups only). -->
+        <button
+          v-if="isGroup && conversation"
+          class="ml-auto flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          title="Members"
+          @click="showMembers = true"
+        >
+          <IconUsers class="h-4 w-4" />
+          <span>{{ conversation.members.length }}</span>
+        </button>
       </header>
+      <ManageMembersDrawer v-if="conversation && isGroup" v-model:open="showMembers" :conversation="conversation" />
 
       <div ref="region" class="relative flex min-h-0 flex-1">
         <div class="min-w-0 flex-1">
@@ -112,7 +128,7 @@ onBeforeUnmount(stopDrag);
         />
         <!-- Wide: sized flex child (defaults to half). Narrow: full-cover overlay. -->
         <div
-          :class="isWide ? 'shrink-0' : 'absolute inset-0 z-20 bg-white dark:bg-zinc-900'"
+          :class="isWide ? 'shrink-0' : 'absolute inset-0 z-nav bg-white dark:bg-zinc-900'"
           :style="isWide ? { width: `${displayWidth}px` } : undefined"
         >
           <ConversationView

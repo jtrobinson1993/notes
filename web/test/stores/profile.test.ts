@@ -36,7 +36,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   holder.friends = [];
   holder.conversations = [];
-  api.profileGet.mockResolvedValue({ displayName: 'Me', nameColor: null, friendsOnly: true });
+  api.profileGet.mockResolvedValue({ displayName: 'Me', nameColor: null, friendsOnly: true, linkPreviews: false });
   api.profileDataGet.mockResolvedValue({ profile: null });
   // The server echoes back the epoch it was sent.
   api.profileDataSet.mockImplementation(async (body: { epoch: number }) => ({ ok: true, epoch: body.epoch }));

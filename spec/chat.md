@@ -41,8 +41,12 @@ declines** — so a leaked code can't silently add anyone.
 
 Each user has an editable **display name** — the only name other users ever see
 (friend lists, DMs, member lists). The **username stays a login credential and
-is never exposed to other users**. When a user hasn't set a display name, the
-server shows a neutral `User-<id-prefix>` fallback — **never** the username.
+is never exposed to other users**. **Registration captures the display name up
+front** (a required field in `RegisterFlow.vue`, persisted via `profileSet`
+once the new session is authenticated) so accounts aren't nameless; it's also
+editable later in Settings → Profile. When a user still has no display name
+(legacy/empty), the server shows a neutral `User-<id-prefix>` fallback —
+**never** the username.
 
 Each user may also pick a **name color** shown to others in chat. Choices are
 restricted to the curated **`NAME_COLORS`** palette (the `--brand-*` accents,
@@ -66,25 +70,49 @@ self-hosted server — see [security.md](security.md) for what could be hardened
 
 Each conversation has a symmetric **conversation key** that encrypts its
 messages, distributed with the sealed-box primitive (`sealKey` → a member's
-X25519 public key; `unsealKey` with their private key). The server stores one
-sealed copy of the key **per member** (like `note_shares`).
+X25519 public key; `unsealKey` with their private key). Because a group re-keys
+on every membership change, the server keeps each member's sealed key **per
+epoch** in a `conversation_keys` table (`conversation_members.sealed_key` holds
+only the current one); `toConversation` returns the member's full `epochKeys`
+list, and the client unseals each into a `convId → epoch → key` map. Keeping all
+epoch keys server-side is what lets a re-keyed group's **back-scroll survive a
+reload** (the in-memory cache is lost).
 
 Membership changes mint a **new epoch**: a fresh key sealed to all current
-members; each message records its epoch. Clients keep every epoch key sealed to
-them, so:
+members; each message records its epoch and is decrypted with the key for *that*
+epoch. Clients keep every epoch key sealed to them, so:
 
-- **Removing a member:** the remover's client mints the new epoch and seals it
-  only to the *remaining* members. The removed member keeps earlier epoch keys,
-  so reads everything **up to** removal but nothing after. (Re-keying is
-  client-side → requires the actor online.)
+- **Removing a member (or leaving):** the actor's client mints the new epoch and
+  seals it only to the *remaining* members; the target's `conversation_keys` rows
+  are deleted. The removed member reads everything **up to** removal (via keys
+  already in memory) but nothing after. (Re-keying is client-side → requires the
+  actor online.)
 - **Adding a member — the inviter decides history:** a *share-history* flag.
-  *Share* → also seal prior epoch keys to the joiner (back-scroll readable).
-  *Start fresh* → only the new epoch key (visible from join point on).
+  *Share* → also seal every prior epoch key to the joiner (back-scroll readable).
+  *Start fresh* → only the new epoch key (unread starts at the latest seq;
+  earlier messages aren't decryptable).
+
+The server validates each re-key: the `keys` must cover **exactly** the expected
+member set, `epoch` must be `current + 1`, and a share-history join's `priorKeys`
+must cover epochs `0..current` — so a partial or stale re-key is rejected, never
+half-applied.
+
+**Permissions.** Members carry a `role` (`owner` = creator, `admin`, `member`).
+The pure `canManageMembers(role)` rule (in `@notes/shared`, enforced server-side
+and used for client affordances) decides who may add/remove/change roles: owners
+**and admins** can — **admins have the same powers as the owner**, with two
+exceptions baked into the routes: an admin can never **remove or demote the
+owner**, and only the owner can't have their role changed at all. Anyone may
+**leave**; an owner who leaves hands ownership to the earliest-joined remaining
+member; a group never drops below two members. Live membership/epoch/role
+changes fan out as a `conversation-updated` frame (recipients refetch); a removed
+member gets `conversation-removed` (drops it). (There is no configurable
+per-group "who can manage" policy — admins always can.)
 
 Within an epoch the key is static (no per-message forward secrecy); epochs give
 coarse forward/backward secrecy at membership boundaries. We deliberately do
 **not** hand-roll Double Ratchet / MLS. **1:1 DMs have fixed membership → a
-single epoch and none of the re-keying machinery (phase 1).**
+single epoch and none of the re-keying machinery.**
 
 ## Delivery transport — the WebSocket
 
@@ -131,8 +159,10 @@ encrypted. This deferral explicitly covers PWA message notifications.
 - **Phase 1** — friends (ephemeral invite codes + add/accept) and **1:1 DMs**
   over the WebSocket, persisted ciphertext history, unread markers. Single epoch;
   no re-keying. **Implemented — see below.**
-- **Phase 2** — **group channels:** membership add/remove, epoch re-keying, the
-  inviter's share-history choice.
+- **Phase 2** — **group channels:** membership add/remove + leave, epoch
+  re-keying, the inviter's share-history choice, and per-group permissions
+  with owner/admin roles (admins share the owner's powers, can't remove the
+  owner). **Implemented — see above.**
 - **Phase 3** — hardening: CSP headers (theme-script hash) + background/PWA push.
 
 ---
@@ -156,14 +186,22 @@ a crypto seal→unseal→encrypt→decrypt round-trip; server boots and enforces
 - `friends(user_id, friend_id, created_at, PK(user_id,friend_id))` — two rows
   per friendship for simple lookups.
 - `conversations(id, kind, created_by, created_at, dm_key UNIQUE)` — `dm_key` is
-  the sorted `min(uid):max(uid)` pair for DMs (NULL for groups), giving one DM
-  per pair via the UNIQUE index.
+  the sorted `min(uid):max(uid)` pair for DMs (NULL for groups), giving one DM per
+  pair via the UNIQUE index. (A legacy `manage_policy` column from an earlier
+  design still exists but is unused — admins always manage.)
 - `conversation_members(conversation_id, user_id, sealed_key, epoch DEFAULT 0,
   last_read_seq DEFAULT 0, joined_at, role, PK(conversation_id,user_id))` —
-  `sealed_key` = JSON `SealedKey`.
+  `sealed_key` = the current epoch's JSON `SealedKey`; `role` is
+  `owner`|`admin`|`member`.
+- `conversation_keys(conversation_id, user_id, epoch, sealed_key,
+  PK(conversation_id,user_id,epoch))` — every epoch key a member can read (kept
+  so back-scroll survives a re-key + reload); a member's rows are deleted when
+  they leave/are removed, which cuts their future access.
 - `messages(id, conversation_id, sender_id, seq, epoch, ciphertext, iv,
-  created_at, UNIQUE(conversation_id,seq))` + `idx_messages_conv_seq`. `seq` is
-  assigned `MAX(seq)+1` inside a transaction.
+  created_at, edited_at, UNIQUE(conversation_id,seq))` + `idx_messages_conv_seq`.
+  `seq` is assigned `MAX(seq)+1` inside a transaction. `edited_at` is null until
+  the message is edited (`editMessage` updates ciphertext/iv + stamps it, guarded
+  by `sender_id` so only the author can edit).
 
 ### REST routes (`routes/chat.ts`, all `requireAuth`)
 
@@ -177,11 +215,20 @@ Conversations: `GET /api/conversations`, `POST /api/conversations/dm`
 (idempotent on `dm_key`, members must be exactly {me, friend}),
 `POST /api/conversations/group` (creates a `kind:'group'` conversation of 3+
 members — me plus 2+ friends; **not** idempotent, every other member must be a
-current friend of the creator; membership add/remove + epoch re-keying remain
-Phase 2),
+current friend of the creator; the creator is the `owner`),
 `GET /api/conversations/:id/messages?before=&limit=` (DESC, ≤100),
 `POST /api/conversations/:id/messages` (assigns seq, fans out), 
+`PATCH /api/conversations/:id/messages/:seq` (edit: re-encrypted ciphertext/iv
+under the message's own epoch; **sender-only**, 403 otherwise; stamps `edited_at`
+and fans out a `message-edited` frame),
 `POST /api/conversations/:id/read` (advances `last_read_seq`, fans out a receipt).
+Group membership (Phase 2, all re-key-validated & permission-gated):
+`POST /api/conversations/:id/members` (add a friend, mints a new epoch sealed to
+everyone + joiner, `history: share|fresh`),
+`DELETE /api/conversations/:id/members/:userId` (remove, or leave when it's you;
+re-keys the remainder),
+`POST /api/conversations/:id/members/:userId/role` (owner/admin grants/revokes
+admin; the owner's role is immutable).
 
 ### Realtime hub (`realtime.ts`)
 
@@ -192,14 +239,18 @@ frame, exceptUserId?), isOnline }`. The `/api/ws` upgrade authenticates via the
 `Map<userId, Set<socket>>`; on open sends `{type:'hello'}` and broadcasts
 presence to online friends; heartbeat every 30s (ping/`isAlive`); per-user cap 8
 (evict oldest); `maxPayload` 64 KiB. Server→client `ServerFrame`s: `hello`,
-`message`, `read`, `friend-request`, `friend-accepted`, `presence`. Send/read
-go over REST; client→server frames are minimal (liveness is protocol ping/pong).
+`message`, `message-edited`, `read`, `friend-request`, `friend-accepted`,
+`profile-updated`, `conversation-updated`, `conversation-removed`, `presence`.
+Send/read/edit go over REST; client→server frames are minimal (liveness is
+protocol ping/pong).
 
 ### Client crypto & state
 
 - `chatCrypto.ts` — `generateConversationKey`, `sealConversationKey`,
   `unsealConversationKey`, `encryptMessage`/`decryptMessage` (AES-256-GCM over a
-  JSON `MessagePayload {text, sentAt}`).
+  JSON `MessagePayload {text, sentAt}`), plus the re-key helpers
+  `sealConversationKeyToMembers` (one new key → many members) and
+  `sealEpochKeysTo` (prior epoch keys → a share-history joiner).
 - **DM creation:** the client generates a conv key, seals it to **both** members'
   public keys, and `POST`s. Because the create endpoint is **idempotent**, the
   client always derives its in-memory key by **unsealing the server-returned
@@ -211,10 +262,43 @@ go over REST; client→server frames are minimal (liveness is protocol ping/pong
   many friends — one → a DM, many → a group. Members discover a new group the
   same way as a DM: the first `message` frame for an unknown conversation
   triggers a `loadConversations()`.
+- **Group membership** (`chat.addMember`/`removeMember`/`setMemberRole`): the
+  actor mints a new conv key, seals it to the post-change member set, and (on a
+  share-history add) seals every prior epoch key to the joiner, then POSTs.
+  `ManageMembersDrawer.vue` — a slide-in drawer (the reusable `AppDrawer.vue`)
+  opened from a members button on the **right of the group header** — drives it:
+  member list with owner/admin badges, remove (X) and admin grant/revoke (gated
+  on `canManageMembers`), and **Leave**. An **Add friend** button at the top opens
+  `AddGroupMemberModal.vue` (the standard `AppModal` picker) with the per-add
+  share/start-fresh toggle. A `conversation-updated` frame triggers a
+  `loadConversations()` (picks up new members + epoch keys); `conversation-removed`
+  drops the conversation.
+- **Editing** (`chat.editMessage`): re-encrypts the new text under the message's
+  **own epoch key** (so the same recipients can read it) — preserving the original
+  non-text payload (gif/attachments/reply/preview) — and `PATCH`es it. The
+  inbound `message-edited` frame replaces the message in place by `seq` (never
+  advances unread); the bubble shows a muted **"(edited)"** marker. The hover
+  toolbar shows an **Edit** (pencil) action on your **own** decryptable text
+  messages; it loads the text into the composer with an **Editing** banner
+  (Enter saves, Esc / ✕ cancels). Pressing **↑ in an empty composer** starts
+  editing your most recent editable message (MarkdownEditor emits `editLast`).
+- **Touch actions** (`MessageActionsSheet.vue`): on a **coarse pointer**,
+  long-pressing a message (~500 ms, cancelled by scroll/lift) opens a **slide-up
+  bottom sheet** with quick reactions + the emoji picker, Reply, Edit (own), and
+  Open thread. Gated on `pointerType === 'touch'` — **mouse/pen keep the hover
+  toolbar** at every screen size. The OS long-press callout is suppressed on
+  touch; the sheet is a bottom-anchored reka Dialog at `z-modal`.
+- **System notices.** Adding a member also posts an ordinary **encrypted message**
+  carrying a `MessagePayload.system` event (`{kind:'member-joined', userId,
+  phrase}`) at the new epoch — so the joiner can read it and the server never sees
+  it. The client renders `system` messages as a **centered, muted line** (no
+  bubble/avatar) and picks a (sometimes silly) join phrase from
+  `lib/systemMessages.ts`; a join you made yourself reads "You joined the chat."
 - `chatSocket.ts` — reconnecting WS client (exponential backoff). `chat.ts`
   store wires frames to both the chat and friends stores and backfills on every
   (re)connect; `startChat()/stopChat()` are hooked to session unlock/lock.
-  Conversation keys are held in an in-memory `Map` only (never persisted).
+  Conversation keys are held in an in-memory `convId → epoch → key` `Map` only
+  (never persisted); each message decrypts under the key for its own epoch.
 - Self-echo dedupe by `seq`; an inbound message for an unknown conversation
   triggers `loadConversations()` first (so a friend's opening DM appears).
 - **Infinite history scroll:** `ConversationView` auto-loads the next older page
@@ -266,7 +350,9 @@ preview: code blocks, spoilers, colors, the selection toolbar), not a plain
 
 - **`submit-on-enter`** — binds **Enter → `submit`** (ahead of the default
   keymap) and **Shift+Enter → newline**; also switches sizing from "fill the
-  pane" to **auto-grow up to `max-height: 40vh`, then scroll**.
+  pane" to **auto-grow up to `max-height: 40vh`, then scroll**. Inside a list,
+  **Enter continues the list** (new item, via `insertNewlineContinueMarkup`)
+  instead of sending; **Cmd/Ctrl+Enter sends** regardless of list context.
 - **`placeholder`** — composer shows `Message…`.
 
 There is **no visible Send button** — Enter sends. An `sr-only` submit button
@@ -321,6 +407,29 @@ Rendering (`ChatAttachment.vue`) decrypts the blob locally to an object URL —
 images inline, other files as a download chip. Decryption is local, so (like
 note attachments) there's **no remote fetch and no IP leak**. The per-file size
 cap mirrors the server's 32 MiB.
+
+An inline image is **clickable**: it opens `ImageLightbox.vue`, a full-bleed
+viewer (reka-ui Dialog; Escape / overlay-click / close-button dismiss). A plain
+**click toggles** between fit-to-screen and a zoomed-in view anchored on the
+cursor; **click-and-hold drags** to pan once zoomed (the wheel also zooms toward
+the cursor). The pan/zoom math is the pure, unit-tested `lib/imageZoom.ts`
+(`zoomToPoint` pins the cursor point across a scale change; `clampPan` keeps the
+scaled image from revealing a gap past its edges). A corner overlay shows the
+file metadata — name, pixel **dimensions** (read from the loaded image's natural
+size), **size**, and **format** (`formatBytes` / `formatMime` in
+`lib/fileMeta.ts`, also unit-tested).
+
+Opening/closing **morphs** the thumbnail into the modal image via the View
+Transitions API: both elements share a temporary `view-transition-name` (per
+attachment id, assigned only while a transition is in flight), and the
+open/close state change is wrapped in `withViewTransition`
+(`lib/viewTransition.ts`, which feature-detects and respects
+`prefers-reduced-motion`, otherwise mutating directly). The lightbox is **fully
+controlled** by `ChatAttachment` so it can't tear down before the morph captures
+its snapshot. The transition captures **only the image** (`excludeRoot` drops the
+default whole-page `root` snapshot); the backdrop and chrome stay live and fade
+with their own CSS, so the blur ramps smoothly and the chrome fades in after the
+image settles rather than being painted over by the morphing snapshot.
 
 ### Replies
 
@@ -388,15 +497,18 @@ This completes the v3.1 "reactions, replies, and threads" bullet.
 
 ### Custom emoji — default 7TV set
 
-A few hundred of the most-used 7TV emotes are **self-hosted** (decision: commit
-the assets). `scripts/fetch-emojis.mjs` pulls them via 7TV's GQL
-(`filter.category = TOP`, i.e. most-used), downloads each as a small WebP
-(prefers crisp 2x, falls back to 1x for heavy/animated, skips >48 KB; filenames
-by emote id to avoid case-insensitive-FS collisions) into
-`web/public/emoji/7tv/`, and writes `web/src/lib/emoji/defaultEmoji.json` **in
-7TV popularity order** (the picker shows top emotes first; not alphabetized).
-Re-run the script to refresh. These are served at `/emoji/7tv/…` and excluded
-from the PWA precache (cached on demand via a `CacheFirst` runtime rule).
+A few hundred of the most-used 7TV emotes back the default set. The binaries are
+**not committed**; instead the server **proxies and disk-caches** each image
+from 7TV's CDN on first request and serves it from our own origin
+(`server/routes/emoji.ts`, `GET /emoji/7tv/:id.webp`, `requireAuth`, validated
+26-char ULID only → never an open proxy; `Cache-Control: immutable`). That keeps
+the self-hosting privacy/offline posture (no per-render IP leak to 7TV;
+service-worker cacheable) without ~300 binaries in the repo. The **metadata set**
+(`web/src/lib/emoji/defaultEmoji.json`, names → 7TV ids, **in 7TV popularity
+order**) is refreshed from 7TV's GQL (`filter.category = TOP`) by
+`scripts/fetch-emojis.mjs` (now metadata-only). The bundled manifest seeds
+`resolveEmoji` synchronously; images load from `/emoji/7tv/…`, excluded from the
+PWA precache and cached on demand via a `CacheFirst` runtime rule.
 
 Messages use Discord-style **`:shortcode:`** syntax. The token renderer
 (`MdTokens.emojiText`) replaces a `:name:` run with an inline `<img.chat-emoji>`
@@ -404,7 +516,9 @@ when `resolveEmoji(name)` matches; unknown shortcodes stay literal, and code
 spans/blocks are never substituted (so `` `:KEKW:` `` stays text). The set is
 global UI chrome, so notes render them too. `EmojiPicker.vue` is a searchable
 two-tab popover; picking inserts at the composer caret via the editor's exposed
-`insertText`.
+`insertText`. Picking from any tab **records a use** (see Most-used ranking
+below), and a **Frequently used** row sits at the top of the picker while not
+searching.
 
 ### Unicode emoji search (emojibase)
 
@@ -415,8 +529,64 @@ bundle) and cached; component glyphs (skin tones/hair, group 2) are excluded.
 Search is substring over label + tags; picking inserts the raw unicode
 character (no shortcode needed — it renders natively).
 
-> Hosting note: whether to keep self-hosting the 7TV set or serve straight from
-> 7TV's CDN is an open follow-up (see [roadmap.md](roadmap.md) v3.3).
+> Hosting note: the default set's images are server-proxied + cached from 7TV's
+> CDN (above) rather than committed — resolved in v3.4.
+
+### Most-used ranking (synced, decayed)
+
+The picker and the `:`-autocomplete float **frequently-used** emoji to the top.
+`lib/emoji/usage.ts` keeps a per-emoji `{ score, lastUsed }` map: each use
+**decays** the prior score (exponential, 14-day half-life) then adds 1, so a
+recent burst overtakes an old habit within ~2 weeks. The map is a master-key-
+encrypted **settings blob** (key `emoji-usage`, same `wrapKey`/`settingPut`
+mechanism as the custom-emoji palette), so usage **follows the account across
+devices** and the server never sees it; it loads on connect (`loadEmojiUsage`)
+and clears on lock/logout (`resetEmojiUsage`). Entries are pruned to the top 300
+before each (debounced) save. Keys are **source-tagged** (`7tv:`/`custom:`/
+`uni:`) so the same name across sources — and the same glyph — never collide.
+
+`rankEmoji(query, unicodeList)` returns one merged, de-duped list ordered as: a
+**most-used tier** (positive decayed score, any source) on top, then **custom →
+7TV → unicode** in their natural order. Each result carries its insert text
+(`:shortcode:` or the glyph) and render data (image url or char).
+
+### `:` autocomplete (composer + note editor)
+
+`MarkdownEditor.vue` (the shared editor used by both the chat composer and the
+note editor) opens a **Discord-style inline completion** when you type `:abc`.
+The trigger (`lib/editor/emojiTrigger.ts`) requires the colon to start a line or
+follow whitespace and at least two name chars to follow — so `http://` and a
+bare `:` never pop it, and it's suppressed inside code. Results come from
+`rankEmoji` (most-used → custom → 7TV → unicode); the unicode set is lazy-loaded
+on first trigger. **↑/↓** move, **Enter/Tab** accept, **Esc** dismisses (a
+top-precedence keymap owns these only while the list is open, so Enter still
+sends/continues lists otherwise). Accepting replaces the typed `:abc` with the
+`:shortcode:` (or glyph) and **records a use**.
+
+### Link previews (v3.4)
+
+**Opt-in, off by default**, and only generated when **every** member of the
+conversation has them enabled (`users.link_previews`, surfaced on each
+`ConversationMember`; the sender's client gates on `members.every(linkPreviews)`).
+
+Because a browser can't fetch arbitrary cross-origin pages, the **sender's
+client** asks the server to fetch the URL via `GET /api/og?url=` and embeds the
+returned `LinkPreview {url,title,description,image,siteName}` inside the
+**encrypted** message payload (Signal-style) — so recipients render it from the
+decrypted payload and the server only ever saw the URL at proxy time. The
+preview image is a remote URL rendered with the usual **click-to-load**
+(`LinkPreviewCard.vue`).
+
+The proxy (`server/routes/og.ts`) is an **SSRF surface** and is guarded: http(s)
+only; the host must resolve to a **public** IP (loopback/private/link-local/
+CGNAT/cloud-metadata/multicast all blocked, IPv4 + IPv6); redirects are followed
+**manually and re-validated each hop**; the response is **size- and
+time-capped** and must be HTML. OG/`<meta>` tags are parsed from the `<head>`
+with no HTML execution, and HTML entities are decoded in a **single pass** so
+escaped markup (e.g. `&amp;lt;`) can't be double-unescaped back into live tags.
+DNS rebinding is closed at the socket layer — the fetch uses an undici
+dispatcher whose lookup re-validates the resolved IP at connect time, so a host
+can't pass the pre-check and then connect to a private address.
 
 ### Custom (encrypted) per-user emoji
 

@@ -56,16 +56,18 @@ export interface SealedKey {
 
 export type ShareAccess = 'read' | 'write';
 
+/** A person you can share a note with — always one of your friends. Carries the
+ *  display name (never the username) and their key to seal the note key to. */
 export interface MemberInfo {
   id: string;
-  username: string;
+  displayName: string;
   publicKey: string | null;
 }
 
 export interface ShareInfo {
   noteId: string;
   recipientId: string;
-  recipientUsername: string;
+  recipientDisplayName: string;
   access: ShareAccess;
   createdAt: number;
 }
@@ -147,7 +149,7 @@ export interface SharedNoteRecord {
   iv: string;
   /** note key sealed to my X25519 public key */
   sealedKey: SealedKey;
-  ownerUsername: string;
+  ownerDisplayName: string;
   access: ShareAccess;
   createdAt: number;
   updatedAt: number;
@@ -188,6 +190,19 @@ export interface Friend {
 
 export type ConversationKind = 'dm' | 'group' | 'thread';
 
+/** A member's standing in a group. `owner` is the creator (exactly one);
+ *  `admin` is a delegated manager with the same powers as the owner (add/remove
+ *  members, grant/revoke admin) — except an admin can never remove the owner.
+ *  `member` is everyone else. DMs/threads are always plain `member`. */
+export type ConversationRole = 'owner' | 'admin' | 'member';
+
+/** Pure authorization rule shared by client (UI affordances) and server
+ *  (enforcement): may a member with `role` manage membership? Owners and admins
+ *  can; plain members cannot. (Removing the owner is blocked separately.) */
+export function canManageMembers(role: ConversationRole): boolean {
+  return role === 'owner' || role === 'admin';
+}
+
 export interface ConversationMember {
   userId: string;
   displayName: string;
@@ -195,6 +210,11 @@ export interface ConversationMember {
   publicKey: string | null;
   /** chosen name color (a NAME_COLORS value), or null for the default */
   nameColor: string | null;
+  /** whether this member has link previews enabled — a preview is only generated
+   *  when EVERY member has it on. */
+  linkPreviews: boolean;
+  /** standing in the group (owner/admin/member); always 'member' for DMs/threads */
+  role: ConversationRole;
 }
 
 /** Curated name-color palette: the `--brand-*` accents, each defined in CSS as a
@@ -213,6 +233,12 @@ export interface Conversation {
   /** the conversation key sealed to ME (current epoch) — unseal with my X25519 key */
   sealedKey: SealedKey;
   epoch: number;
+  /** EVERY epoch key sealed to me (one per epoch I can read, including the
+   *  current one). A group re-keys on each membership change; to decrypt the
+   *  full back-scroll a client unseals all of these, keyed by epoch. */
+  epochKeys: SealedEpochKey[];
+  /** my role in this conversation */
+  myRole: ConversationRole;
   /** highest message seq in the conversation (0 when empty) */
   lastSeq: number;
   /** my last-read seq; unread count = lastSeq - lastReadSeq */
@@ -237,6 +263,8 @@ export interface ChatMessage {
   iv: string;
   /** server-receipt time (metadata) */
   createdAt: number;
+  /** server time of the last edit (metadata); absent if never edited */
+  editedAt?: number;
 }
 
 /** One reaction on a message. The emoji is encrypted with the conversation key
@@ -277,12 +305,26 @@ export interface GifRef {
   title?: string;
 }
 
+/** An inline, non-chat event (e.g. someone joined). Carried inside the encrypted
+ *  `MessagePayload` like any message — so the server never sees it — and rendered
+ *  as a centered system notice instead of a normal bubble. */
+export interface SystemEvent {
+  kind: 'member-joined';
+  /** the user the event is about */
+  userId: string;
+  /** index into the client's join-phrase list (keeps a message's funny line
+   *  stable for everyone, while the display name resolves live) */
+  phrase: number;
+}
+
 /** What the client encrypts into a message blob (extensible in v3.1). */
 export interface MessagePayload {
   /** markdown text (may be empty when the message is purely a GIF/attachment) */
   text: string;
   /** the sender's own clock (server time is separate metadata) */
   sentAt: number;
+  /** a system notice (member joined, …) rendered inline instead of as a bubble */
+  system?: SystemEvent;
   /** an embedded GIF (KLIPY search) — v3.1 */
   gif?: GifRef;
   /** encrypted file/image attachments. Each carries its own random AES key, so
@@ -297,6 +339,21 @@ export interface MessagePayload {
    *  attachment ref so recipients (who don't have the sender's private emoji
    *  palette) can decrypt + render it. */
   customEmoji?: Record<string, AttachmentRef>;
+  /** an Open Graph link preview the sender's client generated (only when every
+   *  conversation member has link previews enabled). Embedded in the encrypted
+   *  payload Signal-style, so the server only ever saw the URL at proxy time. */
+  linkPreview?: LinkPreview;
+}
+
+/** Open Graph metadata for a link, fetched via the server-side `/api/og` proxy
+ *  and embedded in the (encrypted) message payload. The `image` is a remote URL
+ *  rendered with click-to-load, like any other remote image. */
+export interface LinkPreview {
+  url: string;
+  title?: string;
+  description?: string;
+  image?: string;
+  siteName?: string;
 }
 
 /** A snapshot of the message being replied to, embedded in the reply's payload. */
@@ -326,9 +383,17 @@ export interface GifSearchResponse {
   next: string | null;
 }
 
-/** One member's sealed key when creating a conversation client-side. */
+/** One member's sealed key when creating a conversation or re-keying client-side. */
 export interface SealedMemberKey {
   userId: string;
+  sealedKey: SealedKey;
+}
+
+/** A conversation key for one epoch, sealed to a single recipient. Used to hand
+ *  a member their full set of readable epoch keys, and to share prior-epoch keys
+ *  to a joiner who's allowed back-scroll. */
+export interface SealedEpochKey {
+  epoch: number;
   sealedKey: SealedKey;
 }
 
@@ -339,6 +404,9 @@ export interface ProfileInfo {
   displayName: string;
   nameColor: string | null;
   friendsOnly: boolean;
+  /** opt-in (default off): generate link previews for my messages. A preview is
+   *  only created when every member of the conversation has this enabled. */
+  linkPreviews: boolean;
 }
 
 /** The owner-set, E2E-encrypted profile contents. Encrypted under a per-user
@@ -380,12 +448,19 @@ export interface ProfileView {
 export type ServerFrame =
   | { type: 'hello'; userId: string }
   | { type: 'message'; message: ChatMessage }
+  // A message's ciphertext was edited in place (same seq) — replace it locally.
+  | { type: 'message-edited'; message: ChatMessage }
   | { type: 'reaction'; reaction: ChatReaction }
   | { type: 'reaction-removed'; conversationId: string; id: string }
   | { type: 'read'; conversationId: string; userId: string; seq: number }
   | { type: 'friend-request'; request: FriendRequest }
   | { type: 'friend-accepted'; friend: Friend }
   | { type: 'profile-updated'; userId: string }
+  // A group's membership/roles/policy or epoch changed — refetch it to pick up
+  // new members and any newly-sealed epoch keys.
+  | { type: 'conversation-updated'; conversationId: string }
+  // You were removed from (or left) a conversation — drop it locally.
+  | { type: 'conversation-removed'; conversationId: string }
   | { type: 'presence'; userId: string; online: boolean };
 
 /** Client -> server. Sends and read-markers go over REST; this stays minimal.

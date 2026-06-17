@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// Fetch the top N emotes from 7TV's public API, download each as a small
-// (64px) WebP, and write them + a manifest into the web app. 7TV's 2x WebP is
-// already aggressively optimized (a few KB each), so no re-encoding is needed.
+// Refresh the default emote SET (metadata only) from 7TV's public API. The
+// images themselves are no longer committed — the server fetches each one from
+// 7TV's CDN on first request and caches it (server/routes/emoji.ts), serving it
+// from our own origin. So this only writes the manifest of names → 7TV ids.
 //
-// Output (committed, per the v3.1 decision to self-host the default set):
-//   web/public/emoji/7tv/<name>.webp     — the assets, served at /emoji/7tv/…
+// Output:
 //   web/src/lib/emoji/defaultEmoji.json  — [{ name, file, w, h, animated }]
+//   where `file` is `<7TV-id>.webp` (the server proxy key).
 //
 // Re-run to refresh the set:  node scripts/fetch-emojis.mjs [count]
-import { mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,7 +20,6 @@ const GQL = 'https://7tv.io/v3/gql';
 const NAME_RE = /^[A-Za-z0-9_]{2,40}$/;
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const assetDir = join(root, 'web', 'public', 'emoji', '7tv');
 const manifestPath = join(root, 'web', 'src', 'lib', 'emoji', 'defaultEmoji.json');
 
 const QUERY = `query SearchEmotes($query: String!, $page: Int, $limit: Int, $filter: EmoteSearchFilter) {
@@ -50,8 +50,6 @@ async function fetchPage(page) {
 }
 
 async function main() {
-  await rm(assetDir, { recursive: true, force: true });
-  await mkdir(assetDir, { recursive: true });
   await mkdir(dirname(manifestPath), { recursive: true });
 
   const manifest = [];
@@ -63,42 +61,19 @@ async function main() {
     for (const e of items) {
       if (manifest.length >= COUNT) break;
       if (!NAME_RE.test(e.name) || seen.has(e.name)) continue;
-      // Prefer the crisp 2x WebP, but fall back to 1x for heavy (usually
-      // animated) emotes, and skip anything still too large — keeps the
-      // committed set lean.
-      const pick2x = e.host?.files?.find((f) => f.name === '2x.webp');
-      const pick1x = e.host?.files?.find((f) => f.name === '1x.webp');
-      const candidates = [pick2x, pick1x].filter(Boolean);
-      if (!candidates.length) continue;
-      try {
-        let chosen = null;
-        let buf = null;
-        for (const file of candidates) {
-          const r = await fetch(`https://cdn.7tv.app/emote/${e.id}/${file.name}`);
-          if (!r.ok) continue;
-          const b = Buffer.from(await r.arrayBuffer());
-          if (b.length === 0) continue;
-          chosen = file;
-          buf = b;
-          if (b.length <= 24 * 1024) break; // small enough; stop at 2x
-        }
-        if (!chosen || !buf || buf.length > 48 * 1024) continue; // skip oversize
-        // Filename by emote id (not name): avoids collisions on case-insensitive
-        // filesystems between names that differ only in case.
-        const fname = `${e.id}.webp`;
-        await writeFile(join(assetDir, fname), buf);
-        manifest.push({ name: e.name, file: fname, w: chosen.width, h: chosen.height, animated: !!e.animated });
-        seen.add(e.name);
-      } catch {
-        /* skip a single failed download */
-      }
+      // Use the 2x WebP's dimensions (fall back to 1x). The server proxy always
+      // serves the 2x WebP keyed by emote id, so only metadata is needed here.
+      const file = e.host?.files?.find((f) => f.name === '2x.webp') ?? e.host?.files?.find((f) => f.name === '1x.webp');
+      if (!file) continue;
+      manifest.push({ name: e.name, file: `${e.id}.webp`, w: file.width, h: file.height, animated: !!e.animated });
+      seen.add(e.name);
     }
     process.stdout.write(`\rcollected ${manifest.length}/${COUNT}`);
   }
   // Keep 7TV's popularity order (most-used first) — do NOT alphabetize, so the
   // picker defaults to the top emotes. Search filters by name at render time.
   await writeFile(manifestPath, JSON.stringify(manifest, null, 0) + '\n');
-  process.stdout.write(`\ndone: ${manifest.length} emotes -> ${assetDir}\n`);
+  process.stdout.write(`\ndone: ${manifest.length} emotes -> ${manifestPath}\n`);
 }
 
 main().catch((e) => {

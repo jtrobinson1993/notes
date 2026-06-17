@@ -6,15 +6,21 @@ import ChatAvatar from './ChatAvatar.vue';
 import ProfileDialog from './ProfileDialog.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import ChatAttachment from './ChatAttachment.vue';
+import LinkPreviewCard from './LinkPreviewCard.vue';
+import MessageActionsSheet from './MessageActionsSheet.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
 import { resolveEmoji } from '../lib/emoji';
+import { api } from '../lib/api';
 import IconReply from '~icons/mynaui/message-reply';
+import IconPencil from '~icons/mynaui/pencil';
 import IconThread from '~icons/mynaui/chat-dots';
 import IconReplyQuote from '~icons/mynaui/corner-up-left';
 import IconX from '~icons/mynaui/x';
 import IconImage from '~icons/mynaui/image';
 import IconPaperclip from '~icons/mynaui/paperclip';
-import type { AttachmentRef, Conversation, GifRef, ReplyRef } from '@notes/shared';
+import IconPaperclipSolid from '~icons/mynaui/paperclip-solid';
+import type { AttachmentRef, Conversation, GifRef, LinkPreview, ReplyRef, SystemEvent } from '@notes/shared';
+import { joinText } from '../lib/systemMessages';
 import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 import { useProfileStore } from '../stores/profile';
@@ -36,12 +42,95 @@ const reachedStart = ref(false);
 const text = ref('');
 const sending = ref(false);
 const scroller = ref<HTMLElement>();
-const composer = ref<{ insertText: (s: string) => void }>();
+const composer = ref<{ insertText: (s: string) => void; focus: () => void; focusEnd: () => void }>();
 const fileInput = ref<HTMLInputElement>();
 const staged = ref<AttachmentRef[]>([]);
 const attaching = ref(false);
 const attachError = ref('');
 const replyingTo = ref<ReplyRef | null>(null);
+// When set, the composer is editing this message's text (not sending a new one).
+// `original` is the text as-sent, to detect a no-op save.
+const editing = ref<{ seq: number; original: string } | null>(null);
+
+// Only your own decryptable, non-system text messages can be edited.
+function canEdit(m: ChatMessageView): boolean {
+  return m.senderId === session.user?.id && !m.system && m.text !== null;
+}
+
+function startEdit(m: ChatMessageView) {
+  if (!canEdit(m)) return;
+  editing.value = { seq: m.seq, original: m.text ?? '' };
+  replyingTo.value = null;
+  text.value = m.text ?? '';
+  // Wait for the new text to flush into the editor, then place the caret at the end.
+  void nextTick(() => composer.value?.focusEnd());
+}
+
+function cancelEdit() {
+  if (!editing.value) return;
+  editing.value = null;
+  text.value = '';
+}
+
+// ↑ on an empty composer edits your most recent editable message.
+function editLast() {
+  if (editing.value) return;
+  const list = chat.messages[convId.value] ?? [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (canEdit(list[i]!)) {
+      startEdit(list[i]!);
+      return;
+    }
+  }
+}
+
+// Touch long-press → bottom-sheet of actions. Mouse/pen keep the hover toolbar,
+// so this is gated on `pointerType === 'touch'` and cancelled by scroll/lift.
+const sheetMsg = ref<ChatMessageView | null>(null);
+const sheetOpen = computed({
+  get: () => sheetMsg.value !== null,
+  set: (v) => {
+    if (!v) sheetMsg.value = null;
+  },
+});
+let pressTimer: ReturnType<typeof setTimeout> | undefined;
+let pressOrigin: { x: number; y: number } | null = null;
+
+function onRowPointerDown(e: PointerEvent, m: ChatMessageView) {
+  if (e.pointerType !== 'touch') return;
+  pressOrigin = { x: e.clientX, y: e.clientY };
+  clearTimeout(pressTimer);
+  pressTimer = setTimeout(() => {
+    sheetMsg.value = m;
+    pressOrigin = null;
+  }, 500);
+}
+function onRowPointerMove(e: PointerEvent) {
+  // A drag past a small threshold is a scroll, not a press — cancel.
+  if (pressOrigin && Math.hypot(e.clientX - pressOrigin.x, e.clientY - pressOrigin.y) > 10) cancelPress();
+}
+function cancelPress() {
+  clearTimeout(pressTimer);
+  pressOrigin = null;
+}
+// Suppress the OS long-press menu on touch (we show our own sheet); leave the
+// desktop right-click menu alone.
+function onRowContextMenu(e: MouseEvent) {
+  if ((e as PointerEvent).pointerType === 'touch' || sheetOpen.value) e.preventDefault();
+}
+
+function sheetReact(emoji: string) {
+  if (sheetMsg.value) react(sheetMsg.value.seq, emoji);
+}
+function sheetReply() {
+  if (sheetMsg.value) startReply(sheetMsg.value);
+}
+function sheetEdit() {
+  if (sheetMsg.value) startEdit(sheetMsg.value);
+}
+function sheetThread() {
+  if (sheetMsg.value) openThreadFor(sheetMsg.value.seq);
+}
 
 const conversation = computed<Conversation | undefined>(() =>
   chat.conversations.find((c) => c.id === convId.value),
@@ -66,6 +155,14 @@ const msgs = computed(() => chat.messages[convId.value] ?? []);
 
 function memberName(senderId: string): string {
   return conversation.value?.members.find((m) => m.userId === senderId)?.displayName || 'Unknown';
+}
+
+/** Render an inline system notice (centered, muted). Self-references read better
+ *  neutrally than as a third-person funny line. */
+function systemText(ev: SystemEvent): string {
+  const me = ev.userId === session.user?.id;
+  if (ev.kind === 'member-joined') return me ? 'You joined the chat.' : joinText(memberName(ev.userId), ev.phrase);
+  return '';
 }
 
 // A member's chosen name color as a CSS value (theme-aware --brand-* pair), or
@@ -100,10 +197,12 @@ function openProfile(userId: string) {
   profileOpen.value = true;
 }
 
-// A short, single-line preview of a message, for the reply quote.
+// A short, single-line preview of a message, for the reply quote. Capped small
+// (and the UI also truncates with an ellipsis) so it never wraps on mobile.
+const REPLY_PREVIEW_MAX = 64;
 function previewOf(m: ChatMessageView): string {
   const t = (m.text ?? '').replace(/\s+/g, ' ').trim();
-  if (t) return t.length > 100 ? `${t.slice(0, 100)}…` : t;
+  if (t) return t.length > REPLY_PREVIEW_MAX ? `${t.slice(0, REPLY_PREVIEW_MAX)}…` : t;
   if (m.gif) return '[GIF]';
   if (m.attachments?.length) return `[${m.attachments.length} attachment${m.attachments.length > 1 ? 's' : ''}]`;
   return '[message]';
@@ -114,8 +213,15 @@ function startReply(m: ChatMessageView) {
 }
 
 function scrollToSeq(seq: number) {
-  const el = scroller.value?.querySelector(`[data-seq="${seq}"]`);
-  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const el = scroller.value?.querySelector<HTMLElement>(`[data-seq="${seq}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Briefly highlight the target. Remove + reflow + re-add so a repeat click
+  // restarts the flash.
+  el.classList.remove('reply-flash');
+  void el.offsetWidth;
+  el.classList.add('reply-flash');
+  window.setTimeout(() => el.classList.remove('reply-flash'), 1400);
 }
 
 function formatTime(ts: number): string {
@@ -138,7 +244,9 @@ const rows = computed<MessageRow[]>(() => {
   const out: MessageRow[] = [];
   let prev: ChatMessageView | undefined;
   for (const m of msgs.value) {
-    const isStart = !prev || prev.senderId !== m.senderId || m.createdAt - prev.createdAt > GROUP_GAP_MS;
+    // A system notice renders on its own and also breaks the avatar grouping of
+    // the messages around it.
+    const isStart = !prev || prev.senderId !== m.senderId || !!prev.system || m.createdAt - prev.createdAt > GROUP_GAP_MS;
     out.push({ key: String(m.seq), msg: m, senderId: m.senderId, name: memberName(m.senderId), isStart });
     prev = m;
   }
@@ -227,14 +335,59 @@ function onScroll() {
   if (atBottom()) void markReadHere();
 }
 
+// Link previews only when EVERY member (including me) has opted in.
+function linkPreviewsAllowed(): boolean {
+  const members = conversation.value?.members ?? [];
+  return members.length > 0 && members.every((m) => m.linkPreviews);
+}
+
+const URL_RE = /\bhttps?:\/\/[^\s<>]+/i;
+function firstUrl(text: string): string | null {
+  const m = URL_RE.exec(text);
+  if (!m) return null;
+  // Trim trailing sentence punctuation the regex may have caught.
+  return m[0].replace(/[)\].,!?;:'"]+$/, '');
+}
+
 async function send() {
+  if (sending.value) return;
   const body = text.value.trim();
-  if ((!body && !staged.value.length) || sending.value) return;
+  // Editing path: re-encrypt the message in place (no attachments/preview flow).
+  if (editing.value) {
+    if (!body) return; // empty edit is a no-op; cancel via Esc / ✕
+    // Unchanged → just leave edit mode; no API call, no "edited" marker.
+    if (body === editing.value.original.trim()) {
+      cancelEdit();
+      return;
+    }
+    const wasAtBottom = atBottom();
+    sending.value = true;
+    try {
+      await chat.editMessage(convId.value, editing.value.seq, body);
+      editing.value = null;
+      text.value = '';
+      if (wasAtBottom) await scrollToBottom();
+    } finally {
+      sending.value = false;
+    }
+    return;
+  }
+  if (!body && !staged.value.length) return;
   sending.value = true;
   try {
-    const opts: { attachments?: AttachmentRef[]; replyTo?: ReplyRef } = {};
+    const opts: { attachments?: AttachmentRef[]; replyTo?: ReplyRef; linkPreview?: LinkPreview } = {};
     if (staged.value.length) opts.attachments = [...staged.value];
     if (replyingTo.value) opts.replyTo = replyingTo.value;
+    if (body && linkPreviewsAllowed()) {
+      const url = firstUrl(body);
+      if (url) {
+        try {
+          opts.linkPreview = await api.og(url);
+        } catch {
+          // No preview (unreachable / blocked / no OG tags) — send without one.
+        }
+      }
+    }
     await chat.sendMessage(convId.value, body, Object.keys(opts).length ? opts : undefined);
     text.value = '';
     staged.value = [];
@@ -355,12 +508,26 @@ async function sendGif(gif: GifRef) {
 
         <!-- One full-width row per message; the avatar gutter sits on the left.
              Messages align the same for everyone (no own-message special-case). -->
+        <template v-for="row in rows" :key="row.key">
+        <!-- System notice (member joined, …): a centered, muted line, no bubble. -->
         <div
-          v-for="row in rows"
-          :key="row.key"
+          v-if="row.msg.system"
           :data-seq="row.msg.seq"
-          class="group relative flex items-start gap-3 px-4 py-0.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+          class="px-4 py-1.5 text-center text-xs text-zinc-400 dark:text-zinc-500"
+        >
+          {{ systemText(row.msg.system) }}
+        </div>
+        <div
+          v-else
+          :data-seq="row.msg.seq"
+          class="group relative flex items-start gap-3 px-4 py-0.5 transition-colors [-webkit-touch-callout:none] hover:bg-black/5 dark:hover:bg-white/5"
           :class="row.isStart ? 'mt-3' : ''"
+          @pointerdown="onRowPointerDown($event, row.msg)"
+          @pointermove="onRowPointerMove"
+          @pointerup="cancelPress"
+          @pointercancel="cancelPress"
+          @pointerleave="cancelPress"
+          @contextmenu="onRowContextMenu"
         >
           <!-- Hover actions: react + reply + thread. Pulled up by half its
                height (only the bottom half overlays the message). Stays visible
@@ -375,6 +542,14 @@ async function sendGif(gif: GifRef) {
               @click="startReply(row.msg)"
             >
               <IconReply class="h-4 w-4" />
+            </button>
+            <button
+              v-if="canEdit(row.msg)"
+              class="flex items-center rounded px-1.5 py-1 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
+              title="Edit"
+              @click="startEdit(row.msg)"
+            >
+              <IconPencil class="h-4 w-4" />
             </button>
             <button
               v-if="!isThread"
@@ -434,7 +609,7 @@ async function sendGif(gif: GifRef) {
                 class="italic opacity-70"
               >message could not be decrypted</span>
               <template v-else>
-                <MarkdownView v-if="row.msg.text" :source="row.msg.text" />
+                <MarkdownView v-if="row.msg.text" :source="row.msg.text" breaks />
                 <img
                   v-if="row.msg.gif"
                   :src="row.msg.gif.url"
@@ -448,10 +623,23 @@ async function sendGif(gif: GifRef) {
                   :key="a.id"
                   :attachment="a"
                 />
+                <LinkPreviewCard v-if="row.msg.linkPreview" :preview="row.msg.linkPreview" />
+                <span
+                  v-if="row.msg.editedAt"
+                  class="ml-1 select-none align-baseline text-[11px] text-zinc-400 dark:text-zinc-500"
+                  :title="`Edited ${formatTime(row.msg.editedAt)}`"
+                >(edited)</span>
               </template>
             </div>
-            <!-- Reaction pills: grouped by emoji; click toggles mine. -->
-            <div v-if="reactionGroups(row.msg.seq).length" class="mt-1 flex flex-wrap gap-1">
+            <!-- Reaction pills: grouped by emoji; click toggles mine. A new pill
+                 pops in (TransitionGroup enter, never on initial load); the count
+                 pops when it changes (keyed Transition). -->
+            <TransitionGroup
+              tag="div"
+              name="pill"
+              class="flex flex-wrap gap-1 empty:hidden"
+              :class="reactionGroups(row.msg.seq).length ? 'mt-1' : ''"
+            >
               <button
                 v-for="g in reactionGroups(row.msg.seq)"
                 :key="g.emoji"
@@ -461,9 +649,11 @@ async function sendGif(gif: GifRef) {
               >
                 <img v-if="reactionImg(g.emoji)" :src="reactionImg(g.emoji)!" :alt="g.emoji" class="h-4 w-4 object-contain" />
                 <span v-else>{{ g.emoji }}</span>
-                <span class="tabular-nums text-zinc-500">{{ g.count }}</span>
+                <Transition name="count" mode="out-in">
+                  <span :key="g.count" class="tabular-nums text-zinc-500">{{ g.count }}</span>
+                </Transition>
               </button>
-            </div>
+            </TransitionGroup>
             <!-- Thread indicator: open the thread rooted on this message. -->
             <button
               v-if="!isThread && threadReplies(row.msg.seq) > 0"
@@ -475,12 +665,23 @@ async function sendGif(gif: GifRef) {
             </button>
           </div>
         </div>
+        </template>
       </div>
 
       <div class="shrink-0 p-3">
+        <!-- Editing banner. -->
+        <div
+          v-if="editing"
+          class="mb-2 flex items-center gap-2 rounded-lg bg-zinc-50 px-3 py-1.5 text-xs dark:bg-zinc-800"
+        >
+          <span class="flex items-center gap-1 opacity-60"><IconPencil class="h-3.5 w-3.5" /> Editing message</span>
+          <span class="min-w-0 grow truncate opacity-60">— Enter to save, Esc to cancel</span>
+          <button class="flex items-center rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Cancel edit" @click="cancelEdit"><IconX class="h-3.5 w-3.5" /></button>
+        </div>
+
         <!-- Replying-to banner. -->
         <div
-          v-if="replyingTo"
+          v-if="replyingTo && !editing"
           class="mb-2 flex items-center gap-2 rounded-lg bg-zinc-50 px-3 py-1.5 text-xs dark:bg-zinc-800"
         >
           <span class="flex items-center gap-1 opacity-60"><IconReplyQuote class="h-3.5 w-3.5" /> Replying to</span>
@@ -505,28 +706,34 @@ async function sendGif(gif: GifRef) {
           <span v-if="attachError" class="text-xs text-red-500">{{ attachError }}</span>
         </div>
 
-        <!-- Square buttons (~input height) anchored to the bottom. -->
-        <div class="flex items-end gap-2">
+        <!-- One border wraps the whole composer (input + the two square
+             buttons), all vertically centered. The buttons are borderless,
+             equal-size squares with solid icons; the input fills the height so
+             the whole row is an easy click target. A subtle tint lifts it off
+             the app background. -->
+        <div class="flex items-center gap-1 rounded-xl border border-zinc-300 bg-black/[2.5%] px-1.5 py-1 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-white/[2.5%]">
           <input ref="fileInput" type="file" multiple class="hidden" @change="onPickFiles" />
           <button
             type="button"
             title="Attach files"
-            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-700/70"
             @click="fileInput?.click()"
           >
-            <IconPaperclip class="h-5 w-5" />
+            <IconPaperclipSolid class="h-5 w-5" />
           </button>
           <!-- Reuse the v2.1 live editor as the composer: code blocks, spoilers,
                colors, and the selection toolbar all come for free. Enter sends;
-               Shift+Enter inserts a newline. A subtle 5% tint lifts it off the
-               app background without a hard fill. -->
-          <div class="grow rounded-lg border border-zinc-300 bg-black/[2.5%] px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-blue-500 dark:border-zinc-700 dark:bg-white/[2.5%]">
+               Shift+Enter inserts a newline. -->
+          <div class="flex min-w-0 grow cursor-text items-center self-stretch px-1" @click="composer?.focus()">
             <MarkdownEditor
               ref="composer"
               v-model="text"
+              class="w-full"
               submit-on-enter
-              placeholder="Message…"
+              :placeholder="editing ? 'Edit message…' : 'Message…'"
               @submit="send"
+              @edit-last="editLast"
+              @escape="cancelEdit"
             />
           </div>
           <EmojiPicker gifs @pick="insertEmoji" @gif="sendGif" />
@@ -543,5 +750,53 @@ async function sendGif(gif: GifRef) {
       </div>
 
       <ProfileDialog v-model:open="profileOpen" :user-id="profileUserId" />
+      <MessageActionsSheet
+        v-model:open="sheetOpen"
+        :can-edit="!!sheetMsg && canEdit(sheetMsg)"
+        :is-thread="isThread"
+        @react="sheetReact"
+        @reply="sheetReply"
+        @edit="sheetEdit"
+        @thread="sheetThread"
+      />
     </div>
 </template>
+
+<style scoped>
+/* A newly added reaction pill pops from 1.25x to its normal size (~0.15s).
+   TransitionGroup enter never runs on the initial render, so existing
+   reactions don't animate when a conversation opens. */
+.pill-enter-active {
+  transition: transform 0.15s ease-out;
+}
+.pill-enter-from {
+  transform: scale(1.25);
+}
+
+/* When a reaction count changes, the number pops up and settles back. */
+.count-enter-active {
+  animation: count-pop 0.15s ease-out;
+}
+@keyframes count-pop {
+  0% {
+    transform: translateY(-0.35em) scale(1.25);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Briefly highlight a message when jumped to from a reply quote. */
+.reply-flash {
+  animation: reply-flash 1.4s ease-out;
+}
+@keyframes reply-flash {
+  0%,
+  30% {
+    background-color: rgb(59 130 246 / 0.18);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+</style>
