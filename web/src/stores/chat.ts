@@ -31,6 +31,7 @@ import {
 import { connectChatSocket, disconnectChatSocket, onConnect } from '../lib/chatSocket';
 import { randomJoinPhrase } from '../lib/systemMessages';
 import { customEmojiForText, loadCustomEmoji, registerEmbeddedEmoji, resetCustomEmoji } from '../lib/emoji/custom';
+import { loadEmojiUsage, resetEmojiUsage } from '../lib/emoji/usage';
 import { b64 } from '../lib/b64';
 import { useSessionStore } from './session';
 import { useFriendsStore } from './friends';
@@ -555,6 +556,7 @@ export function startChat(): void {
       await friends.load();
       await profile.load();
       void loadCustomEmoji();
+      void loadEmojiUsage();
       if (chat.activeId) {
         await chat.loadHistory(chat.activeId);
         await chat.loadReactions(chat.activeId);
@@ -571,6 +573,7 @@ export function stopChat(): void {
   unsubConnect = null;
   disconnectChatSocket();
   resetCustomEmoji();
+  resetEmojiUsage();
   useChatStore().reset();
   useProfileStore().reset();
 }

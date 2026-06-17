@@ -509,6 +509,24 @@ character (no shortcode needed — it renders natively).
 > Hosting note: the default set's images are server-proxied + cached from 7TV's
 > CDN (above) rather than committed — resolved in v3.4.
 
+### Most-used ranking (synced, decayed)
+
+The picker and the `:`-autocomplete float **frequently-used** emoji to the top.
+`lib/emoji/usage.ts` keeps a per-emoji `{ score, lastUsed }` map: each use
+**decays** the prior score (exponential, 14-day half-life) then adds 1, so a
+recent burst overtakes an old habit within ~2 weeks. The map is a master-key-
+encrypted **settings blob** (key `emoji-usage`, same `wrapKey`/`settingPut`
+mechanism as the custom-emoji palette), so usage **follows the account across
+devices** and the server never sees it; it loads on connect (`loadEmojiUsage`)
+and clears on lock/logout (`resetEmojiUsage`). Entries are pruned to the top 300
+before each (debounced) save. Keys are **source-tagged** (`7tv:`/`custom:`/
+`uni:`) so the same name across sources — and the same glyph — never collide.
+
+`rankEmoji(query, unicodeList)` returns one merged, de-duped list ordered as: a
+**most-used tier** (positive decayed score, any source) on top, then **custom →
+7TV → unicode** in their natural order. Each result carries its insert text
+(`:shortcode:` or the glyph) and render data (image url or char).
+
 ### Link previews (v3.4)
 
 **Opt-in, off by default**, and only generated when **every** member of the
