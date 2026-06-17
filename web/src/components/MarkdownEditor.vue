@@ -143,7 +143,9 @@ const acOpen = ref(false);
 const acItems = shallowRef<EmojiCandidate[]>([]);
 const acIndex = ref(0);
 const acFrom = ref(0);
-const acPos = ref({ left: 0, top: 0 });
+// Anchor spans the trigger's whole text line (top..bottom) so the popover sits
+// clear of the line being typed — above it in the composer, below it in notes.
+const acPos = ref({ left: 0, top: 0, height: 0 });
 // Unicode set is lazy-loaded the first time a trigger appears, then reused.
 let unicodeList: UnicodeEmoji[] | null = null;
 let unicodeLoading = false;
@@ -183,7 +185,11 @@ function updateAutocomplete() {
   acItems.value = items;
   acFrom.value = trig.from;
   acIndex.value = 0;
-  acPos.value = { left: coords.left - hostRect.left, top: coords.bottom - hostRect.top };
+  acPos.value = {
+    left: coords.left - hostRect.left,
+    top: coords.top - hostRect.top,
+    height: coords.bottom - coords.top,
+  };
   acOpen.value = true;
 }
 
@@ -448,12 +454,12 @@ onBeforeUnmount(() => view?.destroy());
     <!-- :emoji autocomplete (Reka popover, portaled + collision-aware) -->
     <PopoverRoot :open="acOpen">
       <PopoverAnchor
-        class="pointer-events-none absolute h-px w-px"
-        :style="{ left: `${acPos.left}px`, top: `${acPos.top}px` }"
+        class="pointer-events-none absolute w-px"
+        :style="{ left: `${acPos.left}px`, top: `${acPos.top}px`, height: `${acPos.height}px` }"
       />
       <PopoverPortal>
         <PopoverContent
-          side="bottom"
+          :side="submitOnEnter ? 'top' : 'bottom'"
           align="start"
           :side-offset="4"
           :collision-padding="8"
