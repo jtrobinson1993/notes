@@ -10,7 +10,7 @@ This spec is split by app area so you can load just the part you're working on:
 | [accounts-and-crypto.md](accounts-and-crypto.md) | Accounts, passkeys, recovery, the master-key + X25519 crypto model, the sharing primitive |
 | [notes.md](notes.md) | The notes app and the Obsidian-style live editor (formatting, code blocks, tables/checkboxes, attachments, import/export, history, offline) |
 | [ui.md](ui.md) | Theming (brand / pastel / high-contrast) and the app shell / sidebar |
-| [chat.md](chat.md) | v3 E2EE chat — friends, DMs, groups, conversation keys/epochs, the WebSocket transport, **and the phase-1 implementation as built** |
+| [chat.md](chat.md) | v3 E2EE chat — friends, DMs, groups, conversation keys/epochs, the WebSocket transport, **the phase-1 implementation as built**, and **v4 channels** |
 | [profiles.md](profiles.md) | v3.2 E2EE editable profiles — bio + avatar, the per-user profile key, visibility, distribution + rotation |
 | [notifications.md](notifications.md) | v3 phase 3 — PWA install + content-free background Web Push (service worker, VAPID, subscriptions) |
 | [security.md](security.md) | Cross-cutting security — rendering/XSS safety, CSP, metadata exposure, threat model |

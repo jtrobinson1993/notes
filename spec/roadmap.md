@@ -109,14 +109,27 @@ Polish + bug fixes that shipped alongside the v3.2 profile work.
 
 ## v4 — Chat sidebar
 
-- Left-hand sidebar inside all chats (group or 1:1).
+**Chat sidebar + channels — implemented** (see
+[chat.md](chat.md#v4--chat-sidebar--channels-as-built)).
+
+- Left-hand sidebar inside all chats. **As built:** the channel sidebar appears
+  in **groups**; the 1:1 DM sidebar (pins only) lands with the note-folders work
+  below.
 - Collapsible; persist open/closed state. Collapse/open icon at the top.
+  (implemented)
 - An edit button at the bottom of the open sidebar makes channels editable /
-  reorderable / deletable.
+  reorderable / deletable. (implemented — rename / reorder via up-down arrows /
+  delete; managers only)
 - Ability to create "channels" à la Discord, with a type (text or voice). Voice
   channels are structural here; the voice functionality itself lands in v6.
+  (implemented)
+  - DECISION: channels share the conversation key/epochs (no extra key
+    distribution) and add per-channel read state + unread; `seq` stays
+    conversation-unique (the reply/thread/edit anchor) rather than restarting per
+    channel. The general channel is virtual (`channelId === conversationId`), so
+    DMs/threads are unchanged.
 
-### Note folders (organization)
+### Note folders (organization) — not yet built
 
 - Organize notes into folders.
 - Pin a note or note folder into the chat sidebar.
