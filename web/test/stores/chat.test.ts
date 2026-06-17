@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   threadCreate: vi.fn(),
   conversationMessages: vi.fn(),
   messageSend: vi.fn(),
+  messageEdit: vi.fn(),
   conversationRead: vi.fn(),
   reactions: vi.fn().mockResolvedValue([]),
   reactionAdd: vi.fn(),
@@ -220,6 +221,53 @@ describe('sendMessage', () => {
 
     expect(store.messages['c1']?.find((m) => m.seq === 1)?.gif).toBeNull();
     expect(store.messages['c1']?.find((m) => m.seq === 2)?.gif).toEqual(good);
+  });
+});
+
+describe('editMessage', () => {
+  it('re-encrypts in place under the same epoch and stamps editedAt', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversationCreateDm.mockResolvedValue(convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 0 }));
+    api.conversationMessages.mockResolvedValue([]);
+    const friend: Friend = { userId: 'friend', displayName: 'Friend', publicKey: b64(generateKeyPair().publicKey), online: true };
+    const store = useChatStore();
+    await store.openDm(friend);
+
+    api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
+    await store.sendMessage('c1', 'first');
+
+    api.messageEdit.mockResolvedValue(msg({ seq: 1, senderId: 'me', editedAt: 999 }));
+    await store.editMessage('c1', 1, 'edited!');
+
+    const v = store.messages['c1']?.find((m) => m.seq === 1);
+    expect(v?.text).toBe('edited!');
+    expect(v?.editedAt).toBe(999);
+    // The new ciphertext (under the same conv key) decrypts to the edited text.
+    const arg = api.messageEdit.mock.calls[0][2] as { ciphertext: string; iv: string };
+    expect((await decryptMessage(serverKey, arg.ciphertext, arg.iv)).text).toBe('edited!');
+    expect(api.messageEdit.mock.calls[0][0]).toBe('c1');
+    expect(api.messageEdit.mock.calls[0][1]).toBe(1);
+  });
+
+  it('applies an inbound message-edited frame in place (same seq, editedAt set)', async () => {
+    const kp = await myKeyPair();
+    const serverKey = generateConversationKey();
+    api.conversations.mockResolvedValue([convTo(kp.publicKey, await sealKey(kp.publicKey, serverKey), { lastSeq: 1 })]);
+    const store = useChatStore();
+    await store.loadConversations();
+
+    const orig = await encryptMessage(serverKey, { text: 'orig', sentAt: 1 });
+    await store.handleFrame({ type: 'message', message: msg({ seq: 1, ciphertext: orig.ciphertext, iv: orig.iv }) });
+    expect(store.messages['c1']?.find((m) => m.seq === 1)?.text).toBe('orig');
+
+    const fixed = await encryptMessage(serverKey, { text: 'fixed', sentAt: 2 });
+    await store.handleFrame({ type: 'message-edited', message: msg({ seq: 1, ciphertext: fixed.ciphertext, iv: fixed.iv, editedAt: 555 }) });
+
+    expect(store.messages['c1']?.filter((m) => m.seq === 1)).toHaveLength(1);
+    const v = store.messages['c1']?.find((m) => m.seq === 1);
+    expect(v?.text).toBe('fixed');
+    expect(v?.editedAt).toBe(555);
   });
 });
 

@@ -11,6 +11,7 @@ import { encryptAndUploadFile } from '../lib/attachments';
 import { resolveEmoji } from '../lib/emoji';
 import { api } from '../lib/api';
 import IconReply from '~icons/mynaui/message-reply';
+import IconPencil from '~icons/mynaui/pencil';
 import IconThread from '~icons/mynaui/chat-dots';
 import IconReplyQuote from '~icons/mynaui/corner-up-left';
 import IconX from '~icons/mynaui/x';
@@ -46,6 +47,27 @@ const staged = ref<AttachmentRef[]>([]);
 const attaching = ref(false);
 const attachError = ref('');
 const replyingTo = ref<ReplyRef | null>(null);
+// When set, the composer is editing this message's text (not sending a new one).
+const editing = ref<{ seq: number } | null>(null);
+
+// Only your own decryptable, non-system text messages can be edited.
+function canEdit(m: ChatMessageView): boolean {
+  return m.senderId === session.user?.id && !m.system && m.text !== null;
+}
+
+function startEdit(m: ChatMessageView) {
+  if (!canEdit(m)) return;
+  editing.value = { seq: m.seq };
+  replyingTo.value = null;
+  text.value = m.text ?? '';
+  void nextTick(() => composer.value?.focus());
+}
+
+function cancelEdit() {
+  if (!editing.value) return;
+  editing.value = null;
+  text.value = '';
+}
 
 const conversation = computed<Conversation | undefined>(() =>
   chat.conversations.find((c) => c.id === convId.value),
@@ -265,8 +287,22 @@ function firstUrl(text: string): string | null {
 }
 
 async function send() {
+  if (sending.value) return;
   const body = text.value.trim();
-  if ((!body && !staged.value.length) || sending.value) return;
+  // Editing path: re-encrypt the message in place (no attachments/preview flow).
+  if (editing.value) {
+    if (!body) return; // empty edit is a no-op; cancel via Esc / ✕
+    sending.value = true;
+    try {
+      await chat.editMessage(convId.value, editing.value.seq, body);
+      editing.value = null;
+      text.value = '';
+    } finally {
+      sending.value = false;
+    }
+    return;
+  }
+  if (!body && !staged.value.length) return;
   sending.value = true;
   try {
     const opts: { attachments?: AttachmentRef[]; replyTo?: ReplyRef; linkPreview?: LinkPreview } = {};
@@ -432,6 +468,14 @@ async function sendGif(gif: GifRef) {
               <IconReply class="h-4 w-4" />
             </button>
             <button
+              v-if="canEdit(row.msg)"
+              class="flex items-center rounded px-1.5 py-1 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
+              title="Edit"
+              @click="startEdit(row.msg)"
+            >
+              <IconPencil class="h-4 w-4" />
+            </button>
+            <button
               v-if="!isThread"
               class="flex items-center rounded px-1.5 py-1 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
               title="Start/open thread"
@@ -549,9 +593,19 @@ async function sendGif(gif: GifRef) {
       </div>
 
       <div class="shrink-0 p-3">
+        <!-- Editing banner. -->
+        <div
+          v-if="editing"
+          class="mb-2 flex items-center gap-2 rounded-lg bg-zinc-50 px-3 py-1.5 text-xs dark:bg-zinc-800"
+        >
+          <span class="flex items-center gap-1 opacity-60"><IconPencil class="h-3.5 w-3.5" /> Editing message</span>
+          <span class="min-w-0 grow truncate opacity-60">— Enter to save, Esc to cancel</span>
+          <button class="flex items-center rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Cancel edit" @click="cancelEdit"><IconX class="h-3.5 w-3.5" /></button>
+        </div>
+
         <!-- Replying-to banner. -->
         <div
-          v-if="replyingTo"
+          v-if="replyingTo && !editing"
           class="mb-2 flex items-center gap-2 rounded-lg bg-zinc-50 px-3 py-1.5 text-xs dark:bg-zinc-800"
         >
           <span class="flex items-center gap-1 opacity-60"><IconReplyQuote class="h-3.5 w-3.5" /> Replying to</span>
@@ -600,8 +654,9 @@ async function sendGif(gif: GifRef) {
               v-model="text"
               class="w-full"
               submit-on-enter
-              placeholder="Message…"
+              :placeholder="editing ? 'Edit message…' : 'Message…'"
               @submit="send"
+              @escape="cancelEdit"
             />
           </div>
           <EmojiPicker gifs @pick="insertEmoji" @gif="sendGif" />

@@ -277,7 +277,10 @@ protocol ping/pong).
   **own epoch key** (so the same recipients can read it) — preserving the original
   non-text payload (gif/attachments/reply/preview) — and `PATCH`es it. The
   inbound `message-edited` frame replaces the message in place by `seq` (never
-  advances unread); the bubble shows a muted **"(edited)"** marker.
+  advances unread); the bubble shows a muted **"(edited)"** marker. The hover
+  toolbar shows an **Edit** (pencil) action on your **own** decryptable text
+  messages; it loads the text into the composer with an **Editing** banner
+  (Enter saves, Esc / ✕ cancels).
 - **System notices.** Adding a member also posts an ordinary **encrypted message**
   carrying a `MessagePayload.system` event (`{kind:'member-joined', userId,
   phrase}`) at the new epoch — so the joiner can read it and the server never sees

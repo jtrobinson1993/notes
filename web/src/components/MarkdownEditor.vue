@@ -44,7 +44,12 @@ const props = defineProps<{
    *  auto-grows to a cap instead of filling the parent. */
   submitOnEnter?: boolean;
 }>();
-const emit = defineEmits<{ 'update:modelValue': [string]; submit: [] }>();
+const emit = defineEmits<{
+  'update:modelValue': [string];
+  submit: [];
+  /** composer-only: Esc pressed (e.g. cancel an in-progress edit) */
+  escape: [];
+}>();
 
 const host = ref<HTMLDivElement>();
 let view: EditorView | null = null;
@@ -103,6 +108,8 @@ const submitKeymap = keymap.of([
     },
   },
   { key: 'Shift-Enter', run: insertNewlineAndIndent },
+  // Esc bubbles up (e.g. to cancel an edit); doesn't block other Esc handling.
+  { key: 'Escape', run: () => (emit('escape'), false) },
 ]);
 
 const md = () =>
