@@ -100,11 +100,6 @@ export const useChatStore = defineStore('chat', () => {
     activeChannelId.value = channelId;
   }
 
-  /** The general channel id for a conversation is the conversation id itself. */
-  function channelOf(conv: Conversation | undefined, channelId: string) {
-    return conv?.channels?.find((ch) => ch.id === channelId);
-  }
-
   /** True once we hold any epoch key for the conversation. */
   function hasKey(convId: string): boolean {
     return (convKeys.get(convId)?.size ?? 0) > 0;
@@ -576,12 +571,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** Unread for one channel = its lastSeq minus my last-read (never negative). */
-  function channelUnread(convId: string, channelId: string): number {
-    const ch = channelOf(conversations.value.find((c) => c.id === convId), channelId);
-    return ch ? Math.max(0, ch.lastSeq - ch.lastReadSeq) : 0;
-  }
-
   /** A conversation's unread = the sum of its channels' unread counts. */
   function unreadCount(convId: string): number {
     const conv = conversations.value.find((c) => c.id === convId);
@@ -629,7 +618,6 @@ export const useChatStore = defineStore('chat', () => {
     markRead,
     handleFrame,
     unreadCount,
-    channelUnread,
     reset,
   };
 });

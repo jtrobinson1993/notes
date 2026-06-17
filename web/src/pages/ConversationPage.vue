@@ -3,17 +3,29 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import ConversationView from '../components/ConversationView.vue';
+import ChatSidebar from '../components/ChatSidebar.vue';
 import ManageMembersDrawer from '../components/ManageMembersDrawer.vue';
 import { conversationTitle } from '../lib/convName';
 import { useChatStore } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 import IconUsers from '~icons/mynaui/users';
+import IconHash from '~icons/mynaui/hash';
 
 const route = useRoute();
 const chat = useChatStore();
 const session = useSessionStore();
 
 const convId = computed(() => String(route.params.id));
+
+// The channel currently being viewed. Defaults to the general channel (whose id
+// is the conversation id). Reset when switching conversations.
+const activeChannelId = ref<string>(convId.value);
+watch(convId, (id) => {
+  activeChannelId.value = id;
+});
+const activeChannel = computed(() =>
+  conversation.value?.channels?.find((c) => c.id === activeChannelId.value),
+);
 
 // The conversation name shown in the shared header above both panes. This header
 // is the visible one (the inner ConversationView is rendered with `hide-header`),
@@ -90,13 +102,29 @@ onBeforeUnmount(stopDrag);
 
 <template>
   <AppLayout>
-    <div class="flex h-full flex-col">
+    <div class="flex h-full">
+      <!-- Channel sidebar (groups only); DMs get a pins sidebar in a later PR. -->
+      <ChatSidebar
+        v-if="isGroup && conversation"
+        :conversation="conversation"
+        :active-channel-id="activeChannelId"
+        @select="activeChannelId = $event"
+      />
+
+      <div class="flex h-full min-w-0 grow flex-col">
       <!-- Shared conversation header, above both the chat and the thread panel. -->
       <header class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
         <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-sm font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
           {{ (parentTitle.trim()[0] ?? '?').toUpperCase() }}
         </span>
         <p class="font-semibold">{{ parentTitle }}</p>
+        <!-- Active channel name (groups). -->
+        <span
+          v-if="isGroup && activeChannel"
+          class="flex min-w-0 items-center gap-0.5 truncate text-sm text-zinc-400"
+        >
+          <IconHash class="h-3.5 w-3.5 shrink-0" />{{ activeChannel.name }}
+        </span>
         <!-- Group member management (groups only). -->
         <button
           v-if="isGroup && conversation"
@@ -112,7 +140,7 @@ onBeforeUnmount(stopDrag);
 
       <div ref="region" class="relative flex min-h-0 flex-1">
         <div class="min-w-0 flex-1">
-          <ConversationView :conv-id="convId" hide-header @open-thread="onOpenThread" />
+          <ConversationView :conv-id="convId" :channel-id="activeChannelId" hide-header @open-thread="onOpenThread" />
         </div>
 
       <template v-if="activeThread">
@@ -139,6 +167,7 @@ onBeforeUnmount(stopDrag);
           />
         </div>
       </template>
+      </div>
       </div>
     </div>
   </AppLayout>
