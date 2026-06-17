@@ -189,10 +189,12 @@ UI:
 
 - **NotesPage** — a single **file tree**: folders (full-width, borderless rows,
   depth-indented) with their notes nested directly beneath, unfiled notes at the
-  root. Clicking a folder's **icon collapses/expands** it (shared
-  `folderCollapse` store, persisted). Everything is drag-and-drop: drag a folder
-  onto another to nest it (or onto empty space to move it to the top level); drag
-  a note onto a folder to move it there, onto another note to reorder/move before
+  root. Clicking a folder row (anywhere but its hover buttons) **collapses/
+  expands** it (shared `folderCollapse` store, persisted). Everything is
+  drag-and-drop, with an absolute **drop-indicator line** (no layout shift) at the
+  insertion point and a ring on a folder you'd drop into: drag a folder onto
+  another to nest it (or onto empty space to move it to the top level); drag a
+  note onto a folder to move it there, onto another note to reorder/move before
   it, or onto empty space to unfile it. A **compact** toggle (beside the
   new-folder button) shows note rows as name-only; otherwise rows show tags + a
   preview. Searching or filtering by a tag swaps the tree for a flat result list.

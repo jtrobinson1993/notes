@@ -682,8 +682,9 @@ refetch the channel list after a create/rename/reorder/delete.
   (managers). Channel rename/delete are inline hover actions (managers,
   non-general). Everything is drag-and-drop — drag an item into a folder, onto
   another item to reorder, or onto empty space to move it out; folders nest by
-  drag and collapse by clicking the folder icon. DMs show a **pins-only** tree
-  (their lone general channel isn't surfaced).
+  drag and collapse by clicking the folder row. A drop-indicator line marks the
+  insertion point while dragging (absolute; no layout shift). DMs show a
+  **pins-only** tree (their lone general channel isn't surfaced).
 - Clicking a pinned note **opens it over the chat window** (a `NoteEditor`
   overlay with a close ✕), so notes — channel rules, D&D sheets, co-working docs
   — live in the chat context. `ChatSidebar` emits `open-note`; `ConversationPage`

@@ -124,19 +124,28 @@ function deleteFolder(id: string, name: string) {
 // ---- Drag & drop: nest folders, move/reorder notes ----
 const draggingFolder = ref<string | null>(null);
 const draggingNote = ref<string | null>(null);
+// The row currently dragged over: `into` = drop inside a folder (ring), else an
+// insertion line before the row. Absolutely positioned, so no layout shift.
+const dragOver = ref<{ key: string; into: boolean } | null>(null);
+function endDrag() {
+  draggingFolder.value = null;
+  draggingNote.value = null;
+  dragOver.value = null;
+}
 
 // Drop onto a folder row: nest a dragged folder, or move a dragged note into it.
 function onDropOnFolder(folderId: string) {
   if (draggingNote.value) org.setNoteFolder(draggingNote.value, folderId);
   else if (draggingFolder.value) org.setFolderParent(draggingFolder.value, folderId);
-  draggingFolder.value = null;
-  draggingNote.value = null;
+  endDrag();
 }
 // Drop a note onto another note: move it into that note's folder, just before it.
 function onDropOnNote(target: DecryptedNote) {
   const dragged = draggingNote.value;
-  draggingNote.value = null;
-  if (!dragged || dragged === target.id) return;
+  if (!dragged || dragged === target.id) {
+    endDrag();
+    return;
+  }
   const folderId = org.folderOf(target.id);
   org.setNoteFolder(dragged, folderId);
   const ids = notesOf(folderId)
@@ -145,13 +154,13 @@ function onDropOnNote(target: DecryptedNote) {
   const idx = ids.indexOf(target.id);
   ids.splice(idx < 0 ? ids.length : idx, 0, dragged);
   org.setNoteOrder(folderId, ids);
+  endDrag();
 }
 // Drop on empty tree space: move a note to unfiled / a folder to the top level.
 function onDropOnRoot() {
   if (draggingNote.value) org.setNoteFolder(draggingNote.value, null);
   else if (draggingFolder.value) org.setFolderParent(draggingFolder.value, null);
-  draggingFolder.value = null;
-  draggingNote.value = null;
+  endDrag();
 }
 
 // Open the most recently edited note once notes are ready (or a fresh note if
@@ -275,35 +284,36 @@ function excerpt(body: string): string {
             <li
               v-for="row in treeRows"
               :key="row.key"
-              class="group flex items-center"
-              :class="
+              class="group relative flex items-center"
+              :class="[
                 (row.type === 'note' && selectedId === row.note!.id) || (row.type === 'folder' && activeFolderId === row.folder!.id)
                   ? 'bg-zinc-100 dark:bg-zinc-800'
-                  : 'hover:bg-zinc-100 dark:hover:bg-zinc-800/60'
-              "
+                  : 'hover:bg-zinc-100 dark:hover:bg-zinc-800/60',
+                dragOver?.key === row.key && dragOver.into ? 'ring-2 ring-inset ring-blue-500' : '',
+              ]"
             >
-              <!-- Folder row: the folder icon toggles collapse; the name selects. -->
+              <!-- Drop indicator: an insertion line before this row (no layout shift). -->
+              <div v-if="dragOver?.key === row.key && !dragOver.into" class="pointer-events-none absolute inset-x-0 -top-px z-10 h-0.5 bg-blue-500"></div>
+
+              <!-- Folder row: clicking anywhere on the row toggles collapse; the
+                   hover buttons act on their own. The row is the drag handle + a
+                   drop target (drop into the folder). -->
               <template v-if="row.type === 'folder'">
-                <div
-                  class="flex min-w-0 grow items-center gap-1.5 py-1.5 pr-2 text-sm"
+                <button
+                  class="flex min-w-0 grow cursor-pointer items-center gap-1.5 py-1.5 pr-2 text-left text-sm"
                   :style="{ paddingLeft: depthPad(row.depth) }"
-                  @dragover.prevent
+                  draggable="true"
+                  :title="isCollapsed(row.folder!.id) ? 'Expand' : 'Collapse'"
+                  @click="toggleCollapsed(row.folder!.id)"
+                  @dragstart.stop="draggingFolder = row.folder!.id"
+                  @dragend="endDrag"
+                  @dragover.prevent="dragOver = { key: row.key, into: true }"
                   @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
                 >
-                  <button class="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700" :title="isCollapsed(row.folder!.id) ? 'Expand' : 'Collapse'" @click.stop="toggleCollapsed(row.folder!.id)">
-                    <IconFolder class="h-4 w-4" :class="isCollapsed(row.folder!.id) ? 'opacity-90' : 'opacity-50'" />
-                  </button>
-                  <button
-                    class="min-w-0 grow cursor-grab truncate text-left font-medium"
-                    draggable="true"
-                    @click="activeFolderId = row.folder!.id"
-                    @dragstart.stop="draggingFolder = row.folder!.id"
-                    @dragend="draggingFolder = null"
-                  >
-                    <EmojiText :text="row.folder!.name" />
-                  </button>
+                  <IconFolder class="h-4 w-4 shrink-0" :class="isCollapsed(row.folder!.id) ? 'opacity-90' : 'opacity-50'" />
+                  <span class="min-w-0 grow truncate font-medium"><EmojiText :text="row.folder!.name" /></span>
                   <span class="text-xs text-zinc-400">{{ notesInFolder(row.folder!.id) }}</span>
-                </div>
+                </button>
                 <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
                   <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(row.folder!.id)"><IconFolderPlus class="h-3.5 w-3.5" /></button>
                   <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(row.folder!.id, row.folder!.name)"><IconPencil class="h-3.5 w-3.5" /></button>
@@ -319,8 +329,8 @@ function excerpt(body: string): string {
                 draggable="true"
                 @click="selectedId = row.note!.id"
                 @dragstart.stop="draggingNote = row.note!.id"
-                @dragend="draggingNote = null"
-                @dragover.prevent
+                @dragend="endDrag"
+                @dragover.prevent="dragOver = { key: row.key, into: false }"
                 @drop.stop.prevent="onDropOnNote(row.note!)"
               >
                 <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />

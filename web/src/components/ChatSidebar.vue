@@ -163,9 +163,13 @@ function unpinNote(noteId: string) {
 // ---- Drag & drop (personal arrangement) ----
 const draggingItem = ref<string | null>(null);
 const draggingFolder = ref<string | null>(null);
+// The row currently dragged over: `into` = drop inside a folder (ring), else an
+// insertion line before the row. Absolutely positioned, so no layout shift.
+const dragOver = ref<{ key: string; into: boolean } | null>(null);
 function clearDrag() {
   draggingItem.value = null;
   draggingFolder.value = null;
+  dragOver.value = null;
 }
 function onDropOnFolder(folderId: string) {
   if (draggingItem.value) org.setChatItemFolder(convId.value, draggingItem.value, folderId);
@@ -252,33 +256,34 @@ function onDropOnRoot() {
       <li
         v-for="row in treeRows"
         :key="row.key"
-        class="group flex items-center"
-        :class="
+        class="group relative flex items-center"
+        :class="[
           row.type === 'item' && row.item!.kind === 'channel' && row.item!.channel.id === activeChannelId
             ? 'bg-zinc-200 dark:bg-zinc-800'
-            : 'hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60'
-        "
+            : 'hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60',
+          dragOver?.key === row.key && dragOver.into ? 'ring-2 ring-inset ring-blue-500' : '',
+        ]"
       >
-        <!-- Folder row: the folder icon toggles collapse; the name selects/drags. -->
+        <!-- Drop indicator: an insertion line before this row (no layout shift). -->
+        <div v-if="dragOver?.key === row.key && !dragOver.into" class="pointer-events-none absolute inset-x-0 -top-px z-10 h-0.5 bg-blue-500"></div>
+
+        <!-- Folder row: clicking anywhere on the row toggles collapse; the hover
+             buttons act on their own. The row is the drag handle + drop target. -->
         <template v-if="row.type === 'folder'">
-          <div
-            class="flex min-w-0 grow items-center gap-1.5 py-1.5 pr-2 text-sm"
+          <button
+            class="flex min-w-0 grow cursor-pointer items-center gap-1.5 py-1.5 pr-2 text-left text-xs font-semibold uppercase tracking-wide text-zinc-500"
             :style="{ paddingLeft: depthPad(row.depth) }"
-            @dragover.prevent
+            draggable="true"
+            :title="isCollapsed(row.folder!.id) ? 'Expand' : 'Collapse'"
+            @click="toggleCollapsed(row.folder!.id)"
+            @dragstart.stop="draggingFolder = row.folder!.id"
+            @dragend="clearDrag"
+            @dragover.prevent="dragOver = { key: row.key, into: true }"
             @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
           >
-            <button class="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700" :title="isCollapsed(row.folder!.id) ? 'Expand' : 'Collapse'" @click.stop="toggleCollapsed(row.folder!.id)">
-              <IconFolder class="h-4 w-4" :class="isCollapsed(row.folder!.id) ? 'opacity-90' : 'opacity-50'" />
-            </button>
-            <button
-              class="min-w-0 grow cursor-grab truncate text-left font-medium text-zinc-500 uppercase tracking-wide"
-              draggable="true"
-              @dragstart.stop="draggingFolder = row.folder!.id"
-              @dragend="clearDrag"
-            >
-              <EmojiText :text="row.folder!.name" />
-            </button>
-          </div>
+            <IconFolder class="h-4 w-4 shrink-0" :class="isCollapsed(row.folder!.id) ? 'opacity-90' : 'opacity-50'" />
+            <span class="min-w-0 grow truncate"><EmojiText :text="row.folder!.name" /></span>
+          </button>
           <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
             <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(row.folder!.id)"><IconFolderPlus class="h-3.5 w-3.5" /></button>
             <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(row.folder!.id, row.folder!.name)"><IconPencil class="h-3.5 w-3.5" /></button>
@@ -299,7 +304,7 @@ function onDropOnRoot() {
             @click="selectItem(row.item!)"
             @dragstart.stop="draggingItem = row.item!.key"
             @dragend="clearDrag"
-            @dragover.prevent
+            @dragover.prevent="dragOver = { key: row.key, into: false }"
             @drop.stop.prevent="onDropOnItem(row.item!)"
           >
             <template v-if="row.item!.kind === 'channel'">
