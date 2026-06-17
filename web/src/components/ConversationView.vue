@@ -28,13 +28,16 @@ import { conversationTitle } from '../lib/convName';
 
 // Renders one conversation (DM, group, or a thread). The parent owns routing and
 // the thread panel, so opening a thread just emits the parent message's seq.
-const props = defineProps<{ convId: string; isThreadPanel?: boolean; hideHeader?: boolean }>();
+const props = defineProps<{ convId: string; channelId?: string; isThreadPanel?: boolean; hideHeader?: boolean }>();
 const emit = defineEmits<{ openThread: [seq: number]; close: [] }>();
 const session = useSessionStore();
 const chat = useChatStore();
 const profile = useProfileStore();
 
 const convId = computed(() => props.convId);
+// The stream this view renders: a specific channel, or the general channel
+// (== convId) for DMs/threads. Messages/reactions are keyed by this id.
+const chanId = computed(() => props.channelId ?? props.convId);
 const loading = ref(false);
 const loadingOlder = ref(false);
 // True once we've fetched a partial page of older messages — no more to load.
@@ -75,7 +78,7 @@ function cancelEdit() {
 // ↑ on an empty composer edits your most recent editable message.
 function editLast() {
   if (editing.value) return;
-  const list = chat.messages[convId.value] ?? [];
+  const list = chat.messages[chanId.value] ?? [];
   for (let i = list.length - 1; i >= 0; i--) {
     if (canEdit(list[i]!)) {
       startEdit(list[i]!);
@@ -151,7 +154,7 @@ function threadReplies(seq: number): number {
   return chat.threadFor(convId.value, seq)?.lastSeq ?? 0;
 }
 
-const msgs = computed(() => chat.messages[convId.value] ?? []);
+const msgs = computed(() => chat.messages[chanId.value] ?? []);
 
 function memberName(senderId: string): string {
   return conversation.value?.members.find((m) => m.userId === senderId)?.displayName || 'Unknown';
@@ -268,20 +271,22 @@ async function scrollToBottom() {
 async function markReadHere() {
   const list = msgs.value;
   const last = list[list.length - 1];
-  if (last) await chat.markRead(convId.value, last.seq);
+  if (last) await chat.markRead(convId.value, chanId.value, last.seq);
 }
 
-async function activate(id: string) {
-  chat.setActive(id);
+async function activate() {
+  const cid = convId.value;
+  const ch = chanId.value;
+  chat.setActive(cid, ch);
   loading.value = true;
   reachedStart.value = false;
   try {
-    if ((chat.messages[id]?.length ?? 0) === 0) {
-      const count = await chat.loadHistory(id);
-      // A first page shorter than the limit is the whole conversation.
+    if ((chat.messages[ch]?.length ?? 0) === 0) {
+      const count = await chat.loadHistory(cid, ch);
+      // A first page shorter than the limit is the whole channel.
       if (count < HISTORY_LIMIT) reachedStart.value = true;
     }
-    await chat.loadReactions(id);
+    await chat.loadReactions(cid, ch);
   } finally {
     loading.value = false;
   }
@@ -290,7 +295,8 @@ async function activate(id: string) {
   await markReadHere();
 }
 
-watch(convId, (id) => void activate(id), { immediate: true });
+// Re-activate when either the conversation OR the selected channel changes.
+watch([convId, chanId], () => void activate(), { immediate: true });
 
 // New messages arriving / sent: keep pinned to bottom when already there, and
 // clear unread when viewing the bottom.
@@ -317,7 +323,7 @@ async function loadOlder() {
   const prevHeight = el?.scrollHeight ?? 0;
   loadingOlder.value = true;
   try {
-    const count = await chat.loadHistory(convId.value, oldest.seq);
+    const count = await chat.loadHistory(convId.value, chanId.value, oldest.seq);
     if (count < HISTORY_LIMIT) reachedStart.value = true;
   } finally {
     loadingOlder.value = false;
@@ -363,7 +369,7 @@ async function send() {
     const wasAtBottom = atBottom();
     sending.value = true;
     try {
-      await chat.editMessage(convId.value, editing.value.seq, body);
+      await chat.editMessage(convId.value, chanId.value, editing.value.seq, body);
       editing.value = null;
       text.value = '';
       if (wasAtBottom) await scrollToBottom();
@@ -388,7 +394,7 @@ async function send() {
         }
       }
     }
-    await chat.sendMessage(convId.value, body, Object.keys(opts).length ? opts : undefined);
+    await chat.sendMessage(convId.value, chanId.value, body, Object.keys(opts).length ? opts : undefined);
     text.value = '';
     staged.value = [];
     replyingTo.value = null;
@@ -437,7 +443,7 @@ interface ReactionGroup {
 function reactionGroups(seq: number): ReactionGroup[] {
   const meId = session.user?.id;
   const map = new Map<string, ReactionGroup>();
-  for (const r of chat.reactions[convId.value] ?? []) {
+  for (const r of chat.reactions[chanId.value] ?? []) {
     if (r.seq !== seq || !r.emoji) continue;
     const g = map.get(r.emoji) ?? { emoji: r.emoji, count: 0, mine: false };
     g.count++;
@@ -454,14 +460,14 @@ function reactionImg(emoji: string): string | null {
 }
 
 function react(seq: number, emoji: string) {
-  void chat.toggleReaction(convId.value, seq, emoji);
+  void chat.toggleReaction(convId.value, chanId.value, seq, emoji);
 }
 
 async function sendGif(gif: GifRef) {
   if (sending.value) return;
   sending.value = true;
   try {
-    await chat.sendMessage(convId.value, '', { gif });
+    await chat.sendMessage(convId.value, chanId.value, '', { gif });
     await scrollToBottom();
   } finally {
     sending.value = false;
