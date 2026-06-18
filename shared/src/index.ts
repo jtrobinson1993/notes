@@ -496,6 +496,83 @@ export interface ProfileView {
   encrypted: (ProfileCipher & { sealedKey: SealedKey }) | null;
 }
 
+// ---------------------------------------------------------------------------
+// v6 — E2EE voice (mediasoup SFU). The server forwards opaque, end-to-end
+// encrypted audio frames (insertable streams); it never decodes audio. The
+// per-call **media key** is distributed per epoch reusing the SealedEpochKey
+// sharing primitive, and re-keyed on join/leave — call membership is tracked
+// separately from channel membership. Signalling is REST (the mediasoup
+// handshake) + the WS ServerFrame `voice-*` events below. See spec/voice.md.
+// ---------------------------------------------------------------------------
+
+/** Max live participants in one voice room/call (small-scale deployment). */
+export const VOICE_MAX_PARTICIPANTS = 10;
+
+/** mediasoup parameter blobs (RtpCapabilities, IceParameters, DtlsParameters,
+ *  RtpParameters, …) are intricate + version-specific; the shared layer treats
+ *  them as opaque JSON. They're typed precisely on the client (mediasoup-client)
+ *  and the server (mediasoup) at the edges. */
+export type MediasoupBlob = Record<string, unknown>;
+
+/** A live participant in a voice room — *call* membership, distinct from channel
+ *  membership. `displayName` is never the username. */
+export interface VoicePeer {
+  userId: string;
+  displayName: string;
+  /** the peer's current audio producer id, or null if not sending mic yet */
+  producerId: string | null;
+}
+
+/** Response to joining a voice room: everything the client needs to set up media
+ *  and decrypt peers' frames. */
+export interface VoiceJoinResponse {
+  roomId: string;
+  /** mediasoup router RTP capabilities — the client loads its Device with these */
+  routerRtpCapabilities: MediasoupBlob;
+  /** current live peers (excluding me) */
+  peers: VoicePeer[];
+  /** current call (media-key) epoch */
+  epoch: number;
+  /** every media-key epoch currently sealed to me (current + recent in-flight),
+   *  reusing the note/channel sharing primitive. Empty until the first rekey
+   *  bundle that includes me lands. */
+  mediaKeys: SealedEpochKey[];
+}
+
+/** Create a `WebRtcTransport` for one direction. */
+export interface VoiceTransportRequest {
+  direction: 'send' | 'recv';
+}
+export interface VoiceTransportResponse {
+  id: string;
+  iceParameters: MediasoupBlob;
+  iceCandidates: MediasoupBlob[];
+  dtlsParameters: MediasoupBlob;
+}
+export interface VoiceConnectTransportRequest {
+  transportId: string;
+  dtlsParameters: MediasoupBlob;
+}
+/** Start sending mic audio (always `kind: 'audio'` — no video in v6). */
+export interface VoiceProduceRequest {
+  transportId: string;
+  rtpParameters: MediasoupBlob;
+}
+export interface VoiceProduceResponse {
+  producerId: string;
+}
+/** Start receiving one peer's audio. */
+export interface VoiceConsumeRequest {
+  transportId: string;
+  producerId: string;
+  rtpCapabilities: MediasoupBlob;
+}
+export interface VoiceConsumeResponse {
+  id: string;
+  producerId: string;
+  rtpParameters: MediasoupBlob;
+}
+
 // ---- WebSocket frame protocol (JSON frames over one authenticated socket) ----
 
 /** Server -> client. The read path: live delivery + receipts + friend events. */
@@ -519,6 +596,13 @@ export type ServerFrame =
   | { type: 'conversation-updated'; conversationId: string }
   // You were removed from (or left) a conversation — drop it locally.
   | { type: 'conversation-removed'; conversationId: string }
+  // v6 voice: a peer joined/left a voice room I'm in (drives presence + roster).
+  | { type: 'voice-peer-joined'; roomId: string; peer: VoicePeer }
+  | { type: 'voice-peer-left'; roomId: string; userId: string }
+  // A peer started sending mic audio — `consume` their producer.
+  | { type: 'voice-new-producer'; roomId: string; userId: string; producerId: string }
+  // A media-key rekey (join/leave): the new epoch's key sealed to me.
+  | { type: 'voice-key-epoch'; roomId: string; epoch: number; sealedKey: SealedKey }
   | { type: 'presence'; userId: string; online: boolean };
 
 /** Client -> server. Sends and read-markers go over REST; this stays minimal.

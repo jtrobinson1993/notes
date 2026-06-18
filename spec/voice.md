@@ -167,24 +167,36 @@ the roadmap predicted.
 
 ## Signalling
 
-A new message namespace on the **existing chat WebSocket** (`@fastify/websocket`)
-— no new transport. Roughly:
+Matches the codebase's existing split (chat does the same): the **WebSocket hub
+(`realtime.ts`) is push-only** — clients call **REST** to do things and the
+server fans out async events over the **WebSocket**. So voice uses **REST for the
+mediasoup handshake** (request/response by nature) and **WS frames for async
+events**.
 
-- `voice.join { roomId }` / `voice.leave { roomId }` — room is a channel id (voice
-  channel) or a DM/call id (direct call).
-- mediasoup handshake: `voice.transport.create`, `voice.transport.connect`
-  (DTLS), `voice.produce` (start sending mic), `voice.consume` (start receiving a
-  peer) — thin wrappers over mediasoup's router/transport/producer/consumer
-  objects.
-- `voice.key.epoch { roomId, epoch, sealedKeys[] }` — the rekey fan-out, sealed
-  per member (reusing the sharing primitive).
-- `voice.presence { roomId, members[] }` — who is currently in the room (drives
-  the channel presence UI; see decision #7).
+**REST** (`/api/voice/*`, each enforcing room access — see below):
 
-The **room/membership model reuses chat**: a voice channel's allowed set is its
-channel membership; a direct call's allowed set is the DM's two (or small-group)
-members. Access control therefore inherits chat's existing checks — no new
-authorization surface for *who may join*.
+- `POST .../rooms/:roomId/join` → router RTP capabilities + the caller's current
+  sealed media key(s) + the current peer/producer list.
+- `POST .../rooms/:roomId/transport` (create) / `.../transport/connect` (DTLS) —
+  thin wrappers over mediasoup `WebRtcTransport`.
+- `POST .../rooms/:roomId/produce` (start sending mic) / `.../consume` (receive a
+  peer) — wrappers over mediasoup `Producer`/`Consumer`.
+- `POST .../rooms/:roomId/leave`.
+
+**WS `ServerFrame` additions** (async, server→client):
+
+- `voice-peer-joined` / `voice-peer-left { roomId, userId }` — drives presence
+  (decision #7) and the call roster.
+- `voice-new-producer { roomId, producerId, userId }` — tells peers to `consume`.
+- `voice-key-epoch { roomId, epoch, sealedKey }` — rekey fan-out, the media key
+  sealed to **me** for the new epoch (reusing the sharing primitive).
+
+**Room/membership reuses chat access.** A room id is a **voice channel id** (its
+allowed set = channel membership, honouring v5 private-channel membership) or a
+**direct-call id** (the DM's members). The join check is exactly chat's existing
+`requireConversationMember` / channel-access check — **no new authorization
+surface for who may join**. *Call* membership (who's live in the room now) is
+tracked separately from channel membership and drives the media-key epoch.
 
 ## Networking / self-host
 
