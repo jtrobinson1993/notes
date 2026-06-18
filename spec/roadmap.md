@@ -153,7 +153,12 @@ own crypto-heavy feature — see **v5**.)
 Per-object access control on top of E2EE — effectively the same
 key-distribution problem as chat membership, so reuse that machinery:
 
-- Share an entire folder of notes (not just individual notes).
+- Share an entire folder of notes from the notes view (not just individual notes).
+- Share an entire folder of notes AND channels from the chat sidebar.
+- **No authoritative "group permissions."** Sharing a folder **recursively grants
+  the permission to each individual child object** — it's purely a UX convenience
+  to avoid granting permissions one-by-one. Permissions live on the objects
+  themselves, not on the folder.
 - Adding a note/folder to a chat sidebar does **not** automatically expose it to
   everyone in the chat. On add, present a UX to optionally grant view permission
   to other participants — individually or to all at once.
