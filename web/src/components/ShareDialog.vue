@@ -48,7 +48,8 @@ const toggleShare = useMutation({
   mutation: async ({ memberId, publicKey, access }: { memberId: string; publicKey: string | null; access: ShareAccess | null }) => {
     error.value = '';
     if (access === null) {
-      await api.unshareNote(props.noteId, memberId);
+      // Revoke rotates the note key so the removed recipient can't read future edits.
+      await notes.revokeShare(props.noteId, memberId);
     } else {
       if (!publicKey) throw new Error('user has not finished setting up their keys');
       await notes.shareWith(props.noteId, memberId, publicKey, access);
@@ -63,7 +64,7 @@ const toggleShare = useMutation({
   <AppModal
     v-model:open="open"
     title="Share note"
-    description="Share with a friend — the note's key is encrypted to them, so the server still can't read it."
+    description="Share with a friend or someone you share a chat with — the note's key is encrypted to them, so the server still can't read it."
   >
     <div class="sticky top-0 bg-white pb-2 dark:bg-zinc-900">
       <div class="relative">

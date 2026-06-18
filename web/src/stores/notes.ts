@@ -267,6 +267,70 @@ export const useNotesStore = defineStore('notes', () => {
     await api.shareNote(noteId, recipientId, sealed, access);
   }
 
+  /** Re-encrypt an OWNED note under a fresh key, wrapped under MK, and store it.
+   *  Returns the raw new key so callers can re-seal it to remaining recipients. */
+  async function rotateNoteKey(noteId: string): Promise<Uint8Array> {
+    const note = notes.value.get(noteId);
+    const record = records.get(noteId);
+    if (!note || !record) throw new Error('note not found');
+    // No existing wrappedKey passed → encryptNotePayload mints a fresh note key.
+    const data = await encryptNotePayload(mk(), note.payload);
+    const { updatedAt } = await api.notePut(noteId, {
+      ciphertext: data.ciphertext,
+      iv: data.iv,
+      wrappedKey: data.wrappedKey,
+      createdAt: note.createdAt,
+      baseUpdatedAt: note.updatedAt,
+    });
+    const fresh: NoteRecord = {
+      id: noteId, ciphertext: data.ciphertext, iv: data.iv, wrappedKey: data.wrappedKey!,
+      createdAt: note.createdAt, updatedAt, deleted: false,
+    };
+    records.set(noteId, fresh);
+    await putCachedNotes([fresh]);
+    const local = notes.value.get(noteId);
+    if (local) local.updatedAt = updatedAt;
+    return unwrapNoteKey(mk(), data.wrappedKey!);
+  }
+
+  /** Revoke a recipient AND rotate the note key so they can't read future
+   *  updates (prior plaintext they held is considered compromised). Re-seals the
+   *  fresh key to every remaining recipient. */
+  async function revokeShare(noteId: string, recipientId: string): Promise<void> {
+    if (!records.get(noteId)) throw new Error('not the owner');
+    await api.unshareNote(noteId, recipientId);
+    const newKey = await rotateNoteKey(noteId);
+    const remaining = (await api.noteShares(noteId)).filter((s) => s.recipientId !== recipientId);
+    if (!remaining.length) return;
+    const pubById = new Map((await api.members()).map((m) => [m.id, m.publicKey]));
+    for (const s of remaining) {
+      const pk = pubById.get(s.recipientId);
+      if (!pk) continue; // relationship gone → can't re-seal; their access lapses
+      await api.shareNote(noteId, s.recipientId, await sealKey(ub64(pk), newKey), s.access);
+    }
+  }
+
+  /** Recursively share every OWNED note in a folder (and its subfolders) with
+   *  each recipient — a one-time snapshot grant (no folder permission record).
+   *  Shared-with-me notes in the folder are skipped (only the owner can share). */
+  async function shareFolder(
+    folderId: string,
+    recipients: { id: string; publicKey: string | null }[],
+    access: ShareAccess,
+  ): Promise<void> {
+    const org = useOrgStore();
+    const folderIds = new Set(org.descendantFolderIds(folderId));
+    const owned = [...notes.value.values()].filter((n) => {
+      const f = org.folderOf(n.id);
+      return !n.shared && f !== null && folderIds.has(f) && records.has(n.id);
+    });
+    for (const n of owned) {
+      for (const r of recipients) {
+        if (r.publicKey) await shareWith(n.id, r.id, r.publicKey, access);
+      }
+    }
+  }
+
   function reset(): void {
     notes.value = new Map();
     records.clear();
@@ -276,6 +340,6 @@ export const useNotesStore = defineStore('notes', () => {
 
   return {
     notes, sorted, allTags, loaded, syncing, syncError, pendingCount,
-    loadFromCache, sync, save, create, remove, shareWith, reset,
+    loadFromCache, sync, save, create, remove, shareWith, revokeShare, shareFolder, reset,
   };
 });
