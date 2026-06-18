@@ -1,9 +1,13 @@
 # v6 — Voice
 
-> **Status: planned / design — not yet implemented.** This is the agreed design
-> coming out of the v6 requirements pass. It supersedes the open-ended
-> [roadmap.md](roadmap.md#v6--voice) entry ("do deep research first"); the
-> research is captured here. No code exists yet.
+> **Status: implemented on the `v6-voice` branch** (pending a manual two-browser
+> audio check — automated tests can't drive real microphones). Server: an
+> embedded mediasoup SFU + `/api/voice/*` routes (`server/src/voice.ts`,
+> `voiceRooms.ts`). Web: `stores/voice.ts`, `lib/voiceCrypto.ts` +
+> `voiceTransform.ts`/`voiceFrameWorker.ts`, `CallPanel.vue` /
+> `IncomingCallModal.vue` + the sidebar/header integration. Tested: the room
+> state machine, the frame crypto, and the voice routes (access + rekey +
+> presence + calls).
 
 End-to-end-encrypted **real-time voice** over WebRTC, in two surfaces:
 
@@ -115,18 +119,15 @@ sealed.
 
 ### Browser support
 
-`RTCRtpScriptTransform` (the standards-track API) is implemented natively in
-**Safari** and **Firefox** (and therefore **Zen**, which is Firefox-based).
-**Chrome / Edge** (Chromium) need a **small, well-known shim** to match the
-standard shape (Chromium historically shipped the older `createEncodedStreams`
-variant). We bundle the shim ([webrtcHacks adapter shim / `adapter.js`
-PR #1145](https://blog.mozilla.org/webrtc/end-to-end-encrypt-webrtc-in-all-browsers/))
-so a **single code path** works across all five targets: Chrome, Edge, Safari,
-Firefox, Zen.
+**As built:** we use `RTCRtpScriptTransform` (the standards-track API) directly —
+it's implemented in **Safari**, **Firefox** (and **Zen**), and current
+**Chrome / Edge** (Chromium), so one code path covers all five targets. The
+transform runs in `voiceFrameWorker.ts`; `voiceE2eeSupported()` gates joining and
+shows a clear message where it's unavailable.
 
-> **Research follow-up:** pin minimum versions per engine during implementation
-> and add them to [README.md](README.md). The shim has two documented
-> Chrome-only workarounds to validate against current Chromium.
+> **Follow-ups:** pin exact minimum versions per engine in [README.md](README.md);
+> if an older Chromium that lacks `RTCRtpScriptTransform` must be supported, add a
+> `createEncodedStreams` fallback (deferred — current Chromium doesn't need it).
 
 ### Why this doesn't hurt latency or quality
 
@@ -286,22 +287,29 @@ Per [testing.md](testing.md) and `CLAUDE.md`:
 - **Unit (server):** signalling message handling, room membership ↔ chat-access
   enforcement (a non-member cannot `voice.join`), key-epoch fan-out, rekey on
   join/leave, presence correctness.
-- **Unit (crypto/web):** media-key seal/unwrap reusing the sharing primitive;
-  the frame-encrypt/decrypt transform (encrypt → decrypt round-trips, wrong-epoch
-  key fails); the Chrome shim selection logic.
-- **Unit (web/stores):** call state machine (ringing → answered/ignored/timeout/
-  busy/cancelled), multi-device first-answer-wins cancellation, mute/deafen/PTT
-  state.
-- **E2E (Playwright):** join/leave a voice channel and presence updates using
-  **fake media devices** (`--use-fake-device-for-media-stream`); ring/answer/
-  ignore flow. Actual audio fidelity is out of automated scope.
+- **Unit (crypto/web):** media-key seal/unwrap reusing the sharing primitive +
+  the frame-encrypt/decrypt round-trip incl. wrong-epoch/tamper rejection
+  (`voiceCrypto.test.ts`, done).
+- **Done (server):** the room/owner/epoch state machine (`voiceRooms.test.ts`)
+  and the voice routes — access, owner-coordinated rekey, presence, and direct
+  calls (`routes.voice.test.ts`).
+- **Not yet automated:** the client call state machine and a Playwright flow with
+  **fake media devices** (`--use-fake-device-for-media-stream`); actual audio
+  fidelity is out of automated scope and needs a manual two-browser check.
+
+## Resolved during implementation
+
+- **Media key = its own call-scoped epoch** (not pinned to the chat epoch): a
+  single **owner** (longest-present peer) authors each rekey on join/leave,
+  serialising changes to avoid races. See `voiceRooms.ts`.
+- **E2EE transform:** `RTCRtpScriptTransform` directly (no shim needed for current
+  browsers); `createEncodedStreams` fallback deferred.
+- **Signalling:** REST handshake + WS events (the hub is push-only).
 
 ## Open questions / research follow-ups
 
-- Pin **minimum browser versions** per engine for `RTCRtpScriptTransform` + shim;
+- Pin **minimum browser versions** per engine for `RTCRtpScriptTransform`;
   record in [README.md](README.md).
-- Decide whether the **voice media key is its own epoch** or **pinned to the chat
-  conversation epoch**.
 - Confirm **mobile PWA background wake** reliability for incoming calls on iOS
   Safari (Web Push limitations) — may constrain the "ring all devices" promise on
   iOS.

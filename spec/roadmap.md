@@ -183,10 +183,10 @@ key-distribution problem as chat membership, so reuse that machinery:
 - **Delivery:** one PR covering notes-view + chat-sidebar folder sharing, channel
   sharing, revoke-with-key-rotation, and the grant-on-add-to-sidebar UX.
 
-## v6 — Voice
+## v6 — Voice ✅ implemented (`v6-voice`)
 
-E2EE voice over WebRTC. The research + design is done — see **[voice.md](voice.md)**
-for the full design. Two surfaces:
+E2EE voice over WebRTC — **implemented**; see **[voice.md](voice.md)** for the
+as-built design (pending a manual two-browser audio check). Two surfaces:
 
 - **Voice channels** — joinable persistent rooms (the voice-type channels created
   in v4).
