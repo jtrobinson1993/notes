@@ -536,3 +536,51 @@ describe('private channels (v5)', () => {
     expect(payload.text).toBe('hush');
   });
 });
+
+describe('private channels — grant / revoke (v5)', () => {
+  const friend = generateKeyPair();
+  // A group with a private channel 'pc' (given channel members + epoch).
+  function privConv(chMembers: string[], chEpoch: number): Conversation {
+    const members = [
+      { userId: 'me', displayName: 'Me', publicKey: b64(generateKeyPair().publicKey) },
+      { userId: 'f', displayName: 'Friend', publicKey: b64(friend.publicKey) },
+    ];
+    return {
+      id: 'g1', kind: 'group', members,
+      sealedKey: { epk: '', iv: '', ct: '' }, epoch: 0, epochKeys: [], managePolicy: 'owner', myRole: 'owner',
+      channels: [
+        { id: 'g1', conversationId: 'g1', name: 'general', type: 'text', position: 0, isDefault: true, lastSeq: 0, lastReadSeq: 0, private: false, channelEpoch: 0, channelKeys: [], memberIds: [] },
+        { id: 'pc', conversationId: 'g1', name: 'secret', type: 'text', position: 1, isDefault: false, lastSeq: 0, lastReadSeq: 0, private: true, channelEpoch: chEpoch, channelKeys: [], memberIds: chMembers },
+      ],
+      lastSeq: 0, lastReadSeq: 0, createdAt: 0,
+    } as Conversation;
+  }
+
+  it('grantChannelMember re-keys at a new epoch and posts the joiner', async () => {
+    const store = useChatStore();
+    store.conversations = [privConv(['me'], 0)];
+    api.channelAddMember.mockResolvedValue(privConv(['me', 'f'], 1));
+    await store.grantChannelMember('g1', 'pc', 'f', 'fresh');
+    const call = api.channelAddMember.mock.calls[0]!;
+    expect(call[0]).toBe('g1');
+    expect(call[1]).toBe('pc');
+    expect(call[2].userId).toBe('f');
+    expect(call[2].epoch).toBe(1);
+    expect(call[2].history).toBe('fresh');
+    expect(call[2].keys.map((k: { userId: string }) => k.userId).sort()).toEqual(['f', 'me']);
+  });
+
+  it('revokeChannelMember re-keys to the remaining members and reloads', async () => {
+    const store = useChatStore();
+    store.conversations = [privConv(['me', 'f'], 1)];
+    api.conversations.mockResolvedValue([privConv(['me'], 2)]);
+    await store.revokeChannelMember('g1', 'pc', 'f');
+    const call = api.channelRemoveMember.mock.calls[0]!;
+    expect(call[0]).toBe('g1');
+    expect(call[1]).toBe('pc');
+    expect(call[2]).toBe('f');
+    expect(call[3].epoch).toBe(2);
+    expect(call[3].keys.map((k: { userId: string }) => k.userId)).toEqual(['me']);
+    expect(api.conversations).toHaveBeenCalled();
+  });
+});
