@@ -166,6 +166,23 @@ key-distribution problem as chat membership, so reuse that machinery:
   (epoch re-key) so they can't read future updates. Prior plaintext they already
   held is considered compromised — document that boundary.
 
+### Decisions (confirmed)
+
+- **Recipients may be non-friend conversation co-members.** Sharing is no longer
+  strictly friends-only: you may grant access to any participant of a shared
+  conversation (friends-of-friends). This **relaxes the friends-gate invariant**
+  in `CLAUDE.md` for the *sharing* path — update that doc when implementing.
+- **Channels become per-object permissioned ("private channels").** This
+  supersedes the v4 model where every member shares the conversation key and sees
+  every channel: a channel gets its own key/membership and is granted to specific
+  people. (Existing v4 channels migrate to "everyone in the conversation has
+  access".)
+- **Folder share = one-time recursive snapshot.** Sharing a folder grants its
+  current children individually; there is **no** persistent folder→recipient
+  record, and notes/channels added later are NOT auto-shared.
+- **Delivery:** one PR covering notes-view + chat-sidebar folder sharing, channel
+  sharing, revoke-with-key-rotation, and the grant-on-add-to-sidebar UX.
+
 ## v6 — Voice
 
 E2EE voice over WebRTC (SFU with insertable streams if needed at our scale, else
