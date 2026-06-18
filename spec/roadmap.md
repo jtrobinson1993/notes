@@ -185,9 +185,8 @@ key-distribution problem as chat membership, so reuse that machinery:
 
 ## v6 — Voice
 
-E2EE voice over WebRTC (SFU with insertable streams if needed at our scale, else
-P2P mesh for small calls). **Do deep research and walk through the options before
-planning or implementing anything officially.** Two surfaces:
+E2EE voice over WebRTC. The research + design is done — see **[voice.md](voice.md)**
+for the full design. Two surfaces:
 
 - **Voice channels** — joinable persistent rooms (the voice-type channels created
   in v4).
@@ -195,6 +194,31 @@ planning or implementing anything officially.** Two surfaces:
   answer / ignore prompt on the callee's side.
 
 No plans for video (see v7).
+
+### Decisions (confirmed)
+
+- **SFU, never mesh — including 1:1.** All media flows through a server-side
+  forwarding unit so **no participant ever sees another's IP**. (Mesh would leak
+  peer IPs.)
+- **Embedded [mediasoup](https://mediasoup.org) v3**, an **npm dependency inside
+  the existing Node process** — not a standalone service (rules out
+  LiveKit/Janus/ion). Prebuilt worker binaries → install stays one `docker run`.
+  The SFU is also the relay, so **no separate TURN server**.
+- **Always end-to-end encrypted** via the WebRTC Encoded Transform API
+  (`RTCRtpScriptTransform`) — the server only forwards opaque frames. Works in
+  Chrome/Edge (small shim), Safari, Firefox/Zen. No "unencrypted for quality"
+  mode (encryption costs no meaningful latency/quality).
+- **Media key reuses the chat/v5 key machinery**; epoch **rekey on join/leave**
+  (forward secrecy on removal). Voice is ephemeral — no at-rest plaintext.
+- **Scope = full parity:** mute, deafen, push-to-talk, per-person volume,
+  who's-speaking highlight (client-side, zero server metadata), connection-quality
+  indicator.
+- **Incoming 1:1 calls ring all linked devices; first to answer wins** (reuses
+  content-free Web Push to wake devices).
+- **Voice-room presence is visible to all channel members** (Discord-style).
+- **No recording** (impossible server-side; no client feature either).
+- **Scale:** ≤ ~10 per room, < 10 concurrent rooms; self-hosted on home hardware
+  (home **upload** bandwidth is the ceiling, not CPU).
 
 ## v7 — Video streaming in voice channels?
 
