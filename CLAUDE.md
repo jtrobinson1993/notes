@@ -68,3 +68,6 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
 - **Commit** in small, logical units as you work.
 - **Merge via PR.** When a feature looks complete, ask whether it's time to
   merge; on confirmation, push the branch, open a PR, and merge it into `main`.
+- **Keep `main` current.** Always pull the latest into the local `main` (merge,
+  not rebase) **after merging a PR into `main`** and **before creating a new
+  branch or worktree** — so every branch starts from an up-to-date `main`.
