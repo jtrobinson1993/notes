@@ -157,3 +157,55 @@ bad file can't abort the batch or orphan earlier uploads; failures surface in a
 banner.
 
 No video uploads, no per-user storage quotas (deferred indefinitely).
+
+## Folders & organization (v4)
+
+Notes can be organized into **folders**, and notes/folders can be **pinned** into
+a chat sidebar (see [chat.md](chat.md#pins-v4--as-built)).
+
+This is all **personal organization**: folders, the note→folder assignment, and
+the per-conversation pins are stored as a single **master-key-encrypted settings
+blob** (`notes-org`, the same mechanism as tag colors / custom emoji), with a
+`localStorage` instant-load cache (`web/src/stores/organization.ts`). Folder
+names are as sensitive as tag names, so the whole blob is encrypted; the server
+only ever stores ciphertext.
+
+Because it lives outside the (E2EE) note payload and the server note model:
+
+- it applies to **notes shared with me** as well as my own (a shared note can go
+  in one of my folders);
+- pinning a note/folder into a chat sidebar **does not share it** — sharing
+  notes/folders with chat participants is its own crypto feature (**v5**).
+
+Model: `folders: {id, name, position, parentId}[]` (**nestable** — `parentId:
+null` is a root folder), `noteFolders: { noteId → folderId }` (absent =
+unfiled), `noteOrder: { folderKey → noteId[] }` (manual drag order within a
+folder; the rest fall back to recency), `pins: { conversationId → {kind, id}[]
+}`. Re-parenting (`setFolderParent`) refuses cycles. Deleting a folder lifts its
+child folders to its parent, unfiles its notes, and drops its pins; deleting a
+note (`notes.remove`) calls `org.forgetNote` to clear its folder + order + pins.
+
+UI:
+
+- **NotesPage** — a single **file tree**: folders (full-width, borderless rows,
+  depth-indented) with their notes nested directly beneath, unfiled notes at the
+  root. Clicking a folder row (anywhere but its hover buttons) **collapses/
+  expands** it (shared `folderCollapse` store, persisted). Everything is
+  drag-and-drop, with an absolute **drop-indicator line** (no layout shift) at the
+  insertion point and a ring on a folder you'd drop into: drag a folder onto
+  another to nest it (or onto empty space to move it to the top level); drag a
+  note onto a folder to move it there, onto another note to reorder/move before
+  it, or onto empty space to unfile it. A **compact** toggle (beside the
+  new-folder button) shows note rows as name-only; otherwise rows show tags + a
+  preview. Searching or filtering by a tag swaps the tree for a flat result list.
+  `:emoji:` shortcodes render in note titles and folder names (`EmojiText`).
+- **NoteEditor** — a folder picker (`<select>`, indented to show nesting) on each
+  note.
+- **Chat sidebar** — pins individual **notes** (not note-folders) into a
+  conversation; grouping there uses the conversation's own **chat folders** (a
+  separate namespace — see [chat.md](chat.md#chat-folders--pins-v4--as-built)).
+  Clicking a pinned note opens it over the chat window.
+- **Chat sidebar** — a Pinned section + a pin picker that toggles pins for
+  existing notes/folders or creates a new note/folder (which also appears in the
+  notes view) and pins it. Opening a pinned item navigates to the notes view
+  (`/?note=` / `/?folder=`).

@@ -109,19 +109,41 @@ Polish + bug fixes that shipped alongside the v3.2 profile work.
 
 ## v4 — Chat sidebar
 
-- Left-hand sidebar inside all chats (group or 1:1).
+**Chat sidebar + channels — implemented** (see
+[chat.md](chat.md#v4--chat-sidebar--channels-as-built)).
+
+- Left-hand sidebar inside all chats. **As built:** the channel sidebar appears
+  in **groups**; the 1:1 DM sidebar (pins only) lands with the note-folders work
+  below.
 - Collapsible; persist open/closed state. Collapse/open icon at the top.
+  (implemented)
 - An edit button at the bottom of the open sidebar makes channels editable /
-  reorderable / deletable.
+  reorderable / deletable. (implemented — rename / drag-reorder (up-down arrows
+  as an accessible fallback) / delete; managers only)
 - Ability to create "channels" à la Discord, with a type (text or voice). Voice
   channels are structural here; the voice functionality itself lands in v6.
+  (implemented)
+  - DECISION: channels share the conversation key/epochs (no extra key
+    distribution) and add per-channel read state + unread; `seq` stays
+    conversation-unique (the reply/thread/edit anchor) rather than restarting per
+    channel. The general channel is virtual (`channelId === conversationId`), so
+    DMs/threads are unchanged.
 
-### Note folders (organization)
+### Note folders (organization) — implemented
 
-- Organize notes into folders.
-- Pin a note or note folder into the chat sidebar.
+See [notes.md](notes.md#folders--organization-v4).
+
+- Organize notes into folders. (implemented — nestable folders via drag-to-nest;
+  a note is in at most one folder)
+- Pin a note or note folder into the chat sidebar. (implemented — per
+  conversation; the 1:1 DM sidebar is pins-only)
 - Create a new note / note folder from the chat sidebar; it also appears in your
-  notes view.
+  notes view. (implemented — via the pin picker)
+  - DECISION: folders + note→folder assignment + pins are **personal
+    organization**, stored as one master-key-encrypted settings blob (like tag
+    colors) — they never touch the E2EE note payloads or the server note model,
+    so they apply to shared-with-me notes too, and **pinning never shares** the
+    item (sharing is v5).
 
 (Sharing folders with chat participants and the associated permissions are their
 own crypto-heavy feature — see **v5**.)

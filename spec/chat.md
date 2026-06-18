@@ -604,3 +604,108 @@ those (decrypting the blob to an object URL) **before** the message view is
 shown, so it renders for everyone — without sharing the whole palette. Names are
 registered into one global map, so across users the last-seen `:name:` wins (fine
 at this app's scale).
+
+## v4 — Chat sidebar + channels (as built)
+
+Groups gain Discord-style **channels**: separate message streams inside one
+conversation. A channel is purely an *organizational partition* — all channels
+of a conversation **share its key and epochs**, so adding a channel needs **no
+new key distribution** and a new group member can read every channel
+immediately. What a channel adds over the conversation is its own **message
+ordering and per-member read state** (so unread is tracked per channel).
+
+### The "general" channel is virtual
+
+Every conversation has a **general channel whose id equals the conversation id**
+(`channelId === conversationId`). It isn't a row anywhere — it's the
+conversation's original message stream. Extra channels (groups only) are rows in
+the `channels` table with distinct ids. This means **DMs and threads are
+completely unchanged** (their messages all sit in the general channel) and the
+v4 migration needed no data move beyond tagging existing rows.
+
+### Data model (server `db.ts`)
+
+- **`channels`** `(id, conversation_id → conversations ON DELETE CASCADE, name,
+  type ['text'|'voice'], position, created_at)` — only *extra* channels; the
+  general channel is virtual. Voice channels are structural placeholders (the
+  voice feature itself is v6).
+- **`messages.channel_id`** / **`message_reactions.channel_id`** — added by an
+  idempotent migration that backfills `channel_id = conversation_id` for all
+  existing rows. `seq` stays **monotonic per conversation** (the shared
+  generator) — it's the conversation-unique anchor for replies/threads/edits — so
+  pagination/ordering within a channel is just `WHERE channel_id = ? ORDER BY
+  seq`. Indexed by `(channel_id, seq)`.
+- **`channel_reads`** `(channel_id, user_id, last_read_seq)` — per-(channel,
+  member) read cursor for *extra* channels. The **general** channel's cursor
+  stays on `conversation_members.last_read_seq`, untouched.
+
+### REST routes (`routes/chat.ts`)
+
+- `POST /api/conversations/:id/channels` `{name, type}` — create (groups only,
+  gated on the same `canManageMembers` owner/admin permission as membership).
+- `PATCH /api/conversations/:id/channels/:channelId` `{name}` — rename.
+- `POST /api/conversations/:id/channels/reorder` `{order}` — reorder; `order`
+  must be a permutation of exactly the conversation's extra channels.
+- `DELETE /api/conversations/:id/channels/:channelId` — delete the channel and
+  all its messages/reactions/read cursors. The general channel can't be
+  renamed/reordered/deleted (it isn't a row → 404).
+- The **message / read / reaction** routes take an optional `channelId`
+  (query for GET, body for POST), validated to belong to the conversation
+  (`resolveChannel`; absent ⇒ general). A reaction's channel is derived
+  **server-side from the target message**, never trusted from the client.
+- A `Conversation` now carries `channels: ChannelInfo[]` (always including the
+  general channel at position 0, each with its own `lastSeq`/`lastReadSeq`).
+
+### Realtime
+
+`message` / `message-edited` / `reaction` frames carry the message's
+`channelId`; `read` and `reaction-removed` frames carry it too. A
+`channels-updated` frame (with an optional `deletedChannelId`) tells members to
+refetch the channel list after a create/rename/reorder/delete.
+
+### Client
+
+- The chat store keys `messages`/`reactions` by **channel id** (so DMs/threads
+  key by their conversation id exactly as before) and tracks per-channel
+  unread, with a conversation's unread = the **sum of its channels'** unread.
+  Channel actions (`createChannel`/`renameChannel`/`reorderChannels`/
+  `deleteChannel`) plus an `activeChannelId` for reconnect backfill.
+- `ConversationView` takes a `channelId` prop (default = general) and
+  re-activates when the channel changes. The active channel lives in the **route**
+  (`/chat/:id` = general, `/chat/:id/:channelId` = an extra channel), so a refresh
+  keeps you in the channel; a stale/deleted channel id redirects to general.
+- `ChatSidebar` is a **unified tree** (like the notes tree): collapsible with a
+  persisted open/closed state (`localStorage` `chat:channels:open`) and a toggle
+  at the top. It lists **channels** (groups; per-channel unread badges; voice
+  channels listed but not selectable) and **pinned notes** as items, organized by
+  **chat folders**. Header buttons: pin a note, new folder, new channel
+  (managers). Channel rename/delete are inline hover actions (managers,
+  non-general). Everything is drag-and-drop — drag an item into a folder, onto
+  another item to reorder, or onto empty space to move it out; folders nest by
+  drag and collapse by clicking the folder row. A drop-indicator line marks the
+  insertion point while dragging (absolute; no layout shift). DMs show a
+  **pins-only** tree (their lone general channel isn't surfaced).
+- Clicking a pinned note **opens it over the chat window** (a `NoteEditor`
+  overlay with a close ✕), so notes — channel rules, D&D sheets, co-working docs
+  — live in the chat context. `ChatSidebar` emits `open-note`; `ConversationPage`
+  loads notes on unlock and renders the overlay.
+
+### Chat folders + pins (v4) — as built
+
+Chat folders are a **separate namespace** from note folders, **per conversation**
+and **personal** (stored in the org blob under `chat[convId]` —
+folders/itemFolder/itemOrder), so they don't touch the shared channel list or
+note payloads. They group both channels and pinned notes. Channel
+**create/rename/delete** stay server-side (managers); the **arrangement**
+(folders, order) and **pins** are personal — pinning a note into a chat does
+**not** share it (sharing is v5). See
+[notes.md](notes.md#folders--organization-v4) for the shared org-blob mechanism.
+
+`:emoji:` shortcodes (the same custom/7TV set as chat) render in channel names,
+note titles, and folder names via the `EmojiText` component; unicode emoji typed
+as glyphs pass through.
+
+### Not yet built (v4 follow-ups)
+
+- Renaming the general channel (extra channels rename/reorder/delete; the general
+  channel is fixed).

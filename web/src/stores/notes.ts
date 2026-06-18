@@ -26,6 +26,7 @@ import {
   type OutboxEntry,
 } from '../lib/idb';
 import { useSessionStore } from './session';
+import { useOrgStore } from './organization';
 
 export interface DecryptedNote {
   id: string;
@@ -249,6 +250,8 @@ export const useNotesStore = defineStore('notes', () => {
     notes.value.delete(id);
     records.delete(id);
     sharedNoteKeys.delete(id);
+    // Drop any folder assignment + sidebar pins for this note.
+    useOrgStore().forgetNote(id);
     await removeCachedNote(id);
     await removeOutbox(id);
     await api.noteDelete(id);

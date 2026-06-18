@@ -203,28 +203,40 @@ export const api = {
     req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, body),
   conversationSetRole: (id: string, userId: string, role: 'admin' | 'member') =>
     req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}/role`, { role }),
-  conversationMessages: (id: string, opts?: { before?: number; limit?: number }) => {
+  conversationMessages: (id: string, opts?: { before?: number; limit?: number; channelId?: string }) => {
     const q = new URLSearchParams();
     if (opts?.before !== undefined) q.set('before', String(opts.before));
     if (opts?.limit !== undefined) q.set('limit', String(opts.limit));
+    if (opts?.channelId !== undefined) q.set('channelId', opts.channelId);
     const qs = q.toString();
     return req<ChatMessage[]>(
       'GET',
       `/api/conversations/${encodeURIComponent(id)}/messages${qs ? `?${qs}` : ''}`,
     );
   },
-  messageSend: (id: string, body: { ciphertext: string; iv: string; epoch: number }) =>
+  messageSend: (id: string, body: { ciphertext: string; iv: string; epoch: number; channelId?: string }) =>
     req<ChatMessage>('POST', `/api/conversations/${encodeURIComponent(id)}/messages`, body),
   messageEdit: (id: string, seq: number, body: { ciphertext: string; iv: string }) =>
     req<ChatMessage>('PATCH', `/api/conversations/${encodeURIComponent(id)}/messages/${seq}`, body),
-  conversationRead: (id: string, seq: number) =>
-    req<{ ok: true }>('POST', `/api/conversations/${encodeURIComponent(id)}/read`, { seq }),
-  reactions: (id: string) =>
-    req<ChatReaction[]>('GET', `/api/conversations/${encodeURIComponent(id)}/reactions`),
+  conversationRead: (id: string, seq: number, channelId?: string) =>
+    req<{ ok: true }>('POST', `/api/conversations/${encodeURIComponent(id)}/read`, { seq, channelId }),
+  reactions: (id: string, channelId?: string) => {
+    const qs = channelId !== undefined ? `?channelId=${encodeURIComponent(channelId)}` : '';
+    return req<ChatReaction[]>('GET', `/api/conversations/${encodeURIComponent(id)}/reactions${qs}`);
+  },
   reactionAdd: (id: string, seq: number, body: { ciphertext: string; iv: string }) =>
     req<ChatReaction>('POST', `/api/conversations/${encodeURIComponent(id)}/messages/${seq}/reactions`, body),
   reactionRemove: (id: string, rid: string) =>
     req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/reactions/${encodeURIComponent(rid)}`),
+  // ---- v4: channels (groups only) ----
+  channelCreate: (id: string, body: { name: string; type: 'text' | 'voice' }) =>
+    req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/channels`, body),
+  channelRename: (id: string, channelId: string, name: string) =>
+    req<Conversation>('PATCH', `/api/conversations/${encodeURIComponent(id)}/channels/${encodeURIComponent(channelId)}`, { name }),
+  channelReorder: (id: string, order: string[]) =>
+    req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/channels/reorder`, { order }),
+  channelDelete: (id: string, channelId: string) =>
+    req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/channels/${encodeURIComponent(channelId)}`),
   gifSearch: (q: string, pos?: string) => {
     const params = new URLSearchParams({ q });
     if (pos) params.set('pos', pos);

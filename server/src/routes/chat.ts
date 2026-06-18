@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type {
+  ChannelInfo,
+  ChannelType,
   ChatMessage,
   ChatReaction,
   Conversation,
@@ -14,7 +16,7 @@ import type {
   SealedKey,
   SealedMemberKey,
 } from '@notes/shared';
-import { canManageMembers, NAME_COLORS } from '@notes/shared';
+import { canManageMembers, CHANNEL_NAME_MAX, MAX_CHANNELS_PER_CONVERSATION, NAME_COLORS } from '@notes/shared';
 import {
   effectiveDisplayName,
   type ConversationRow,
@@ -89,6 +91,7 @@ function parseSealedEpochKeys(raw: unknown, maxEpoch: number): SealedEpochKey[] 
 function toMessage(m: MessageRow): ChatMessage {
   return {
     conversationId: m.conversation_id,
+    channelId: m.channel_id,
     seq: m.seq,
     senderId: m.sender_id,
     epoch: m.epoch,
@@ -103,6 +106,7 @@ function toReaction(r: ReactionRow): ChatReaction {
   return {
     id: r.id,
     conversationId: r.conversation_id,
+    channelId: r.channel_id,
     seq: r.seq,
     userId: r.user_id,
     ciphertext: r.ciphertext,
@@ -137,6 +141,33 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const epochKeys: SealedEpochKey[] = db
       .listConversationKeysForUser(conv.id, userId)
       .map((k) => ({ epoch: k.epoch, sealedKey: JSON.parse(k.sealed_key) as SealedKey }));
+    // The general channel is virtual (id === conversation id); its read cursor is
+    // the member row. Extra channels (groups) come from the channels table.
+    const generalLastSeq = db.getChannelMaxSeq(conv.id);
+    const channels: ChannelInfo[] = [
+      {
+        id: conv.id,
+        conversationId: conv.id,
+        name: 'general',
+        type: 'text',
+        position: 0,
+        isDefault: true,
+        lastSeq: generalLastSeq,
+        lastReadSeq: mine.last_read_seq,
+      },
+      ...db.listChannels(conv.id).map(
+        (ch): ChannelInfo => ({
+          id: ch.id,
+          conversationId: conv.id,
+          name: ch.name,
+          type: ch.type as ChannelType,
+          position: ch.position,
+          isDefault: false,
+          lastSeq: db.getChannelMaxSeq(ch.id),
+          lastReadSeq: db.getLastReadSeq(conv.id, ch.id, userId),
+        }),
+      ),
+    ];
     return {
       id: conv.id,
       kind: conv.kind as Conversation['kind'],
@@ -145,12 +176,23 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       epoch: mine.epoch,
       epochKeys,
       myRole: mine.role as ConversationRole,
-      lastSeq: db.getMaxSeq(conv.id),
+      channels,
+      lastSeq: generalLastSeq,
       lastReadSeq: mine.last_read_seq,
       createdAt: conv.created_at,
       parentId: conv.parent_id,
       parentSeq: conv.parent_seq,
     };
+  }
+
+  // Resolve a client-supplied channel id within a conversation. `undefined`/the
+  // conversation id itself ⇒ the general channel. Returns the resolved channel
+  // id, or null when the id is malformed or doesn't belong to this conversation.
+  function resolveChannel(convId: string, raw: unknown): string | null {
+    if (raw === undefined || raw === null || raw === convId) return convId;
+    if (typeof raw !== 'string' || !ID_RE.test(raw)) return null;
+    const ch = db.getChannel(raw);
+    return ch && ch.conversation_id === convId ? raw : null;
   }
 
   // Access requires membership AND, for a DM, current friendship.
@@ -808,7 +850,9 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
     if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
 
-    const q = request.query as { before?: string; limit?: string };
+    const q = request.query as { before?: string; limit?: string; channelId?: string };
+    const channelId = resolveChannel(id, q.channelId);
+    if (channelId === null) return reply.code(404).send({ error: 'channel not found' });
     let limit = q.limit ? Number(q.limit) : 50;
     if (!Number.isFinite(limit) || limit < 1) limit = 50;
     if (limit > 100) limit = 100;
@@ -817,7 +861,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       const n = Number(q.before);
       if (Number.isFinite(n)) before = n;
     }
-    return db.listMessages(id, before, limit).map(toMessage);
+    return db.listMessages(channelId, before, limit).map(toMessage);
   });
 
   app.post('/api/conversations/:id/messages', { preHandler: requireAuth }, async (request, reply) => {
@@ -835,9 +879,12 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     ) {
       return reply.code(400).send({ error: 'invalid message payload' });
     }
+    const channelId = resolveChannel(id, b.channelId);
+    if (channelId === null) return reply.code(404).send({ error: 'channel not found' });
     const row = db.insertMessage({
       id: newId(),
       conversationId: id,
+      channelId,
       senderId: me,
       epoch: b.epoch,
       ciphertext: b.ciphertext,
@@ -887,10 +934,12 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     if (typeof b?.seq !== 'number' || !Number.isFinite(b.seq)) {
       return reply.code(400).send({ error: 'invalid seq' });
     }
-    db.setLastReadSeq(id, me, b.seq);
+    const channelId = resolveChannel(id, b.channelId);
+    if (channelId === null) return reply.code(404).send({ error: 'channel not found' });
+    db.setLastReadSeq(id, channelId, me, b.seq);
     hub.sendToUsers(
       db.listConversationMemberIds(id),
-      { type: 'read', conversationId: id, userId: me, seq: b.seq },
+      { type: 'read', conversationId: id, channelId, userId: me, seq: b.seq },
       me,
     );
     return { ok: true };
@@ -903,7 +952,10 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const me = request.user!.id;
     if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
     if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
-    return db.listReactions(id).map(toReaction);
+    const q = request.query as { channelId?: string };
+    const channelId = resolveChannel(id, q.channelId);
+    if (channelId === null) return reply.code(404).send({ error: 'channel not found' });
+    return db.listReactions(channelId).map(toReaction);
   });
 
   app.post('/api/conversations/:id/messages/:seq/reactions', { preHandler: requireAuth }, async (request, reply) => {
@@ -920,7 +972,20 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     ) {
       return reply.code(400).send({ error: 'invalid reaction payload' });
     }
-    const row = db.addReaction({ id: newId(), conversationId: id, seq: seqNum, userId: me, ciphertext: b.ciphertext, iv: b.iv });
+    // The reaction's channel is the one the target message actually lives in —
+    // derived server-side, never trusted from the client, so a reaction can't be
+    // mis-filed into another channel.
+    const target = db.getMessageBySeq(id, seqNum);
+    if (!target) return reply.code(400).send({ error: 'invalid seq' });
+    const row = db.addReaction({
+      id: newId(),
+      conversationId: id,
+      channelId: target.channel_id,
+      seq: seqNum,
+      userId: me,
+      ciphertext: b.ciphertext,
+      iv: b.iv,
+    });
     const reaction = toReaction(row);
     hub.sendToUsers(db.listConversationMemberIds(id), { type: 'reaction', reaction });
     return reaction;
@@ -935,7 +1000,105 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     // Scope to this conversation, and only the owner may remove (IDOR guard).
     if (!existing || existing.conversation_id !== id) return reply.code(404).send({ error: 'not found' });
     if (!db.removeReaction(rid, me)) return reply.code(403).send({ error: 'not your reaction' });
-    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'reaction-removed', conversationId: id, id: rid });
+    hub.sendToUsers(db.listConversationMemberIds(id), {
+      type: 'reaction-removed',
+      conversationId: id,
+      channelId: existing.channel_id,
+      id: rid,
+    });
+    return { ok: true };
+  });
+
+  // ---- Channels (v4): create / rename / reorder / delete (groups only) -------
+
+  // Channel management mirrors member management: groups only, and gated on the
+  // same manage-members permission (owner/admin). The general channel is virtual
+  // (id === conversation id) and can't be created/renamed/reordered/deleted.
+  function validChannelName(s: unknown): s is string {
+    return typeof s === 'string' && s.trim().length >= 1 && s.trim().length <= CHANNEL_NAME_MAX;
+  }
+  function requireChannelManager(convId: string, me: string): { code: number; error: string } | null {
+    const conv = db.getConversation(convId);
+    if (!conv || conv.kind !== 'group') return { code: 404, error: 'not found' };
+    const mine = db.getConversationMember(convId, me);
+    if (!mine) return { code: 403, error: 'not a member' };
+    if (!canManageMembers(mine.role as ConversationRole)) return { code: 403, error: 'not allowed to manage channels' };
+    return null;
+  }
+
+  app.post('/api/conversations/:id/channels', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
+    const err = requireChannelManager(id, me);
+    if (err) return reply.code(err.code).send({ error: err.error });
+    const b = request.body as Record<string, unknown> | null;
+    if (!validChannelName(b?.name)) return reply.code(400).send({ error: 'invalid name' });
+    const type = b?.type === 'voice' ? 'voice' : 'text';
+    if (b?.type !== undefined && b.type !== 'text' && b.type !== 'voice') {
+      return reply.code(400).send({ error: 'invalid type' });
+    }
+    if (db.countChannels(id) >= MAX_CHANNELS_PER_CONVERSATION) {
+      return reply.code(409).send({ error: 'too many channels' });
+    }
+    db.createChannel({
+      id: newId(),
+      conversationId: id,
+      name: (b!.name as string).trim(),
+      type,
+      position: db.nextChannelPosition(id),
+    });
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'channels-updated', conversationId: id });
+    return toConversation(db.getConversation(id)!, me)!;
+  });
+
+  app.patch('/api/conversations/:id/channels/:channelId', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, channelId } = request.params as { id: string; channelId: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id) || !ID_RE.test(channelId)) return reply.code(404).send({ error: 'not found' });
+    const err = requireChannelManager(id, me);
+    if (err) return reply.code(err.code).send({ error: err.error });
+    const ch = db.getChannel(channelId);
+    if (!ch || ch.conversation_id !== id) return reply.code(404).send({ error: 'channel not found' });
+    const b = request.body as Record<string, unknown> | null;
+    if (!validChannelName(b?.name)) return reply.code(400).send({ error: 'invalid name' });
+    db.renameChannel(channelId, (b!.name as string).trim());
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'channels-updated', conversationId: id });
+    return toConversation(db.getConversation(id)!, me)!;
+  });
+
+  app.post('/api/conversations/:id/channels/reorder', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
+    const err = requireChannelManager(id, me);
+    if (err) return reply.code(err.code).send({ error: err.error });
+    const order = (request.body as Record<string, unknown> | null)?.order;
+    const existing = db.listChannels(id).map((c) => c.id);
+    // `order` must be a permutation of exactly the conversation's extra channels.
+    if (
+      !Array.isArray(order) ||
+      order.length !== existing.length ||
+      new Set(order).size !== order.length ||
+      !order.every((o) => typeof o === 'string' && existing.includes(o))
+    ) {
+      return reply.code(400).send({ error: 'order must permute all channels' });
+    }
+    db.reorderChannels(id, order as string[]);
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'channels-updated', conversationId: id });
+    return toConversation(db.getConversation(id)!, me)!;
+  });
+
+  app.delete('/api/conversations/:id/channels/:channelId', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, channelId } = request.params as { id: string; channelId: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id) || !ID_RE.test(channelId)) return reply.code(404).send({ error: 'not found' });
+    const err = requireChannelManager(id, me);
+    if (err) return reply.code(err.code).send({ error: err.error });
+    const ch = db.getChannel(channelId);
+    if (!ch || ch.conversation_id !== id) return reply.code(404).send({ error: 'channel not found' });
+    db.deleteChannel(channelId);
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'channels-updated', conversationId: id, deletedChannelId: channelId });
     return { ok: true };
   });
 }

@@ -190,6 +190,36 @@ export interface Friend {
 
 export type ConversationKind = 'dm' | 'group' | 'thread';
 
+/** A channel's medium. `text` channels carry messages like today; `voice`
+ *  channels are structural placeholders in v4 — the live voice functionality
+ *  lands in v6. */
+export type ChannelType = 'text' | 'voice';
+
+/** A channel inside a conversation — the message-stream unit (its own message
+ *  ordering + per-member read state). All channels of a conversation share the
+ *  conversation key/epochs, so no extra key distribution is needed. Every
+ *  conversation has a virtual "general" channel whose id equals the conversation
+ *  id (`id === conversationId`); extra channels (groups only) have distinct ids
+ *  and live in the `channels` table. */
+export interface ChannelInfo {
+  id: string;
+  conversationId: string;
+  name: string;
+  type: ChannelType;
+  /** sort order within the conversation; the general channel is always 0 */
+  position: number;
+  /** the general channel can't be renamed/deleted/reordered (it's the conversation) */
+  isDefault: boolean;
+  /** highest message seq in this channel (0 when empty) */
+  lastSeq: number;
+  /** my last-read seq in this channel; unread = lastSeq - lastReadSeq */
+  lastReadSeq: number;
+}
+
+/** Bounds for a channel name (server-enforced). */
+export const CHANNEL_NAME_MAX = 50;
+export const MAX_CHANNELS_PER_CONVERSATION = 50;
+
 /** A member's standing in a group. `owner` is the creator (exactly one);
  *  `admin` is a delegated manager with the same powers as the owner (add/remove
  *  members, grant/revoke admin) — except an admin can never remove the owner.
@@ -239,9 +269,14 @@ export interface Conversation {
   epochKeys: SealedEpochKey[];
   /** my role in this conversation */
   myRole: ConversationRole;
-  /** highest message seq in the conversation (0 when empty) */
+  /** every channel in this conversation, ordered by position. Always includes
+   *  the general channel (`id === this.id`) at position 0. DMs/threads have only
+   *  the general channel; groups may have more. */
+  channels: ChannelInfo[];
+  /** highest message seq in the GENERAL channel (0 when empty). Kept for the
+   *  DM/thread fast-path; per-channel values live in `channels`. */
   lastSeq: number;
-  /** my last-read seq; unread count = lastSeq - lastReadSeq */
+  /** my last-read seq in the GENERAL channel; per-channel values live in `channels`. */
   lastReadSeq: number;
   createdAt: number;
   /** for a thread (`kind: 'thread'`): the parent conversation it hangs off */
@@ -253,7 +288,12 @@ export interface Conversation {
 /** One chat message. ciphertext/iv are opaque to the server. */
 export interface ChatMessage {
   conversationId: string;
-  /** monotonic per-conversation sequence, assigned by the server */
+  /** the channel this message belongs to. Equals `conversationId` for the
+   *  general channel; a distinct id for an extra (group) channel. */
+  channelId: string;
+  /** monotonic per-conversation sequence, assigned by the server (shared across
+   *  the conversation's channels — unique per conversation, the anchor for
+   *  replies/threads/edits). */
   seq: number;
   senderId: string;
   epoch: number;
@@ -273,6 +313,8 @@ export interface ChatMessage {
 export interface ChatReaction {
   id: string;
   conversationId: string;
+  /** the channel the reacted message belongs to (== conversationId for general) */
+  channelId: string;
   /** the reacted message's per-conversation seq */
   seq: number;
   userId: string;
@@ -451,8 +493,12 @@ export type ServerFrame =
   // A message's ciphertext was edited in place (same seq) — replace it locally.
   | { type: 'message-edited'; message: ChatMessage }
   | { type: 'reaction'; reaction: ChatReaction }
-  | { type: 'reaction-removed'; conversationId: string; id: string }
-  | { type: 'read'; conversationId: string; userId: string; seq: number }
+  | { type: 'reaction-removed'; conversationId: string; channelId: string; id: string }
+  | { type: 'read'; conversationId: string; channelId: string; userId: string; seq: number }
+  // A channel was created/renamed/reordered/deleted in a group — refetch the
+  // conversation to pick up the new channel list. `channelId` is set on delete
+  // so clients can drop that channel's local state.
+  | { type: 'channels-updated'; conversationId: string; deletedChannelId?: string }
   | { type: 'friend-request'; request: FriendRequest }
   | { type: 'friend-accepted'; friend: Friend }
   | { type: 'profile-updated'; userId: string }

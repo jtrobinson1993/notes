@@ -87,8 +87,8 @@ describe('addMember', () => {
     const epoch1Key = await unsealKey(privateKey, publicKey, body.keys.find((k: SealedMemberKey) => k.userId === 'me')!.sealedKey);
     const e0 = await encryptMessage(epoch0Key, { text: 'old', sentAt: 0 });
     const e1 = await encryptMessage(epoch1Key, { text: 'new', sentAt: 0 });
-    await store.handleFrame({ type: 'message', message: { conversationId: 'g1', seq: 1, senderId: 'm2', epoch: 0, ciphertext: e0.ciphertext, iv: e0.iv, createdAt: 0 } });
-    await store.handleFrame({ type: 'message', message: { conversationId: 'g1', seq: 2, senderId: 'me', epoch: 1, ciphertext: e1.ciphertext, iv: e1.iv, createdAt: 0 } });
+    await store.handleFrame({ type: 'message', message: { conversationId: 'g1', channelId: 'g1', seq: 1, senderId: 'm2', epoch: 0, ciphertext: e0.ciphertext, iv: e0.iv, createdAt: 0 } });
+    await store.handleFrame({ type: 'message', message: { conversationId: 'g1', channelId: 'g1', seq: 2, senderId: 'me', epoch: 1, ciphertext: e1.ciphertext, iv: e1.iv, createdAt: 0 } });
     expect(store.messages.g1.filter((m) => !m.system).map((m) => m.text)).toEqual(['old', 'new']);
 
     // Adding posts an encrypted "X joined" system message at the new epoch.

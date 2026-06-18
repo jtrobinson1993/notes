@@ -18,16 +18,30 @@ import { optimizeImage } from '../lib/imageOptimize';
 import { optimizeImages } from '../lib/privacy';
 import { clearTagColor, setTagColor, tagColor, tagTextColor } from '../lib/tagColors';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
+import { useOrgStore } from '../stores/organization';
+import IconFolder from '~icons/mynaui/folder';
+import IconX from '~icons/mynaui/x';
 import ColorPalette from './ColorPalette.vue';
+import EmojiInput from './EmojiInput.vue';
+import EmojiText from './EmojiText.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import MarkdownView from './MarkdownView.vue';
 import ShareDialog from './ShareDialog.vue';
 import HistoryDialog from './HistoryDialog.vue';
 
-const props = defineProps<{ note: DecryptedNote }>();
-const emit = defineEmits<{ deleted: [] }>();
+// `closable` shows a ✕ next to the kebab — used when the editor is opened as an
+// overlay over a chat; emits `close` when clicked.
+const props = defineProps<{ note: DecryptedNote; closable?: boolean }>();
+const emit = defineEmits<{ deleted: []; close: [] }>();
 
 const notes = useNotesStore();
+const org = useOrgStore();
+// The note's folder is personal organization (org store), not part of the note
+// payload — so it also applies to notes shared with me.
+const folderName = computed(() => {
+  const id = org.folderOf(props.note.id);
+  return id ? (org.folders.find((f) => f.id === id)?.name ?? null) : null;
+});
 const title = ref(props.note.payload.title);
 const body = ref(props.note.payload.body);
 const tags = ref<string[]>([...props.note.payload.tags]);
@@ -224,11 +238,12 @@ function fmtSize(bytes: number): string {
 <template>
   <div class="flex h-full flex-col p-4">
     <div class="mb-2 flex items-center gap-1">
-      <input
+      <EmojiInput
         v-model="title"
         placeholder="Untitled"
         :readonly="readonly"
-        class="min-w-0 grow bg-transparent text-xl font-semibold outline-none placeholder:text-zinc-400"
+        wrapper-class="min-w-0 grow"
+        input-class="w-full bg-transparent text-xl font-semibold outline-none placeholder:text-zinc-400"
       />
       <span v-if="note.shared" class="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700 dark:bg-violet-950 dark:text-violet-300">
         {{ note.shared.ownerDisplayName }} · {{ note.shared.access === 'read' ? 'read-only' : 'can edit' }}
@@ -292,12 +307,30 @@ function fmtSize(bytes: number): string {
           </DropdownMenuContent>
         </DropdownMenuPortal>
       </DropdownMenuRoot>
+      <button
+        v-if="closable"
+        class="shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        title="Close note"
+        aria-label="Close note"
+        @click="emit('close')"
+      >
+        <IconX class="h-5 w-5" />
+      </button>
       <input ref="fileInput" type="file" multiple class="hidden" @change="attach" />
       <ShareDialog v-if="isOwner" v-model:open="shareOpen" :note-id="note.id" />
       <HistoryDialog v-if="isOwner" v-model:open="historyOpen" :note-id="note.id" />
     </div>
 
     <div class="mb-2 flex flex-wrap items-center gap-1.5">
+      <!-- Folder (read-only; assign by dragging in the notes/chat tree). -->
+      <span
+        v-if="folderName"
+        class="flex max-w-[10rem] items-center gap-1 rounded-full border border-zinc-300 px-2 py-0.5 text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400"
+        title="Folder"
+      >
+        <IconFolder class="h-3 w-3 shrink-0" />
+        <span class="truncate"><EmojiText :text="folderName" /></span>
+      </span>
       <span
         v-for="tag in tags"
         :key="tag"

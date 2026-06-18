@@ -5,7 +5,7 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', component: () => import('./pages/NotesPage.vue') },
-    { path: '/chat/:id', component: () => import('./pages/ConversationPage.vue') },
+    { path: '/chat/:id/:channelId?', component: () => import('./pages/ConversationPage.vue') },
     { path: '/friends', component: () => import('./pages/FriendsPage.vue') },
     { path: '/settings', component: () => import('./pages/SettingsPage.vue') },
     { path: '/setup', component: () => import('./pages/SetupPage.vue'), meta: { public: true } },

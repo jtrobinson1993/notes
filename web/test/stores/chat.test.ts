@@ -17,6 +17,10 @@ const api = vi.hoisted(() => ({
   reactions: vi.fn().mockResolvedValue([]),
   reactionAdd: vi.fn(),
   reactionRemove: vi.fn().mockResolvedValue({ ok: true }),
+  channelCreate: vi.fn(),
+  channelRename: vi.fn(),
+  channelReorder: vi.fn(),
+  channelDelete: vi.fn().mockResolvedValue({ ok: true }),
 }));
 vi.mock('../../src/lib/api', () => ({ api }));
 
@@ -41,7 +45,7 @@ async function myKeyPair() {
 }
 
 function convTo(myPub: Uint8Array, sealedKey: Conversation['sealedKey'], over: Partial<Conversation> = {}): Conversation {
-  return {
+  const base: Conversation = {
     id: 'c1',
     kind: 'dm',
     members: [
@@ -53,15 +57,24 @@ function convTo(myPub: Uint8Array, sealedKey: Conversation['sealedKey'], over: P
     epochKeys: [{ epoch: 0, sealedKey }],
     managePolicy: 'owner',
     myRole: 'member',
+    channels: [],
     lastSeq: 0,
     lastReadSeq: 0,
     createdAt: 0,
     ...over,
-  };
+  } as Conversation;
+  // Synthesize the virtual general channel (id === conversation id) mirroring the
+  // conversation-level cursors, unless the caller supplied channels explicitly.
+  if (!over.channels) {
+    base.channels = [
+      { id: base.id, conversationId: base.id, name: 'general', type: 'text', position: 0, isDefault: true, lastSeq: base.lastSeq, lastReadSeq: base.lastReadSeq },
+    ];
+  }
+  return base;
 }
 
 function msg(over: Partial<ChatMessage>): ChatMessage {
-  return { conversationId: 'c1', seq: 1, senderId: 'friend', epoch: 0, ciphertext: '', iv: '', createdAt: 0, ...over };
+  return { conversationId: 'c1', channelId: 'c1', seq: 1, senderId: 'friend', epoch: 0, ciphertext: '', iv: '', createdAt: 0, ...over };
 }
 
 beforeEach(() => {
@@ -116,7 +129,7 @@ describe('sendMessage', () => {
     await store.openDm(friend);
 
     api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
-    await store.sendMessage('c1', 'hello');
+    await store.sendMessage('c1', 'c1', 'hello');
     expect(store.messages['c1']?.find((m) => m.seq === 1)?.text).toBe('hello');
 
     // WS echo of the same message (same seq) must not duplicate it.
@@ -136,7 +149,7 @@ describe('sendMessage', () => {
 
     const gif = { provider: 'klipy' as const, id: '42', url: 'https://cdn/x.webp', previewUrl: 'https://cdn/p.webp', width: 100, height: 80, title: 'Cat' };
     api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
-    await store.sendMessage('c1', '', { gif });
+    await store.sendMessage('c1', 'c1', '', { gif });
 
     // Optimistic view carries the GIF.
     expect(store.messages['c1']?.find((m) => m.seq === 1)?.gif).toEqual(gif);
@@ -158,7 +171,7 @@ describe('sendMessage', () => {
 
     const att = { id: 'a1', name: 'cat.png', type: 'image/png', size: 12, key: 'AAAA', iv: 'BBBB' };
     api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
-    await store.sendMessage('c1', 'look', { attachments: [att] });
+    await store.sendMessage('c1', 'c1', 'look', { attachments: [att] });
 
     expect(store.messages['c1']?.find((m) => m.seq === 1)?.attachments).toEqual([att]);
     const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
@@ -178,7 +191,7 @@ describe('sendMessage', () => {
     const ref = { id: 'x', name: 'foo', type: 'image/png', size: 1, key: 'AAAA', iv: 'BBBB' };
     customEmoji.items = [{ name: 'foo', ref }];
     api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
-    await store.sendMessage('c1', 'hi :foo: but not :bar:');
+    await store.sendMessage('c1', 'c1', 'hi :foo: but not :bar:');
     customEmoji.items = [];
 
     const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
@@ -197,7 +210,7 @@ describe('sendMessage', () => {
 
     const replyTo = { seq: 3, senderId: 'friend', preview: 'earlier message' };
     api.messageSend.mockResolvedValue(msg({ seq: 4, senderId: 'me' }));
-    await store.sendMessage('c1', 'replying', { replyTo });
+    await store.sendMessage('c1', 'c1', 'replying', { replyTo });
 
     expect(store.messages['c1']?.find((m) => m.seq === 4)?.replyTo).toEqual(replyTo);
     const sentArg = api.messageSend.mock.calls[0][1] as { ciphertext: string; iv: string };
@@ -235,10 +248,10 @@ describe('editMessage', () => {
     await store.openDm(friend);
 
     api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
-    await store.sendMessage('c1', 'first');
+    await store.sendMessage('c1', 'c1', 'first');
 
     api.messageEdit.mockResolvedValue(msg({ seq: 1, senderId: 'me', editedAt: 999 }));
-    await store.editMessage('c1', 1, 'edited!');
+    await store.editMessage('c1', 'c1', 1, 'edited!');
 
     const v = store.messages['c1']?.find((m) => m.seq === 1);
     expect(v?.text).toBe('edited!');
@@ -260,9 +273,9 @@ describe('editMessage', () => {
     await store.openDm(friend);
 
     api.messageSend.mockResolvedValue(msg({ seq: 1, senderId: 'me' }));
-    await store.sendMessage('c1', 'same');
+    await store.sendMessage('c1', 'c1', 'same');
 
-    await store.editMessage('c1', 1, 'same');
+    await store.editMessage('c1', 'c1', 1, 'same');
     expect(api.messageEdit).not.toHaveBeenCalled();
     expect(store.messages['c1']?.find((m) => m.seq === 1)?.editedAt).toBeUndefined();
   });
@@ -313,7 +326,9 @@ describe('markRead + unreadCount', () => {
     const store = useChatStore();
     store.conversations = [convTo(new Uint8Array(32), { epk: '', iv: '', ct: '' }, { lastSeq: 5, lastReadSeq: 2 })];
     expect(store.unreadCount('c1')).toBe(3);
-    store.conversations = [{ ...store.conversations[0]!, lastReadSeq: 9 }];
+    // Reading past the head (per-channel cursor) clears the unread count.
+    const c = store.conversations[0]!;
+    store.conversations = [{ ...c, lastReadSeq: 9, channels: c.channels.map((ch) => ({ ...ch, lastReadSeq: 9 })) }];
     expect(store.unreadCount('c1')).toBe(0);
   });
 
@@ -322,9 +337,9 @@ describe('markRead + unreadCount', () => {
     const store = useChatStore();
     store.conversations = [convTo(new Uint8Array(32), { epk: '', iv: '', ct: '' }, { lastSeq: 10, lastReadSeq: 3 })];
 
-    await store.markRead('c1', 6);
+    await store.markRead('c1', 'c1', 6);
     expect(store.conversations[0]!.lastReadSeq).toBe(6);
-    await store.markRead('c1', 4); // backward → ignored
+    await store.markRead('c1', 'c1', 4); // backward → ignored
     expect(store.conversations[0]!.lastReadSeq).toBe(6);
   });
 });
@@ -345,11 +360,11 @@ describe('reactions', () => {
     const { store } = await openedStore();
     api.reactionAdd.mockResolvedValue({ id: 'r1', conversationId: 'c1', seq: 1, userId: 'me', ciphertext: 'X', iv: 'Y', createdAt: 0 });
 
-    await store.toggleReaction('c1', 1, '👍');
+    await store.toggleReaction('c1', 'c1', 1, '👍');
     expect(store.reactions['c1']?.find((r) => r.id === 'r1')?.emoji).toBe('👍');
     expect(api.reactionAdd).toHaveBeenCalledTimes(1);
 
-    await store.toggleReaction('c1', 1, '👍'); // same emoji → remove
+    await store.toggleReaction('c1', 'c1', 1, '👍'); // same emoji → remove
     expect(store.reactions['c1']?.length).toBe(0);
     expect(api.reactionRemove).toHaveBeenCalledWith('c1', 'r1');
   });
@@ -357,10 +372,10 @@ describe('reactions', () => {
   it('applies inbound reaction and reaction-removed frames', async () => {
     const { store, serverKey } = await openedStore();
     const enc = await encryptReaction(serverKey, '🎉');
-    await store.handleFrame({ type: 'reaction', reaction: { id: 'r9', conversationId: 'c1', seq: 2, userId: 'friend', ciphertext: enc.ciphertext, iv: enc.iv, createdAt: 0 } });
+    await store.handleFrame({ type: 'reaction', reaction: { id: 'r9', conversationId: 'c1', channelId: 'c1', seq: 2, userId: 'friend', ciphertext: enc.ciphertext, iv: enc.iv, createdAt: 0 } });
     expect(store.reactions['c1']?.find((r) => r.id === 'r9')?.emoji).toBe('🎉');
 
-    await store.handleFrame({ type: 'reaction-removed', conversationId: 'c1', id: 'r9' });
+    await store.handleFrame({ type: 'reaction-removed', conversationId: 'c1', channelId: 'c1', id: 'r9' });
     expect(store.reactions['c1']?.find((r) => r.id === 'r9')).toBeUndefined();
   });
 });
@@ -390,11 +405,90 @@ describe('openThread', () => {
 
     // The thread key was cached → a thread message decrypts.
     const enc = await encryptMessage(threadKey, { text: 'in thread', sentAt: 1 });
-    await store.handleFrame({ type: 'message', message: { conversationId: 't1', seq: 1, senderId: 'friend', epoch: 0, ciphertext: enc.ciphertext, iv: enc.iv, createdAt: 0 } });
+    await store.handleFrame({ type: 'message', message: { conversationId: 't1', channelId: 't1', seq: 1, senderId: 'friend', epoch: 0, ciphertext: enc.ciphertext, iv: enc.iv, createdAt: 0 } });
     expect(store.messages['t1']?.[0]?.text).toBe('in thread');
 
     // Idempotent: a second open reuses the in-memory thread.
     await store.openThread('c1', 2);
     expect(api.threadCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('channel actions (v4)', () => {
+  // A group conversation with the given channel ids (general first).
+  function groupWith(ids: string[]): Conversation {
+    return {
+      id: 'g1',
+      kind: 'group',
+      members: [{ userId: 'me', displayName: 'Me', publicKey: null }],
+      sealedKey: { epk: '', iv: '', ct: '' },
+      epoch: 0,
+      epochKeys: [],
+      managePolicy: 'owner',
+      myRole: 'owner',
+      channels: ids.map((id, i) => ({
+        id,
+        conversationId: 'g1',
+        name: id === 'g1' ? 'general' : id,
+        type: 'text' as const,
+        position: i,
+        isDefault: id === 'g1',
+        lastSeq: 0,
+        lastReadSeq: 0,
+      })),
+      lastSeq: 0,
+      lastReadSeq: 0,
+      createdAt: 0,
+    } as Conversation;
+  }
+
+  it('createChannel posts, upserts, and returns the new channel id', async () => {
+    const store = useChatStore();
+    store.conversations = [groupWith(['g1'])];
+    api.channelCreate.mockResolvedValue(groupWith(['g1', 'c2']));
+    const id = await store.createChannel('g1', 'random', 'text');
+    expect(api.channelCreate).toHaveBeenCalledWith('g1', { name: 'random', type: 'text' });
+    expect(id).toBe('c2');
+    expect(store.conversations[0]!.channels.map((c) => c.id)).toContain('c2');
+  });
+
+  it('renameChannel and reorderChannels upsert the returned conversation', async () => {
+    const store = useChatStore();
+    store.conversations = [groupWith(['g1', 'c2'])];
+    api.channelRename.mockResolvedValue(groupWith(['g1', 'c2']));
+    await store.renameChannel('g1', 'c2', 'memes');
+    expect(api.channelRename).toHaveBeenCalledWith('g1', 'c2', 'memes');
+    api.channelReorder.mockResolvedValue(groupWith(['g1', 'c2']));
+    await store.reorderChannels('g1', ['c2']);
+    expect(api.channelReorder).toHaveBeenCalledWith('g1', ['c2']);
+  });
+
+  it('deleteChannel drops the channel state, resets the active channel, and reloads', async () => {
+    const store = useChatStore();
+    store.conversations = [groupWith(['g1', 'c2'])];
+    store.messages = { c2: [msg({ conversationId: 'g1', channelId: 'c2', seq: 1 }) as never] };
+    store.setActive('g1', 'c2');
+    api.conversations.mockResolvedValue([groupWith(['g1'])]);
+    await store.deleteChannel('g1', 'c2');
+    expect(api.channelDelete).toHaveBeenCalledWith('g1', 'c2');
+    expect(store.messages['c2']).toBeUndefined();
+    expect(store.activeChannelId).toBe('g1'); // fell back to general
+    expect(api.conversations).toHaveBeenCalled();
+  });
+
+  it('handleFrame channels-updated reloads and drops a deleted channel’s state', async () => {
+    const store = useChatStore();
+    store.conversations = [groupWith(['g1', 'c2'])];
+    store.messages = { c2: [msg({ conversationId: 'g1', channelId: 'c2', seq: 1 }) as never] };
+    api.conversations.mockResolvedValue([groupWith(['g1'])]);
+    await store.handleFrame({ type: 'channels-updated', conversationId: 'g1', deletedChannelId: 'c2' });
+    expect(store.messages['c2']).toBeUndefined();
+    expect(api.conversations).toHaveBeenCalled();
+  });
+
+  it('setActiveChannel updates the active channel', () => {
+    const store = useChatStore();
+    store.setActiveChannel('c2');
+    expect(store.activeChannelId).toBe('c2');
   });
 });

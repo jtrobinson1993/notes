@@ -78,17 +78,26 @@ export const useChatStore = defineStore('chat', () => {
   const session = useSessionStore();
 
   const conversations = ref<Conversation[]>([]);
+  // Messages/reactions are keyed by CHANNEL id (the general channel's id equals
+  // the conversation id, so DMs/threads key by their conversation id as before).
   const messages = ref<Record<string, ChatMessageView[]>>({});
   const reactions = ref<Record<string, ChatReactionView[]>>({});
   const activeId = ref<string | null>(null);
+  // The channel the user is currently viewing in the active conversation (for
+  // socket-reconnect backfill). Defaults to the general channel.
+  const activeChannelId = ref<string | null>(null);
 
   // Unsealed conversation keys, per epoch (convId → epoch → key); in-memory only
   // (never persisted). A group re-keys on each membership change, so we keep one
   // key per epoch and decrypt each message with the key for *its* epoch.
   const convKeys = new Map<string, Map<number, Uint8Array>>();
 
-  function setActive(convId: string | null): void {
+  function setActive(convId: string | null, channelId?: string | null): void {
     activeId.value = convId;
+    activeChannelId.value = channelId ?? convId;
+  }
+  function setActiveChannel(channelId: string | null): void {
+    activeChannelId.value = channelId;
   }
 
   /** True once we hold any epoch key for the conversation. */
@@ -141,15 +150,16 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** Merge views into a conversation, keeping ascending seq order and deduping. */
-  function mergeMessages(convId: string, views: ChatMessageView[]): void {
-    const existing = messages.value[convId] ?? [];
+  /** Merge views into a channel's stream, keeping ascending seq order and
+   *  deduping. Keyed by channel id (== conversation id for the general channel). */
+  function mergeMessages(channelId: string, views: ChatMessageView[]): void {
+    const existing = messages.value[channelId] ?? [];
     const bySeq = new Map<number, ChatMessageView>();
     for (const v of existing) bySeq.set(v.seq, v);
     for (const v of views) bySeq.set(v.seq, v);
     messages.value = {
       ...messages.value,
-      [convId]: [...bySeq.values()].sort((a, b) => a.seq - b.seq),
+      [channelId]: [...bySeq.values()].sort((a, b) => a.seq - b.seq),
     };
   }
 
@@ -302,9 +312,10 @@ export const useChatStore = defineStore('chat', () => {
     if (!conv || !key) return;
     const system: SystemEvent = { kind: 'member-joined', userId, phrase: randomJoinPhrase() };
     const { ciphertext, iv } = await encryptMessage(key, { text: '', sentAt: Date.now(), system });
+    // Join notices always land in the general channel.
     const sent = await api.messageSend(convId, { ciphertext, iv, epoch: conv.epoch });
     mergeMessages(convId, [{ ...sent, text: '', system }]);
-    bumpLastSeq(convId, sent.seq);
+    bumpLastSeq(convId, convId, sent.seq);
   }
 
   /** Remove a member (or, when `userId` is me, leave): mint a new epoch sealed to
@@ -330,29 +341,64 @@ export const useChatStore = defineStore('chat', () => {
     upsertConversation(await api.conversationSetRole(convId, userId, role));
   }
 
-  /** Forget a conversation we've left or been removed from. */
+  /** Drop one channel's cached messages + reactions. */
+  function dropChannelState(channelId: string): void {
+    const { [channelId]: _m, ...restM } = messages.value;
+    messages.value = restM;
+    const { [channelId]: _r, ...restR } = reactions.value;
+    reactions.value = restR;
+  }
+
+  /** Forget a conversation we've left or been removed from (and all its channels). */
   function dropConversation(convId: string): void {
+    const conv = conversations.value.find((c) => c.id === convId);
+    for (const ch of conv?.channels ?? []) dropChannelState(ch.id);
+    dropChannelState(convId); // general (in case channels[] wasn't populated)
     conversations.value = conversations.value.filter((c) => c.id !== convId);
     convKeys.delete(convId);
-    const { [convId]: _m, ...restM } = messages.value;
-    messages.value = restM;
-    const { [convId]: _r, ...restR } = reactions.value;
-    reactions.value = restR;
     if (activeId.value === convId) activeId.value = null;
   }
 
-  /** Fetch (older, when `before` is set) history and merge decrypted views.
+  // ---- Channel management (v4; groups only) -------------------------------
+
+  async function createChannel(convId: string, name: string, type: 'text' | 'voice'): Promise<string> {
+    const before = new Set((conversations.value.find((c) => c.id === convId)?.channels ?? []).map((ch) => ch.id));
+    const updated = await api.channelCreate(convId, { name, type });
+    upsertConversation(updated);
+    // The newly created channel is the one not present before.
+    return updated.channels.find((ch) => !before.has(ch.id))?.id ?? convId;
+  }
+
+  async function renameChannel(convId: string, channelId: string, name: string): Promise<void> {
+    upsertConversation(await api.channelRename(convId, channelId, name));
+  }
+
+  async function reorderChannels(convId: string, orderedIds: string[]): Promise<void> {
+    upsertConversation(await api.channelReorder(convId, orderedIds));
+  }
+
+  async function deleteChannel(convId: string, channelId: string): Promise<void> {
+    await api.channelDelete(convId, channelId);
+    dropChannelState(channelId);
+    if (activeChannelId.value === channelId) activeChannelId.value = convId;
+    await loadConversations();
+  }
+
+  /** Fetch (older, when `before` is set) history for one channel and merge
+   *  decrypted views. `channelId` defaults to the general channel (== convId).
    *  Returns the number of messages fetched — a count below `HISTORY_LIMIT`
-   *  means the conversation's start has been reached. */
-  async function loadHistory(convId: string, before?: number): Promise<number> {
-    const raw = await api.conversationMessages(convId, { before, limit: HISTORY_LIMIT });
+   *  means the channel's start has been reached. */
+  async function loadHistory(convId: string, channelId?: string, before?: number): Promise<number> {
+    const chan = channelId ?? convId;
+    const raw = await api.conversationMessages(convId, { before, limit: HISTORY_LIMIT, channelId: chan });
     const views = await Promise.all(raw.map((m) => decryptOne(convId, m)));
-    mergeMessages(convId, views);
+    mergeMessages(chan, views);
     return raw.length;
   }
 
   async function sendMessage(
     convId: string,
+    channelId: string,
     text: string,
     opts?: { gif?: GifRef; attachments?: AttachmentRef[]; replyTo?: ReplyRef; linkPreview?: LinkPreview },
   ): Promise<void> {
@@ -368,18 +414,18 @@ export const useChatStore = defineStore('chat', () => {
     const usedEmoji = customEmojiForText(text);
     if (usedEmoji) payload.customEmoji = usedEmoji;
     const { ciphertext, iv } = await encryptMessage(key, payload);
-    const sent = await api.messageSend(convId, { ciphertext, iv, epoch });
-    mergeMessages(convId, [
+    const sent = await api.messageSend(convId, { ciphertext, iv, epoch, channelId });
+    mergeMessages(channelId, [
       { ...sent, text, gif: opts?.gif ?? null, attachments: opts?.attachments ?? [], replyTo: opts?.replyTo, linkPreview: opts?.linkPreview },
     ]);
-    bumpLastSeq(convId, sent.seq);
+    bumpLastSeq(convId, channelId, sent.seq);
   }
 
   /** Edit my own message's text in place. Re-encrypts under the message's own
    *  epoch key (so the same recipients can read it) and preserves the original
    *  non-text payload (gif/attachments/reply/preview). */
-  async function editMessage(convId: string, seq: number, text: string): Promise<void> {
-    const existing = (messages.value[convId] ?? []).find((m) => m.seq === seq);
+  async function editMessage(convId: string, channelId: string, seq: number, text: string): Promise<void> {
+    const existing = (messages.value[channelId] ?? []).find((m) => m.seq === seq);
     if (!existing) throw new Error('message not found');
     if (text === existing.text) return; // no change → no API call, stays unedited
     const key = keyForEpoch(convId, existing.epoch);
@@ -393,7 +439,7 @@ export const useChatStore = defineStore('chat', () => {
     if (usedEmoji) payload.customEmoji = usedEmoji;
     const { ciphertext, iv } = await encryptMessage(key, payload);
     const updated = await api.messageEdit(convId, seq, { ciphertext, iv });
-    mergeMessages(convId, [{ ...existing, ...updated, text }]);
+    mergeMessages(channelId, [{ ...existing, ...updated, text }]);
   }
 
   async function decryptReactionOne(convId: string, r: ChatReaction): Promise<ChatReactionView> {
@@ -410,55 +456,61 @@ export const useChatStore = defineStore('chat', () => {
     return { ...r, emoji: null };
   }
 
-  function upsertReaction(convId: string, view: ChatReactionView): void {
-    const list = reactions.value[convId] ?? [];
+  function upsertReaction(channelId: string, view: ChatReactionView): void {
+    const list = reactions.value[channelId] ?? [];
     if (list.some((r) => r.id === view.id)) return; // dedupe self-echo / refetch
-    reactions.value = { ...reactions.value, [convId]: [...list, view] };
+    reactions.value = { ...reactions.value, [channelId]: [...list, view] };
   }
 
-  function dropReaction(convId: string, id: string): void {
-    const list = reactions.value[convId];
+  function dropReaction(channelId: string, id: string): void {
+    const list = reactions.value[channelId];
     if (!list) return;
-    reactions.value = { ...reactions.value, [convId]: list.filter((r) => r.id !== id) };
+    reactions.value = { ...reactions.value, [channelId]: list.filter((r) => r.id !== id) };
   }
 
-  async function loadReactions(convId: string): Promise<void> {
-    const raw = await api.reactions(convId);
-    reactions.value = { ...reactions.value, [convId]: await Promise.all(raw.map((r) => decryptReactionOne(convId, r))) };
+  async function loadReactions(convId: string, channelId?: string): Promise<void> {
+    const chan = channelId ?? convId;
+    const raw = await api.reactions(convId, chan);
+    reactions.value = { ...reactions.value, [chan]: await Promise.all(raw.map((r) => decryptReactionOne(convId, r))) };
   }
 
   /** Toggle my reaction with `emoji` on a message: remove it if I already have
    *  one, otherwise add it. */
-  async function toggleReaction(convId: string, seq: number, emoji: string): Promise<void> {
+  async function toggleReaction(convId: string, channelId: string, seq: number, emoji: string): Promise<void> {
     const key = currentKey(convId);
     if (!key) return;
     const me = session.user?.id;
-    const mine = (reactions.value[convId] ?? []).find((r) => r.seq === seq && r.userId === me && r.emoji === emoji);
+    const mine = (reactions.value[channelId] ?? []).find((r) => r.seq === seq && r.userId === me && r.emoji === emoji);
     if (mine) {
-      dropReaction(convId, mine.id);
+      dropReaction(channelId, mine.id);
       await api.reactionRemove(convId, mine.id);
       return;
     }
     const { ciphertext, iv } = await encryptReaction(key, emoji);
     const created = await api.reactionAdd(convId, seq, { ciphertext, iv });
-    upsertReaction(convId, { ...created, emoji });
+    upsertReaction(channelId, { ...created, emoji });
   }
 
-  async function markRead(convId: string, seq: number): Promise<void> {
-    await api.conversationRead(convId, seq);
+  /** Patch one channel's field within a conversation (immutably, max-monotonic). */
+  function patchChannelSeq(convId: string, channelId: string, field: 'lastSeq' | 'lastReadSeq', seq: number): void {
     const idx = conversations.value.findIndex((c) => c.id === convId);
     const conv = conversations.value[idx];
-    if (conv && seq > conv.lastReadSeq) {
-      conversations.value[idx] = { ...conv, lastReadSeq: seq };
-    }
+    if (!conv) return;
+    const isGeneral = channelId === convId;
+    const channels = (conv.channels ?? []).map((ch) => (ch.id === channelId && seq > ch[field] ? { ...ch, [field]: seq } : ch));
+    const patch: Partial<Conversation> = { channels };
+    // Mirror the general channel onto the conversation-level fields (DM/thread fast-path).
+    if (isGeneral && seq > conv[field]) patch[field] = seq;
+    conversations.value[idx] = { ...conv, ...patch };
   }
 
-  function bumpLastSeq(convId: string, seq: number): void {
-    const idx = conversations.value.findIndex((c) => c.id === convId);
-    const conv = conversations.value[idx];
-    if (conv && seq > conv.lastSeq) {
-      conversations.value[idx] = { ...conv, lastSeq: seq };
-    }
+  async function markRead(convId: string, channelId: string, seq: number): Promise<void> {
+    await api.conversationRead(convId, seq, channelId);
+    patchChannelSeq(convId, channelId, 'lastReadSeq', seq);
+  }
+
+  function bumpLastSeq(convId: string, channelId: string, seq: number): void {
+    patchChannelSeq(convId, channelId, 'lastSeq', seq);
   }
 
   async function handleFrame(frame: ServerFrame): Promise<void> {
@@ -469,8 +521,8 @@ export const useChatStore = defineStore('chat', () => {
         // opening DM): fetch it so we hold its sealed key before decrypting.
         if (!hasKey(m.conversationId)) await loadConversations();
         const view = await decryptOne(m.conversationId, m);
-        mergeMessages(m.conversationId, [view]);
-        bumpLastSeq(m.conversationId, m.seq);
+        mergeMessages(m.channelId, [view]);
+        bumpLastSeq(m.conversationId, m.channelId, m.seq);
         break;
       }
       case 'message-edited': {
@@ -478,12 +530,12 @@ export const useChatStore = defineStore('chat', () => {
         // Edits never advance unread; just replace the message in place (same
         // seq). Skip if we can't decrypt this conversation yet.
         if (!hasKey(m.conversationId)) break;
-        mergeMessages(m.conversationId, [await decryptOne(m.conversationId, m)]);
+        mergeMessages(m.channelId, [await decryptOne(m.conversationId, m)]);
         break;
       }
       case 'reaction': {
         const r = frame.reaction;
-        if (hasKey(r.conversationId)) upsertReaction(r.conversationId, await decryptReactionOne(r.conversationId, r));
+        if (hasKey(r.conversationId)) upsertReaction(r.channelId, await decryptReactionOne(r.conversationId, r));
         break;
       }
       case 'conversation-updated': {
@@ -496,16 +548,21 @@ export const useChatStore = defineStore('chat', () => {
         dropConversation(frame.conversationId);
         break;
       }
+      case 'channels-updated': {
+        // A channel was added/renamed/reordered/deleted — refetch the list, and
+        // drop any local state for a deleted channel.
+        if (frame.deletedChannelId) dropChannelState(frame.deletedChannelId);
+        await loadConversations();
+        break;
+      }
       case 'reaction-removed': {
-        dropReaction(frame.conversationId, frame.id);
+        dropReaction(frame.channelId, frame.id);
         break;
       }
       case 'read': {
-        const idx = conversations.value.findIndex((c) => c.id === frame.conversationId);
-        const conv = conversations.value[idx];
-        // Only my own read receipts advance my unread baseline.
-        if (conv && frame.userId === session.user?.id && frame.seq > conv.lastReadSeq) {
-          conversations.value[idx] = { ...conv, lastReadSeq: frame.seq };
+        // Only my own read receipts advance my unread baseline (per channel).
+        if (frame.userId === session.user?.id) {
+          patchChannelSeq(frame.conversationId, frame.channelId, 'lastReadSeq', frame.seq);
         }
         break;
       }
@@ -514,11 +571,14 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** Unread = highest seq minus my last-read seq (never negative). */
+  /** A conversation's unread = the sum of its channels' unread counts. */
   function unreadCount(convId: string): number {
     const conv = conversations.value.find((c) => c.id === convId);
     if (!conv) return 0;
-    return Math.max(0, conv.lastSeq - conv.lastReadSeq);
+    const chans = conv.channels ?? [];
+    // Fall back to the conversation-level cursor when channels aren't populated.
+    if (chans.length === 0) return Math.max(0, conv.lastSeq - conv.lastReadSeq);
+    return chans.reduce((sum, ch) => sum + Math.max(0, ch.lastSeq - ch.lastReadSeq), 0);
   }
 
   function reset(): void {
@@ -526,6 +586,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = {};
     reactions.value = {};
     activeId.value = null;
+    activeChannelId.value = null;
     convKeys.clear();
   }
 
@@ -534,7 +595,9 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     reactions,
     activeId,
+    activeChannelId,
     setActive,
+    setActiveChannel,
     loadConversations,
     openDm,
     openGroup,
@@ -543,6 +606,10 @@ export const useChatStore = defineStore('chat', () => {
     addMember,
     removeMember,
     setMemberRole,
+    createChannel,
+    renameChannel,
+    reorderChannels,
+    deleteChannel,
     loadHistory,
     sendMessage,
     editMessage,
@@ -588,8 +655,9 @@ export function startChat(): void {
       void loadCustomEmoji();
       void loadEmojiUsage();
       if (chat.activeId) {
-        await chat.loadHistory(chat.activeId);
-        await chat.loadReactions(chat.activeId);
+        const chan = chat.activeChannelId ?? chat.activeId;
+        await chat.loadHistory(chat.activeId, chan);
+        await chat.loadReactions(chat.activeId, chan);
       }
     })();
   });
