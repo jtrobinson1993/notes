@@ -693,6 +693,22 @@ export function openDb(dataDir: string) {
         )
         .all(userId) as { id: string; display_name: string | null; public_key: string | null }[];
     },
+    /** People you may share with (v5): your friends OR anyone you share a
+     *  conversation with (friends-of-friends in a common group). Deduped. */
+    listShareableMembers(userId: string): { id: string; display_name: string | null; public_key: string | null }[] {
+      return db
+        .prepare(
+          `SELECT u.id, u.display_name, u.public_key FROM users u
+             WHERE u.id != ?
+               AND ( u.id IN (SELECT friend_id FROM friends WHERE user_id = ?)
+                  OR u.id IN (
+                       SELECT cm2.user_id FROM conversation_members cm1
+                         JOIN conversation_members cm2 ON cm1.conversation_id = cm2.conversation_id
+                        WHERE cm1.user_id = ? AND cm2.user_id != ?) )
+             ORDER BY u.display_name`,
+        )
+        .all(userId, userId, userId, userId) as { id: string; display_name: string | null; public_key: string | null }[];
+    },
 
     getUserSetting(userId: string, key: string) {
       return db.prepare('SELECT data, updated_at FROM user_settings WHERE user_id = ? AND key = ?').get(userId, key) as
