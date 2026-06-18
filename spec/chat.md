@@ -709,3 +709,53 @@ as glyphs pass through.
 
 - Renaming the general channel (extra channels rename/reorder/delete; the general
   channel is fixed).
+
+## v5 — Private channels (as built)
+
+A channel is now either **open** or **private**:
+
+- **Open** (default, the general channel, and every pre-v5 channel) — encrypted
+  with the **conversation key** and visible to all conversation members, exactly
+  as in v4.
+- **Private** — has its **own key + explicit membership + epochs**, mirroring the
+  conversation key machinery at the channel level. Only its members can read it.
+  Private-from-creation: an open channel can't be retroactively privatised (you
+  create a new private channel instead), so a channel never mixes conv-key and
+  channel-key messages.
+
+### Data model (server)
+
+- `channels.private` flag. **`channel_members`** `(channel_id, user_id,
+  sealed_key, epoch, joined_at)` holds the current-epoch sealed channel key per
+  member; **`channel_keys`** `(channel_id, user_id, epoch, sealed_key)` keeps
+  every epoch for back-scroll — the same shape as `conversation_members` /
+  `conversation_keys`.
+
+### Routes / access
+
+- `POST …/channels` accepts `private:true` + `members:[{userId, sealedKey}]` (a
+  sealed channel key per initial member; must be ⊆ conversation members and
+  include the creator).
+- `POST …/channels/:id/members` (grant) and `DELETE …/channels/:id/members/:uid`
+  (revoke) re-key the channel: a new epoch sealed to the (remaining/expanded)
+  members; `history:'share'` also seals prior epoch keys to a joiner. Revoking
+  deletes the target's keys — they can't read future messages (prior plaintext
+  they held is a documented boundary).
+- A private channel is **only included in a member's conversation payload**;
+  message/read/reaction access is gated on channel membership, and fan-out
+  targets the channel's members (not the whole conversation).
+
+### Client
+
+The chat store keeps a `channelKeys` cache (channelId→epoch→key) unsealed from the
+conversation payload. Private-channel messages/reactions encrypt/decrypt with the
+channel key at the channel epoch; open/general channels use the conversation key.
+Actions: `createPrivateChannel`, `grantChannelMember`, `revokeChannelMember`.
+`ChannelModal` has a "Private channel" toggle + member picker; private channels
+show a lock icon and a Manage-members dialog (`ChannelMembersDialog`).
+
+### Not yet built (v5 follow-ups)
+
+- A chat-sidebar **"share folder"** that bulk-grants every note + private channel
+  in a chat folder to chosen participants in one action.
+- A **grant-on-pin** prompt (offer to grant participants when pinning a note).
