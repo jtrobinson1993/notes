@@ -320,7 +320,7 @@ function onDropOnRoot() {
             @dragover.prevent="dragOver = { key: row.key, into: true }"
             @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
           >
-            <component :is="isCollapsed(row.folder!.id) ? IconFolderPlus : IconFolderMinus" class="h-[18px] w-[18px] shrink-0 opacity-60" />
+            <component :is="isCollapsed(row.folder!.id) ? IconFolderPlus : IconFolderMinus" class="h-4.5 w-4.5 shrink-0 opacity-60" />
             <span class="min-w-0 grow truncate"><EmojiText :text="row.folder!.name" /></span>
           </button>
           <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
