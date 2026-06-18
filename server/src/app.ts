@@ -55,7 +55,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
 
   const realtime = createRealtime(db, config);
   const push = createPush(db, config, realtime);
-  const voice = createVoice(db, config, realtime);
+  const voice = createVoice(db, config, realtime, push);
   // Tear down a fully-offline user's calls (mediasoup worker is lazy — no cost
   // until voice is actually used).
   realtime.onUserOffline((userId) => voice.disconnect(userId));

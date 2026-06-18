@@ -614,6 +614,14 @@ export type ServerFrame =
   | { type: 'voice-rekey-needed'; roomId: string; epoch: number; roster: VoiceRekeyMember[] }
   // A media-key rekey (join/leave): the new epoch's key sealed to me.
   | { type: 'voice-key-epoch'; roomId: string; epoch: number; sealedKey: SealedKey }
+  // v6 direct (1:1/small-group) calls. The call room id is the conversation id.
+  // Incoming call → ring this user's devices (answer = join the room).
+  | { type: 'voice-call-ring'; conversationId: string; fromUserId: string; fromDisplayName: string }
+  // The callee answered on some device — other devices stop ringing.
+  | { type: 'voice-call-answered'; conversationId: string; userId: string }
+  // The callee declined, or the caller cancelled before pickup.
+  | { type: 'voice-call-declined'; conversationId: string; userId: string }
+  | { type: 'voice-call-canceled'; conversationId: string; userId: string }
   | { type: 'presence'; userId: string; online: boolean };
 
 /** Client -> server. Sends and read-markers go over REST; this stays minimal.
@@ -630,8 +638,8 @@ export interface PushSubscriptionInput {
   keys: { p256dh: string; auth: string };
 }
 
-/** The content-free payload the server pushes; the client opens and decrypts. */
-export interface PushPayload {
-  type: 'message';
-  conversationId: string;
-}
+/** The content-free payload the server pushes; the client opens and decrypts.
+ *  A `call` ping notifies a callee whose devices have no live socket. */
+export type PushPayload =
+  | { type: 'message'; conversationId: string }
+  | { type: 'call'; conversationId: string };

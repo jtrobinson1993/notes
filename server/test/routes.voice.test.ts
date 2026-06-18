@@ -133,6 +133,25 @@ describe('voice routes — presence', () => {
   });
 });
 
+describe('voice routes — direct calls', () => {
+  let dmId: string;
+  beforeEach(async () => {
+    dmId = (await inject('POST', '/api/conversations/dm', ownerCookie, { friendId: a, members: [owner, a].map((userId) => ({ userId, sealedKey: SEALED })) })).json().id;
+  });
+  it('a member can ring the conversation', async () => {
+    expect((await inject('POST', `/api/voice/calls/${dmId}/ring`, ownerCookie)).statusCode).toBe(200);
+  });
+  it('the callee can decline', async () => {
+    expect((await inject('POST', `/api/voice/calls/${dmId}/decline`, aCookie)).statusCode).toBe(200);
+  });
+  it('a non-member cannot ring', async () => {
+    expect((await inject('POST', `/api/voice/calls/${dmId}/ring`, outsiderCookie)).statusCode).toBe(403);
+  });
+  it('the conversation id doubles as a joinable call room', async () => {
+    expect((await inject('POST', `/api/voice/rooms/${dmId}/join`, ownerCookie)).statusCode).toBe(200);
+  });
+});
+
 describe('voice routes — leave', () => {
   it('leaving is idempotent and lets you rejoin', async () => {
     await join(voiceId, ownerCookie);
