@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import ChannelModal from './ChannelModal.vue';
 import ChannelMembersDialog from './ChannelMembersDialog.vue';
 import ChatFolderShareDialog from './ChatFolderShareDialog.vue';
@@ -10,6 +10,7 @@ import { useResizable } from '../lib/useResizable';
 import { useChatStore } from '../stores/chat';
 import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
+import { useVoiceStore } from '../stores/voice';
 import { useOrgStore, chKey, noteItemKey } from '../stores/organization';
 import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
 import { canManageMembers, type ChannelInfo, type ChannelType, type Conversation } from '@notes/shared';
@@ -46,7 +47,27 @@ function noteActive(noteId: string): boolean {
 const chat = useChatStore();
 const notes = useNotesStore();
 const session = useSessionStore();
+const voice = useVoiceStore();
 const org = useOrgStore();
+
+// Voice channels: clicking joins/leaves a call; the row shows live occupants
+// (presence is visible to all channel members — decision #7).
+function toggleVoice(ch: ChannelInfo): void {
+  if (voice.activeRoomId === ch.id) void voice.leave();
+  else void voice.join(ch.id, ch.name);
+}
+function voiceOccupants(channelId: string) {
+  return voice.roomPresence(channelId);
+}
+// Load presence for this conversation's voice channels (so an in-progress call
+// shows even before a live join/leave event arrives).
+watch(
+  () => props.conversation.channels?.filter((c) => c.type === 'voice').map((c) => c.id).join(',') ?? '',
+  () => {
+    for (const ch of props.conversation.channels ?? []) if (ch.type === 'voice') void voice.loadPresence(ch.id);
+  },
+  { immediate: true },
+);
 // Channel whose members are being managed (private channels).
 const manageChannel = ref<ChannelInfo | null>(null);
 
@@ -115,7 +136,8 @@ function unread(ch: ChannelInfo): number {
 }
 function selectItem(it: Item) {
   if (it.kind === 'note') emit('openNote', it.noteId);
-  else if (it.channel.type !== 'voice') emit('select', it.channel.id); // voice has no text stream yet
+  else if (it.channel.type === 'voice') toggleVoice(it.channel);
+  else emit('select', it.channel.id);
 }
 
 // ---- Channel create / rename / delete (server; managers) ----
@@ -398,8 +420,17 @@ function onDropOnRoot() {
               <IconVolume v-else-if="row.item!.channel.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
               <IconHash v-else class="h-4 w-4 shrink-0 opacity-60" />
               <span class="min-w-0 grow truncate"><EmojiText :text="row.item!.channel.name" /></span>
+              <!-- Voice channel: live occupant count (green when I'm in it). -->
               <span
-                v-if="unread(row.item!.channel) > 0 && row.item!.channel.id !== activeChannelId"
+                v-if="row.item!.channel.type === 'voice' && voiceOccupants(row.item!.channel.id).length"
+                class="ml-1 flex shrink-0 items-center gap-0.5 text-[10px] font-semibold"
+                :class="voice.activeRoomId === row.item!.channel.id ? 'text-green-600 dark:text-green-400' : 'text-zinc-400'"
+                :title="voiceOccupants(row.item!.channel.id).map((p) => p.displayName).join(', ')"
+              >
+                <IconUsers class="h-3 w-3" />{{ voiceOccupants(row.item!.channel.id).length }}
+              </span>
+              <span
+                v-else-if="unread(row.item!.channel) > 0 && row.item!.channel.id !== activeChannelId"
                 class="ml-1 shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
               >{{ unread(row.item!.channel) > 99 ? '99+' : unread(row.item!.channel) }}</span>
             </template>

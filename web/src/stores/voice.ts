@@ -36,6 +36,7 @@ export const useVoiceStore = defineStore('voice', () => {
   const session = useSessionStore();
 
   const activeRoomId = ref<string | null>(null);
+  const activeRoomName = ref<string | null>(null);
   const connecting = ref(false);
   const error = ref<string | null>(null);
   const peers = reactive(new Map<string, UiPeer>());
@@ -86,6 +87,7 @@ export const useVoiceStore = defineStore('voice', () => {
 
   function reset(): void {
     activeRoomId.value = null;
+    activeRoomName.value = null;
     peers.clear();
     runtime.clear();
     mediaKeys.clear();
@@ -236,7 +238,7 @@ export const useVoiceStore = defineStore('voice', () => {
   }
 
   // --- public actions -------------------------------------------------------
-  async function join(roomId: string): Promise<void> {
+  async function join(roomId: string, roomName?: string): Promise<void> {
     if (activeRoomId.value === roomId) return;
     if (!voiceE2eeSupported()) {
       error.value = 'Your browser does not support end-to-end-encrypted voice.';
@@ -248,6 +250,7 @@ export const useVoiceStore = defineStore('voice', () => {
     try {
       const resp = await api.voiceJoin(roomId);
       activeRoomId.value = roomId;
+      activeRoomName.value = roomName ?? null;
       device = new Device();
       await device.load({ routerRtpCapabilities: resp.routerRtpCapabilities as unknown as msTypes.RtpCapabilities });
 
@@ -379,6 +382,7 @@ export const useVoiceStore = defineStore('voice', () => {
 
   return {
     activeRoomId,
+    activeRoomName,
     connecting,
     error,
     peers,
