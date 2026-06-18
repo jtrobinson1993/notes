@@ -42,6 +42,11 @@ These were settled in the v6 requirements pass and drive everything below:
    style) so people can join an ongoing conversation.
 8. **No recording**, ever — server-side recording is impossible by construction
    (the server can't hear the audio) and no client-side recording feature ships.
+9. **Silence suppression (Opus DTX) is required and on.** Clients stop
+   transmitting while silent. Accepted tradeoff: this lets the server infer
+   speech-activity timing from packet patterns (it still can't hear audio) —
+   hiding that timing is the job of bitrate padding, deferred to a future
+   follow-up (see [§ Security & privacy](#security--privacy)).
 
 ## Architecture
 
@@ -192,8 +197,9 @@ authorization surface for *who may join*.
   **egress** 10 × 9 × 40 ≈ **3.6 Mbps up**. At < 10 concurrent rooms, worst-case
   is low tens of Mbps **upload** — watch home upload bandwidth; CPU is trivial
   (the SFU only copies packets and *can't* transcode encrypted audio anyway).
-- **Opus DTX (Discontinuous Transmission)** — stop sending while silent — is on,
-  cutting real-world bandwidth far below the all-talking worst case.
+- **Opus DTX (Discontinuous Transmission)** — stop sending while silent — is a
+  **requirement** (decision #9), cutting real-world bandwidth far below the
+  all-talking worst case. Privacy tradeoff in [§ Security & privacy](#security--privacy).
 
 ## Direct 1:1 (and small-group) calls
 
@@ -235,10 +241,17 @@ involved in any of these):
 - **Server cannot hear audio:** E2EE frame layer; the server only forwards
   ciphertext.
 - **Metadata the server *does* learn (be honest):** who is in which call, join/
-  leave timing, and packet timing/sizes (which can leak speech activity via
-  traffic analysis). It does **not** learn audio content or who is speaking from
-  content. Constant-bitrate padding to defeat traffic-analysis is **out of scope**
-  for v6 — note as a known limitation.
+  leave timing, and packet timing/sizes. With **DTX on (decision #9)** the
+  silence gaps make **speech-activity timing** readily observable to the server
+  via traffic analysis — it still **never** learns audio content or who is
+  speaking *from content*.
+- **Bitrate padding — future follow-up (not v6).** Sending constant-rate,
+  constant-size traffic whether talking or silent would hide speech-activity
+  timing from the server. It is deliberately deferred. Note the tension: padding
+  is the **opposite** of DTX — to hide silence you must transmit through it, so
+  padding largely **gives back the bandwidth DTX saves**. They're a privacy ↔
+  bandwidth dial, not additive savings; v6 picks bandwidth (DTX on, no padding)
+  and revisits padding later if speech-timing privacy is wanted.
 - **No recording** (decision #8).
 - **Authorization** to join a room is exactly chat membership — no weaker path.
 
@@ -270,4 +283,6 @@ Per [testing.md](testing.md) and `CLAUDE.md`:
   iOS.
 - mediasoup **worker count / `announcedIp` + port-range** defaults and Docker
   documentation.
-- Codec params (Opus bitrate, DTX, FEC) defaults.
+- Codec params (Opus target bitrate, FEC) defaults. DTX is fixed on (decision #9).
+- **Bitrate padding** to hide speech-activity timing — design + opt-in, **future
+  follow-up** (see [§ Security & privacy](#security--privacy)).
