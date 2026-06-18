@@ -17,6 +17,10 @@ const api = vi.hoisted(() => ({
   reactions: vi.fn().mockResolvedValue([]),
   reactionAdd: vi.fn(),
   reactionRemove: vi.fn().mockResolvedValue({ ok: true }),
+  channelCreate: vi.fn(),
+  channelRename: vi.fn(),
+  channelReorder: vi.fn(),
+  channelDelete: vi.fn().mockResolvedValue({ ok: true }),
 }));
 vi.mock('../../src/lib/api', () => ({ api }));
 
@@ -407,5 +411,84 @@ describe('openThread', () => {
     // Idempotent: a second open reuses the in-memory thread.
     await store.openThread('c1', 2);
     expect(api.threadCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('channel actions (v4)', () => {
+  // A group conversation with the given channel ids (general first).
+  function groupWith(ids: string[]): Conversation {
+    return {
+      id: 'g1',
+      kind: 'group',
+      members: [{ userId: 'me', displayName: 'Me', publicKey: null }],
+      sealedKey: { epk: '', iv: '', ct: '' },
+      epoch: 0,
+      epochKeys: [],
+      managePolicy: 'owner',
+      myRole: 'owner',
+      channels: ids.map((id, i) => ({
+        id,
+        conversationId: 'g1',
+        name: id === 'g1' ? 'general' : id,
+        type: 'text' as const,
+        position: i,
+        isDefault: id === 'g1',
+        lastSeq: 0,
+        lastReadSeq: 0,
+      })),
+      lastSeq: 0,
+      lastReadSeq: 0,
+      createdAt: 0,
+    } as Conversation;
+  }
+
+  it('createChannel posts, upserts, and returns the new channel id', async () => {
+    const store = useChatStore();
+    store.conversations = [groupWith(['g1'])];
+    api.channelCreate.mockResolvedValue(groupWith(['g1', 'c2']));
+    const id = await store.createChannel('g1', 'random', 'text');
+    expect(api.channelCreate).toHaveBeenCalledWith('g1', { name: 'random', type: 'text' });
+    expect(id).toBe('c2');
+    expect(store.conversations[0]!.channels.map((c) => c.id)).toContain('c2');
+  });
+
+  it('renameChannel and reorderChannels upsert the returned conversation', async () => {
+    const store = useChatStore();
+    store.conversations = [groupWith(['g1', 'c2'])];
+    api.channelRename.mockResolvedValue(groupWith(['g1', 'c2']));
+    await store.renameChannel('g1', 'c2', 'memes');
+    expect(api.channelRename).toHaveBeenCalledWith('g1', 'c2', 'memes');
+    api.channelReorder.mockResolvedValue(groupWith(['g1', 'c2']));
+    await store.reorderChannels('g1', ['c2']);
+    expect(api.channelReorder).toHaveBeenCalledWith('g1', ['c2']);
+  });
+
+  it('deleteChannel drops the channel state, resets the active channel, and reloads', async () => {
+    const store = useChatStore();
+    store.conversations = [groupWith(['g1', 'c2'])];
+    store.messages = { c2: [msg({ conversationId: 'g1', channelId: 'c2', seq: 1 }) as never] };
+    store.setActive('g1', 'c2');
+    api.conversations.mockResolvedValue([groupWith(['g1'])]);
+    await store.deleteChannel('g1', 'c2');
+    expect(api.channelDelete).toHaveBeenCalledWith('g1', 'c2');
+    expect(store.messages['c2']).toBeUndefined();
+    expect(store.activeChannelId).toBe('g1'); // fell back to general
+    expect(api.conversations).toHaveBeenCalled();
+  });
+
+  it('handleFrame channels-updated reloads and drops a deleted channel’s state', async () => {
+    const store = useChatStore();
+    store.conversations = [groupWith(['g1', 'c2'])];
+    store.messages = { c2: [msg({ conversationId: 'g1', channelId: 'c2', seq: 1 }) as never] };
+    api.conversations.mockResolvedValue([groupWith(['g1'])]);
+    await store.handleFrame({ type: 'channels-updated', conversationId: 'g1', deletedChannelId: 'c2' });
+    expect(store.messages['c2']).toBeUndefined();
+    expect(api.conversations).toHaveBeenCalled();
+  });
+
+  it('setActiveChannel updates the active channel', () => {
+    const store = useChatStore();
+    store.setActiveChannel('c2');
+    expect(store.activeChannelId).toBe('c2');
   });
 });
