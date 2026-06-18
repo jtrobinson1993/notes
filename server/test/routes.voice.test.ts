@@ -121,6 +121,18 @@ describe('voice routes — rekey', () => {
   });
 });
 
+describe('voice routes — presence', () => {
+  it('reports who is in the room to any channel member (decision #7)', async () => {
+    await join(voiceId, ownerCookie);
+    const res = await inject('GET', `/api/voice/rooms/${voiceId}/presence`, aCookie); // a is a member, not in the call
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { peers: { userId: string }[] }).peers.map((p) => p.userId)).toEqual([owner]);
+  });
+  it('denies presence to a non-member', async () => {
+    expect((await inject('GET', `/api/voice/rooms/${voiceId}/presence`, outsiderCookie)).statusCode).toBe(403);
+  });
+});
+
 describe('voice routes — leave', () => {
   it('leaving is idempotent and lets you rejoin', async () => {
     await join(voiceId, ownerCookie);

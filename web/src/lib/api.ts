@@ -33,6 +33,7 @@ import type {
   VoiceJoinResponse,
   VoiceProduceRequest,
   VoiceProduceResponse,
+  VoicePeer,
   VoiceTransportRequest,
   VoiceTransportResponse,
   WrappedKey,
@@ -278,4 +279,5 @@ export const api = {
     req<VoiceConsumeResponse>('POST', `/api/voice/rooms/${encodeURIComponent(room)}/consume`, body),
   voiceRekey: (room: string, epoch: number, keys: SealedMemberKey[]) =>
     req<{ ok: true }>('POST', `/api/voice/rooms/${encodeURIComponent(room)}/rekey`, { epoch, keys }),
+  voicePresence: (room: string) => req<{ peers: VoicePeer[] }>('GET', `/api/voice/rooms/${encodeURIComponent(room)}/presence`),
 };

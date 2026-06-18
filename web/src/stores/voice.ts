@@ -45,8 +45,30 @@ export const useVoiceStore = defineStore('voice', () => {
   const localSpeaking = ref(false);
   const connectionQuality = ref<'good' | 'fair' | 'poor' | 'unknown'>('unknown');
 
+  // Who's in each voice room (any room, not just my active call) — drives the
+  // sidebar presence indicator (decision #7).
+  const presence = reactive(new Map<string, VoicePeer[]>());
+
   const inCall = computed(() => activeRoomId.value !== null);
   const peerList = computed(() => [...peers.values()]);
+
+  function roomPresence(roomId: string): VoicePeer[] {
+    return presence.get(roomId) ?? [];
+  }
+  async function loadPresence(roomId: string): Promise<void> {
+    try {
+      presence.set(roomId, (await api.voicePresence(roomId)).peers);
+    } catch {
+      /* not accessible / offline — leave as-is */
+    }
+  }
+  function presenceAdd(roomId: string, peer: VoicePeer): void {
+    const list = presence.get(roomId) ?? [];
+    if (!list.some((p) => p.userId === peer.userId)) presence.set(roomId, [...list, peer]);
+  }
+  function presenceRemove(roomId: string, userId: string): void {
+    presence.set(roomId, (presence.get(roomId) ?? []).filter((p) => p.userId !== userId));
+  }
 
   // --- non-reactive runtime (never proxied — mediasoup objects dislike proxies) ---
   let device: Device | null = null;
@@ -165,32 +187,34 @@ export const useVoiceStore = defineStore('voice', () => {
 
   // --- frame handling -------------------------------------------------------
   async function handleFrame(frame: ServerFrame): Promise<void> {
-    const roomId = activeRoomId.value;
-    if (!roomId) return;
+    const active = activeRoomId.value;
     switch (frame.type) {
       case 'voice-peer-joined':
-        if (frame.roomId === roomId && frame.peer.userId !== session.user?.id) {
+        // Presence is tracked for every room (sidebar), even ones I'm not in.
+        presenceAdd(frame.roomId, frame.peer);
+        if (frame.roomId === active && frame.peer.userId !== session.user?.id) {
           peers.set(frame.peer.userId, { ...frame.peer, speaking: false, volume: 1 });
         }
         break;
       case 'voice-peer-left':
-        if (frame.roomId === roomId) removePeer(frame.userId);
+        presenceRemove(frame.roomId, frame.userId);
+        if (frame.roomId === active) removePeer(frame.userId);
         break;
       case 'voice-new-producer':
-        if (frame.roomId === roomId && frame.userId !== session.user?.id) {
+        if (frame.roomId === active && active && frame.userId !== session.user?.id) {
           const p = peers.get(frame.userId);
           if (p) p.producerId = frame.producerId;
-          await consumePeer(roomId, frame.userId, frame.producerId);
+          await consumePeer(active, frame.userId, frame.producerId);
         }
         break;
       case 'voice-key-epoch':
-        if (frame.roomId === roomId) {
+        if (frame.roomId === active) {
           const { privateKey, publicKey } = await session.getKeyPair();
           await onKeyEpoch(frame.epoch, await unsealMediaKey(frame.sealedKey, privateKey, publicKey));
         }
         break;
       case 'voice-rekey-needed':
-        if (frame.roomId === roomId) await authorRekey(roomId, frame.epoch, frame.roster);
+        if (frame.roomId === active && active) await authorRekey(active, frame.epoch, frame.roster);
         break;
       default:
         break;
@@ -365,6 +389,8 @@ export const useVoiceStore = defineStore('voice', () => {
     localSpeaking,
     connectionQuality,
     inCall,
+    roomPresence,
+    loadPresence,
     init,
     join,
     leave,
