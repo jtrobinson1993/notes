@@ -153,6 +153,7 @@ onBeforeUnmount(stopDrag);
         v-if="conversation && conversation.kind !== 'thread'"
         :conversation="conversation"
         :active-channel-id="activeChannelId"
+        :open-note-id="openNoteId"
         @select="selectChannel($event)"
         @open-note="openNoteId = $event"
       />

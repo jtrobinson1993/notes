@@ -104,6 +104,17 @@ describe('ChatSidebar (unified tree)', () => {
     expect(w.emitted('select')).toContainEqual(['d1']);
   });
 
+  it('highlights the open note (not the channel) when a note is open', () => {
+    const org = useOrgStore();
+    org.pin('g1', 'note', 'n1');
+    const w = mount(ChatSidebar, { props: { conversation: group('owner'), activeChannelId: 'g1', openNoteId: 'n1' }, global: { stubs } });
+    const lis = w.findAll('li');
+    const noteLi = lis.find((li) => li.find('[title="Unpin"]').exists())!;
+    const generalLi = lis.find((li) => li.text().includes('general'))!;
+    expect(noteLi.classes()).toContain('bg-zinc-200'); // active note
+    expect(generalLi.classes()).not.toContain('bg-zinc-200'); // channel not active while a note is open
+  });
+
   it('renders a pinned note and unpins it', async () => {
     const org = useOrgStore();
     org.pin('g1', 'note', 'n1');

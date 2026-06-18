@@ -26,8 +26,17 @@ import IconX from '~icons/mynaui/x';
 // distinct from note folders, personal like pins) group channels AND pinned
 // notes. Channel create/rename/delete are server-side (managers); the folder
 // arrangement, ordering, and pins are personal to each member.
-const props = defineProps<{ conversation: Conversation; activeChannelId: string }>();
+const props = defineProps<{ conversation: Conversation; activeChannelId: string; openNoteId?: string | null }>();
 const emit = defineEmits<{ select: [channelId: string]; openNote: [noteId: string] }>();
+
+// A channel is "active" only when no note overlay is open; the open note row
+// highlights instead.
+function channelActive(channelId: string): boolean {
+  return !props.openNoteId && channelId === props.activeChannelId;
+}
+function noteActive(noteId: string): boolean {
+  return props.openNoteId === noteId;
+}
 const chat = useChatStore();
 const notes = useNotesStore();
 const org = useOrgStore();
@@ -271,7 +280,7 @@ function onDropOnRoot() {
       <li v-if="!isGroup" class="flex items-center">
         <button
           class="flex min-w-0 grow items-center gap-1.5 py-1.5 pl-2 pr-2 text-left text-sm"
-          :class="convId === activeChannelId ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
+          :class="channelActive(convId) ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
           @click="emit('select', convId)"
         >
           <IconHash class="h-4 w-4 shrink-0 opacity-60" />
@@ -283,7 +292,8 @@ function onDropOnRoot() {
         :key="row.key"
         class="group relative flex items-center"
         :class="[
-          row.type === 'item' && row.item!.kind === 'channel' && row.item!.channel.id === activeChannelId
+          row.type === 'item' &&
+          ((row.item!.kind === 'channel' && channelActive(row.item!.channel.id)) || (row.item!.kind === 'note' && noteActive(row.item!.noteId)))
             ? 'bg-zinc-200 dark:bg-zinc-800'
             : 'hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60',
           dragOver?.key === row.key && dragOver.into ? 'ring-2 ring-inset ring-blue-500' : '',
@@ -326,7 +336,7 @@ function onDropOnRoot() {
             class="flex min-w-0 grow cursor-grab items-center gap-1.5 py-1.5 pr-2 text-left text-sm"
             :style="{ paddingLeft: depthPad(row.depth) }"
             :class="[
-              row.item!.kind === 'channel' && row.item!.channel.id === activeChannelId ? 'font-medium' : 'text-zinc-600 dark:text-zinc-300',
+              (row.item!.kind === 'channel' && channelActive(row.item!.channel.id)) || (row.item!.kind === 'note' && noteActive(row.item!.noteId)) ? 'font-medium' : 'text-zinc-600 dark:text-zinc-300',
               row.item!.kind === 'channel' && row.item!.channel.type === 'voice' ? 'opacity-70' : '',
             ]"
             draggable="true"
