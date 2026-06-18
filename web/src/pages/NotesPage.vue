@@ -331,7 +331,7 @@ function excerpt(body: string): string {
                   @dragover.prevent="dragOver = { key: row.key, into: true }"
                   @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
                 >
-                  <component :is="isCollapsed(row.folder!.id) ? IconFolderPlus : IconFolderMinus" class="h-4 w-4 shrink-0 opacity-60" />
+                  <component :is="isCollapsed(row.folder!.id) ? IconFolderPlus : IconFolderMinus" class="h-[18px] w-[18px] shrink-0 opacity-60" />
                   <span class="min-w-0 grow truncate font-medium"><EmojiText :text="row.folder!.name" /></span>
                   <span class="text-xs text-zinc-400">{{ notesInFolder(row.folder!.id) }}</span>
                 </button>
