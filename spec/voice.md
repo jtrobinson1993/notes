@@ -245,13 +245,25 @@ involved in any of these):
   silence gaps make **speech-activity timing** readily observable to the server
   via traffic analysis — it still **never** learns audio content or who is
   speaking *from content*.
-- **Bitrate padding — future follow-up (not v6).** Sending constant-rate,
-  constant-size traffic whether talking or silent would hide speech-activity
-  timing from the server. It is deliberately deferred. Note the tension: padding
-  is the **opposite** of DTX — to hide silence you must transmit through it, so
-  padding largely **gives back the bandwidth DTX saves**. They're a privacy ↔
-  bandwidth dial, not additive savings; v6 picks bandwidth (DTX on, no padding)
-  and revisits padding later if speech-timing privacy is wanted.
+- **Hiding speech-activity timing — future follow-up (not v6).** Two variants,
+  both deferred; mechanically both are easy here (encrypted decoy frames marked
+  "fake" *inside* the sealed payload, dropped by recipients after decrypt; the
+  server can't tell them apart; no added latency):
+  - **Constant-rate padding** — transmit at the full speech rate even when
+    silent. **Strong** guarantee (rate is flat, so it reveals nothing) but
+    **gives back all the bandwidth DTX saves** — it's the opposite of DTX.
+  - **Intermittent cover traffic ("chaffing")** — cheaper decoys at less than
+    full rate. **Partial** protection only: because real speech is always
+    transmitted, any decoy rate *below* the speech rate leaves the traffic
+    envelope higher during real speech than during silence, so the
+    speech-activity signal (and cross-participant turn-taking correlation) still
+    leaks to an observer who averages over time. Raises attacker effort; not a
+    guarantee.
+  - **Why deferred:** it's a privacy ↔ bandwidth dial, not additive savings — a
+    *flat* rate requires decoy-rate == speech-rate (≈ no savings); anything
+    cheaper is heuristic. For a self-hosted server among friends the realistic
+    threat is seizure/compromise/network observer, so v6 picks bandwidth (DTX on,
+    no cover) and revisits this if speech-timing privacy is wanted.
 - **No recording** (decision #8).
 - **Authorization** to join a room is exactly chat membership — no weaker path.
 
