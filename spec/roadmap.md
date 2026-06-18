@@ -153,13 +153,35 @@ own crypto-heavy feature — see **v5**.)
 Per-object access control on top of E2EE — effectively the same
 key-distribution problem as chat membership, so reuse that machinery:
 
-- Share an entire folder of notes (not just individual notes).
+- Share an entire folder of notes from the notes view (not just individual notes).
+- Share an entire folder of notes AND channels from the chat sidebar.
+- **No authoritative "group permissions."** Sharing a folder **recursively grants
+  the permission to each individual child object** — it's purely a UX convenience
+  to avoid granting permissions one-by-one. Permissions live on the objects
+  themselves, not on the folder.
 - Adding a note/folder to a chat sidebar does **not** automatically expose it to
   everyone in the chat. On add, present a UX to optionally grant view permission
   to other participants — individually or to all at once.
 - **Revocation:** removing a participant's access must rotate the note/folder key
   (epoch re-key) so they can't read future updates. Prior plaintext they already
   held is considered compromised — document that boundary.
+
+### Decisions (confirmed)
+
+- **Recipients may be non-friend conversation co-members.** Sharing is no longer
+  strictly friends-only: you may grant access to any participant of a shared
+  conversation (friends-of-friends). This **relaxes the friends-gate invariant**
+  in `CLAUDE.md` for the *sharing* path — update that doc when implementing.
+- **Channels become per-object permissioned ("private channels").** This
+  supersedes the v4 model where every member shares the conversation key and sees
+  every channel: a channel gets its own key/membership and is granted to specific
+  people. (Existing v4 channels migrate to "everyone in the conversation has
+  access".)
+- **Folder share = one-time recursive snapshot.** Sharing a folder grants its
+  current children individually; there is **no** persistent folder→recipient
+  record, and notes/channels added later are NOT auto-shared.
+- **Delivery:** one PR covering notes-view + chat-sidebar folder sharing, channel
+  sharing, revoke-with-key-rotation, and the grant-on-add-to-sidebar UX.
 
 ## v6 — Voice
 

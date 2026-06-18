@@ -214,6 +214,18 @@ export interface ChannelInfo {
   lastSeq: number;
   /** my last-read seq in this channel; unread = lastSeq - lastReadSeq */
   lastReadSeq: number;
+  /** v5: a **private** channel has its own key + explicit membership (only its
+   *  members can read it). Open channels (default + general + pre-v5) use the
+   *  conversation key and are visible to all conversation members. A private
+   *  channel is only included in a member's conversation payload. */
+  private: boolean;
+  /** private channel: its current epoch (re-keyed on grant/revoke). 0 for open. */
+  channelEpoch: number;
+  /** private channel: every channel-epoch key sealed to ME (unseal with my
+   *  X25519 key), keyed by epoch. Empty for open channels (they use the conv key). */
+  channelKeys: SealedEpochKey[];
+  /** private channel: the member user ids. Empty for open channels (all members). */
+  memberIds: string[];
 }
 
 /** Bounds for a channel name (server-enforced). */

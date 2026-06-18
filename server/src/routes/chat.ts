@@ -154,20 +154,34 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
         isDefault: true,
         lastSeq: generalLastSeq,
         lastReadSeq: mine.last_read_seq,
+        private: false,
+        channelEpoch: 0,
+        channelKeys: [],
+        memberIds: [],
       },
-      ...db.listChannels(conv.id).map(
-        (ch): ChannelInfo => ({
-          id: ch.id,
-          conversationId: conv.id,
-          name: ch.name,
-          type: ch.type as ChannelType,
-          position: ch.position,
-          isDefault: false,
-          lastSeq: db.getChannelMaxSeq(ch.id),
-          lastReadSeq: db.getLastReadSeq(conv.id, ch.id, userId),
-        }),
-      ),
     ];
+    for (const ch of db.listChannels(conv.id)) {
+      const isPrivate = ch.private !== 0;
+      // A private channel is only visible to its members.
+      if (isPrivate && !db.isChannelMember(ch.id, userId)) continue;
+      const myChannelKeys: SealedEpochKey[] = isPrivate
+        ? db.listChannelKeysForUser(ch.id, userId).map((k) => ({ epoch: k.epoch, sealedKey: JSON.parse(k.sealed_key) as SealedKey }))
+        : [];
+      channels.push({
+        id: ch.id,
+        conversationId: conv.id,
+        name: ch.name,
+        type: ch.type as ChannelType,
+        position: ch.position,
+        isDefault: false,
+        lastSeq: db.getChannelMaxSeq(ch.id),
+        lastReadSeq: db.getLastReadSeq(conv.id, ch.id, userId),
+        private: isPrivate,
+        channelEpoch: isPrivate ? (db.getChannelMember(ch.id, userId)?.epoch ?? 0) : 0,
+        channelKeys: myChannelKeys,
+        memberIds: isPrivate ? db.listChannelMemberIds(ch.id) : [],
+      });
+    }
     return {
       id: conv.id,
       kind: conv.kind as Conversation['kind'],
@@ -188,11 +202,24 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
   // Resolve a client-supplied channel id within a conversation. `undefined`/the
   // conversation id itself ⇒ the general channel. Returns the resolved channel
   // id, or null when the id is malformed or doesn't belong to this conversation.
-  function resolveChannel(convId: string, raw: unknown): string | null {
+  function resolveChannel(convId: string, raw: unknown, userId: string): string | null {
     if (raw === undefined || raw === null || raw === convId) return convId;
     if (typeof raw !== 'string' || !ID_RE.test(raw)) return null;
     const ch = db.getChannel(raw);
-    return ch && ch.conversation_id === convId ? raw : null;
+    if (!ch || ch.conversation_id !== convId) return null;
+    // A private channel is only reachable by its members.
+    if (ch.private !== 0 && !db.isChannelMember(raw, userId)) return null;
+    return raw;
+  }
+
+  // Who should receive events for a channel: a private channel's own members,
+  // otherwise (open/general) every conversation member.
+  function channelAudience(convId: string, channelId: string): string[] {
+    if (channelId !== convId) {
+      const ch = db.getChannel(channelId);
+      if (ch && ch.private !== 0) return db.listChannelMemberIds(channelId);
+    }
+    return db.listConversationMemberIds(convId);
   }
 
   // Access requires membership AND, for a DM, current friendship.
@@ -851,7 +878,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
 
     const q = request.query as { before?: string; limit?: string; channelId?: string };
-    const channelId = resolveChannel(id, q.channelId);
+    const channelId = resolveChannel(id, q.channelId, me);
     if (channelId === null) return reply.code(404).send({ error: 'channel not found' });
     let limit = q.limit ? Number(q.limit) : 50;
     if (!Number.isFinite(limit) || limit < 1) limit = 50;
@@ -879,7 +906,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     ) {
       return reply.code(400).send({ error: 'invalid message payload' });
     }
-    const channelId = resolveChannel(id, b.channelId);
+    const channelId = resolveChannel(id, b.channelId, me);
     if (channelId === null) return reply.code(404).send({ error: 'channel not found' });
     const row = db.insertMessage({
       id: newId(),
@@ -891,10 +918,10 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       iv: b.iv,
     });
     const message = toMessage(row);
-    // Fan out to ALL members (including the sender's other sockets).
-    const memberIds = db.listConversationMemberIds(id);
+    // Fan out to the channel's audience (private → its members; else all members).
+    const memberIds = channelAudience(id, channelId);
     hub.sendToUsers(memberIds, { type: 'message', message });
-    // Background push to members with no live socket (content-free; see push.ts).
+    // Background push to recipients with no live socket (content-free; see push.ts).
     push.notifyNewMessage(id, me, memberIds);
     return message;
   });
@@ -920,7 +947,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const row = db.editMessage({ conversationId: id, seq: seqNum, senderId: me, ciphertext: b.ciphertext, iv: b.iv });
     if (!row) return reply.code(403).send({ error: 'not your message' });
     const message = toMessage(row);
-    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'message-edited', message });
+    hub.sendToUsers(channelAudience(id, row.channel_id), { type: 'message-edited', message });
     return message;
   });
 
@@ -934,11 +961,11 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     if (typeof b?.seq !== 'number' || !Number.isFinite(b.seq)) {
       return reply.code(400).send({ error: 'invalid seq' });
     }
-    const channelId = resolveChannel(id, b.channelId);
+    const channelId = resolveChannel(id, b.channelId, me);
     if (channelId === null) return reply.code(404).send({ error: 'channel not found' });
     db.setLastReadSeq(id, channelId, me, b.seq);
     hub.sendToUsers(
-      db.listConversationMemberIds(id),
+      channelAudience(id, channelId),
       { type: 'read', conversationId: id, channelId, userId: me, seq: b.seq },
       me,
     );
@@ -953,7 +980,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
     if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
     const q = request.query as { channelId?: string };
-    const channelId = resolveChannel(id, q.channelId);
+    const channelId = resolveChannel(id, q.channelId, me);
     if (channelId === null) return reply.code(404).send({ error: 'channel not found' });
     return db.listReactions(channelId).map(toReaction);
   });
@@ -977,6 +1004,9 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     // mis-filed into another channel.
     const target = db.getMessageBySeq(id, seqNum);
     if (!target) return reply.code(400).send({ error: 'invalid seq' });
+    // Must be able to reach the target's channel (blocks reacting in a private
+    // channel you're not a member of).
+    if (resolveChannel(id, target.channel_id, me) === null) return reply.code(403).send({ error: 'no channel access' });
     const row = db.addReaction({
       id: newId(),
       conversationId: id,
@@ -987,7 +1017,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       iv: b.iv,
     });
     const reaction = toReaction(row);
-    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'reaction', reaction });
+    hub.sendToUsers(channelAudience(id, target.channel_id), { type: 'reaction', reaction });
     return reaction;
   });
 
@@ -1000,7 +1030,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     // Scope to this conversation, and only the owner may remove (IDOR guard).
     if (!existing || existing.conversation_id !== id) return reply.code(404).send({ error: 'not found' });
     if (!db.removeReaction(rid, me)) return reply.code(403).send({ error: 'not your reaction' });
-    hub.sendToUsers(db.listConversationMemberIds(id), {
+    hub.sendToUsers(channelAudience(id, existing.channel_id), {
       type: 'reaction-removed',
       conversationId: id,
       channelId: existing.channel_id,
@@ -1041,14 +1071,36 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     if (db.countChannels(id) >= MAX_CHANNELS_PER_CONVERSATION) {
       return reply.code(409).send({ error: 'too many channels' });
     }
-    db.createChannel({
-      id: newId(),
-      conversationId: id,
-      name: (b!.name as string).trim(),
-      type,
-      position: db.nextChannelPosition(id),
-    });
-    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'channels-updated', conversationId: id });
+    // A private channel ships with a sealed channel key per initial member (a
+    // subset of conversation members, which must include the creator). Open
+    // channels (no `private`) carry no keys and stay conversation-wide.
+    const isPrivate = b?.private === true;
+    const sealed: SealedMemberKey[] = [];
+    if (isPrivate) {
+      // Members must be a non-empty set of distinct conversation members, sealed
+      // the channel key, and must include the creator.
+      const convMembers = new Set(db.listConversationMemberIds(id));
+      const raw = b?.members;
+      if (!Array.isArray(raw) || raw.length === 0) return reply.code(400).send({ error: 'private channel needs members' });
+      const ids = new Set<string>();
+      for (const m of raw as unknown[]) {
+        if (typeof m !== 'object' || m === null) return reply.code(400).send({ error: 'invalid member' });
+        const mm = m as Record<string, unknown>;
+        if (typeof mm.userId !== 'string' || !validSealedKey(mm.sealedKey)) return reply.code(400).send({ error: 'invalid member' });
+        if (!convMembers.has(mm.userId) || ids.has(mm.userId)) return reply.code(400).send({ error: 'members must be distinct conversation members' });
+        ids.add(mm.userId);
+        sealed.push({ userId: mm.userId, sealedKey: mm.sealedKey });
+      }
+      if (!ids.has(me)) return reply.code(400).send({ error: 'creator must be a member' });
+    }
+    const channelId = newId();
+    db.raw.transaction(() => {
+      db.createChannel({ id: channelId, conversationId: id, name: (b!.name as string).trim(), type, position: db.nextChannelPosition(id), private: isPrivate });
+      for (const mk of sealed) db.addChannelMember({ channelId, userId: mk.userId, sealedKey: JSON.stringify(mk.sealedKey), epoch: 0 });
+    })();
+    // Open channel → tell everyone; private → only its members.
+    const audience = isPrivate ? sealed.map((m) => m.userId) : db.listConversationMemberIds(id);
+    hub.sendToUsers(audience, { type: 'channels-updated', conversationId: id });
     return toConversation(db.getConversation(id)!, me)!;
   });
 
@@ -1098,7 +1150,80 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const ch = db.getChannel(channelId);
     if (!ch || ch.conversation_id !== id) return reply.code(404).send({ error: 'channel not found' });
     db.deleteChannel(channelId);
-    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'channels-updated', conversationId: id, deletedChannelId: channelId });
+    hub.sendToUsers(channelAudience(id, channelId), { type: 'channels-updated', conversationId: id, deletedChannelId: channelId });
+    return { ok: true };
+  });
+
+  // ---- Private-channel membership (v5): grant / revoke (managers) ----------
+  // Grant access to a private channel: mint a NEW channel epoch, sealing the new
+  // key to every current channel member + the joiner; `history:'share'` also
+  // seals every prior epoch key so they can read the back-scroll.
+  app.post('/api/conversations/:id/channels/:channelId/members', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, channelId } = request.params as { id: string; channelId: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id) || !ID_RE.test(channelId)) return reply.code(404).send({ error: 'not found' });
+    const err = requireChannelManager(id, me);
+    if (err) return reply.code(err.code).send({ error: err.error });
+    const ch = db.getChannel(channelId);
+    if (!ch || ch.conversation_id !== id || ch.private === 0) return reply.code(404).send({ error: 'not a private channel' });
+
+    const b = request.body as Record<string, unknown> | null;
+    const userId = b?.userId;
+    const history = b?.history;
+    const epoch = b?.epoch;
+    if (typeof userId !== 'string') return reply.code(400).send({ error: 'invalid userId' });
+    if (history !== 'share' && history !== 'fresh') return reply.code(400).send({ error: 'invalid history' });
+    if (!db.getConversationMember(id, userId)) return reply.code(400).send({ error: 'not a conversation member' });
+    if (db.isChannelMember(channelId, userId)) return reply.code(409).send({ error: 'already a member' });
+
+    const current = db.getChannelEpoch(channelId);
+    if (epoch !== current + 1) return reply.code(409).send({ error: 'epoch mismatch' });
+    const expected = new Set([...db.listChannelMemberIds(channelId), userId]);
+    const sealed = parseSealedMemberKeys(b?.keys, expected);
+    if (!sealed) return reply.code(400).send({ error: 'keys must cover all members + the new member' });
+    let prior: SealedEpochKey[] = [];
+    if (history === 'share') {
+      const p = parseSealedEpochKeys(b?.priorKeys, current);
+      if (!p) return reply.code(400).send({ error: 'priorKeys must cover epochs 0..current' });
+      prior = p;
+    }
+    db.raw.transaction(() => {
+      for (const k of sealed) {
+        const sk = JSON.stringify(k.sealedKey);
+        if (k.userId === userId) db.addChannelMember({ channelId, userId, sealedKey: sk, epoch: epoch as number });
+        else db.setChannelMemberEpochKey(channelId, k.userId, epoch as number, sk);
+      }
+      for (const p of prior) db.addChannelKey(channelId, userId, p.epoch, JSON.stringify(p.sealedKey));
+    })();
+    hub.sendToUsers([...expected], { type: 'channels-updated', conversationId: id });
+    return toConversation(db.getConversation(id)!, me)!;
+  });
+
+  // Revoke a member from a private channel: mint a new epoch sealed to the
+  // REMAINING members; the target's keys are deleted (future-access cut).
+  app.delete('/api/conversations/:id/channels/:channelId/members/:userId', { preHandler: requireAuth }, async (request, reply) => {
+    const { id, channelId, userId: target } = request.params as { id: string; channelId: string; userId: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id) || !ID_RE.test(channelId)) return reply.code(404).send({ error: 'not found' });
+    const err = requireChannelManager(id, me);
+    if (err) return reply.code(err.code).send({ error: err.error });
+    const ch = db.getChannel(channelId);
+    if (!ch || ch.conversation_id !== id || ch.private === 0) return reply.code(404).send({ error: 'not a private channel' });
+    if (!db.isChannelMember(channelId, target)) return reply.code(404).send({ error: 'not a member' });
+
+    const remaining = db.listChannelMemberIds(channelId).filter((u) => u !== target);
+    if (remaining.length < 1) return reply.code(400).send({ error: 'a private channel needs at least one member' });
+    const current = db.getChannelEpoch(channelId);
+    const b = request.body as Record<string, unknown> | null;
+    if (b?.epoch !== current + 1) return reply.code(409).send({ error: 'epoch mismatch' });
+    const sealed = parseSealedMemberKeys(b?.keys, new Set(remaining));
+    if (!sealed) return reply.code(400).send({ error: 'keys must cover the remaining members' });
+    db.raw.transaction(() => {
+      db.removeChannelMember(channelId, target);
+      for (const k of sealed) db.setChannelMemberEpochKey(channelId, k.userId, current + 1, JSON.stringify(k.sealedKey));
+    })();
+    hub.sendToUsers(remaining, { type: 'channels-updated', conversationId: id });
+    hub.sendToUser(target, { type: 'channels-updated', conversationId: id, deletedChannelId: channelId });
     return { ok: true };
   });
 }

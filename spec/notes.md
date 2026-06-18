@@ -209,3 +209,19 @@ UI:
   existing notes/folders or creates a new note/folder (which also appears in the
   notes view) and pins it. Opening a pinned item navigates to the notes view
   (`/?note=` / `/?folder=`).
+
+## Sharing (v5)
+
+Individual note sharing (v1) gains:
+
+- **Recipients = friends OR conversation co-members.** You can now share with a
+  friend-of-friend you share a group with, not just direct friends
+  (`/api/members` → `listShareableMembers`). True outsiders are still rejected.
+- **Revoke rotates the note key.** `notes.revokeShare` re-encrypts the note under
+  a fresh key (re-wrapped under MK), re-seals it to the remaining recipients, and
+  drops the revoked recipient — so they can't read future edits. Prior plaintext
+  they already held is a documented boundary.
+- **Folder sharing** (`notes.shareFolder`) — a one-time recursive snapshot grant:
+  every OWNED note in a folder + its subfolders is shared with each recipient.
+  There's no folder-level permission record, so notes added later aren't
+  auto-shared (`FolderShareDialog`, reached from a folder's Share hover action).

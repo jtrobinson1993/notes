@@ -110,10 +110,10 @@ export function noteRoutes(app: FastifyInstance, db: DB): void {
 
   // ---- Sharing ----
 
-  // Only friends can be shared with, so the picker lists exactly your friends —
+  // Share targets (v5): your friends plus anyone you share a conversation with —
   // by display name, never the username.
   app.get('/api/members', { preHandler: requireAuth }, async (request) => {
-    return db.listFriendMembers(request.user!.id).map(
+    return db.listShareableMembers(request.user!.id).map(
       (m): MemberInfo => ({
         id: m.id,
         displayName: effectiveDisplayName({ id: m.id, display_name: m.display_name }),
@@ -164,9 +164,11 @@ export function noteRoutes(app: FastifyInstance, db: DB): void {
       return reply.code(400).send({ error: 'invalid share payload' });
     }
     if (b.recipientId === me) return reply.code(400).send({ error: 'cannot share with yourself' });
-    // You can only share with a friend (mirrors DM access — non-friends are
-    // reachable only via a group a mutual friend creates).
-    if (!db.areFriends(me, b.recipientId)) return reply.code(403).send({ error: 'not a friend' });
+    // v5: you may share with a friend OR a conversation co-member (a
+    // friend-of-friend you already share a group with).
+    if (!db.areFriends(me, b.recipientId) && !db.sharesConversation(me, b.recipientId)) {
+      return reply.code(403).send({ error: 'not a friend or co-member' });
+    }
     const recipient = db.getUser(b.recipientId);
     if (!recipient?.public_key) return reply.code(400).send({ error: 'recipient has no public key yet' });
     db.upsertShare({ noteId: id, recipientId: b.recipientId, sealedKey: JSON.stringify(b.sealedKey), access: b.access });

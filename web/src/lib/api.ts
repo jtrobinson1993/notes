@@ -228,8 +228,8 @@ export const api = {
     req<ChatReaction>('POST', `/api/conversations/${encodeURIComponent(id)}/messages/${seq}/reactions`, body),
   reactionRemove: (id: string, rid: string) =>
     req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/reactions/${encodeURIComponent(rid)}`),
-  // ---- v4: channels (groups only) ----
-  channelCreate: (id: string, body: { name: string; type: 'text' | 'voice' }) =>
+  // ---- v4/v5: channels (groups only; v5 adds private channels) ----
+  channelCreate: (id: string, body: { name: string; type: 'text' | 'voice'; private?: boolean; members?: SealedMemberKey[] }) =>
     req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/channels`, body),
   channelRename: (id: string, channelId: string, name: string) =>
     req<Conversation>('PATCH', `/api/conversations/${encodeURIComponent(id)}/channels/${encodeURIComponent(channelId)}`, { name }),
@@ -237,6 +237,13 @@ export const api = {
     req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/channels/reorder`, { order }),
   channelDelete: (id: string, channelId: string) =>
     req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/channels/${encodeURIComponent(channelId)}`),
+  channelAddMember: (
+    id: string,
+    channelId: string,
+    body: { userId: string; epoch: number; history: 'share' | 'fresh'; keys: SealedMemberKey[]; priorKeys?: SealedEpochKey[] },
+  ) => req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/channels/${encodeURIComponent(channelId)}/members`, body),
+  channelRemoveMember: (id: string, channelId: string, userId: string, body: { epoch: number; keys: SealedMemberKey[] }) =>
+    req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(userId)}`, body),
   gifSearch: (q: string, pos?: string) => {
     const params = new URLSearchParams({ q });
     if (pos) params.set('pos', pos);

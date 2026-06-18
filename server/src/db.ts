@@ -104,6 +104,7 @@ export interface ChannelRow {
   type: string;
   position: number;
   created_at: number;
+  private: number;
 }
 
 export interface DeviceLinkRow {
@@ -303,9 +304,29 @@ CREATE TABLE IF NOT EXISTS channels (
   name TEXT NOT NULL,
   type TEXT NOT NULL DEFAULT 'text',
   position INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  private INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_channels_conv ON channels(conversation_id, position);
+-- v5: a PRIVATE channel has its own key + explicit membership (mirrors
+-- conversation_members / conversation_keys but scoped to the channel). Open
+-- channels have no rows here and use the conversation key. channel_members holds
+-- the current-epoch sealed key; channel_keys keeps every epoch for back-scroll.
+CREATE TABLE IF NOT EXISTS channel_members (
+  channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sealed_key TEXT NOT NULL,
+  epoch INTEGER NOT NULL DEFAULT 0,
+  joined_at INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS channel_keys (
+  channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  epoch INTEGER NOT NULL,
+  sealed_key TEXT NOT NULL,
+  PRIMARY KEY (channel_id, user_id, epoch)
+);
 -- Per-(channel, member) read cursor for EXTRA channels (v4). The general
 -- channel's cursor stays on conversation_members.last_read_seq, so existing
 -- DM/thread read tracking is untouched.
@@ -433,6 +454,12 @@ export function openDb(dataDir: string) {
   // both fresh DBs and DBs whose channel_id column was just added above.
   db.exec('CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages(channel_id, seq)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_reactions_channel_seq ON message_reactions(channel_id, seq)');
+  // v5: channels.private. Existing channels stay open (private=0) — all members
+  // keep access, matching v4 behaviour.
+  const channelCols = db.prepare('PRAGMA table_info(channels)').all() as { name: string }[];
+  if (channelCols.length && !channelCols.some((c) => c.name === 'private')) {
+    db.exec('ALTER TABLE channels ADD COLUMN private INTEGER NOT NULL DEFAULT 0');
+  }
 
   // Idempotent migration: add conversations.parent_id/parent_seq (threads).
   // Must precede the partial unique index, which references parent_id.
@@ -692,6 +719,22 @@ export function openDb(dataDir: string) {
            JOIN users u ON u.id = f.friend_id WHERE f.user_id = ? ORDER BY u.display_name`,
         )
         .all(userId) as { id: string; display_name: string | null; public_key: string | null }[];
+    },
+    /** People you may share with (v5): your friends OR anyone you share a
+     *  conversation with (friends-of-friends in a common group). Deduped. */
+    listShareableMembers(userId: string): { id: string; display_name: string | null; public_key: string | null }[] {
+      return db
+        .prepare(
+          `SELECT u.id, u.display_name, u.public_key FROM users u
+             WHERE u.id != ?
+               AND ( u.id IN (SELECT friend_id FROM friends WHERE user_id = ?)
+                  OR u.id IN (
+                       SELECT cm2.user_id FROM conversation_members cm1
+                         JOIN conversation_members cm2 ON cm1.conversation_id = cm2.conversation_id
+                        WHERE cm1.user_id = ? AND cm2.user_id != ?) )
+             ORDER BY u.display_name`,
+        )
+        .all(userId, userId, userId, userId) as { id: string; display_name: string | null; public_key: string | null }[];
     },
 
     getUserSetting(userId: string, key: string) {
@@ -1063,12 +1106,13 @@ export function openDb(dataDir: string) {
     },
 
     // ---- Channels (v4) ----
-    createChannel(c: { id: string; conversationId: string; name: string; type: string; position: number }): ChannelRow {
+    createChannel(c: { id: string; conversationId: string; name: string; type: string; position: number; private?: boolean }): ChannelRow {
       const createdAt = now();
+      const priv = c.private ? 1 : 0;
       db.prepare(
-        'INSERT INTO channels (id, conversation_id, name, type, position, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-      ).run(c.id, c.conversationId, c.name, c.type, c.position, createdAt);
-      return { id: c.id, conversation_id: c.conversationId, name: c.name, type: c.type, position: c.position, created_at: createdAt };
+        'INSERT INTO channels (id, conversation_id, name, type, position, created_at, private) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(c.id, c.conversationId, c.name, c.type, c.position, createdAt, priv);
+      return { id: c.id, conversation_id: c.conversationId, name: c.name, type: c.type, position: c.position, created_at: createdAt, private: priv };
     },
     getChannel(id: string): ChannelRow | undefined {
       return db.prepare('SELECT * FROM channels WHERE id = ?').get(id) as ChannelRow | undefined;
@@ -1100,14 +1144,67 @@ export function openDb(dataDir: string) {
         orderedIds.forEach((id, i) => stmt.run(i + 1, id, conversationId));
       })();
     },
-    /** Delete a channel and all of its messages/reactions/read cursors. */
+    /** Delete a channel and all of its messages/reactions/read cursors + keys. */
     deleteChannel(id: string): void {
       db.transaction(() => {
         db.prepare('DELETE FROM messages WHERE channel_id = ?').run(id);
         db.prepare('DELETE FROM message_reactions WHERE channel_id = ?').run(id);
         db.prepare('DELETE FROM channel_reads WHERE channel_id = ?').run(id);
+        db.prepare('DELETE FROM channel_members WHERE channel_id = ?').run(id);
+        db.prepare('DELETE FROM channel_keys WHERE channel_id = ?').run(id);
         db.prepare('DELETE FROM channels WHERE id = ?').run(id);
       })();
+    },
+
+    // ---- Private-channel membership + keys (v5; mirrors conversation_*) ----
+    addChannelMember(m: { channelId: string; userId: string; sealedKey: string; epoch: number }): void {
+      db.prepare(
+        'INSERT INTO channel_members (channel_id, user_id, sealed_key, epoch, joined_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(m.channelId, m.userId, m.sealedKey, m.epoch, now());
+      db.prepare(
+        'INSERT OR REPLACE INTO channel_keys (channel_id, user_id, epoch, sealed_key) VALUES (?, ?, ?, ?)',
+      ).run(m.channelId, m.userId, m.epoch, m.sealedKey);
+    },
+    removeChannelMember(channelId: string, userId: string): void {
+      db.prepare('DELETE FROM channel_members WHERE channel_id = ? AND user_id = ?').run(channelId, userId);
+      db.prepare('DELETE FROM channel_keys WHERE channel_id = ? AND user_id = ?').run(channelId, userId);
+    },
+    getChannelMember(channelId: string, userId: string): { sealed_key: string; epoch: number } | undefined {
+      return db
+        .prepare('SELECT sealed_key, epoch FROM channel_members WHERE channel_id = ? AND user_id = ?')
+        .get(channelId, userId) as { sealed_key: string; epoch: number } | undefined;
+    },
+    isChannelMember(channelId: string, userId: string): boolean {
+      return !!db.prepare('SELECT 1 FROM channel_members WHERE channel_id = ? AND user_id = ?').get(channelId, userId);
+    },
+    listChannelMemberIds(channelId: string): string[] {
+      return (
+        db.prepare('SELECT user_id FROM channel_members WHERE channel_id = ?').all(channelId) as { user_id: string }[]
+      ).map((r) => r.user_id);
+    },
+    getChannelEpoch(channelId: string): number {
+      const r = db.prepare('SELECT MAX(epoch) AS e FROM channel_members WHERE channel_id = ?').get(channelId) as {
+        e: number | null;
+      };
+      return r.e ?? 0;
+    },
+    setChannelMemberEpochKey(channelId: string, userId: string, epoch: number, sealedKey: string): void {
+      db.prepare('UPDATE channel_members SET epoch = ?, sealed_key = ? WHERE channel_id = ? AND user_id = ?').run(
+        epoch, sealedKey, channelId, userId,
+      );
+      db.prepare(
+        'INSERT OR REPLACE INTO channel_keys (channel_id, user_id, epoch, sealed_key) VALUES (?, ?, ?, ?)',
+      ).run(channelId, userId, epoch, sealedKey);
+    },
+    addChannelKey(channelId: string, userId: string, epoch: number, sealedKey: string): void {
+      db.prepare(
+        'INSERT OR REPLACE INTO channel_keys (channel_id, user_id, epoch, sealed_key) VALUES (?, ?, ?, ?)',
+      ).run(channelId, userId, epoch, sealedKey);
+    },
+    listChannelKeysForUser(channelId: string, userId: string): { epoch: number; sealed_key: string }[] {
+      return db
+        .prepare('SELECT epoch, sealed_key FROM channel_keys WHERE channel_id = ? AND user_id = ? ORDER BY epoch')
+        .all(channelId, userId) as { epoch: number; sealed_key: string }[];
     },
 
     // ---- Messages ----

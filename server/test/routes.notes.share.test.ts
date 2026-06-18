@@ -51,6 +51,20 @@ describe('POST /api/notes/:id/shares (friends-gated)', () => {
   it('refuses to share with yourself', async () => {
     expect((await share(me)).statusCode).toBe(400);
   });
+
+  it('shares with a non-friend conversation co-member, but not a true outsider (v5)', async () => {
+    // me + stranger share a group conversation (stranger is a friend-of-friend).
+    t.db.createConversation({ id: 'g1', kind: 'group', createdBy: me, dmKey: null });
+    t.db.addConversationMember({ conversationId: 'g1', userId: me, sealedKey: '{}', epoch: 0 });
+    t.db.addConversationMember({ conversationId: 'g1', userId: stranger, sealedKey: '{}', epoch: 0 });
+    expect((await share(stranger)).statusCode).toBe(200);
+    // The picker now surfaces the co-member too.
+    const members = (await inject('GET', '/api/members', meCookie)).json() as { id: string }[];
+    expect(members.map((m) => m.id).sort()).toEqual([friend, stranger].sort());
+    // A user with no friendship and no shared conversation is still rejected.
+    const outsider = seedUser(t.db, { publicKey: 'pk-out' });
+    expect((await share(outsider)).statusCode).toBe(403);
+  });
 });
 
 describe('GET /api/shared', () => {
