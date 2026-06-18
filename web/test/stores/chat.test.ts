@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import type { ChatMessage, Conversation, Friend } from '@notes/shared';
 import { generateKeyPair, sealKey } from '../../src/lib/crypto';
 import { b64 } from '../../src/lib/b64';
-import { decryptMessage, encryptMessage, encryptReaction, generateConversationKey } from '../../src/lib/chatCrypto';
+import { decryptMessage, encryptMessage, encryptReaction, generateConversationKey, unsealConversationKey } from '../../src/lib/chatCrypto';
 
 // The api surface the chat store touches, hoisted so the mock factory can see it.
 const api = vi.hoisted(() => ({
@@ -21,6 +21,8 @@ const api = vi.hoisted(() => ({
   channelRename: vi.fn(),
   channelReorder: vi.fn(),
   channelDelete: vi.fn().mockResolvedValue({ ok: true }),
+  channelAddMember: vi.fn(),
+  channelRemoveMember: vi.fn().mockResolvedValue({ ok: true }),
 }));
 vi.mock('../../src/lib/api', () => ({ api }));
 
@@ -490,5 +492,47 @@ describe('channel actions (v4)', () => {
     const store = useChatStore();
     store.setActiveChannel('c2');
     expect(store.activeChannelId).toBe('c2');
+  });
+});
+
+describe('private channels (v5)', () => {
+  it('encrypts private-channel messages with the channel key, not the conversation key', async () => {
+    const kp = await myKeyPair();
+    const store = useChatStore();
+    store.conversations = [
+      {
+        id: 'g1', kind: 'group',
+        members: [{ userId: 'me', displayName: 'Me', publicKey: b64(kp.publicKey) }],
+        sealedKey: { epk: '', iv: '', ct: '' }, epoch: 0, epochKeys: [], managePolicy: 'owner', myRole: 'owner',
+        channels: [{ id: 'g1', conversationId: 'g1', name: 'general', type: 'text', position: 0, isDefault: true, lastSeq: 0, lastReadSeq: 0, private: false, channelEpoch: 0, channelKeys: [], memberIds: [] }],
+        lastSeq: 0, lastReadSeq: 0, createdAt: 0,
+      } as Conversation,
+    ];
+    // channelCreate echoes the sealed members back as a new private channel.
+    api.channelCreate.mockImplementation(async (_id: string, body: { members: { userId: string; sealedKey: unknown }[] }) => {
+      const conv = JSON.parse(JSON.stringify(store.conversations[0])) as Conversation;
+      conv.channels.push({
+        id: 'pc', conversationId: 'g1', name: 'secret', type: 'text', position: 1, isDefault: false,
+        lastSeq: 0, lastReadSeq: 0, private: true, channelEpoch: 0,
+        channelKeys: body.members.filter((m) => m.userId === 'me').map((m) => ({ epoch: 0, sealedKey: m.sealedKey as never })),
+        memberIds: body.members.map((m) => m.userId),
+      });
+      return conv;
+    });
+
+    const cid = await store.createPrivateChannel('g1', 'secret', 'text', ['me']);
+    expect(cid).toBe('pc');
+
+    api.messageSend.mockImplementation(async (_id: string, b: { epoch: number }) => msg({ conversationId: 'g1', channelId: 'pc', seq: 1, senderId: 'me', epoch: b.epoch }));
+    await store.sendMessage('g1', 'pc', 'hush');
+    const sent = api.messageSend.mock.calls.at(-1)![1] as { ciphertext: string; iv: string; epoch: number; channelId: string };
+    expect(sent.channelId).toBe('pc');
+    expect(sent.epoch).toBe(0);
+
+    // Decryptable with the CHANNEL key (me's sealed key) → not the conversation key.
+    const mySealed = (api.channelCreate.mock.calls[0][1].members as { userId: string; sealedKey: never }[]).find((m) => m.userId === 'me')!.sealedKey;
+    const channelKey = await unsealConversationKey(mySealed, kp.privateKey, kp.publicKey);
+    const payload = await decryptMessage(channelKey, sent.ciphertext, sent.iv);
+    expect(payload.text).toBe('hush');
   });
 });

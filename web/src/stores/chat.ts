@@ -2,6 +2,8 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type {
   AttachmentRef,
+  ChannelInfo,
+  ChannelType,
   ChatMessage,
   ChatReaction,
   Conversation,
@@ -91,6 +93,10 @@ export const useChatStore = defineStore('chat', () => {
   // (never persisted). A group re-keys on each membership change, so we keep one
   // key per epoch and decrypt each message with the key for *its* epoch.
   const convKeys = new Map<string, Map<number, Uint8Array>>();
+  // v5: unsealed PRIVATE-channel keys, per epoch (channelId → epoch → key).
+  // Open channels (incl. general) use the conversation key above; private
+  // channels have their own keys distributed only to their members.
+  const channelKeys = new Map<string, Map<number, Uint8Array>>();
 
   function setActive(convId: string | null, channelId?: string | null): void {
     activeId.value = convId;
@@ -128,8 +134,42 @@ export const useChatStore = defineStore('chat', () => {
     convKeys.set(conv.id, map);
   }
 
+  /** Unseal my private-channel keys for a conversation into the in-memory map. */
+  async function unsealChannelKeys(conv: Conversation): Promise<void> {
+    const { privateKey, publicKey } = await session.getKeyPair();
+    for (const ch of conv.channels ?? []) {
+      if (!ch.private || !ch.channelKeys?.length) continue;
+      const map = channelKeys.get(ch.id) ?? new Map<number, Uint8Array>();
+      for (const ek of ch.channelKeys) {
+        if (map.has(ek.epoch)) continue;
+        try {
+          map.set(ek.epoch, await unsealConversationKey(ek.sealedKey, privateKey, publicKey));
+        } catch {
+          /* can't unseal → its messages stay opaque */
+        }
+      }
+      channelKeys.set(ch.id, map);
+    }
+  }
+
+  function channelOf(convId: string, channelId: string): ChannelInfo | undefined {
+    return conversations.value.find((c) => c.id === convId)?.channels?.find((ch) => ch.id === channelId);
+  }
+  /** Decryption key for a message: the channel key when the channel is private,
+   *  otherwise the conversation key for that epoch. */
+  function keyForMessage(convId: string, channelId: string, epoch: number): Uint8Array | undefined {
+    return channelOf(convId, channelId)?.private ? channelKeys.get(channelId)?.get(epoch) : keyForEpoch(convId, epoch);
+  }
+  /** The key + epoch to encrypt a new send to a channel with. */
+  function sendKeyFor(convId: string, channelId: string): { key: Uint8Array | undefined; epoch: number } {
+    const ch = channelOf(convId, channelId);
+    if (ch?.private) return { key: channelKeys.get(channelId)?.get(ch.channelEpoch), epoch: ch.channelEpoch };
+    const conv = conversations.value.find((c) => c.id === convId);
+    return { key: currentKey(convId), epoch: conv?.epoch ?? 0 };
+  }
+
   async function decryptOne(convId: string, m: ChatMessage): Promise<ChatMessageView> {
-    const key = keyForEpoch(convId, m.epoch);
+    const key = keyForMessage(convId, m.channelId, m.epoch);
     if (!key) return { ...m, text: null };
     try {
       const payload = await decryptMessage(key, m.ciphertext, m.iv);
@@ -176,7 +216,10 @@ export const useChatStore = defineStore('chat', () => {
     const live = new Set(list.map((c) => c.id));
     for (const id of [...convKeys.keys()]) if (!live.has(id)) convKeys.delete(id);
     // Unseal every (possibly new) epoch key — picks up re-keys after a membership change.
-    for (const conv of list) await unsealEpochKeys(conv);
+    for (const conv of list) {
+      await unsealEpochKeys(conv);
+      await unsealChannelKeys(conv);
+    }
   }
 
   /** Open (or create) a 1:1 DM with a friend; returns the conversation id. */
@@ -369,6 +412,68 @@ export const useChatStore = defineStore('chat', () => {
     return updated.channels.find((ch) => !before.has(ch.id))?.id ?? convId;
   }
 
+  /** Create a PRIVATE channel (v5): generate a channel key, seal it to each
+   *  member (a subset of conversation members, incl. me), and POST. Returns the
+   *  new channel id. */
+  async function createPrivateChannel(convId: string, name: string, type: ChannelType, memberIds: string[]): Promise<string> {
+    const conv = conversations.value.find((c) => c.id === convId);
+    if (!conv) throw new Error('unknown conversation');
+    const me = session.user?.id;
+    const ids = new Set([...(me ? [me] : []), ...memberIds]);
+    const channelKey = generateConversationKey();
+    const withKeys = conv.members.filter((m) => ids.has(m.userId) && m.publicKey) as { userId: string; publicKey: string }[];
+    const keys = await sealConversationKeyToMembers(withKeys, channelKey);
+    const before = new Set((conv.channels ?? []).map((ch) => ch.id));
+    const updated = await api.channelCreate(convId, { name, type, private: true, members: keys });
+    upsertConversation(updated);
+    await unsealChannelKeys(updated);
+    return updated.channels.find((ch) => !before.has(ch.id))?.id ?? convId;
+  }
+
+  /** Grant a conversation member access to a private channel: mint a new channel
+   *  epoch sealed to current members + the joiner (and prior keys when sharing
+   *  history so they can back-scroll). */
+  async function grantChannelMember(convId: string, channelId: string, userId: string, history: 'share' | 'fresh'): Promise<void> {
+    const conv = conversations.value.find((c) => c.id === convId);
+    const ch = channelOf(convId, channelId);
+    const joiner = conv?.members.find((m) => m.userId === userId);
+    if (!conv || !ch || !joiner?.publicKey) throw new Error('cannot grant');
+    const epoch = ch.channelEpoch + 1;
+    const memberList = conv.members.filter((m) => ch.memberIds.includes(m.userId));
+    const channelKey = generateConversationKey();
+    const withKeys = [...memberList, joiner].filter((m) => m.publicKey) as { userId: string; publicKey: string }[];
+    const keys = await sealConversationKeyToMembers(withKeys, channelKey);
+    let priorKeys: SealedEpochKey[] | undefined;
+    if (history === 'share') {
+      const held: { epoch: number; key: Uint8Array }[] = [];
+      for (let e = 0; e <= ch.channelEpoch; e++) {
+        const k = channelKeys.get(channelId)?.get(e);
+        if (k) held.push({ epoch: e, key: k });
+      }
+      priorKeys = await sealEpochKeysTo(joiner.publicKey, held);
+    }
+    const updated = await api.channelAddMember(convId, channelId, { userId, epoch, history, keys, priorKeys });
+    channelKeys.get(channelId)?.set(epoch, channelKey);
+    upsertConversation(updated);
+    await unsealChannelKeys(updated);
+  }
+
+  /** Revoke a member from a private channel: mint a new epoch sealed to the
+   *  remaining members so the removed member can't read future messages. */
+  async function revokeChannelMember(convId: string, channelId: string, userId: string): Promise<void> {
+    const conv = conversations.value.find((c) => c.id === convId);
+    const ch = channelOf(convId, channelId);
+    if (!conv || !ch) throw new Error('cannot revoke');
+    const epoch = ch.channelEpoch + 1;
+    const remaining = conv.members.filter((m) => ch.memberIds.includes(m.userId) && m.userId !== userId);
+    const channelKey = generateConversationKey();
+    const withKeys = remaining.filter((m) => m.publicKey) as { userId: string; publicKey: string }[];
+    const keys = await sealConversationKeyToMembers(withKeys, channelKey);
+    await api.channelRemoveMember(convId, channelId, userId, { epoch, keys });
+    channelKeys.get(channelId)?.set(epoch, channelKey);
+    await loadConversations();
+  }
+
   async function renameChannel(convId: string, channelId: string, name: string): Promise<void> {
     upsertConversation(await api.channelRename(convId, channelId, name));
   }
@@ -402,10 +507,8 @@ export const useChatStore = defineStore('chat', () => {
     text: string,
     opts?: { gif?: GifRef; attachments?: AttachmentRef[]; replyTo?: ReplyRef; linkPreview?: LinkPreview },
   ): Promise<void> {
-    const conv = conversations.value.find((c) => c.id === convId);
-    const epoch = conv?.epoch ?? 0;
-    const key = currentKey(convId);
-    if (!key) throw new Error('no conversation key');
+    const { key, epoch } = sendKeyFor(convId, channelId);
+    if (!key) throw new Error('no channel key');
     const payload: MessagePayload = { text, sentAt: Date.now() };
     if (opts?.gif) payload.gif = opts.gif;
     if (opts?.attachments?.length) payload.attachments = opts.attachments;
@@ -428,8 +531,8 @@ export const useChatStore = defineStore('chat', () => {
     const existing = (messages.value[channelId] ?? []).find((m) => m.seq === seq);
     if (!existing) throw new Error('message not found');
     if (text === existing.text) return; // no change → no API call, stays unedited
-    const key = keyForEpoch(convId, existing.epoch);
-    if (!key) throw new Error('no conversation key');
+    const key = keyForMessage(convId, channelId, existing.epoch);
+    if (!key) throw new Error('no channel key');
     const payload: MessagePayload = { text, sentAt: existing.createdAt };
     if (existing.gif) payload.gif = existing.gif;
     if (existing.attachments?.length) payload.attachments = existing.attachments;
@@ -444,8 +547,9 @@ export const useChatStore = defineStore('chat', () => {
 
   async function decryptReactionOne(convId: string, r: ChatReaction): Promise<ChatReactionView> {
     // Reactions don't record their epoch, so try each held key (newest first) —
-    // a reaction was sealed under whatever epoch was current when it was added.
-    const keys = [...(convKeys.get(convId)?.entries() ?? [])].sort((x, y) => y[0] - x[0]);
+    // from the channel's key set (private) or the conversation's (open).
+    const source = channelOf(convId, r.channelId)?.private ? channelKeys.get(r.channelId) : convKeys.get(convId);
+    const keys = [...(source?.entries() ?? [])].sort((x, y) => y[0] - x[0]);
     for (const [, key] of keys) {
       try {
         return { ...r, emoji: await decryptReaction(key, r.ciphertext, r.iv) };
@@ -477,7 +581,7 @@ export const useChatStore = defineStore('chat', () => {
   /** Toggle my reaction with `emoji` on a message: remove it if I already have
    *  one, otherwise add it. */
   async function toggleReaction(convId: string, channelId: string, seq: number, emoji: string): Promise<void> {
-    const key = currentKey(convId);
+    const { key } = sendKeyFor(convId, channelId);
     if (!key) return;
     const me = session.user?.id;
     const mine = (reactions.value[channelId] ?? []).find((r) => r.seq === seq && r.userId === me && r.emoji === emoji);
@@ -588,6 +692,7 @@ export const useChatStore = defineStore('chat', () => {
     activeId.value = null;
     activeChannelId.value = null;
     convKeys.clear();
+    channelKeys.clear();
   }
 
   return {
@@ -607,6 +712,9 @@ export const useChatStore = defineStore('chat', () => {
     removeMember,
     setMemberRole,
     createChannel,
+    createPrivateChannel,
+    grantChannelMember,
+    revokeChannelMember,
     renameChannel,
     reorderChannels,
     deleteChannel,
