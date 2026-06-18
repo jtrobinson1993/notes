@@ -217,12 +217,14 @@ No plans for video (see v7).
   content-free Web Push to wake devices).
 - **Voice-room presence is visible to all channel members** (Discord-style).
 - **No recording** (impossible server-side; no client feature either).
-- **Silence suppression (Opus DTX) required + on.** Accepted tradeoff: server can
-  infer speech-activity *timing* from packet gaps (never content). **Bitrate
-  padding** to hide that timing is a **future follow-up** — it's the opposite of
-  DTX (you'd transmit through silence), so it trades the bandwidth back.
+- **No silence suppression (Opus DTX) in v6.** Mics transmit continuously;
+  **future follow-up** to add DTX only if bandwidth becomes a problem. Bonus:
+  continuous transmission keeps the rate flat, so speech-activity timing isn't
+  exposed (adding DTX later would reintroduce that leak; decoy traffic could then
+  mitigate it).
 - **Scale:** ≤ ~10 per room, < 10 concurrent rooms; self-hosted on home hardware
-  (home **upload** bandwidth is the ceiling, not CPU).
+  (home **upload** bandwidth is the ceiling, not CPU). Without DTX these figures
+  are the sustained rate, not a peak.
 
 ## v7 — Video streaming in voice channels?
 

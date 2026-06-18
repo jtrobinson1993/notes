@@ -42,11 +42,12 @@ These were settled in the v6 requirements pass and drive everything below:
    style) so people can join an ongoing conversation.
 8. **No recording**, ever — server-side recording is impossible by construction
    (the server can't hear the audio) and no client-side recording feature ships.
-9. **Silence suppression (Opus DTX) is required and on.** Clients stop
-   transmitting while silent. Accepted tradeoff: this lets the server infer
-   speech-activity timing from packet patterns (it still can't hear audio) —
-   hiding that timing is the job of bitrate padding, deferred to a future
-   follow-up (see [§ Security & privacy](#security--privacy)).
+9. **No silence suppression in v6.** Opus transmits **continuously** (DTX off);
+   the all-talking bandwidth figures are therefore the sustained case, not just a
+   worst case. Deferred as a future follow-up — revisit **only if bandwidth
+   becomes a problem**. Side benefit: continuous transmission keeps each stream's
+   rate roughly flat, so it does **not** expose speech-activity timing via on/off
+   gaps (see [§ Security & privacy](#security--privacy)).
 
 ## Architecture
 
@@ -194,12 +195,14 @@ authorization surface for *who may join*.
   Docker compose.
 - **Bandwidth (the real ceiling on home hardware):** Opus voice ≈ **40 kbps**
   per stream. A full 10-person room ⇒ server **ingest** 10 × 40 ≈ 0.4 Mbps,
-  **egress** 10 × 9 × 40 ≈ **3.6 Mbps up**. At < 10 concurrent rooms, worst-case
-  is low tens of Mbps **upload** — watch home upload bandwidth; CPU is trivial
-  (the SFU only copies packets and *can't* transcode encrypted audio anyway).
-- **Opus DTX (Discontinuous Transmission)** — stop sending while silent — is a
-  **requirement** (decision #9), cutting real-world bandwidth far below the
-  all-talking worst case. Privacy tradeoff in [§ Security & privacy](#security--privacy).
+  **egress** 10 × 9 × 40 ≈ **3.6 Mbps up**. At < 10 concurrent rooms that's low
+  tens of Mbps **upload**. **Without DTX (decision #9) this is the sustained
+  rate, not a peak** — every joined mic transmits continuously. Watch home upload
+  bandwidth; CPU is trivial (the SFU only copies packets and *can't* transcode
+  encrypted audio anyway).
+- **No silence suppression (Opus DTX) in v6** — deferred (decision #9). Revisit
+  to cut bandwidth if it becomes a problem; doing so would reintroduce a
+  speech-activity timing leak (see [§ Security & privacy](#security--privacy)).
 
 ## Direct 1:1 (and small-group) calls
 
@@ -241,29 +244,26 @@ involved in any of these):
 - **Server cannot hear audio:** E2EE frame layer; the server only forwards
   ciphertext.
 - **Metadata the server *does* learn (be honest):** who is in which call, join/
-  leave timing, and packet timing/sizes. With **DTX on (decision #9)** the
-  silence gaps make **speech-activity timing** readily observable to the server
-  via traffic analysis — it still **never** learns audio content or who is
-  speaking *from content*.
-- **Hiding speech-activity timing — future follow-up (not v6).** Two variants,
-  both deferred; mechanically both are easy here (encrypted decoy frames marked
-  "fake" *inside* the sealed payload, dropped by recipients after decrypt; the
-  server can't tell them apart; no added latency):
-  - **Constant-rate padding** — transmit at the full speech rate even when
-    silent. **Strong** guarantee (rate is flat, so it reveals nothing) but
-    **gives back all the bandwidth DTX saves** — it's the opposite of DTX.
-  - **Intermittent cover traffic ("chaffing")** — cheaper decoys at less than
-    full rate. **Partial** protection only: because real speech is always
-    transmitted, any decoy rate *below* the speech rate leaves the traffic
-    envelope higher during real speech than during silence, so the
-    speech-activity signal (and cross-participant turn-taking correlation) still
-    leaks to an observer who averages over time. Raises attacker effort; not a
-    guarantee.
-  - **Why deferred:** it's a privacy ↔ bandwidth dial, not additive savings — a
-    *flat* rate requires decoy-rate == speech-rate (≈ no savings); anything
-    cheaper is heuristic. For a self-hosted server among friends the realistic
-    threat is seizure/compromise/network observer, so v6 picks bandwidth (DTX on,
-    no cover) and revisits this if speech-timing privacy is wanted.
+  leave timing, and packet timing/sizes. It **never** learns audio content or who
+  is speaking *from content*. Because v6 runs **without DTX (decision #9)**, each
+  mic transmits continuously, so the per-stream rate is roughly flat and
+  **speech-activity timing is largely not exposed** via on/off gaps (some residual
+  leak is possible from variable frame sizes in VBR mode).
+- **If DTX is added later (for bandwidth), speech-timing leak returns.** Stopping
+  transmission during silence makes the gaps — and cross-participant turn-taking —
+  observable to the server. The mitigations, both **future follow-ups**, are decoy
+  traffic (encrypted "fake" frames marked inside the sealed payload, dropped by
+  recipients after decrypt; the server can't distinguish them; no added latency):
+  - **Constant-rate padding** — transmit at full speech rate even when silent.
+    **Strong** (flat rate reveals nothing) but **gives back all the bandwidth DTX
+    saved** — the opposite of DTX.
+  - **Intermittent cover ("chaffing")** — cheaper decoys below full rate. **Partial
+    only**: real speech is always sent, so any sub-speech-rate decoy leaves the
+    envelope higher during real speech, leaking activity to an observer who averages
+    over time. Raises effort; not a guarantee.
+  - It's a privacy ↔ bandwidth dial, not additive savings. For a self-hosted server
+    among friends the realistic threat is seizure/compromise/network observer, so
+    none of this is needed for v6 (no DTX = naturally flat).
 - **No recording** (decision #8).
 - **Authorization** to join a room is exactly chat membership — no weaker path.
 
@@ -295,6 +295,7 @@ Per [testing.md](testing.md) and `CLAUDE.md`:
   iOS.
 - mediasoup **worker count / `announcedIp` + port-range** defaults and Docker
   documentation.
-- Codec params (Opus target bitrate, FEC) defaults. DTX is fixed on (decision #9).
-- **Bitrate padding** to hide speech-activity timing — design + opt-in, **future
-  follow-up** (see [§ Security & privacy](#security--privacy)).
+- Codec params (Opus target bitrate, FEC) defaults. **DTX off** in v6 (decision #9).
+- **Silence suppression (Opus DTX)** — **future follow-up**, only if bandwidth
+  becomes a problem; reintroduces a speech-timing leak that decoy traffic
+  (also deferred) would then mitigate (see [§ Security & privacy](#security--privacy)).
