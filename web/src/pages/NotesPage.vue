@@ -13,7 +13,7 @@ import { toPlainText } from '../lib/transfer';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import { useOrgStore, type OrgFolder } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
-import IconFolder from '~icons/mynaui/folder';
+import IconFolderMinus from '~icons/mynaui/folder-minus';
 import IconFolderPlus from '~icons/mynaui/folder-plus';
 import IconNote from '~icons/mynaui/file-text';
 import IconPencil from '~icons/mynaui/pencil';
@@ -331,7 +331,7 @@ function excerpt(body: string): string {
                   @dragover.prevent="dragOver = { key: row.key, into: true }"
                   @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
                 >
-                  <IconFolder class="h-4 w-4 shrink-0" :class="isCollapsed(row.folder!.id) ? 'opacity-90' : 'opacity-50'" />
+                  <component :is="isCollapsed(row.folder!.id) ? IconFolderPlus : IconFolderMinus" class="h-4 w-4 shrink-0 opacity-60" />
                   <span class="min-w-0 grow truncate font-medium"><EmojiText :text="row.folder!.name" /></span>
                   <span class="text-xs text-zinc-400">{{ notesInFolder(row.folder!.id) }}</span>
                 </button>
