@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import ChannelModal from './ChannelModal.vue';
+import ChannelMembersDialog from './ChannelMembersDialog.vue';
 import PinPickerModal from './PinPickerModal.vue';
 import EmojiText from './EmojiText.vue';
 import ResizeHandle from './ResizeHandle.vue';
 import { useResizable } from '../lib/useResizable';
 import { useChatStore } from '../stores/chat';
 import { useNotesStore } from '../stores/notes';
+import { useSessionStore } from '../stores/session';
 import { useOrgStore, chKey, noteItemKey } from '../stores/organization';
 import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
 import { canManageMembers, type ChannelInfo, type ChannelType, type Conversation } from '@notes/shared';
 import IconHash from '~icons/mynaui/hash';
+import IconLock from '~icons/mynaui/lock';
+import IconUsers from '~icons/mynaui/users';
 import IconVolume from '~icons/mynaui/volume-high';
 import IconPanelLeft from '~icons/mynaui/panel-left';
 import IconPlus from '~icons/mynaui/plus';
@@ -39,7 +43,10 @@ function noteActive(noteId: string): boolean {
 }
 const chat = useChatStore();
 const notes = useNotesStore();
+const session = useSessionStore();
 const org = useOrgStore();
+// Channel whose members are being managed (private channels).
+const manageChannel = ref<ChannelInfo | null>(null);
 
 const convId = computed(() => props.conversation.id);
 const isGroup = computed(() => props.conversation.kind === 'group');
@@ -124,11 +131,13 @@ function openChannelRename(ch: ChannelInfo) {
   renameChannelTarget.value = ch;
   channelModalOpen.value = true;
 }
-async function onChannelSubmit(payload: { name: string; type: ChannelType }) {
+async function onChannelSubmit(payload: { name: string; type: ChannelType; private: boolean; memberIds: string[] }) {
   busy.value = true;
   try {
     if (channelMode.value === 'create') {
-      const id = await chat.createChannel(convId.value, payload.name, payload.type);
+      const id = payload.private
+        ? await chat.createPrivateChannel(convId.value, payload.name, payload.type, payload.memberIds)
+        : await chat.createChannel(convId.value, payload.name, payload.type);
       channelModalOpen.value = false;
       if (payload.type === 'text') emit('select', id);
     } else if (renameChannelTarget.value) {
@@ -347,7 +356,8 @@ function onDropOnRoot() {
             @drop.stop.prevent="onDropOnItem(row.item!)"
           >
             <template v-if="row.item!.kind === 'channel'">
-              <IconVolume v-if="row.item!.channel.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
+              <IconLock v-if="row.item!.channel.private" class="h-4 w-4 shrink-0 opacity-60" />
+              <IconVolume v-else-if="row.item!.channel.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
               <IconHash v-else class="h-4 w-4 shrink-0 opacity-60" />
               <span class="min-w-0 grow truncate"><EmojiText :text="row.item!.channel.name" /></span>
               <span
@@ -364,6 +374,7 @@ function onDropOnRoot() {
           <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
             <button v-if="row.item!.kind === 'note'" class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Unpin" @click="unpinNote(row.item!.noteId)"><IconX class="h-3.5 w-3.5" /></button>
             <template v-else-if="canManage && !row.item!.channel.isDefault">
+              <button v-if="row.item!.channel.private" class="rounded p-1 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400" title="Manage members" @click="manageChannel = row.item!.channel"><IconUsers class="h-3.5 w-3.5" /></button>
               <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename channel" @click="openChannelRename(row.item!.channel)"><IconPencil class="h-3.5 w-3.5" /></button>
               <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete channel" @click="deleteChannel(row.item!.channel)"><IconTrash class="h-3.5 w-3.5" /></button>
             </template>
@@ -377,7 +388,16 @@ function onDropOnRoot() {
       :mode="channelMode"
       :initial-name="renameChannelTarget?.name"
       :busy="busy"
+      :members="conversation.members"
+      :me-id="session.user?.id"
       @submit="onChannelSubmit"
+    />
+    <ChannelMembersDialog
+      v-if="manageChannel"
+      :open="true"
+      :conversation="conversation"
+      :channel="manageChannel"
+      @update:open="(v) => { if (!v) manageChannel = null; }"
     />
     <PinPickerModal v-model:open="pinPickerOpen" :conversation-id="convId" @open-note="emit('openNote', $event)" />
     <ResizeHandle :active="resizing" @start="startResize" />
