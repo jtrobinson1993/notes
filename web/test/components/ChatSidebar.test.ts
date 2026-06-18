@@ -92,13 +92,16 @@ describe('ChatSidebar (unified tree)', () => {
     expect(owner.find('[aria-label="New channel"]').exists()).toBe(true);
   });
 
-  it('a DM shows a pins-only sidebar — its general channel is not listed', () => {
+  it('a DM shows a fixed #chat item + pins (not the general channel), and #chat selects the conversation', async () => {
     const org = useOrgStore();
     org.pin('d1', 'note', 'n1');
     const w = mount(ChatSidebar, { props: { conversation: dm(), activeChannelId: 'd1' }, global: { stubs } });
     expect(w.text()).not.toContain('general');
+    expect(w.text()).toContain('chat'); // the fixed #chat entry
     expect(w.find('[aria-label="New channel"]').exists()).toBe(false);
     expect(w.find('[title="Unpin"]').exists()).toBe(true); // the pinned note row
+    await w.findAll('ul button').find((b) => b.text() === 'chat')!.trigger('click');
+    expect(w.emitted('select')).toContainEqual(['d1']);
   });
 
   it('renders a pinned note and unpins it', async () => {

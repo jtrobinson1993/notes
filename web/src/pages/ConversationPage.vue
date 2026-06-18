@@ -14,8 +14,6 @@ import { useOrgStore } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
 import IconUsers from '~icons/mynaui/users';
 import IconHash from '~icons/mynaui/hash';
-import IconNote from '~icons/mynaui/file-text';
-import IconX from '~icons/mynaui/x';
 
 const route = useRoute();
 const router = useRouter();
@@ -51,6 +49,7 @@ const activeChannelId = computed(() => {
   return typeof ch === 'string' && ch ? ch : convId.value;
 });
 function selectChannel(channelId: string) {
+  openNoteId.value = null; // selecting a channel (incl. DM "#chat") exits a note
   void router.push(channelId === convId.value ? `/chat/${convId.value}` : `/chat/${convId.value}/${channelId}`);
 }
 const activeChannel = computed(() =>
@@ -191,33 +190,27 @@ onBeforeUnmount(stopDrag);
         </div>
 
       <!-- A pinned note opened over the chat window (rules, character sheets,
-           co-working docs, …). Closes with the ✕; edits save to your notes. -->
+           co-working docs, …). The editor's own header carries the close ✕
+           (next to its kebab); edits save to your notes. -->
       <div v-if="openNote" class="absolute inset-0 z-modal flex flex-col bg-zinc-50 dark:bg-zinc-950">
-        <div class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-          <IconNote class="h-4 w-4 shrink-0 text-zinc-400" />
-          <p class="min-w-0 grow truncate font-medium"><EmojiText :text="openNote.payload.title || 'Untitled'" /></p>
-          <button
-            class="ml-auto flex shrink-0 items-center rounded-lg p-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-            title="Close note"
-            @click="openNoteId = null"
-          >
-            <IconX class="h-5 w-5" />
-          </button>
-        </div>
-        <div class="min-h-0 grow"><NoteEditor :note="openNote" @deleted="openNoteId = null" /></div>
+        <NoteEditor :note="openNote" closable @deleted="openNoteId = null" @close="openNoteId = null" />
       </div>
 
       <template v-if="activeThread">
-        <!-- Drag handle = the separating line (wide mode only). -->
+        <!-- Drag handle: a wide grab area with a 1px line (wide mode only). -->
         <div
           v-if="isWide"
           role="separator"
           aria-orientation="vertical"
           title="Drag to resize"
-          class="w-1 shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-blue-400 dark:bg-zinc-800 dark:hover:bg-blue-500"
-          :class="{ '!bg-blue-400 dark:!bg-blue-500': dragging }"
+          class="group/th relative w-2 shrink-0 cursor-col-resize"
           @pointerdown.prevent="startDrag"
-        />
+        >
+          <div
+            class="mx-auto h-full w-px bg-zinc-200 transition-colors group-hover/th:bg-blue-400 dark:bg-zinc-800"
+            :class="{ '!bg-blue-400 dark:!bg-blue-500': dragging }"
+          ></div>
+        </div>
         <!-- Wide: sized flex child (defaults to half). Narrow: full-cover overlay. -->
         <div
           :class="isWide ? 'shrink-0' : 'absolute inset-0 z-nav bg-white dark:bg-zinc-900'"

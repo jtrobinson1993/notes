@@ -3,6 +3,8 @@ import { computed, ref } from 'vue';
 import ChannelModal from './ChannelModal.vue';
 import PinPickerModal from './PinPickerModal.vue';
 import EmojiText from './EmojiText.vue';
+import ResizeHandle from './ResizeHandle.vue';
+import { useResizable } from '../lib/useResizable';
 import { useChatStore } from '../stores/chat';
 import { useNotesStore } from '../stores/notes';
 import { useOrgStore, chKey, noteItemKey } from '../stores/organization';
@@ -36,6 +38,7 @@ const canManage = computed(() => canManageMembers(props.conversation.myRole));
 
 const STORAGE_KEY = 'chat:channels:open';
 const open = ref(localStorage.getItem(STORAGE_KEY) !== '0');
+const { width: sidebarWidth, dragging: resizing, start: startResize } = useResizable('chat:sidebar:w', 224, 180, 420);
 function toggleOpen() {
   open.value = !open.value;
   localStorage.setItem(STORAGE_KEY, open.value ? '1' : '0');
@@ -222,26 +225,10 @@ function onDropOnRoot() {
   <!-- Open: the unified channel/note tree. -->
   <aside
     v-else
-    class="z-nav flex w-56 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
+    class="relative z-nav flex w-[var(--sw)] shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
+    :style="{ '--sw': `${sidebarWidth}px` }"
   >
     <header class="flex items-center gap-0.5 px-2 py-2">
-      <button
-        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
-        aria-label="Hide channels"
-        title="Hide sidebar"
-        @click="toggleOpen"
-      >
-        <IconPanelLeft class="h-5 w-5" />
-      </button>
-      <span class="grow" />
-      <button
-        class="flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-        aria-label="Pin a note"
-        title="Pin a note"
-        @click="pinPickerOpen = true"
-      >
-        <IconPin class="h-4 w-4" />
-      </button>
       <button
         class="flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
         aria-label="New folder"
@@ -249,6 +236,14 @@ function onDropOnRoot() {
         @click="createFolder"
       >
         <IconFolderPlus class="h-4 w-4" />
+      </button>
+      <button
+        class="flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+        aria-label="Pin a note"
+        title="Pin a note"
+        @click="pinPickerOpen = true"
+      >
+        <IconPin class="h-4 w-4" />
       </button>
       <button
         v-if="canManage"
@@ -259,9 +254,30 @@ function onDropOnRoot() {
       >
         <IconPlus class="h-4 w-4" />
       </button>
+      <span class="grow" />
+      <button
+        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        aria-label="Hide channels"
+        title="Hide sidebar"
+        @click="toggleOpen"
+      >
+        <IconPanelLeft class="h-5 w-5" />
+      </button>
     </header>
 
     <ul class="min-h-0 grow overflow-y-auto pb-2" @dragover.prevent @drop.prevent="onDropOnRoot">
+      <!-- DMs have no channel list; a fixed "#chat" entry keeps the sidebar
+           non-empty and gives a way back to the conversation (e.g. from a note). -->
+      <li v-if="!isGroup" class="flex items-center">
+        <button
+          class="flex min-w-0 grow items-center gap-1.5 py-1.5 pl-2 pr-2 text-left text-sm"
+          :class="convId === activeChannelId ? 'bg-zinc-200 font-medium dark:bg-zinc-800' : 'text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800/60'"
+          @click="emit('select', convId)"
+        >
+          <IconHash class="h-4 w-4 shrink-0 opacity-60" />
+          <span class="min-w-0 grow truncate">chat</span>
+        </button>
+      </li>
       <li
         v-for="row in treeRows"
         :key="row.key"
@@ -284,7 +300,7 @@ function onDropOnRoot() {
              buttons act on their own. The row is the drag handle + drop target. -->
         <template v-if="row.type === 'folder'">
           <button
-            class="flex min-w-0 grow cursor-pointer items-center gap-1.5 py-1.5 pr-2 text-left text-xs font-semibold uppercase tracking-wide text-zinc-500"
+            class="flex min-w-0 grow cursor-pointer items-center gap-1.5 py-1.5 pr-2 text-left text-sm font-medium text-zinc-600 dark:text-zinc-300"
             :style="{ paddingLeft: depthPad(row.depth) }"
             draggable="true"
             :title="isCollapsed(row.folder!.id) ? 'Expand' : 'Collapse'"
@@ -354,5 +370,6 @@ function onDropOnRoot() {
       @submit="onChannelSubmit"
     />
     <PinPickerModal v-model:open="pinPickerOpen" :conversation-id="convId" @open-note="emit('openNote', $event)" />
+    <ResizeHandle :active="resizing" @start="startResize" />
   </aside>
 </template>

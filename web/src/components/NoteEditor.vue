@@ -20,6 +20,7 @@ import { clearTagColor, setTagColor, tagColor, tagTextColor } from '../lib/tagCo
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import { useOrgStore } from '../stores/organization';
 import IconFolder from '~icons/mynaui/folder';
+import IconX from '~icons/mynaui/x';
 import ColorPalette from './ColorPalette.vue';
 import EmojiInput from './EmojiInput.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
@@ -27,8 +28,10 @@ import MarkdownView from './MarkdownView.vue';
 import ShareDialog from './ShareDialog.vue';
 import HistoryDialog from './HistoryDialog.vue';
 
-const props = defineProps<{ note: DecryptedNote }>();
-const emit = defineEmits<{ deleted: [] }>();
+// `closable` shows a ✕ next to the kebab — used when the editor is opened as an
+// overlay over a chat; emits `close` when clicked.
+const props = defineProps<{ note: DecryptedNote; closable?: boolean }>();
+const emit = defineEmits<{ deleted: []; close: [] }>();
 
 const notes = useNotesStore();
 const org = useOrgStore();
@@ -315,6 +318,15 @@ function fmtSize(bytes: number): string {
           </DropdownMenuContent>
         </DropdownMenuPortal>
       </DropdownMenuRoot>
+      <button
+        v-if="closable"
+        class="shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        title="Close note"
+        aria-label="Close note"
+        @click="emit('close')"
+      >
+        <IconX class="h-5 w-5" />
+      </button>
       <input ref="fileInput" type="file" multiple class="hidden" @change="attach" />
       <ShareDialog v-if="isOwner" v-model:open="shareOpen" :note-id="note.id" />
       <HistoryDialog v-if="isOwner" v-model:open="historyOpen" :note-id="note.id" />

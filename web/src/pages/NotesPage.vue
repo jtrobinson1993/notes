@@ -5,6 +5,8 @@ import { useQuery } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import NoteEditor from '../components/NoteEditor.vue';
 import EmojiText from '../components/EmojiText.vue';
+import ResizeHandle from '../components/ResizeHandle.vue';
+import { useResizable } from '../lib/useResizable';
 import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
 import { loadTagColors, tagColor, tagTextColor } from '../lib/tagColors';
 import { toPlainText } from '../lib/transfer';
@@ -30,6 +32,8 @@ const selectedId = ref<string | null>(null);
 // The highlighted folder (selection only — the tree shows notes inline, so it
 // doesn't filter). Set when opening a pinned folder from a chat sidebar.
 const activeFolderId = ref<string | null>(null);
+
+const { width: sidebarWidth, dragging: resizing, start: startResize } = useResizable('notes:sidebar:w', 288, 200, 480);
 
 // Compact density: note rows show the name only (no tags/preview). Persisted.
 const compact = ref(localStorage.getItem('notes:compact') === '1');
@@ -230,8 +234,9 @@ function excerpt(body: string): string {
   <AppLayout>
     <div class="flex h-full">
       <aside
-        class="flex w-full flex-col border-r border-zinc-200 sm:w-72 dark:border-zinc-800"
+        class="relative flex w-full flex-col border-r border-zinc-200 sm:w-[var(--sw)] dark:border-zinc-800"
         :class="{ 'hidden sm:flex': selected }"
+        :style="{ '--sw': `${sidebarWidth}px` }"
       >
         <div class="flex gap-2 p-3">
           <input
@@ -409,6 +414,7 @@ function excerpt(body: string): string {
             </li>
           </template>
         </ul>
+        <ResizeHandle class="hidden sm:block" :active="resizing" @start="startResize" />
       </aside>
 
       <section class="min-w-0 grow" :class="{ 'hidden sm:block': !selected }">
