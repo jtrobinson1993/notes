@@ -14,6 +14,20 @@ export interface Config {
   /** Per-IP request ceiling per minute for the global rate limiter. Liberal by
    *  default so normal use is never throttled; tests raise it out of the way. */
   rateLimitMax: number;
+  /** v6 voice (mediasoup SFU) network settings. */
+  voice: VoiceConfig;
+}
+
+export interface VoiceConfig {
+  /** IP advertised in ICE candidates — clients connect here, so it must be
+   *  reachable by them: the public/LAN IP in prod, 127.0.0.1 for local dev. */
+  announcedIp: string;
+  /** Interface the mediasoup RTC transports bind to (0.0.0.0 = all). */
+  listenIp: string;
+  /** UDP/TCP port range mediasoup allocates RTC ports from (must be reachable;
+   *  forward this range on a home router). */
+  rtcMinPort: number;
+  rtcMaxPort: number;
 }
 
 export function loadConfig(): Config {
@@ -35,5 +49,11 @@ export function loadConfig(): Config {
     webDist: process.env.WEB_DIST === 'off' ? null : (process.env.WEB_DIST ?? null),
     klipyApiKey: process.env.KLIPY_API_KEY?.trim() || null,
     rateLimitMax: Number(process.env.RATE_LIMIT_MAX ?? 600),
+    voice: {
+      announcedIp: process.env.VOICE_ANNOUNCED_IP ?? '127.0.0.1',
+      listenIp: process.env.VOICE_LISTEN_IP ?? '0.0.0.0',
+      rtcMinPort: Number(process.env.VOICE_RTC_MIN_PORT ?? 40000),
+      rtcMaxPort: Number(process.env.VOICE_RTC_MAX_PORT ?? 40100),
+    },
   };
 }

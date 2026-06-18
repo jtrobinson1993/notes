@@ -514,6 +514,14 @@ export const VOICE_MAX_PARTICIPANTS = 10;
  *  and the server (mediasoup) at the edges. */
 export type MediasoupBlob = Record<string, unknown>;
 
+/** A roster entry the room owner needs in order to seal the new media key to a
+ *  member: their id + X25519 public key. (No display name — sealing only needs
+ *  the key.) */
+export interface VoiceRekeyMember {
+  userId: string;
+  publicKey: string;
+}
+
 /** A live participant in a voice room — *call* membership, distinct from channel
  *  membership. `displayName` is never the username. */
 export interface VoicePeer {
@@ -601,6 +609,9 @@ export type ServerFrame =
   | { type: 'voice-peer-left'; roomId: string; userId: string }
   // A peer started sending mic audio — `consume` their producer.
   | { type: 'voice-new-producer'; roomId: string; userId: string; producerId: string }
+  // I'm the room owner: mint media key `epoch` sealed to each `roster` member
+  // (X25519 publicKey) and POST it back so the server can fan it out.
+  | { type: 'voice-rekey-needed'; roomId: string; epoch: number; roster: VoiceRekeyMember[] }
   // A media-key rekey (join/leave): the new epoch's key sealed to me.
   | { type: 'voice-key-epoch'; roomId: string; epoch: number; sealedKey: SealedKey }
   | { type: 'presence'; userId: string; online: boolean };

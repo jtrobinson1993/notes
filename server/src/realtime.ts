@@ -21,6 +21,9 @@ export interface Realtime {
   sendToUser(userId: string, frame: ServerFrame): void;
   sendToUsers(userIds: string[], frame: ServerFrame, exceptUserId?: string): void;
   isOnline(userId: string): boolean;
+  /** Register a callback fired when a user's last socket closes (fully offline).
+   *  Used by voice to tear down a disconnected user's calls. */
+  onUserOffline(cb: (userId: string) => void): void;
 }
 
 /** In-memory realtime hub: tracks each user's open sockets, fans out frames,
@@ -29,6 +32,11 @@ export interface Realtime {
 export function createRealtime(db: DB, config: Config): Realtime {
   // userId -> insertion-ordered set of live sockets (Map keeps oldest first).
   const sockets = new Map<string, Set<LiveSocket>>();
+  const offlineCallbacks: ((userId: string) => void)[] = [];
+
+  function onUserOffline(cb: (userId: string) => void): void {
+    offlineCallbacks.push(cb);
+  }
 
   function isOnline(userId: string): boolean {
     const set = sockets.get(userId);
@@ -148,6 +156,7 @@ export function createRealtime(db: DB, config: Config): Realtime {
           const wentOffline = removeSocket(live);
           if (wentOffline) {
             sendToUsers(onlineFriendIds(user.id), { type: 'presence', userId: user.id, online: false });
+            for (const cb of offlineCallbacks) cb(user.id);
           }
         };
         socket.on('close', onGone);
@@ -180,7 +189,7 @@ export function createRealtime(db: DB, config: Config): Realtime {
     app.addHook('onClose', async () => clearInterval(timer));
   }
 
-  return { register, sendToUser, sendToUsers, isOnline };
+  return { register, sendToUser, sendToUsers, isOnline, onUserOffline };
 }
 
 export const WS_MAX_PAYLOAD = MAX_PAYLOAD;

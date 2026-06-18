@@ -27,6 +27,7 @@ export function makeConfig(dataDir: string, overrides: Partial<Config> = {}): Co
     // Effectively unlimited so the rate limiter never interferes with a suite
     // that fires many requests; rate-limit behavior is covered explicitly.
     rateLimitMax: 1_000_000,
+    voice: { announcedIp: '127.0.0.1', listenIp: '127.0.0.1', rtcMinPort: 40000, rtcMaxPort: 40100 },
     ...overrides,
   };
 }
