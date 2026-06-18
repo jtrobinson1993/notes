@@ -7,6 +7,7 @@ import { onFrame } from '../lib/chatSocket';
 import { useSessionStore } from './session';
 import { generateMediaKey, sealMediaKey, unsealMediaKey } from '../lib/voiceCrypto';
 import { decryptReceiver, dropFrameKey, encryptSender, resetVoiceWorker, setFrameKey, setSendEpoch, voiceE2eeSupported } from '../lib/voiceTransform';
+import { startRingtone, stopRingtone } from '../lib/ringtone';
 
 // Client orchestration for E2EE voice: mediasoup-client Device + transports,
 // produce/consume, media-key handling via WS events, plus the UI-facing roster
@@ -50,8 +51,17 @@ export const useVoiceStore = defineStore('voice', () => {
   // sidebar presence indicator (decision #7).
   const presence = reactive(new Map<string, VoicePeer[]>());
 
+  // 1:1/group direct calls (room == conversation id).
+  const incomingCall = ref<{ conversationId: string; fromUserId: string; fromDisplayName: string } | null>(null);
+  const outgoingCall = ref<{ conversationId: string } | null>(null);
+
   const inCall = computed(() => activeRoomId.value !== null);
   const peerList = computed(() => [...peers.values()]);
+
+  function clearIncoming(): void {
+    incomingCall.value = null;
+    stopRingtone();
+  }
 
   function roomPresence(roomId: string): VoicePeer[] {
     return presence.get(roomId) ?? [];
@@ -88,6 +98,8 @@ export const useVoiceStore = defineStore('voice', () => {
   function reset(): void {
     activeRoomId.value = null;
     activeRoomName.value = null;
+    outgoingCall.value = null;
+    clearIncoming();
     peers.clear();
     runtime.clear();
     mediaKeys.clear();
@@ -196,7 +208,24 @@ export const useVoiceStore = defineStore('voice', () => {
         presenceAdd(frame.roomId, frame.peer);
         if (frame.roomId === active && frame.peer.userId !== session.user?.id) {
           peers.set(frame.peer.userId, { ...frame.peer, speaking: false, volume: 1 });
+          if (outgoingCall.value?.conversationId === active) outgoingCall.value = null; // call connected
         }
+        break;
+      case 'voice-call-ring':
+        // Don't ring myself for a call I'm already in / placing.
+        if (frame.conversationId !== active && outgoingCall.value?.conversationId !== frame.conversationId) {
+          incomingCall.value = { conversationId: frame.conversationId, fromUserId: frame.fromUserId, fromDisplayName: frame.fromDisplayName };
+          startRingtone();
+        }
+        break;
+      case 'voice-call-answered':
+        // I answered on another device — stop ringing here.
+        if (incomingCall.value?.conversationId === frame.conversationId) clearIncoming();
+        break;
+      case 'voice-call-declined':
+      case 'voice-call-canceled':
+        if (incomingCall.value?.conversationId === frame.conversationId) clearIncoming();
+        if (outgoingCall.value?.conversationId === frame.conversationId) outgoingCall.value = null;
         break;
       case 'voice-peer-left':
         presenceRemove(frame.roomId, frame.userId);
@@ -374,6 +403,49 @@ export const useVoiceStore = defineStore('voice', () => {
     }
   }
 
+  // --- direct-call actions --------------------------------------------------
+  /** Place a call: join the room (be ready), then ring the other members. */
+  async function startCall(conversationId: string, displayName?: string): Promise<void> {
+    outgoingCall.value = { conversationId };
+    await join(conversationId, displayName);
+    if (activeRoomId.value !== conversationId) {
+      outgoingCall.value = null; // join failed
+      return;
+    }
+    try {
+      await api.voiceRing(conversationId);
+    } catch {
+      outgoingCall.value = null;
+    }
+  }
+  /** Answer the incoming call (join its room). */
+  async function answerCall(): Promise<void> {
+    const c = incomingCall.value;
+    if (!c) return;
+    clearIncoming();
+    await join(c.conversationId, c.fromDisplayName);
+  }
+  /** Decline the incoming call (notify the caller). */
+  async function declineCall(): Promise<void> {
+    const c = incomingCall.value;
+    if (!c) return;
+    clearIncoming();
+    try {
+      await api.voiceDecline(c.conversationId);
+    } catch {/* best-effort */}
+  }
+  /** Cancel an outgoing call before it's answered. */
+  async function cancelCall(): Promise<void> {
+    const c = outgoingCall.value;
+    outgoingCall.value = null;
+    if (c) {
+      try {
+        await api.voiceDecline(c.conversationId);
+      } catch {/* best-effort */}
+    }
+    await leave();
+  }
+
   /** Subscribe to voice WS frames (idempotent). Call once at app start. */
   function init(): void {
     if (unsub) return;
@@ -393,11 +465,17 @@ export const useVoiceStore = defineStore('voice', () => {
     localSpeaking,
     connectionQuality,
     inCall,
+    incomingCall,
+    outgoingCall,
     roomPresence,
     loadPresence,
     init,
     join,
     leave,
+    startCall,
+    answerCall,
+    declineCall,
+    cancelCall,
     toggleMute,
     setMuted,
     toggleDeafen,

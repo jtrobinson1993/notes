@@ -16,6 +16,7 @@ import IconPencil from '~icons/mynaui/pencil';
 import IconThread from '~icons/mynaui/chat-dots';
 import IconReplyQuote from '~icons/mynaui/corner-up-left';
 import IconX from '~icons/mynaui/x';
+import IconPhone from '~icons/mynaui/telephone-call';
 import IconImage from '~icons/mynaui/image';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import IconPaperclipSolid from '~icons/mynaui/paperclip-solid';
@@ -24,6 +25,7 @@ import { joinText } from '../lib/systemMessages';
 import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 import { useProfileStore } from '../stores/profile';
+import { useVoiceStore } from '../stores/voice';
 import { conversationTitle } from '../lib/convName';
 
 // Renders one conversation (DM, group, or a thread). The parent owns routing and
@@ -33,6 +35,14 @@ const emit = defineEmits<{ openThread: [seq: number]; close: [] }>();
 const session = useSessionStore();
 const chat = useChatStore();
 const profile = useProfileStore();
+const voice = useVoiceStore();
+
+// A direct call can be placed from any non-thread conversation; the call room is
+// the conversation id. Hidden while already in this call.
+const canCall = computed(() => !isThread.value && !props.isThreadPanel && voice.activeRoomId !== props.convId);
+function startCall(): void {
+  void voice.startCall(props.convId, title.value);
+}
 
 const convId = computed(() => props.convId);
 // The stream this view renders: a specific channel, or the general channel
@@ -485,8 +495,17 @@ async function sendGif(gif: GifRef) {
         <p class="font-semibold">{{ title }}</p>
         <span v-if="isThread" class="text-xs text-zinc-400">thread</span>
         <button
+          v-if="canCall"
+          class="ml-auto flex items-center rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-green-600 dark:hover:bg-zinc-800 dark:hover:text-green-400"
+          title="Start a voice call"
+          @click="startCall"
+        >
+          <IconPhone class="h-4.5 w-4.5" />
+        </button>
+        <button
           v-if="isThreadPanel"
-          class="ml-auto flex items-center rounded-lg p-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          class="flex items-center rounded-lg p-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          :class="{ 'ml-auto': !canCall }"
           title="Close thread"
           @click="emit('close')"
         >

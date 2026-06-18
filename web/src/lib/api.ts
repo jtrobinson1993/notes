@@ -280,4 +280,6 @@ export const api = {
   voiceRekey: (room: string, epoch: number, keys: SealedMemberKey[]) =>
     req<{ ok: true }>('POST', `/api/voice/rooms/${encodeURIComponent(room)}/rekey`, { epoch, keys }),
   voicePresence: (room: string) => req<{ peers: VoicePeer[] }>('GET', `/api/voice/rooms/${encodeURIComponent(room)}/presence`),
+  voiceRing: (conversationId: string) => req<{ ok: true }>('POST', `/api/voice/calls/${encodeURIComponent(conversationId)}/ring`),
+  voiceDecline: (conversationId: string) => req<{ ok: true }>('POST', `/api/voice/calls/${encodeURIComponent(conversationId)}/decline`),
 };

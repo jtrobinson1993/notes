@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { useSessionStore } from '../stores/session';
 import AppSidebar from './AppSidebar.vue';
 import CallPanel from './CallPanel.vue';
+import IncomingCallModal from './IncomingCallModal.vue';
 
 const session = useSessionStore();
 const unlockError = ref('');
@@ -46,5 +47,6 @@ async function unlock() {
       <slot />
     </main>
     <CallPanel v-if="session.loggedIn" />
+    <IncomingCallModal v-if="session.loggedIn" />
   </div>
 </template>
