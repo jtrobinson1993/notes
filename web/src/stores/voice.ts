@@ -162,6 +162,10 @@ export const useVoiceStore = defineStore('voice', () => {
     const peer = peers.get(userId);
     audio.volume = peer?.volume ?? 1;
     audio.muted = deafened.value;
+    // Chrome won't reliably play remote WebRTC audio from a detached element —
+    // attach a hidden one to the DOM.
+    audio.style.display = 'none';
+    document.body.appendChild(audio);
     void audio.play().catch(() => {/* autoplay may need a gesture; UI prompts */});
 
     const rt = runtime.get(userId) ?? {};
@@ -259,6 +263,7 @@ export const useVoiceStore = defineStore('voice', () => {
         rt.consumer?.close();
         if (rt.audio) {
           rt.audio.srcObject = null;
+          rt.audio.remove();
         }
       } catch {/* ignore */}
       runtime.delete(userId);
@@ -276,10 +281,13 @@ export const useVoiceStore = defineStore('voice', () => {
     if (activeRoomId.value) await leave();
     connecting.value = true;
     error.value = null;
+    // Set the active room BEFORE the join round-trip: the server fans out the
+    // rekey request during /join, so the WS event can arrive before the response
+    // resolves — if active weren't set yet, the owner would drop its first key.
+    activeRoomId.value = roomId;
+    activeRoomName.value = roomName ?? null;
     try {
       const resp = await api.voiceJoin(roomId);
-      activeRoomId.value = roomId;
-      activeRoomName.value = roomName ?? null;
       device = new Device();
       await device.load({ routerRtpCapabilities: resp.routerRtpCapabilities as unknown as msTypes.RtpCapabilities });
 
