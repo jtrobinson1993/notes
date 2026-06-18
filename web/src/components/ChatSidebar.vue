@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import ChannelModal from './ChannelModal.vue';
 import ChannelMembersDialog from './ChannelMembersDialog.vue';
+import ChatFolderShareDialog from './ChatFolderShareDialog.vue';
 import PinPickerModal from './PinPickerModal.vue';
 import EmojiText from './EmojiText.vue';
 import ResizeHandle from './ResizeHandle.vue';
@@ -14,6 +15,7 @@ import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
 import { canManageMembers, type ChannelInfo, type ChannelType, type Conversation } from '@notes/shared';
 import IconHash from '~icons/mynaui/hash';
 import IconLock from '~icons/mynaui/lock';
+import IconShare from '~icons/mynaui/share';
 import IconUsers from '~icons/mynaui/users';
 import IconVolume from '~icons/mynaui/volume-high';
 import IconPanelLeft from '~icons/mynaui/panel-left';
@@ -181,6 +183,41 @@ function unpinNote(noteId: string) {
   org.unpin(convId.value, 'note', noteId);
 }
 
+// ---- Sharing a chat folder (notes + private channels) with participants ----
+const shareFolderTarget = ref<{ id: string; name: string } | null>(null);
+async function shareChatFolder(payload: { memberIds: string[]; access: 'read' | 'write' }) {
+  const target = shareFolderTarget.value;
+  if (!target) return;
+  // Every item in the folder and its subfolders.
+  const folderIds = org.chatDescendantIds(convId.value, target.id);
+  const items = folderIds.flatMap((fid) => itemsInFolder(fid));
+  for (const it of items) {
+    if (it.kind === 'note') {
+      const note = notes.notes.get(it.noteId);
+      if (!note || note.shared) continue; // only OWNED notes can be shared
+      for (const mid of payload.memberIds) {
+        const m = props.conversation.members.find((x) => x.userId === mid);
+        if (m?.publicKey) await notes.shareWith(it.noteId, mid, m.publicKey, payload.access);
+      }
+    } else if (it.channel.private) {
+      for (const mid of payload.memberIds) {
+        if (!it.channel.memberIds.includes(mid)) await chat.grantChannelMember(convId.value, it.channel.id, mid, 'fresh');
+      }
+    }
+    // Open channels need no grant — all members already have them.
+  }
+}
+
+// When a note is freshly pinned, offer to grant the chat's members view access.
+async function onNotePinned(noteId: string) {
+  const note = notes.notes.get(noteId);
+  if (!note || note.shared) return; // only the owner can grant
+  const others = props.conversation.members.filter((m) => m.userId !== session.user?.id && m.publicKey);
+  if (!others.length) return;
+  if (!window.confirm(`Grant ${others.length} chat member${others.length > 1 ? 's' : ''} view access to “${note.payload.title || 'Untitled'}”?`)) return;
+  for (const m of others) await notes.shareWith(noteId, m.userId, m.publicKey!, 'read');
+}
+
 // ---- Drag & drop (personal arrangement) ----
 const draggingItem = ref<string | null>(null);
 const draggingFolder = ref<string | null>(null);
@@ -333,6 +370,7 @@ function onDropOnRoot() {
             <span class="min-w-0 grow truncate"><EmojiText :text="row.folder!.name" /></span>
           </button>
           <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
+            <button class="rounded p-1 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400" title="Share folder with the chat" @click="shareFolderTarget = { id: row.folder!.id, name: row.folder!.name }"><IconShare class="h-3.5 w-3.5" /></button>
             <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(row.folder!.id)"><IconFolderPlus class="h-3.5 w-3.5" /></button>
             <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(row.folder!.id, row.folder!.name)"><IconPencil class="h-3.5 w-3.5" /></button>
             <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete folder" @click="deleteFolder(row.folder!.id, row.folder!.name)"><IconTrash class="h-3.5 w-3.5" /></button>
@@ -399,7 +437,15 @@ function onDropOnRoot() {
       :channel="manageChannel"
       @update:open="(v) => { if (!v) manageChannel = null; }"
     />
-    <PinPickerModal v-model:open="pinPickerOpen" :conversation-id="convId" @open-note="emit('openNote', $event)" />
+    <ChatFolderShareDialog
+      v-if="shareFolderTarget"
+      :open="true"
+      :conversation="conversation"
+      :folder-name="shareFolderTarget.name"
+      @share="shareChatFolder"
+      @update:open="(v) => { if (!v) shareFolderTarget = null; }"
+    />
+    <PinPickerModal v-model:open="pinPickerOpen" :conversation-id="convId" @open-note="emit('openNote', $event)" @pinned="onNotePinned" />
     <ResizeHandle :active="resizing" @start="startResize" />
   </aside>
 </template>

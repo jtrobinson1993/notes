@@ -13,7 +13,7 @@ import IconPin from '~icons/mynaui/pin';
 // NOT share the note (sharing is v5). Group notes with chat folders in the
 // sidebar itself.
 const props = defineProps<{ conversationId: string }>();
-const emit = defineEmits<{ openNote: [id: string] }>();
+const emit = defineEmits<{ openNote: [id: string]; pinned: [id: string] }>();
 const open = defineModel<boolean>('open', { default: false });
 const notes = useNotesStore();
 const org = useOrgStore();
@@ -27,8 +27,12 @@ const items = computed(() => {
 });
 
 function toggle(id: string) {
-  if (org.isPinned(props.conversationId, 'note', id)) org.unpin(props.conversationId, 'note', id);
-  else org.pin(props.conversationId, 'note', id);
+  if (org.isPinned(props.conversationId, 'note', id)) {
+    org.unpin(props.conversationId, 'note', id);
+  } else {
+    org.pin(props.conversationId, 'note', id);
+    emit('pinned', id); // offer to grant chat members access
+  }
 }
 
 async function newNote() {
