@@ -77,7 +77,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
       <div class="flex flex-col gap-1 p-2">
         <SidebarTooltip label="New chat" :disabled="expanded">
           <button
-            class="flex items-center gap-2 rounded-lg bg-blue-600 px-2 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            class="flex items-center gap-2 bg-blue-600 px-2 py-2 text-sm font-medium text-white hover:bg-blue-700"
             :class="expanded ? '' : 'justify-center'"
             aria-label="New chat"
             @click="newChatOpen = true"
@@ -90,7 +90,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
       <NewChatModal v-model:open="newChatOpen" />
 
       <!-- Conversations + Notes -->
-      <div class="min-h-0 grow overflow-y-auto px-2">
+      <div class="min-h-0 grow overflow-y-auto">
         <SidebarTooltip
           v-for="conv in sortedConversations"
           :key="conv.id"
@@ -100,7 +100,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
           <RouterLink
             :to="`/chat/${conv.id}`"
             :aria-label="convName(conv)"
-            class="relative flex items-center gap-2 rounded-lg px-2 py-2 text-sm"
+            class="relative flex items-center gap-2 p-1 text-sm"
             :class="[
               expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center',
               activeConvId === conv.id
@@ -108,7 +108,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
                 : 'text-zinc-700 dark:text-zinc-200',
             ]"
           >
-            <span class="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-300 text-xs font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-100">
+            <span class="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-300 text-xs font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-100">
               <img
                 v-if="convIcon(conv)"
                 :src="convIcon(conv) ?? undefined"
@@ -138,7 +138,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
           <RouterLink
             to="/"
             aria-label="Notes"
-            class="mt-1 flex items-center gap-2 rounded-lg px-2 py-2 text-sm"
+            class="flex items-center gap-2 p-1 text-sm"
             :class="[
               expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center',
               isNotesActive
@@ -146,7 +146,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
                 : 'text-zinc-700 dark:text-zinc-200',
             ]"
           >
-            <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-200 dark:bg-zinc-800">
+            <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 dark:bg-zinc-800">
               <IconPen class="h-4 w-4" />
             </span>
             <span v-if="expanded" class="truncate">Notes</span>
