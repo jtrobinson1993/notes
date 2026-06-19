@@ -6,6 +6,11 @@ recovery
 *.log
 .DS_Store
 data/
+# Local server backups + scratch copies (the app's SQLite backups live under
+# data/ and are already covered; these also catch hand-made backup/migration dirs).
+**/data/backups/
+data.bak*/
+*.sqlite.bak
 .env
 dev-dist/
 coverage/
