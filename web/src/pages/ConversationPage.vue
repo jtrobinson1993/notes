@@ -81,11 +81,28 @@ const groupIcon = computed(() => chat.groupIconUrl(convId.value));
 const editingName = ref(false);
 const nameDraft = ref('');
 const nameInput = ref<HTMLInputElement | null>(null);
+// A hidden mirror of the draft text, used to size the input to its content. The
+// rendered width is clamped by `max-w-full` on the input so it can never push
+// the header's call/members buttons out of view.
+const NAME_PLACEHOLDER = 'Group name';
+const nameSizer = ref<HTMLSpanElement | null>(null);
+const nameWidth = ref(0);
+function measureName(): void {
+  void nextTick(() => {
+    if (nameSizer.value) nameWidth.value = nameSizer.value.offsetWidth;
+  });
+}
+watch(nameDraft, measureName);
 function startEditName(): void {
   if (!canEditGroup.value) return;
   nameDraft.value = conversation.value?.name ?? '';
   editingName.value = true;
+  measureName();
   void nextTick(() => nameInput.value?.focus());
+}
+// Esc cancels without saving; blur (clicking elsewhere) saves and exits.
+function cancelEditName(): void {
+  editingName.value = false;
 }
 async function saveName(): Promise<void> {
   if (!editingName.value) return;
@@ -219,33 +236,41 @@ onBeforeUnmount(stopDrag);
           <template v-else>{{ (parentTitle.trim()[0] ?? '?').toUpperCase() }}</template>
         </button>
         <input v-if="canEditGroup" ref="iconInput" type="file" accept="image/*" class="hidden" @change="pickIcon" />
-        <!-- Conversation name. Owners/admins click to rename a group inline. -->
-        <input
-          v-if="editingName"
-          ref="nameInput"
-          v-model="nameDraft"
-          type="text"
-          :maxlength="60"
-          class="min-w-0 rounded-md border border-zinc-300 bg-white px-1.5 py-0.5 font-semibold dark:border-zinc-600 dark:bg-zinc-900"
-          placeholder="Group name"
-          @keydown.enter.prevent="saveName"
-          @keydown.esc.prevent="editingName = false"
-          @blur="saveName"
-        />
-        <p
-          v-else
-          class="font-semibold"
-          :class="canEditGroup ? 'cursor-pointer rounded px-1 hover:bg-zinc-100 dark:hover:bg-zinc-800' : ''"
-          :title="canEditGroup ? 'Rename group' : ''"
-          @click="startEditName"
-        >{{ parentTitle }}</p>
-        <!-- Active channel name (groups). -->
-        <span
-          v-if="isGroup && activeChannel"
-          class="flex min-w-0 items-center gap-0.5 truncate text-sm text-zinc-400"
-        >
-          <IconHash class="h-3.5 w-3.5 shrink-0" /><EmojiText :text="activeChannel.name" />
-        </span>
+        <!-- Name + active-channel slot: shrinkable so a long name (or its editor)
+             can never push the call/members buttons out of the header. -->
+        <div class="flex min-w-0 flex-1 items-center gap-2">
+          <!-- Conversation name. Owners/admins click to rename a group inline. -->
+          <template v-if="editingName">
+            <!-- Hidden mirror that sizes the input to its content. -->
+            <span ref="nameSizer" aria-hidden="true" class="pointer-events-none invisible absolute whitespace-pre font-semibold">{{ nameDraft || NAME_PLACEHOLDER }}</span>
+            <input
+              ref="nameInput"
+              v-model="nameDraft"
+              type="text"
+              :maxlength="60"
+              :style="{ width: `${nameWidth + 2}px` }"
+              class="min-w-0 max-w-full border-x-0 border-t-0 border-b border-zinc-300 bg-transparent px-0 py-0 font-semibold focus:border-blue-500 focus:outline-none focus:ring-0 dark:border-zinc-600"
+              :placeholder="NAME_PLACEHOLDER"
+              @keydown.enter.prevent="saveName"
+              @keydown.esc.prevent="cancelEditName"
+              @blur="saveName"
+            />
+          </template>
+          <p
+            v-else
+            class="min-w-0 truncate font-semibold"
+            :class="canEditGroup ? 'cursor-pointer rounded px-1 hover:bg-zinc-100 dark:hover:bg-zinc-800' : ''"
+            :title="canEditGroup ? 'Rename group' : ''"
+            @click="startEditName"
+          >{{ parentTitle }}</p>
+          <!-- Active channel name (groups). -->
+          <span
+            v-if="isGroup && activeChannel"
+            class="flex min-w-0 items-center gap-0.5 truncate text-sm text-zinc-400"
+          >
+            <IconHash class="h-3.5 w-3.5 shrink-0" /><EmojiText :text="activeChannel.name" />
+          </span>
+        </div>
         <div class="ml-auto flex items-center gap-1">
           <button
             v-if="canCall"
