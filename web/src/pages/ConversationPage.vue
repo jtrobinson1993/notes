@@ -222,7 +222,7 @@ onBeforeUnmount(stopDrag);
 
       <div class="flex h-full min-w-0 grow flex-col">
       <!-- Shared conversation header, above both the chat and the thread panel. -->
-      <header class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+      <header class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-2 py-2 dark:border-zinc-800">
         <!-- Conversation icon. Owners/admins can click it to set a group icon. -->
         <button
           type="button"
