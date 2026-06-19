@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import ConversationView from '../components/ConversationView.vue';
@@ -7,13 +7,17 @@ import ChatSidebar from '../components/ChatSidebar.vue';
 import NoteEditor from '../components/NoteEditor.vue';
 import EmojiText from '../components/EmojiText.vue';
 import ManageMembersDrawer from '../components/ManageMembersDrawer.vue';
+import AvatarCropper from '../components/AvatarCropper.vue';
 import { conversationTitle } from '../lib/convName';
+import { MAX_AVATAR_INPUT_BYTES } from '../lib/avatar';
 import { useChatStore } from '../stores/chat';
 import { useNotesStore } from '../stores/notes';
 import { useOrgStore } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
+import { useVoiceStore } from '../stores/voice';
 import IconUsers from '~icons/mynaui/users';
 import IconHash from '~icons/mynaui/hash';
+import IconPhone from '~icons/mynaui/telephone-call';
 
 const route = useRoute();
 const router = useRouter();
@@ -68,6 +72,47 @@ const parentTitle = computed(() =>
   conversation.value ? conversationTitle(conversation.value, session.user?.id) : 'Conversation',
 );
 const isGroup = computed(() => conversation.value?.kind === 'group');
+
+// Group name/icon editing (owner/admin) lives in this (visible) header.
+const voice = useVoiceStore();
+const canEditGroup = computed(() => isGroup.value && (conversation.value?.myRole === 'owner' || conversation.value?.myRole === 'admin'));
+const groupIcon = computed(() => chat.groupIconUrl(convId.value));
+
+const editingName = ref(false);
+const nameDraft = ref('');
+const nameInput = ref<HTMLInputElement | null>(null);
+function startEditName(): void {
+  if (!canEditGroup.value) return;
+  nameDraft.value = conversation.value?.name ?? '';
+  editingName.value = true;
+  void nextTick(() => nameInput.value?.focus());
+}
+async function saveName(): Promise<void> {
+  if (!editingName.value) return;
+  editingName.value = false;
+  const next = nameDraft.value.trim();
+  if (next !== (conversation.value?.name ?? '')) await chat.renameGroup(convId.value, next);
+}
+
+const iconInput = ref<HTMLInputElement | null>(null);
+const cropFile = ref<File | null>(null);
+const cropOpen = ref(false);
+function pickIcon(e: Event): void {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (!file || file.size > MAX_AVATAR_INPUT_BYTES) return;
+  cropFile.value = file;
+  cropOpen.value = true;
+  (e.target as HTMLInputElement).value = '';
+}
+async function onIconCropped(dataUrl: string): Promise<void> {
+  await chat.setGroupIcon(convId.value, dataUrl);
+}
+
+// Start a voice call on this conversation (1:1 or group).
+const canCall = computed(() => !!conversation.value && voice.activeRoomId !== convId.value);
+function startCall(): void {
+  void voice.startCall(convId.value, parentTitle.value);
+}
 
 // If the route points at a channel that doesn't exist (deleted / stale link),
 // fall back to the general channel once the conversation's channels are known.
@@ -161,10 +206,39 @@ onBeforeUnmount(stopDrag);
       <div class="flex h-full min-w-0 grow flex-col">
       <!-- Shared conversation header, above both the chat and the thread panel. -->
       <header class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-sm font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
-          {{ (parentTitle.trim()[0] ?? '?').toUpperCase() }}
-        </span>
-        <p class="font-semibold">{{ parentTitle }}</p>
+        <!-- Conversation icon. Owners/admins can click it to set a group icon. -->
+        <button
+          type="button"
+          class="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-zinc-200 text-sm font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200"
+          :class="canEditGroup ? 'cursor-pointer hover:opacity-80' : 'cursor-default'"
+          :disabled="!canEditGroup"
+          :title="canEditGroup ? 'Change group icon' : parentTitle"
+          @click="iconInput?.click()"
+        >
+          <img v-if="groupIcon" :src="groupIcon" alt="" class="h-full w-full object-cover" />
+          <template v-else>{{ (parentTitle.trim()[0] ?? '?').toUpperCase() }}</template>
+        </button>
+        <input v-if="canEditGroup" ref="iconInput" type="file" accept="image/*" class="hidden" @change="pickIcon" />
+        <!-- Conversation name. Owners/admins click to rename a group inline. -->
+        <input
+          v-if="editingName"
+          ref="nameInput"
+          v-model="nameDraft"
+          type="text"
+          :maxlength="60"
+          class="min-w-0 rounded-md border border-zinc-300 bg-white px-1.5 py-0.5 font-semibold dark:border-zinc-600 dark:bg-zinc-900"
+          placeholder="Group name"
+          @keydown.enter.prevent="saveName"
+          @keydown.esc.prevent="editingName = false"
+          @blur="saveName"
+        />
+        <p
+          v-else
+          class="font-semibold"
+          :class="canEditGroup ? 'cursor-pointer rounded px-1 hover:bg-zinc-100 dark:hover:bg-zinc-800' : ''"
+          :title="canEditGroup ? 'Rename group' : ''"
+          @click="startEditName"
+        >{{ parentTitle }}</p>
         <!-- Active channel name (groups). -->
         <span
           v-if="isGroup && activeChannel"
@@ -172,17 +246,28 @@ onBeforeUnmount(stopDrag);
         >
           <IconHash class="h-3.5 w-3.5 shrink-0" /><EmojiText :text="activeChannel.name" />
         </span>
-        <!-- Group member management (groups only). -->
-        <button
-          v-if="isGroup && conversation"
-          class="ml-auto flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          title="Members"
-          @click="showMembers = true"
-        >
-          <IconUsers class="h-4 w-4" />
-          <span>{{ conversation.members.length }}</span>
-        </button>
+        <div class="ml-auto flex items-center gap-1">
+          <button
+            v-if="canCall"
+            class="flex items-center rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-green-600 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-green-400"
+            title="Start a voice call"
+            @click="startCall"
+          >
+            <IconPhone class="h-4.5 w-4.5" />
+          </button>
+          <!-- Group member management (groups only). -->
+          <button
+            v-if="isGroup && conversation"
+            class="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            title="Members"
+            @click="showMembers = true"
+          >
+            <IconUsers class="h-4 w-4" />
+            <span>{{ conversation.members.length }}</span>
+          </button>
+        </div>
       </header>
+      <AvatarCropper v-if="canEditGroup" v-model:open="cropOpen" :file="cropFile" @cropped="onIconCropped" />
       <ManageMembersDrawer v-if="conversation && isGroup" v-model:open="showMembers" :conversation="conversation" />
 
       <div ref="region" class="relative flex min-h-0 flex-1">
