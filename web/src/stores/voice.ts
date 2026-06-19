@@ -8,6 +8,7 @@ import { useSessionStore } from './session';
 import { generateMediaKey, sealMediaKey, unsealMediaKey } from '../lib/voiceCrypto';
 import { decryptReceiver, dropFrameKey, encryptSender, resetVoiceWorker, setFrameKey, setSendEpoch, voiceE2eeSupported } from '../lib/voiceTransform';
 import { startRingtone, stopRingtone } from '../lib/ringtone';
+import { createDenoisedStream } from '../lib/voiceDenoise';
 
 // Client orchestration for E2EE voice: mediasoup-client Device + transports,
 // produce/consume, media-key handling via WS events, plus the UI-facing roster
@@ -91,6 +92,7 @@ export const useVoiceStore = defineStore('voice', () => {
   let micStream: MediaStream | null = null;
   let audioCtx: AudioContext | null = null;
   let localAnalyser: AnalyserNode | null = null;
+  let denoiseCleanup: (() => void) | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   const runtime = new Map<string, PeerRuntime>(); // by userId
   const mediaKeys = new Map<number, Uint8Array>(); // epoch -> raw (owner keeps these to re-seal)
@@ -297,15 +299,21 @@ export const useVoiceStore = defineStore('voice', () => {
       const { privateKey, publicKey } = await session.getKeyPair();
       for (const k of resp.mediaKeys) await onKeyEpoch(k.epoch, await unsealMediaKey(k.sealedKey, privateKey, publicKey));
 
-      audioCtx = new AudioContext();
+      // 48 kHz to match Opus + RNNoise's assumed rate.
+      audioCtx = new AudioContext({ sampleRate: 48000 });
       sendTransport = await makeTransport(roomId, 'send');
       recvTransport = await makeTransport(roomId, 'recv');
 
       micStream = await navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS });
-      const track = micStream.getAudioTracks()[0]!;
+      // ML denoise (RNNoise) on top of the browser's built-in suppression; falls
+      // back to the raw mic if it can't load. Mute still works: disabling the raw
+      // mic track feeds silence through the graph.
+      const denoised = await createDenoisedStream(audioCtx, micStream);
+      denoiseCleanup = denoised.cleanup;
+      const track = denoised.stream.getAudioTracks()[0]!;
       producer = await sendTransport.produce({ track });
       if (producer.rtpSender) encryptSender(producer.rtpSender);
-      const micSrc = audioCtx.createMediaStreamSource(micStream);
+      const micSrc = audioCtx.createMediaStreamSource(denoised.stream);
       localAnalyser = audioCtx.createAnalyser();
       localAnalyser.fftSize = 512;
       micSrc.connect(localAnalyser);
@@ -328,12 +336,14 @@ export const useVoiceStore = defineStore('voice', () => {
     stopPolling();
     for (const userId of [...runtime.keys()]) removePeer(userId);
     try {
+      denoiseCleanup?.();
       producer?.close();
       sendTransport?.close();
       recvTransport?.close();
       micStream?.getTracks().forEach((t) => t.stop());
       await audioCtx?.close();
     } catch {/* ignore */}
+    denoiseCleanup = null;
     micStream = null;
     audioCtx = null;
     localAnalyser = null;
