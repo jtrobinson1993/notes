@@ -1,7 +1,11 @@
-import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor';
 import rnnoiseWorkletPath from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url';
 import rnnoiseWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
 import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url';
+
+// NOTE: the package is imported dynamically (inside the function) on purpose —
+// its `RnnoiseWorkletNode extends AudioWorkletNode` evaluates a browser-only
+// global at import time, which would crash any unit test that transitively
+// imports the voice store under jsdom. Deferring keeps module load test-safe.
 
 // ML noise suppression (RNNoise) on the mic, on top of the browser's built-in
 // echo-cancel/noise-suppress/AGC. RNNoise strips steady + transient background
@@ -21,6 +25,7 @@ let workletAdded = false;
 
 export async function createDenoisedStream(ctx: AudioContext, mic: MediaStream): Promise<Denoised> {
   try {
+    const { loadRnnoise, RnnoiseWorkletNode } = await import('@sapphi-red/web-noise-suppressor');
     const wasmBinary = await loadRnnoise({ url: rnnoiseWasmPath, simdUrl: rnnoiseSimdWasmPath });
     if (!workletAdded) {
       await ctx.audioWorklet.addModule(rnnoiseWorkletPath);
