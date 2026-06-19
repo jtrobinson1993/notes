@@ -3,6 +3,7 @@ import type {
   Conversation,
   CredentialInfo,
   ChatReaction,
+  ConversationIcon,
   Friend,
   FriendInvite,
   FriendRequest,
@@ -27,6 +28,15 @@ import type {
   SharedNoteRecord,
   UserInfo,
   UserKeys,
+  VoiceConnectTransportRequest,
+  VoiceConsumeRequest,
+  VoiceConsumeResponse,
+  VoiceJoinResponse,
+  VoiceProduceRequest,
+  VoiceProduceResponse,
+  VoicePeer,
+  VoiceTransportRequest,
+  VoiceTransportResponse,
   WrappedKey,
 } from '@notes/shared';
 
@@ -203,6 +213,8 @@ export const api = {
     req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, body),
   conversationSetRole: (id: string, userId: string, role: 'admin' | 'member') =>
     req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}/role`, { role }),
+  conversationEdit: (id: string, body: { name?: string | null; icon?: ConversationIcon | null }) =>
+    req<Conversation>('PATCH', `/api/conversations/${encodeURIComponent(id)}`, body),
   conversationMessages: (id: string, opts?: { before?: number; limit?: number; channelId?: string }) => {
     const q = new URLSearchParams();
     if (opts?.before !== undefined) q.set('before', String(opts.before));
@@ -255,4 +267,22 @@ export const api = {
   pushKey: () => req<{ publicKey: string | null }>('GET', '/api/push/key'),
   pushSubscribe: (sub: PushSubscriptionInput) => req<{ ok: true }>('POST', '/api/push/subscribe', sub),
   pushUnsubscribe: (endpoint: string) => req<{ ok: true }>('POST', '/api/push/unsubscribe', { endpoint }),
+
+  // v6 voice (mediasoup SFU). `room` is a voice-channel id. Blobs are mediasoup
+  // params, typed loosely here and precisely by mediasoup-client at the edges.
+  voiceJoin: (room: string) => req<VoiceJoinResponse>('POST', `/api/voice/rooms/${encodeURIComponent(room)}/join`),
+  voiceLeave: (room: string) => req<{ ok: true }>('POST', `/api/voice/rooms/${encodeURIComponent(room)}/leave`),
+  voiceCreateTransport: (room: string, direction: 'send' | 'recv') =>
+    req<VoiceTransportResponse>('POST', `/api/voice/rooms/${encodeURIComponent(room)}/transport`, { direction } satisfies VoiceTransportRequest),
+  voiceConnectTransport: (room: string, body: VoiceConnectTransportRequest) =>
+    req<{ ok: true }>('POST', `/api/voice/rooms/${encodeURIComponent(room)}/transport/connect`, body),
+  voiceProduce: (room: string, body: VoiceProduceRequest) =>
+    req<VoiceProduceResponse>('POST', `/api/voice/rooms/${encodeURIComponent(room)}/produce`, body),
+  voiceConsume: (room: string, body: VoiceConsumeRequest) =>
+    req<VoiceConsumeResponse>('POST', `/api/voice/rooms/${encodeURIComponent(room)}/consume`, body),
+  voiceRekey: (room: string, epoch: number, keys: SealedMemberKey[]) =>
+    req<{ ok: true }>('POST', `/api/voice/rooms/${encodeURIComponent(room)}/rekey`, { epoch, keys }),
+  voicePresence: (room: string) => req<{ peers: VoicePeer[] }>('GET', `/api/voice/rooms/${encodeURIComponent(room)}/presence`),
+  voiceRing: (conversationId: string) => req<{ ok: true }>('POST', `/api/voice/calls/${encodeURIComponent(conversationId)}/ring`),
+  voiceDecline: (conversationId: string) => req<{ ok: true }>('POST', `/api/voice/calls/${encodeURIComponent(conversationId)}/decline`),
 };

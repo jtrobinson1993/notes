@@ -19,9 +19,12 @@ export interface Push {
   readonly publicKey: string | null;
   /** Push a content-free ping to every member without a live socket. */
   notifyNewMessage(conversationId: string, senderId: string, memberIds: string[]): void;
+  /** Push a content-free incoming-call ping to callees without a live socket
+   *  (online devices are rung over the WebSocket). */
+  notifyCall(conversationId: string, callerId: string, calleeIds: string[]): void;
 }
 
-const NOOP: Push = { enabled: false, publicKey: null, notifyNewMessage() {} };
+const NOOP: Push = { enabled: false, publicKey: null, notifyNewMessage() {}, notifyCall() {} };
 
 /** Resolve VAPID keys: explicit env vars win; otherwise generate once and
  * persist to the data dir so the keypair (and clients' existing subscriptions)
@@ -72,5 +75,20 @@ export function createPush(db: DB, config: Config, realtime: Realtime): Push {
     }
   }
 
-  return { enabled: true, publicKey: keys.publicKey, notifyNewMessage };
+  function notifyCall(conversationId: string, callerId: string, calleeIds: string[]): void {
+    const body = JSON.stringify({ type: 'call', conversationId } satisfies PushPayload);
+    for (const uid of calleeIds) {
+      if (uid === callerId) continue;
+      if (realtime.isOnline(uid)) continue; // a live socket rings them over WS
+      for (const sub of db.listPushSubscriptions(uid)) {
+        webpush
+          .sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, body)
+          .catch((err: { statusCode?: number }) => {
+            if (err?.statusCode === 404 || err?.statusCode === 410) db.deletePushSubscription(uid, sub.endpoint);
+          });
+      }
+    }
+  }
+
+  return { enabled: true, publicKey: keys.publicKey, notifyNewMessage, notifyCall };
 }

@@ -58,9 +58,26 @@ existing passkeys.
 | `APP_NAME` | `Notes` | Display name |
 | `BACKUP_INTERVAL_HOURS` | `24` | Periodic SQLite backup interval (0 disables) |
 | `BACKUP_KEEP` | `14` | Number of backups to retain |
+| `VOICE_ANNOUNCED_IP` | `127.0.0.1` | Public/LAN IP clients reach for voice media — set for non-local calls |
+| `VOICE_LISTEN_IP` | `0.0.0.0` | Interface the voice media server binds to |
+| `VOICE_RTC_MIN_PORT` / `VOICE_RTC_MAX_PORT` | `40000` / `40100` | UDP/TCP port range for voice media |
 
 All state lives in `DATA_DIR` — back up that one directory (it only contains
 encrypted notes and public keys).
+
+### Voice (v6)
+
+Voice is **end-to-end encrypted** and relayed through a built-in mediasoup SFU
+(no second service to run). For calls to connect **off localhost** you must:
+
+1. Set `VOICE_ANNOUNCED_IP` to the public/LAN IP clients can reach this host at.
+2. Publish **and** port-forward the RTC range `40000–40100` (UDP, with TCP
+   fallback) — the compose file and Dockerfile already declare it.
+3. Serve over **HTTPS** (browsers gate microphone access + the encryption API to
+   secure origins).
+
+Supported browsers: Chrome, Edge, Safari, Firefox, and Zen (the encryption uses
+the standard `RTCRtpScriptTransform`). See [spec/voice.md](spec/voice.md).
 
 ## How the encryption works
 

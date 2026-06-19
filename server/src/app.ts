@@ -23,6 +23,7 @@ import { ogRoutes } from './routes/og.js';
 import { pushRoutes } from './routes/push.js';
 import { createRealtime, WS_MAX_PAYLOAD } from './realtime.js';
 import { createPush } from './push.js';
+import { createVoice } from './voice.js';
 
 export async function buildApp(db: DB, config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
@@ -54,6 +55,11 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
 
   const realtime = createRealtime(db, config);
   const push = createPush(db, config, realtime);
+  const voice = createVoice(db, config, realtime, push);
+  // Tear down a fully-offline user's calls (mediasoup worker is lazy — no cost
+  // until voice is actually used).
+  realtime.onUserOffline((userId) => voice.disconnect(userId));
+  app.addHook('onClose', async () => voice.close());
 
   app.get('/api/health', async () => ({ ok: true }));
   authRoutes(app, db, config);
@@ -67,6 +73,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   emojiRoutes(app, config);
   ogRoutes(app);
   pushRoutes(app, db, push);
+  voice.register(app);
   realtime.register(app);
 
   // Serve the built SPA (resolved above). Default: web/dist relative to the repo

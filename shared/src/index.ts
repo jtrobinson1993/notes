@@ -268,10 +268,27 @@ export type NameColor = (typeof NAME_COLORS)[number];
 
 /** A conversation as returned to one of its members, including that member's
  * own sealed copy of the current-epoch conversation key. */
+/** A group's E2EE icon: an optimized image encrypted under the conversation key
+ *  (like a user avatar under the profile key), so the server never sees it. */
+export interface ConversationIcon {
+  ciphertext: string;
+  iv: string;
+  /** the conversation epoch whose key encrypted it */
+  epoch: number;
+}
+
+/** Max length of a custom group name (server-enforced). */
+export const CONVERSATION_NAME_MAX = 60;
+
 export interface Conversation {
   id: string;
   kind: ConversationKind;
   members: ConversationMember[];
+  /** group only: a custom name set by an owner/admin. Plaintext metadata (like
+   *  display names); null falls back to the member-derived title. */
+  name: string | null;
+  /** group only: the E2EE group icon, or null for the initial fallback. */
+  icon: ConversationIcon | null;
   /** the conversation key sealed to ME (current epoch) — unseal with my X25519 key */
   sealedKey: SealedKey;
   epoch: number;
@@ -496,6 +513,91 @@ export interface ProfileView {
   encrypted: (ProfileCipher & { sealedKey: SealedKey }) | null;
 }
 
+// ---------------------------------------------------------------------------
+// v6 — E2EE voice (mediasoup SFU). The server forwards opaque, end-to-end
+// encrypted audio frames (insertable streams); it never decodes audio. The
+// per-call **media key** is distributed per epoch reusing the SealedEpochKey
+// sharing primitive, and re-keyed on join/leave — call membership is tracked
+// separately from channel membership. Signalling is REST (the mediasoup
+// handshake) + the WS ServerFrame `voice-*` events below. See spec/voice.md.
+// ---------------------------------------------------------------------------
+
+/** Max live participants in one voice room/call (small-scale deployment). */
+export const VOICE_MAX_PARTICIPANTS = 10;
+
+/** mediasoup parameter blobs (RtpCapabilities, IceParameters, DtlsParameters,
+ *  RtpParameters, …) are intricate + version-specific; the shared layer treats
+ *  them as opaque JSON. They're typed precisely on the client (mediasoup-client)
+ *  and the server (mediasoup) at the edges. */
+export type MediasoupBlob = Record<string, unknown>;
+
+/** A roster entry the room owner needs in order to seal the new media key to a
+ *  member: their id + X25519 public key. (No display name — sealing only needs
+ *  the key.) */
+export interface VoiceRekeyMember {
+  userId: string;
+  publicKey: string;
+}
+
+/** A live participant in a voice room — *call* membership, distinct from channel
+ *  membership. `displayName` is never the username. */
+export interface VoicePeer {
+  userId: string;
+  displayName: string;
+  /** the peer's current audio producer id, or null if not sending mic yet */
+  producerId: string | null;
+}
+
+/** Response to joining a voice room: everything the client needs to set up media
+ *  and decrypt peers' frames. */
+export interface VoiceJoinResponse {
+  roomId: string;
+  /** mediasoup router RTP capabilities — the client loads its Device with these */
+  routerRtpCapabilities: MediasoupBlob;
+  /** current live peers (excluding me) */
+  peers: VoicePeer[];
+  /** current call (media-key) epoch */
+  epoch: number;
+  /** every media-key epoch currently sealed to me (current + recent in-flight),
+   *  reusing the note/channel sharing primitive. Empty until the first rekey
+   *  bundle that includes me lands. */
+  mediaKeys: SealedEpochKey[];
+}
+
+/** Create a `WebRtcTransport` for one direction. */
+export interface VoiceTransportRequest {
+  direction: 'send' | 'recv';
+}
+export interface VoiceTransportResponse {
+  id: string;
+  iceParameters: MediasoupBlob;
+  iceCandidates: MediasoupBlob[];
+  dtlsParameters: MediasoupBlob;
+}
+export interface VoiceConnectTransportRequest {
+  transportId: string;
+  dtlsParameters: MediasoupBlob;
+}
+/** Start sending mic audio (always `kind: 'audio'` — no video in v6). */
+export interface VoiceProduceRequest {
+  transportId: string;
+  rtpParameters: MediasoupBlob;
+}
+export interface VoiceProduceResponse {
+  producerId: string;
+}
+/** Start receiving one peer's audio. */
+export interface VoiceConsumeRequest {
+  transportId: string;
+  producerId: string;
+  rtpCapabilities: MediasoupBlob;
+}
+export interface VoiceConsumeResponse {
+  id: string;
+  producerId: string;
+  rtpParameters: MediasoupBlob;
+}
+
 // ---- WebSocket frame protocol (JSON frames over one authenticated socket) ----
 
 /** Server -> client. The read path: live delivery + receipts + friend events. */
@@ -519,6 +621,24 @@ export type ServerFrame =
   | { type: 'conversation-updated'; conversationId: string }
   // You were removed from (or left) a conversation — drop it locally.
   | { type: 'conversation-removed'; conversationId: string }
+  // v6 voice: a peer joined/left a voice room I'm in (drives presence + roster).
+  | { type: 'voice-peer-joined'; roomId: string; peer: VoicePeer }
+  | { type: 'voice-peer-left'; roomId: string; userId: string }
+  // A peer started sending mic audio — `consume` their producer.
+  | { type: 'voice-new-producer'; roomId: string; userId: string; producerId: string }
+  // I'm the room owner: mint media key `epoch` sealed to each `roster` member
+  // (X25519 publicKey) and POST it back so the server can fan it out.
+  | { type: 'voice-rekey-needed'; roomId: string; epoch: number; roster: VoiceRekeyMember[] }
+  // A media-key rekey (join/leave): the new epoch's key sealed to me.
+  | { type: 'voice-key-epoch'; roomId: string; epoch: number; sealedKey: SealedKey }
+  // v6 direct (1:1/small-group) calls. The call room id is the conversation id.
+  // Incoming call → ring this user's devices (answer = join the room).
+  | { type: 'voice-call-ring'; conversationId: string; fromUserId: string; fromDisplayName: string }
+  // The callee answered on some device — other devices stop ringing.
+  | { type: 'voice-call-answered'; conversationId: string; userId: string }
+  // The callee declined, or the caller cancelled before pickup.
+  | { type: 'voice-call-declined'; conversationId: string; userId: string }
+  | { type: 'voice-call-canceled'; conversationId: string; userId: string }
   | { type: 'presence'; userId: string; online: boolean };
 
 /** Client -> server. Sends and read-markers go over REST; this stays minimal.
@@ -535,8 +655,8 @@ export interface PushSubscriptionInput {
   keys: { p256dh: string; auth: string };
 }
 
-/** The content-free payload the server pushes; the client opens and decrypts. */
-export interface PushPayload {
-  type: 'message';
-  conversationId: string;
-}
+/** The content-free payload the server pushes; the client opens and decrypts.
+ *  A `call` ping notifies a callee whose devices have no live socket. */
+export type PushPayload =
+  | { type: 'message'; conversationId: string }
+  | { type: 'call'; conversationId: string };

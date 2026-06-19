@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import ChannelModal from './ChannelModal.vue';
 import ChannelMembersDialog from './ChannelMembersDialog.vue';
 import ChatFolderShareDialog from './ChatFolderShareDialog.vue';
 import PinPickerModal from './PinPickerModal.vue';
 import EmojiText from './EmojiText.vue';
 import ResizeHandle from './ResizeHandle.vue';
+import CallPanel from './CallPanel.vue';
 import { useResizable } from '../lib/useResizable';
 import { useChatStore } from '../stores/chat';
 import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
+import { useVoiceStore } from '../stores/voice';
 import { useOrgStore, chKey, noteItemKey } from '../stores/organization';
 import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
 import { canManageMembers, type ChannelInfo, type ChannelType, type Conversation } from '@notes/shared';
@@ -46,7 +48,44 @@ function noteActive(noteId: string): boolean {
 const chat = useChatStore();
 const notes = useNotesStore();
 const session = useSessionStore();
+const voice = useVoiceStore();
 const org = useOrgStore();
+
+// Voice channels: clicking joins/leaves a call; the row shows live occupants
+// (presence is visible to all channel members — decision #7).
+function toggleVoice(ch: ChannelInfo): void {
+  if (voice.activeRoomId === ch.id) void voice.leave();
+  else void voice.join(ch.id, ch.name);
+}
+function voiceOccupants(channelId: string) {
+  return voice.roomPresence(channelId);
+}
+// Speaking highlight only applies to the call I'm actually in (I only decode
+// audio for my active room).
+function occupantSpeaking(row: Row, userId: string): boolean {
+  if (row.type !== 'item' || row.item?.kind !== 'channel') return false;
+  if (voice.activeRoomId !== row.item.channel.id) return false;
+  if (userId === session.user?.id) return voice.localSpeaking && !voice.micMuted;
+  return voice.peers.get(userId)?.speaking ?? false;
+}
+function occupantName(userId: string, displayName: string): string {
+  return userId === session.user?.id ? `${displayName} (you)` : displayName;
+}
+// Occupants to list under a row — only for voice-channel rows, else empty (so
+// the template can v-for without an illegal v-if on the same element).
+function rowOccupants(row: Row) {
+  if (row.type !== 'item' || row.item?.kind !== 'channel' || row.item.channel.type !== 'voice') return [];
+  return voiceOccupants(row.item.channel.id);
+}
+// Load presence for this conversation's voice channels (so an in-progress call
+// shows even before a live join/leave event arrives).
+watch(
+  () => props.conversation.channels?.filter((c) => c.type === 'voice').map((c) => c.id).join(',') ?? '',
+  () => {
+    for (const ch of props.conversation.channels ?? []) if (ch.type === 'voice') void voice.loadPresence(ch.id);
+  },
+  { immediate: true },
+);
 // Channel whose members are being managed (private channels).
 const manageChannel = ref<ChannelInfo | null>(null);
 
@@ -115,7 +154,8 @@ function unread(ch: ChannelInfo): number {
 }
 function selectItem(it: Item) {
   if (it.kind === 'note') emit('openNote', it.noteId);
-  else if (it.channel.type !== 'voice') emit('select', it.channel.id); // voice has no text stream yet
+  else if (it.channel.type === 'voice') toggleVoice(it.channel);
+  else emit('select', it.channel.id);
 }
 
 // ---- Channel create / rename / delete (server; managers) ----
@@ -275,6 +315,8 @@ function onDropOnRoot() {
     >
       <IconPanelLeft class="h-5 w-5" />
     </button>
+    <!-- Active-call controls (mic/deafen/hangup), pinned to the bottom. -->
+    <CallPanel collapsed class="mt-auto w-full" />
   </aside>
 
   <!-- Open: the unified channel/note tree. -->
@@ -333,9 +375,8 @@ function onDropOnRoot() {
           <span class="min-w-0 grow truncate">chat</span>
         </button>
       </li>
+      <template v-for="row in treeRows" :key="row.key">
       <li
-        v-for="row in treeRows"
-        :key="row.key"
         class="group relative flex items-center"
         :class="[
           row.type === 'item' &&
@@ -384,7 +425,6 @@ function onDropOnRoot() {
             :style="{ paddingLeft: depthPad(row.depth) }"
             :class="[
               (row.item!.kind === 'channel' && channelActive(row.item!.channel.id)) || (row.item!.kind === 'note' && noteActive(row.item!.noteId)) ? 'font-medium' : 'text-zinc-600 dark:text-zinc-300',
-              row.item!.kind === 'channel' && row.item!.channel.type === 'voice' ? 'opacity-70' : '',
             ]"
             draggable="true"
             @click="selectItem(row.item!)"
@@ -397,9 +437,21 @@ function onDropOnRoot() {
               <IconLock v-if="row.item!.channel.private" class="h-4 w-4 shrink-0 opacity-60" />
               <IconVolume v-else-if="row.item!.channel.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
               <IconHash v-else class="h-4 w-4 shrink-0 opacity-60" />
-              <span class="min-w-0 grow truncate"><EmojiText :text="row.item!.channel.name" /></span>
               <span
-                v-if="unread(row.item!.channel) > 0 && row.item!.channel.id !== activeChannelId"
+                class="min-w-0 grow truncate"
+                :class="row.item!.channel.type === 'voice' && voice.activeRoomId === row.item!.channel.id ? 'font-medium text-green-600 dark:text-green-400' : ''"
+              ><EmojiText :text="row.item!.channel.name" /></span>
+              <!-- Voice channel: live occupant count (green when I'm in it). -->
+              <span
+                v-if="row.item!.channel.type === 'voice' && voiceOccupants(row.item!.channel.id).length"
+                class="ml-1 flex shrink-0 items-center gap-0.5 text-[10px] font-semibold"
+                :class="voice.activeRoomId === row.item!.channel.id ? 'text-green-600 dark:text-green-400' : 'text-zinc-400'"
+                :title="voiceOccupants(row.item!.channel.id).map((p) => p.displayName).join(', ')"
+              >
+                <IconUsers class="h-3 w-3" />{{ voiceOccupants(row.item!.channel.id).length }}
+              </span>
+              <span
+                v-else-if="unread(row.item!.channel) > 0 && row.item!.channel.id !== activeChannelId"
                 class="ml-1 shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
               >{{ unread(row.item!.channel) > 99 ? '99+' : unread(row.item!.channel) }}</span>
             </template>
@@ -419,7 +471,25 @@ function onDropOnRoot() {
           </div>
         </template>
       </li>
+      <!-- Voice-channel occupants, listed underneath (visible to all members). -->
+      <li
+        v-for="(occ, i) in rowOccupants(row)"
+        :key="`${row.key}:${occ.userId}`"
+        class="flex items-center gap-2 py-0.5 text-xs text-zinc-500 dark:text-zinc-400"
+        :class="{ 'mb-2': i === rowOccupants(row).length - 1 }"
+        :style="{ paddingLeft: depthPad(row.depth + 1) }"
+      >
+        <span
+          class="h-1.5 w-1.5 shrink-0 rounded-full"
+          :class="occupantSpeaking(row, occ.userId) ? 'bg-green-500' : 'bg-zinc-400 dark:bg-zinc-600'"
+        ></span>
+        <span class="min-w-0 grow truncate">{{ occupantName(occ.userId, occ.displayName) }}</span>
+      </li>
+      </template>
     </ul>
+
+    <!-- Active-call controls + roster, pinned to the sidebar bottom. -->
+    <CallPanel />
 
     <ChannelModal
       v-model:open="channelModalOpen"

@@ -11,6 +11,7 @@ This spec is split by app area so you can load just the part you're working on:
 | [notes.md](notes.md) | The notes app and the Obsidian-style live editor (formatting, code blocks, tables/checkboxes, attachments, import/export, history, offline) + **v4 folders & chat-sidebar pins** |
 | [ui.md](ui.md) | Theming (brand / pastel / high-contrast) and the app shell / sidebar |
 | [chat.md](chat.md) | v3 E2EE chat — friends, DMs, groups, conversation keys/epochs, the WebSocket transport, **the phase-1 implementation as built**, and **v4 channels** |
+| [voice.md](voice.md) | **v6** E2EE voice — embedded mediasoup SFU, end-to-end frame encryption, voice channels + 1:1 calls, key reuse from chat/v5 (implemented on `v6-voice`) |
 | [profiles.md](profiles.md) | v3.2 E2EE editable profiles — bio + avatar, the per-user profile key, visibility, distribution + rotation |
 | [notifications.md](notifications.md) | v3 phase 3 — PWA install + content-free background Web Push (service worker, VAPID, subscriptions) |
 | [security.md](security.md) | Cross-cutting security — rendering/XSS safety, CSP, metadata exposure, threat model |
@@ -34,5 +35,7 @@ This spec is split by app area so you can load just the part you're working on:
 
 ## Status at a glance
 
-- **Shipped:** v1 (notes, passkeys, recovery, PWA), v2 (sharing, attachments, version history, offline editing, import/export, encrypted backups), v2.1 (Obsidian-style live editor), v2.2 (themes, media optimization, block-level live rendering), v3 phase 1 (friends + 1:1 DMs over WebSocket), v3.1 (chat polish — emoji, GIFs, attachments, reactions/replies/threads), v3.2 (E2EE editable profiles), v3.3 (new-chat modal + groups, reusable modal, sidebar tooltips, infinite scroll), v3 phase 2 (group membership management — add/remove/leave, epoch re-keying, per-group permissions + admin roles), v3 phase 3 (CSP + hardening headers, content-free PWA push), v3.1 – v3.5.
-- **Planned:** v4 – v8 — see [roadmap.md](roadmap.md).
+- **Shipped:** v1 (notes, passkeys, recovery, PWA), v2 (sharing, attachments, version history, offline editing, import/export, encrypted backups), v2.1 (Obsidian-style live editor), v2.2 (themes, media optimization, block-level live rendering), v3 phase 1 (friends + 1:1 DMs over WebSocket), v3.1 (chat polish — emoji, GIFs, attachments, reactions/replies/threads), v3.2 (E2EE editable profiles), v3.3 (new-chat modal + groups, reusable modal, sidebar tooltips, infinite scroll), v3 phase 2 (group membership management — add/remove/leave, epoch re-keying, per-group permissions + admin roles), v3 phase 3 (CSP + hardening headers, content-free PWA push), v3.1 – v3.5, v4 (chat sidebar + text/voice channels + note folders & pins), v5 (note & folder sharing, private channels, recursive folder grants).
+- **Planned:** v7 – v8 — see [roadmap.md](roadmap.md). **v6 voice** is implemented
+  on the `v6-voice` branch (embedded mediasoup SFU, E2EE frames, channels + 1:1
+  calls) — see [voice.md](voice.md); pending a manual two-browser audio check.

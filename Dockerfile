@@ -25,4 +25,8 @@ RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME /data
 EXPOSE 3000
+# v6 voice: mediasoup RTC media ports (UDP/TCP). Keep in sync with
+# VOICE_RTC_MIN_PORT/VOICE_RTC_MAX_PORT; publish + forward this range to use voice.
+EXPOSE 40000-40100/udp
+EXPOSE 40000-40100/tcp
 CMD ["node", "server/dist/index.js"]

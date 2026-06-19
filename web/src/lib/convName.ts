@@ -7,6 +7,7 @@ export function conversationTitle(conv: Conversation, meId: string | undefined):
   if (conv.kind === 'thread') return 'Thread';
   const others = conv.members.filter((m) => m.userId !== meId);
   if (conv.kind === 'group') {
+    if (conv.name && conv.name.trim()) return conv.name;
     return others.length ? others.map((m) => m.displayName).join(', ') : 'Group';
   }
   return (others[0] ?? conv.members[0])?.displayName || 'Conversation';

@@ -5,9 +5,16 @@ services:
     restart: unless-stopped
     ports:
       - '3000:3000'
+      # v6 voice: mediasoup RTC media (UDP, TCP fallback). Forward this range on
+      # your router too; keep it in sync with VOICE_RTC_MIN/MAX_PORT.
+      - '40000-40100:40000-40100/udp'
+      - '40000-40100:40000-40100/tcp'
     environment:
       # Must exactly match the URL you open the app at (passkeys are bound to it).
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      # Voice: the public/LAN IP clients reach this host at (required for calls
+      # to connect off-localhost). Leave unset for local-only testing.
+      VOICE_ANNOUNCED_IP: ${VOICE_ANNOUNCED_IP:-127.0.0.1}
     volumes:
       - notes-data:/data
 

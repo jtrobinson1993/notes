@@ -3,8 +3,10 @@ import type { MessagePayload } from '@notes/shared';
 import {
   decryptMessage,
   decryptReaction,
+  decryptText,
   encryptMessage,
   encryptReaction,
+  encryptText,
   generateConversationKey,
   sealConversationKey,
   sealConversationKeyToMembers,
@@ -32,6 +34,18 @@ describe('conversation keys', () => {
     const b = generateKeyPair();
     const sealed = await sealConversationKey(b64(a.publicKey), generateConversationKey());
     await expect(unsealConversationKey(sealed, b.privateKey, b.publicKey)).rejects.toThrow();
+  });
+
+  it('encryptText/decryptText round-trips a string under the conv key', async () => {
+    const key = generateConversationKey();
+    const text = 'data:image/webp;base64,AAAA';
+    const { ciphertext, iv } = await encryptText(key, text);
+    expect(await decryptText(key, ciphertext, iv)).toBe(text);
+  });
+
+  it('decryptText fails under the wrong key', async () => {
+    const { ciphertext, iv } = await encryptText(generateConversationKey(), 'secret');
+    await expect(decryptText(generateConversationKey(), ciphertext, iv)).rejects.toThrow();
   });
 });
 
