@@ -6,6 +6,7 @@ import ChatFolderShareDialog from './ChatFolderShareDialog.vue';
 import PinPickerModal from './PinPickerModal.vue';
 import EmojiText from './EmojiText.vue';
 import ResizeHandle from './ResizeHandle.vue';
+import CallPanel from './CallPanel.vue';
 import { useResizable } from '../lib/useResizable';
 import { useChatStore } from '../stores/chat';
 import { useNotesStore } from '../stores/notes';
@@ -314,6 +315,8 @@ function onDropOnRoot() {
     >
       <IconPanelLeft class="h-5 w-5" />
     </button>
+    <!-- Active-call controls (mic/deafen/hangup), pinned to the bottom. -->
+    <CallPanel collapsed class="mt-auto w-full" />
   </aside>
 
   <!-- Open: the unified channel/note tree. -->
@@ -422,7 +425,6 @@ function onDropOnRoot() {
             :style="{ paddingLeft: depthPad(row.depth) }"
             :class="[
               (row.item!.kind === 'channel' && channelActive(row.item!.channel.id)) || (row.item!.kind === 'note' && noteActive(row.item!.noteId)) ? 'font-medium' : 'text-zinc-600 dark:text-zinc-300',
-              row.item!.kind === 'channel' && row.item!.channel.type === 'voice' ? 'opacity-70' : '',
             ]"
             draggable="true"
             @click="selectItem(row.item!)"
@@ -484,6 +486,9 @@ function onDropOnRoot() {
       </li>
       </template>
     </ul>
+
+    <!-- Active-call controls + roster, pinned to the sidebar bottom. -->
+    <CallPanel />
 
     <ChannelModal
       v-model:open="channelModalOpen"
