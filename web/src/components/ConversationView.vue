@@ -619,7 +619,7 @@ async function sendGif(gif: GifRef) {
               <span class="font-medium" :style="{ color: nameColorCss(row.msg.replyTo.senderId) }">{{ memberName(row.msg.replyTo.senderId) }}</span>
               <span class="truncate opacity-80">{{ row.msg.replyTo.preview }}</span>
             </button>
-            <div v-if="row.isStart" class="mb-0.5 flex items-baseline gap-2">
+            <div v-if="row.isStart" class="flex items-baseline gap-2">
               <button
                 type="button"
                 class="font-medium text-zinc-700 hover:underline dark:text-zinc-200"
