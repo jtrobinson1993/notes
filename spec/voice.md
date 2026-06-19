@@ -141,8 +141,13 @@ shows a clear message where it's unavailable.
   all cleanup runs client-side regardless (next point).
 - **Noise suppression, echo cancellation, auto-gain** are done by the browser on
   the **raw mic stream, before our encryption** — free and E2EE-compatible.
-  Optional heavier ML noise removal (RNNoise-class) can run client-side as
-  WASM/AudioWorklet at modest CPU cost. None of it involves the server.
+  On top of that, **RNNoise** (WASM/AudioWorklet) runs client-side for heavier ML
+  noise removal at modest CPU cost. None of it involves the server.
+  **As built:** RNNoise has no native intensity knob, so the **Settings → Voice →
+  Noise suppression strength** slider is a **wet/dry mix** — it sums the denoised
+  (wet) and raw (dry) mic paths, where `1.0` = fully denoised (default) and `0` =
+  raw mic. Applied at call start and adjustable live during a call. If RNNoise
+  fails to load, the pipeline falls back to the raw mic (the call never breaks).
 
 ## Keys & membership
 
@@ -242,7 +247,10 @@ Full parity, **all client-side** (compatible with E2EE — the server is not
 involved in any of these):
 
 - **Mute** (stop your producer) and **deafen** (stop all consumers + mute).
-- **Push-to-talk** — hold-to-transmit; toggle in settings.
+- **Voice activation mode** (**Settings → Voice**, device-level): *Voice activity*
+  (open mic) or *Push-to-talk*. In PTT mode the mic only transmits while held —
+  via the in-call **Hold to talk** button or an optional, user-recorded **PTT key**
+  (stored as a `KeyboardEvent.code`; honoured globally except while typing).
 - **Per-person volume** sliders (local gain per remote consumer).
 - **Who's-speaking highlight** — each client already decrypts every peer's audio
   to play it, so it measures **audio energy locally** and highlights the active

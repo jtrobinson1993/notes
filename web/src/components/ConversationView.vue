@@ -342,9 +342,12 @@ function onScroll() {
 }
 
 // Link previews only when EVERY member (including me) has opted in.
-function linkPreviewsAllowed(): boolean {
+const previewsAllowed = computed(() => {
   const members = conversation.value?.members ?? [];
   return members.length > 0 && members.every((m) => m.linkPreviews);
+});
+function linkPreviewsAllowed(): boolean {
+  return previewsAllowed.value;
 }
 
 const URL_RE = /\bhttps?:\/\/[^\s<>]+/i;
@@ -353,6 +356,13 @@ function firstUrl(text: string): string | null {
   if (!m) return null;
   // Trim trailing sentence punctuation the regex may have caught.
   return m[0].replace(/[)\].,!?;:'"]+$/, '');
+}
+
+// A message has a link but no preview *because* not everyone has previews on —
+// show a hint where the preview would have rendered. (When previews are allowed
+// but a message still has none, it's a no-OG-data case, not an opt-in gap.)
+function showLinkPreviewHint(m: ChatMessageView): boolean {
+  return !previewsAllowed.value && !m.linkPreview && !!m.text && !!firstUrl(m.text);
 }
 
 async function send() {
@@ -632,6 +642,12 @@ async function sendGif(gif: GifRef) {
                   :attachment="a"
                 />
                 <LinkPreviewCard v-if="row.msg.linkPreview" :preview="row.msg.linkPreview" />
+                <p
+                  v-else-if="showLinkPreviewHint(row.msg)"
+                  class="mt-1 text-xs text-zinc-400 dark:text-zinc-500"
+                >
+                  No link preview — every member needs link previews enabled (Settings → Privacy).
+                </p>
                 <span
                   v-if="row.msg.editedAt"
                   class="ml-1 select-none align-baseline text-[11px] text-zinc-400 dark:text-zinc-500"

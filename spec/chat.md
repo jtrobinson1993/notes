@@ -577,6 +577,11 @@ decrypted payload and the server only ever saw the URL at proxy time. The
 preview image is a remote URL rendered with the usual **click-to-load**
 (`LinkPreviewCard.vue`).
 
+When previews are **not** allowed (not every member has them on) and a message
+contains a URL, the message renders a small grey **hint** where the preview would
+have been ("every member needs link previews enabled"), so it's clear why no card
+appears — distinct from a message that simply yielded no OG data.
+
 The proxy (`server/routes/og.ts`) is an **SSRF surface** and is guarded: http(s)
 only; the host must resolve to a **public** IP (loopback/private/link-local/
 CGNAT/cloud-metadata/multicast all blocked, IPv4 + IPv6); redirects are followed

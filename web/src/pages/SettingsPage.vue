@@ -16,6 +16,15 @@ import AvatarCropper from '../components/AvatarCropper.vue';
 import { addCustomEmoji, customEmoji, loadCustomEmoji, removeCustomEmoji } from '../lib/emoji/custom';
 import { resolveEmoji } from '../lib/emoji';
 import { NAME_COLORS } from '@notes/shared';
+import {
+  denoiseStrength,
+  formatKeyCode,
+  pttKey,
+  setDenoiseStrength,
+  setPttKey,
+  setVoiceActivation,
+  voiceActivation,
+} from '../lib/voicePrefs';
 import IconX from '~icons/mynaui/x';
 
 const session = useSessionStore();
@@ -29,6 +38,7 @@ const sections = [
   { id: 'appearance', label: 'Appearance' },
   { id: 'security', label: 'Security' },
   { id: 'privacy', label: 'Privacy' },
+  { id: 'voice', label: 'Voice' },
   { id: 'emoji', label: 'Custom emoji' },
   { id: 'data', label: 'Import & export' },
   ...(isAdmin ? [{ id: 'invites', label: 'Invites' }, { id: 'users', label: 'Users' }] : []),
@@ -289,6 +299,21 @@ function confirmDeleteUser(id: string, username: string) {
 
 function fmtDate(ts: number | null): string {
   return ts ? new Date(ts).toLocaleDateString() : '—';
+}
+
+// Voice (device-level prefs; see lib/voicePrefs.ts). The PTT key is recorded by
+// capturing the next keypress; Esc cancels.
+const recordingPtt = ref(false);
+function recordPttKey() {
+  recordingPtt.value = true;
+  const onKey = (e: KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.code !== 'Escape') setPttKey(e.code);
+    recordingPtt.value = false;
+    window.removeEventListener('keydown', onKey, true);
+  };
+  window.addEventListener('keydown', onKey, true);
 }
 
 const transferBusy = ref(false);
@@ -622,6 +647,84 @@ async function importFiles(event: Event) {
             <option value="true">On</option>
             <option value="false">Off</option>
           </select>
+        </div>
+      </section>
+
+      <section v-show="activeSection === 'voice'" class="space-y-3">
+        <h2 class="text-lg font-semibold">Voice</h2>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400">
+          These settings apply to this device only. Calls are end-to-end encrypted; noise
+          suppression runs locally before your audio is encrypted.
+        </p>
+
+        <div class="flex items-center justify-between gap-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <div>
+            <p class="text-sm">Voice activation</p>
+            <p class="text-xs text-zinc-500 dark:text-zinc-400">
+              Voice activity keeps your mic open; push-to-talk only transmits while a key or the
+              on-screen button is held.
+            </p>
+          </div>
+          <select
+            :value="voiceActivation"
+            class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            @change="setVoiceActivation(($event.target as HTMLSelectElement).value === 'ptt' ? 'ptt' : 'voice')"
+          >
+            <option value="voice">Voice activity</option>
+            <option value="ptt">Push to talk</option>
+          </select>
+        </div>
+
+        <div
+          v-if="voiceActivation === 'ptt'"
+          class="flex items-center justify-between gap-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800"
+        >
+          <div>
+            <p class="text-sm">Push-to-talk key</p>
+            <p class="text-xs text-zinc-500 dark:text-zinc-400">
+              Held anywhere (except while typing) to open your mic. Optional — the in-call
+              “Hold to talk” button always works.
+            </p>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              class="min-w-24 rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              @click="recordPttKey"
+            >
+              {{ recordingPtt ? 'Press a key…' : formatKeyCode(pttKey) }}
+            </button>
+            <button
+              v-if="pttKey && !recordingPtt"
+              type="button"
+              class="text-xs text-zinc-500 hover:underline dark:text-zinc-400"
+              @click="setPttKey(null)"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <div class="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm">Noise suppression strength</p>
+              <p class="text-xs text-zinc-500 dark:text-zinc-400">
+                How aggressively background noise (keyboard, fans, hum) is removed by RNNoise.
+                Lower lets more of your raw mic through.
+              </p>
+            </div>
+            <span class="shrink-0 text-sm tabular-nums text-zinc-500 dark:text-zinc-400">{{ Math.round(denoiseStrength * 100) }}%</span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            :value="denoiseStrength"
+            class="mt-3 w-full accent-blue-600"
+            @input="setDenoiseStrength(Number(($event.target as HTMLInputElement).value))"
+          />
         </div>
       </section>
 

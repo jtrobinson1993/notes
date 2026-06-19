@@ -47,6 +47,13 @@ function convInitial(conv: Conversation): string {
   return conversationInitial(conv, session.user?.id);
 }
 
+// Decrypted group-icon data URL for a conversation (groups only; null otherwise).
+// Reactive via the chat store's groupIcons map, so renaming/changing the icon
+// reflects here without a reload.
+function convIcon(conv: Conversation): string | null {
+  return conv.kind === 'group' ? chat.groupIconUrl(conv.id) : null;
+}
+
 const sortedConversations = computed(() =>
   // Threads aren't top-level entries — they're reached from their parent message.
   chat.conversations.filter((c) => c.kind !== 'thread').sort((a, b) => b.lastSeq - a.lastSeq),
@@ -102,7 +109,13 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
             ]"
           >
             <span class="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-300 text-xs font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-100">
-              {{ convInitial(conv) }}
+              <img
+                v-if="convIcon(conv)"
+                :src="convIcon(conv) ?? undefined"
+                alt=""
+                class="absolute inset-0 h-full w-full rounded-full object-cover"
+              />
+              <template v-else>{{ convInitial(conv) }}</template>
               <span
                 v-if="chat.unreadCount(conv.id) > 0 && !expanded"
                 class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-semibold text-white"

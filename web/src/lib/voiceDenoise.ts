@@ -19,11 +19,18 @@ import rnnoiseSimdWasmPath from '@sapphi-red/web-noise-suppressor/rnnoise_simd.w
 export interface Denoised {
   stream: MediaStream;
   cleanup: () => void;
+  /** Adjust the wet/dry mix (0..1) live, e.g. from the settings slider. */
+  setStrength: (v: number) => void;
 }
 
 let workletAdded = false;
 
-export async function createDenoisedStream(ctx: AudioContext, mic: MediaStream): Promise<Denoised> {
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+
+// `strength` is a 0..1 wet/dry mix: RNNoise has no native intensity knob, so we
+// blend the denoised (wet) signal with the raw (dry) mic. 1 = fully denoised
+// (default); 0 = raw mic. Intermediate values let through more of the original.
+export async function createDenoisedStream(ctx: AudioContext, mic: MediaStream, strength = 1): Promise<Denoised> {
   try {
     const { loadRnnoise, RnnoiseWorkletNode } = await import('@sapphi-red/web-noise-suppressor');
     const wasmBinary = await loadRnnoise({ url: rnnoiseWasmPath, simdUrl: rnnoiseSimdWasmPath });
@@ -34,7 +41,12 @@ export async function createDenoisedStream(ctx: AudioContext, mic: MediaStream):
     const source = ctx.createMediaStreamSource(mic);
     const rnnoise = new RnnoiseWorkletNode(ctx, { maxChannels: 1, wasmBinary });
     const dest = ctx.createMediaStreamDestination();
-    source.connect(rnnoise).connect(dest);
+    const wet = ctx.createGain(); // denoised path
+    const dry = ctx.createGain(); // raw path
+    wet.gain.value = clamp01(strength);
+    dry.gain.value = 1 - clamp01(strength);
+    source.connect(rnnoise).connect(wet).connect(dest);
+    source.connect(dry).connect(dest);
     return {
       stream: dest.stream,
       cleanup: () => {
@@ -42,14 +54,20 @@ export async function createDenoisedStream(ctx: AudioContext, mic: MediaStream):
           rnnoise.destroy();
           source.disconnect();
           rnnoise.disconnect();
+          wet.disconnect();
+          dry.disconnect();
         } catch {
           /* ignore */
         }
+      },
+      setStrength: (v: number) => {
+        wet.gain.value = clamp01(v);
+        dry.gain.value = 1 - clamp01(v);
       },
     };
   } catch {
     // RNNoise unavailable (load/worklet failure) — use the raw mic; the browser's
     // built-in noise suppression (from getUserMedia constraints) still applies.
-    return { stream: mic, cleanup: () => {} };
+    return { stream: mic, cleanup: () => {}, setStrength: () => {} };
   }
 }

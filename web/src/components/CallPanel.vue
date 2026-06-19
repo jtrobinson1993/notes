@@ -7,6 +7,7 @@ import IconVolumeOff from '~icons/mynaui/volume-off';
 import IconHangup from '~icons/mynaui/telephone-off';
 import IconSignal from '~icons/mynaui/signal';
 import { useVoiceStore } from '../stores/voice';
+import { formatKeyCode, pttKey } from '../lib/voicePrefs';
 import ChatAvatar from './ChatAvatar.vue';
 
 // Lives at the bottom of the chat sidebar. `collapsed` renders just the
@@ -82,23 +83,17 @@ const btnActive = 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
         <button :class="[btnBase, voice.deafened ? btnActive : btnNeutral]" :title="voice.deafened ? 'Undeafen' : 'Deafen'" @click="voice.toggleDeafen()">
           <component :is="voice.deafened ? IconVolumeOff : IconHeadphones" class="h-4 w-4" />
         </button>
-        <button
-          class="rounded-lg px-2 py-2 text-xs"
-          :class="voice.pushToTalk ? 'bg-blue-600 text-white' : btnNeutral"
-          title="Toggle push-to-talk"
-          @click="voice.setPushToTalk(!voice.pushToTalk)"
-        >
-          PTT
-        </button>
+        <!-- Push-to-talk hold button (mouse fallback). PTT mode + the optional
+             key are configured in Settings → Voice. -->
         <button
           v-if="voice.pushToTalk"
           class="grow rounded-lg bg-zinc-200 py-2 text-xs font-medium hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700"
-          title="Hold to talk"
+          :title="pttKey ? `Hold to talk (or hold ${formatKeyCode(pttKey)})` : 'Hold to talk'"
           @pointerdown="voice.setPttHeld(true)"
           @pointerup="voice.setPttHeld(false)"
           @pointerleave="voice.setPttHeld(false)"
         >
-          Hold to talk
+          Hold to talk<span v-if="pttKey" class="ml-1 text-zinc-500 dark:text-zinc-400">({{ formatKeyCode(pttKey) }})</span>
         </button>
         <span v-else class="grow"></span>
         <button :class="[btnBase, 'bg-red-600 text-white hover:bg-red-700']" title="Leave call" @click="voice.leave()">
