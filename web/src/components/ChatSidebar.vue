@@ -59,6 +59,23 @@ function toggleVoice(ch: ChannelInfo): void {
 function voiceOccupants(channelId: string) {
   return voice.roomPresence(channelId);
 }
+// Speaking highlight only applies to the call I'm actually in (I only decode
+// audio for my active room).
+function occupantSpeaking(row: Row, userId: string): boolean {
+  if (row.type !== 'item' || row.item?.kind !== 'channel') return false;
+  if (voice.activeRoomId !== row.item.channel.id) return false;
+  if (userId === session.user?.id) return voice.localSpeaking && !voice.micMuted;
+  return voice.peers.get(userId)?.speaking ?? false;
+}
+function occupantName(userId: string, fallback: string): string {
+  return userId === session.user?.id ? 'You' : fallback;
+}
+// Occupants to list under a row — only for voice-channel rows, else empty (so
+// the template can v-for without an illegal v-if on the same element).
+function rowOccupants(row: Row) {
+  if (row.type !== 'item' || row.item?.kind !== 'channel' || row.item.channel.type !== 'voice') return [];
+  return voiceOccupants(row.item.channel.id);
+}
 // Load presence for this conversation's voice channels (so an in-progress call
 // shows even before a live join/leave event arrives).
 watch(
@@ -355,9 +372,8 @@ function onDropOnRoot() {
           <span class="min-w-0 grow truncate">chat</span>
         </button>
       </li>
+      <template v-for="row in treeRows" :key="row.key">
       <li
-        v-for="row in treeRows"
-        :key="row.key"
         class="group relative flex items-center"
         :class="[
           row.type === 'item' &&
@@ -450,6 +466,20 @@ function onDropOnRoot() {
           </div>
         </template>
       </li>
+      <!-- Voice-channel occupants, listed underneath (visible to all members). -->
+      <li
+        v-for="occ in rowOccupants(row)"
+        :key="`${row.key}:${occ.userId}`"
+        class="flex items-center gap-2 py-0.5 text-xs text-zinc-500 dark:text-zinc-400"
+        :style="{ paddingLeft: depthPad(row.depth + 1) }"
+      >
+        <span
+          class="h-1.5 w-1.5 shrink-0 rounded-full"
+          :class="occupantSpeaking(row, occ.userId) ? 'bg-green-500' : 'bg-zinc-400 dark:bg-zinc-600'"
+        ></span>
+        <span class="min-w-0 grow truncate">{{ occupantName(occ.userId, occ.displayName) }}</span>
+      </li>
+      </template>
     </ul>
 
     <ChannelModal

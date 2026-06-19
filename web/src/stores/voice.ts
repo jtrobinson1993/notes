@@ -57,6 +57,8 @@ export const useVoiceStore = defineStore('voice', () => {
 
   const inCall = computed(() => activeRoomId.value !== null);
   const peerList = computed(() => [...peers.values()]);
+  // Mic is effectively off when explicitly muted OR deafened (deafen mutes too).
+  const micMuted = computed(() => muted.value || deafened.value);
 
   function clearIncoming(): void {
     incomingCall.value = null;
@@ -311,6 +313,7 @@ export const useVoiceStore = defineStore('voice', () => {
       // consume peers already producing
       for (const p of resp.peers) if (p.producerId) await consumePeer(roomId, p.userId, p.producerId);
 
+      void loadPresence(roomId); // seed the full roster (incl. me) for the sidebar list
       startPolling();
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to join voice';
@@ -473,6 +476,7 @@ export const useVoiceStore = defineStore('voice', () => {
     localSpeaking,
     connectionQuality,
     inCall,
+    micMuted,
     incomingCall,
     outgoingCall,
     roomPresence,

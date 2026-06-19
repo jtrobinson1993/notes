@@ -43,7 +43,11 @@ const qualityLabel = computed(() => `Connection: ${voice.connectionQuality}`);
           :class="voice.localSpeaking && !voice.muted ? 'ring-2 ring-green-500' : ''"
         />
         <span class="grow truncate text-sm">You</span>
-        <IconMicOff v-if="voice.muted" class="h-4 w-4 text-zinc-400" title="Muted" />
+        <IconMicOff
+          v-if="voice.micMuted"
+          class="h-4 w-4 text-red-500"
+          :title="voice.deafened ? 'Mic muted (deafened)' : 'Muted'"
+        />
       </li>
       <li v-for="p in voice.peerList" :key="p.userId" class="flex items-center gap-2">
         <ChatAvatar
@@ -70,11 +74,11 @@ const qualityLabel = computed(() => `Connection: ${voice.connectionQuality}`);
     <div class="flex items-center gap-1.5">
       <button
         class="rounded-lg p-2"
-        :class="voice.muted ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400' : 'bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700'"
-        :title="voice.muted ? 'Unmute' : 'Mute'"
+        :class="voice.micMuted ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400' : 'bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700'"
+        :title="voice.deafened ? 'Mic muted (deafened — undeafen to talk)' : voice.muted ? 'Unmute' : 'Mute'"
         @click="voice.toggleMute()"
       >
-        <component :is="voice.muted ? IconMicOff : IconMic" class="h-4 w-4" />
+        <component :is="voice.micMuted ? IconMicOff : IconMic" class="h-4 w-4" />
       </button>
       <button
         class="rounded-lg p-2"
