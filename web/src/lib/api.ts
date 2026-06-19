@@ -3,6 +3,7 @@ import type {
   Conversation,
   CredentialInfo,
   ChatReaction,
+  ConversationIcon,
   Friend,
   FriendInvite,
   FriendRequest,
@@ -212,6 +213,8 @@ export const api = {
     req<{ ok: true }>('DELETE', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, body),
   conversationSetRole: (id: string, userId: string, role: 'admin' | 'member') =>
     req<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}/role`, { role }),
+  conversationEdit: (id: string, body: { name?: string | null; icon?: ConversationIcon | null }) =>
+    req<Conversation>('PATCH', `/api/conversations/${encodeURIComponent(id)}`, body),
   conversationMessages: (id: string, opts?: { before?: number; limit?: number; channelId?: string }) => {
     const q = new URLSearchParams();
     if (opts?.before !== undefined) q.set('before', String(opts.before));

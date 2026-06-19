@@ -16,7 +16,7 @@ import type {
   SealedKey,
   SealedMemberKey,
 } from '@notes/shared';
-import { canManageMembers, CHANNEL_NAME_MAX, MAX_CHANNELS_PER_CONVERSATION, NAME_COLORS } from '@notes/shared';
+import { canManageMembers, CHANNEL_NAME_MAX, CONVERSATION_NAME_MAX, MAX_CHANNELS_PER_CONVERSATION, NAME_COLORS } from '@notes/shared';
 import {
   effectiveDisplayName,
   type ConversationRow,
@@ -186,6 +186,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       id: conv.id,
       kind: conv.kind as Conversation['kind'],
       members,
+      name: conv.name ?? null,
+      icon: conv.icon_ct ? { ciphertext: conv.icon_ct, iv: conv.icon_iv!, epoch: conv.icon_epoch! } : null,
       sealedKey: JSON.parse(mine.sealed_key) as SealedKey,
       epoch: mine.epoch,
       epochKeys,
@@ -798,6 +800,42 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const role = (request.body as Record<string, unknown> | null)?.role;
     if (role !== 'admin' && role !== 'member') return reply.code(400).send({ error: 'invalid role' });
     db.setConversationMemberRole(id, target, role);
+    hub.sendToUsers(db.listConversationMemberIds(id), { type: 'conversation-updated', conversationId: id });
+    return toConversation(db.getConversation(id)!, me)!;
+  });
+
+  // Edit a group's name and/or E2EE icon (owner/admin). `name`/`icon` are each
+  // optional; pass null to clear. The icon is opaque ciphertext (encrypted under
+  // the conversation key client-side).
+  app.patch('/api/conversations/:id', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const me = request.user!.id;
+    if (!ID_RE.test(id)) return reply.code(404).send({ error: 'not found' });
+    const conv = db.getConversation(id);
+    if (!conv || conv.kind !== 'group') return reply.code(404).send({ error: 'not found' });
+    const mine = db.getConversationMember(id, me);
+    if (!mine || !canManageMembers(mine.role as ConversationRole)) {
+      return reply.code(403).send({ error: 'not allowed to edit this group' });
+    }
+    const b = (request.body ?? {}) as { name?: unknown; icon?: unknown };
+
+    if ('name' in b) {
+      if (b.name !== null && typeof b.name !== 'string') return reply.code(400).send({ error: 'invalid name' });
+      const trimmed = typeof b.name === 'string' ? b.name.trim() : '';
+      if (trimmed.length > CONVERSATION_NAME_MAX) return reply.code(400).send({ error: 'name too long' });
+      db.setConversationName(id, trimmed || null);
+    }
+    if ('icon' in b) {
+      if (b.icon === null) {
+        db.setConversationIcon(id, null);
+      } else {
+        const ic = b.icon as Record<string, unknown>;
+        if (typeof ic.ciphertext !== 'string' || typeof ic.iv !== 'string' || typeof ic.epoch !== 'number' || !Number.isInteger(ic.epoch)) {
+          return reply.code(400).send({ error: 'invalid icon' });
+        }
+        db.setConversationIcon(id, { ct: ic.ciphertext, iv: ic.iv, epoch: ic.epoch });
+      }
+    }
     hub.sendToUsers(db.listConversationMemberIds(id), { type: 'conversation-updated', conversationId: id });
     return toConversation(db.getConversation(id)!, me)!;
   });

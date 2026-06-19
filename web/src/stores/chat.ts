@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { reactive, ref } from 'vue';
 import type {
   AttachmentRef,
   ChannelInfo,
@@ -22,8 +22,10 @@ import { api } from '../lib/api';
 import {
   decryptMessage,
   decryptReaction,
+  decryptText,
   encryptMessage,
   encryptReaction,
+  encryptText,
   generateConversationKey,
   sealConversationKey,
   sealConversationKeyToMembers,
@@ -203,10 +205,47 @@ export const useChatStore = defineStore('chat', () => {
     };
   }
 
+  // Decrypted group-icon data URLs, by conversation id (E2EE under the conv key).
+  const groupIcons = reactive(new Map<string, string>());
+  function groupIconUrl(convId: string): string | null {
+    return groupIcons.get(convId) ?? null;
+  }
+  async function refreshGroupIcon(conv: Conversation): Promise<void> {
+    if (conv.kind !== 'group' || !conv.icon) {
+      groupIcons.delete(conv.id);
+      return;
+    }
+    const key = keyForEpoch(conv.id, conv.icon.epoch);
+    if (!key) return; // key not unsealed yet; a later upsert/load will retry
+    try {
+      groupIcons.set(conv.id, await decryptText(key, conv.icon.ciphertext, conv.icon.iv));
+    } catch {
+      groupIcons.delete(conv.id);
+    }
+  }
+
   function upsertConversation(conv: Conversation): void {
     const idx = conversations.value.findIndex((c) => c.id === conv.id);
     if (idx >= 0) conversations.value[idx] = conv;
     else conversations.value = [...conversations.value, conv];
+    void refreshGroupIcon(conv);
+  }
+
+  /** Rename a group (owner/admin). Empty clears back to the member-derived title. */
+  async function renameGroup(convId: string, name: string): Promise<void> {
+    upsertConversation(await api.conversationEdit(convId, { name: name.trim() || null }));
+  }
+  /** Set or clear a group's E2EE icon (owner/admin). `dataUrl` null clears it. */
+  async function setGroupIcon(convId: string, dataUrl: string | null): Promise<void> {
+    if (!dataUrl) {
+      upsertConversation(await api.conversationEdit(convId, { icon: null }));
+      return;
+    }
+    const conv = conversations.value.find((c) => c.id === convId);
+    const key = conv && keyForEpoch(convId, conv.epoch);
+    if (!conv || !key) throw new Error('conversation key unavailable');
+    const enc = await encryptText(key, dataUrl);
+    upsertConversation(await api.conversationEdit(convId, { icon: { ciphertext: enc.ciphertext, iv: enc.iv, epoch: conv.epoch } }));
   }
 
   async function loadConversations(): Promise<void> {
@@ -219,6 +258,7 @@ export const useChatStore = defineStore('chat', () => {
     for (const conv of list) {
       await unsealEpochKeys(conv);
       await unsealChannelKeys(conv);
+      await refreshGroupIcon(conv); // keys are now available
     }
   }
 
@@ -716,6 +756,9 @@ export const useChatStore = defineStore('chat', () => {
     grantChannelMember,
     revokeChannelMember,
     renameChannel,
+    renameGroup,
+    setGroupIcon,
+    groupIconUrl,
     reorderChannels,
     deleteChannel,
     loadHistory,

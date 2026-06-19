@@ -268,10 +268,27 @@ export type NameColor = (typeof NAME_COLORS)[number];
 
 /** A conversation as returned to one of its members, including that member's
  * own sealed copy of the current-epoch conversation key. */
+/** A group's E2EE icon: an optimized image encrypted under the conversation key
+ *  (like a user avatar under the profile key), so the server never sees it. */
+export interface ConversationIcon {
+  ciphertext: string;
+  iv: string;
+  /** the conversation epoch whose key encrypted it */
+  epoch: number;
+}
+
+/** Max length of a custom group name (server-enforced). */
+export const CONVERSATION_NAME_MAX = 60;
+
 export interface Conversation {
   id: string;
   kind: ConversationKind;
   members: ConversationMember[];
+  /** group only: a custom name set by an owner/admin. Plaintext metadata (like
+   *  display names); null falls back to the member-derived title. */
+  name: string | null;
+  /** group only: the E2EE group icon, or null for the initial fallback. */
+  icon: ConversationIcon | null;
   /** the conversation key sealed to ME (current epoch) — unseal with my X25519 key */
   sealedKey: SealedKey;
   epoch: number;

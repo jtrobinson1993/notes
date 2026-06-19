@@ -8,6 +8,8 @@ import EmojiPicker from './EmojiPicker.vue';
 import ChatAttachment from './ChatAttachment.vue';
 import LinkPreviewCard from './LinkPreviewCard.vue';
 import MessageActionsSheet from './MessageActionsSheet.vue';
+import AvatarCropper from './AvatarCropper.vue';
+import { MAX_AVATAR_INPUT_BYTES } from '../lib/avatar';
 import { encryptAndUploadFile } from '../lib/attachments';
 import { resolveEmoji } from '../lib/emoji';
 import { api } from '../lib/api';
@@ -42,6 +44,43 @@ const voice = useVoiceStore();
 const canCall = computed(() => !isThread.value && !props.isThreadPanel && voice.activeRoomId !== props.convId);
 function startCall(): void {
   void voice.startCall(props.convId, title.value);
+}
+
+// Group name/icon editing (owner/admin only; not in the thread panel).
+const canEditGroup = computed(
+  () => !props.isThreadPanel && conversation.value?.kind === 'group' && (conversation.value.myRole === 'owner' || conversation.value.myRole === 'admin'),
+);
+const groupIcon = computed(() => chat.groupIconUrl(props.convId));
+
+const editingName = ref(false);
+const nameDraft = ref('');
+const nameInput = ref<HTMLInputElement | null>(null);
+function startEditName(): void {
+  if (!canEditGroup.value) return;
+  nameDraft.value = conversation.value?.name ?? '';
+  editingName.value = true;
+  void nextTick(() => nameInput.value?.focus());
+}
+async function saveName(): Promise<void> {
+  if (!editingName.value) return;
+  editingName.value = false;
+  const next = nameDraft.value.trim();
+  if (next !== (conversation.value?.name ?? '')) await chat.renameGroup(props.convId, next);
+}
+
+const iconInput = ref<HTMLInputElement | null>(null);
+const cropFile = ref<File | null>(null);
+const cropOpen = ref(false);
+function pickIcon(e: Event): void {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+  if (file.size > MAX_AVATAR_INPUT_BYTES) return;
+  cropFile.value = file;
+  cropOpen.value = true;
+  (e.target as HTMLInputElement).value = '';
+}
+async function onIconCropped(dataUrl: string): Promise<void> {
+  await chat.setGroupIcon(props.convId, dataUrl);
 }
 
 const convId = computed(() => props.convId);
@@ -489,10 +528,40 @@ async function sendGif(gif: GifRef) {
     <div class="flex h-full flex-col">
       <div v-if="!hideHeader" class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
         <IconThread v-if="isThread" class="h-5 w-5 shrink-0 text-zinc-400" />
-        <span v-else class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-sm font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
-          {{ (title.trim()[0] ?? '?').toUpperCase() }}
-        </span>
-        <p class="font-semibold">{{ title }}</p>
+        <!-- Group/DM icon. For groups, owners/admins can click to change it. -->
+        <button
+          v-else
+          type="button"
+          class="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-zinc-200 text-sm font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200"
+          :class="canEditGroup ? 'cursor-pointer hover:opacity-80' : 'cursor-default'"
+          :title="canEditGroup ? 'Change group icon' : title"
+          :disabled="!canEditGroup"
+          @click="iconInput?.click()"
+        >
+          <img v-if="groupIcon" :src="groupIcon" alt="" class="h-full w-full object-cover" />
+          <template v-else>{{ (title.trim()[0] ?? '?').toUpperCase() }}</template>
+        </button>
+        <input v-if="canEditGroup" ref="iconInput" type="file" accept="image/*" class="hidden" @change="pickIcon" />
+        <!-- Group name: owners/admins click to rename inline. -->
+        <input
+          v-if="editingName"
+          ref="nameInput"
+          v-model="nameDraft"
+          type="text"
+          :maxlength="60"
+          class="min-w-0 rounded-md border border-zinc-300 bg-white px-1.5 py-0.5 font-semibold dark:border-zinc-600 dark:bg-zinc-900"
+          placeholder="Group name"
+          @keydown.enter.prevent="saveName"
+          @keydown.esc.prevent="editingName = false"
+          @blur="saveName"
+        />
+        <p
+          v-else
+          class="font-semibold"
+          :class="canEditGroup ? 'cursor-pointer rounded px-1 hover:bg-zinc-100 dark:hover:bg-zinc-800' : ''"
+          :title="canEditGroup ? 'Rename group' : ''"
+          @click="startEditName"
+        >{{ title }}</p>
         <span v-if="isThread" class="text-xs text-zinc-400">thread</span>
         <button
           v-if="canCall"
@@ -512,6 +581,8 @@ async function sendGif(gif: GifRef) {
           <IconX class="h-4 w-4" />
         </button>
       </div>
+
+      <AvatarCropper v-if="canEditGroup" v-model:open="cropOpen" :file="cropFile" @cropped="onIconCropped" />
 
       <div ref="scroller" class="min-h-0 grow overflow-y-auto py-2" @scroll="onScroll">
         <!-- Older messages auto-load as the user scrolls up; this just reflects

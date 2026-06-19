@@ -5,6 +5,22 @@ import { randomBytes, sealKey, unsealKey } from './crypto';
 const te = new TextEncoder();
 const td = new TextDecoder();
 
+/** Encrypt an arbitrary string with the conversation key (e.g. a group icon
+ *  data URL). AES-256-GCM, random IV — same primitive as messages. */
+export async function encryptText(convKey: Uint8Array, text: string): Promise<{ ciphertext: string; iv: string }> {
+  const key = await crypto.subtle.importKey('raw', convKey as BufferSource, 'AES-GCM', false, ['encrypt']);
+  const iv = randomBytes(12);
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv as BufferSource }, key, te.encode(text));
+  return { ciphertext: b64(new Uint8Array(ct)), iv: b64(iv) };
+}
+
+/** Decrypt a string encrypted with `encryptText`. */
+export async function decryptText(convKey: Uint8Array, ciphertext: string, iv: string): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', convKey as BufferSource, 'AES-GCM', false, ['decrypt']);
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(iv) as BufferSource }, key, ub64(ciphertext) as BufferSource);
+  return td.decode(pt);
+}
+
 /** Fresh 32-byte AES-256-GCM conversation key. */
 export function generateConversationKey(): Uint8Array {
   return randomBytes(32);

@@ -61,6 +61,12 @@ export interface ConversationRow {
   parent_seq: number | null;
   /** group membership policy: 'owner' | 'admins' | 'open' */
   manage_policy: string;
+  /** group only: custom plaintext name, or null (member-derived title) */
+  name: string | null;
+  /** group only: E2EE icon encrypted under the conversation key, or null */
+  icon_ct: string | null;
+  icon_iv: string | null;
+  icon_epoch: number | null;
 }
 
 export interface ConversationMemberRow {
@@ -479,6 +485,14 @@ export function openDb(dataDir: string) {
          WHERE user_id = (SELECT created_by FROM conversations c WHERE c.id = conversation_id)
            AND (SELECT kind FROM conversations c WHERE c.id = conversation_id) = 'group'`,
     );
+  }
+  // Group name + E2EE icon (v6 polish): custom name (plaintext metadata) + an
+  // icon encrypted under the conversation key.
+  if (!convCols.some((c) => c.name === 'name')) db.exec('ALTER TABLE conversations ADD COLUMN name TEXT');
+  if (!convCols.some((c) => c.name === 'icon_ct')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN icon_ct TEXT');
+    db.exec('ALTER TABLE conversations ADD COLUMN icon_iv TEXT');
+    db.exec('ALTER TABLE conversations ADD COLUMN icon_epoch INTEGER');
   }
   // Backfill per-epoch keys from the current sealed_key for any conversation that
   // predates the conversation_keys table, so existing back-scroll stays readable.
@@ -963,6 +977,17 @@ export function openDb(dataDir: string) {
     },
     getConversation(id: string): ConversationRow | undefined {
       return db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as ConversationRow | undefined;
+    },
+    setConversationName(id: string, name: string | null): void {
+      db.prepare('UPDATE conversations SET name = ? WHERE id = ?').run(name, id);
+    },
+    setConversationIcon(id: string, icon: { ct: string; iv: string; epoch: number } | null): void {
+      db.prepare('UPDATE conversations SET icon_ct = ?, icon_iv = ?, icon_epoch = ? WHERE id = ?').run(
+        icon?.ct ?? null,
+        icon?.iv ?? null,
+        icon?.epoch ?? null,
+        id,
+      );
     },
     getConversationByDmKey(dmKey: string): ConversationRow | undefined {
       return db.prepare('SELECT * FROM conversations WHERE dm_key = ?').get(dmKey) as ConversationRow | undefined;
