@@ -473,9 +473,10 @@ function onDropOnRoot() {
       </li>
       <!-- Voice-channel occupants, listed underneath (visible to all members). -->
       <li
-        v-for="occ in rowOccupants(row)"
+        v-for="(occ, i) in rowOccupants(row)"
         :key="`${row.key}:${occ.userId}`"
         class="flex items-center gap-2 py-0.5 text-xs text-zinc-500 dark:text-zinc-400"
+        :class="{ 'mb-2': i === rowOccupants(row).length - 1 }"
         :style="{ paddingLeft: depthPad(row.depth + 1) }"
       >
         <span

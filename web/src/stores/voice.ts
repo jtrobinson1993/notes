@@ -348,6 +348,10 @@ export const useVoiceStore = defineStore('voice', () => {
     audioCtx = null;
     localAnalyser = null;
     resetVoiceWorker();
+    // The server doesn't send ME my own peer-left (I know I left), so drop myself
+    // from the local presence map or the sidebar would still list me in the room.
+    const myId = session.user?.id;
+    if (roomId && myId) presenceRemove(roomId, myId);
     reset();
     if (roomId) {
       try {
