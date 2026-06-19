@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import { Device, type types as msTypes } from 'mediasoup-client';
 import type { ServerFrame, VoicePeer } from '@notes/shared';
 import { api } from '../lib/api';
@@ -9,6 +9,7 @@ import { generateMediaKey, sealMediaKey, unsealMediaKey } from '../lib/voiceCryp
 import { decryptReceiver, dropFrameKey, encryptSender, resetVoiceWorker, setFrameKey, setSendEpoch, voiceE2eeSupported } from '../lib/voiceTransform';
 import { startRingtone, stopRingtone } from '../lib/ringtone';
 import { createDenoisedStream } from '../lib/voiceDenoise';
+import { denoiseStrength, pttKey, voiceActivation } from '../lib/voicePrefs';
 
 // Client orchestration for E2EE voice: mediasoup-client Device + transports,
 // produce/consume, media-key handling via WS events, plus the UI-facing roster
@@ -44,7 +45,9 @@ export const useVoiceStore = defineStore('voice', () => {
   const peers = reactive(new Map<string, UiPeer>());
   const muted = ref(false);
   const deafened = ref(false);
-  const pushToTalk = ref(false);
+  // Push-to-talk is now driven by the device-level voice-activation preference
+  // (Settings → Voice), not an in-call toggle.
+  const pushToTalk = computed(() => voiceActivation.value === 'ptt');
   const localSpeaking = ref(false);
   const connectionQuality = ref<'good' | 'fair' | 'poor' | 'unknown'>('unknown');
 
@@ -93,6 +96,7 @@ export const useVoiceStore = defineStore('voice', () => {
   let audioCtx: AudioContext | null = null;
   let localAnalyser: AnalyserNode | null = null;
   let denoiseCleanup: (() => void) | null = null;
+  let denoiseSetStrength: ((v: number) => void) | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   const runtime = new Map<string, PeerRuntime>(); // by userId
   const mediaKeys = new Map<number, Uint8Array>(); // epoch -> raw (owner keeps these to re-seal)
@@ -110,6 +114,7 @@ export const useVoiceStore = defineStore('voice', () => {
     currentEpoch = -1;
     muted.value = false;
     deafened.value = false;
+    pttHeld = false;
     localSpeaking.value = false;
     connectionQuality.value = 'unknown';
     device = sendTransport = recvTransport = producer = null;
@@ -308,8 +313,9 @@ export const useVoiceStore = defineStore('voice', () => {
       // ML denoise (RNNoise) on top of the browser's built-in suppression; falls
       // back to the raw mic if it can't load. Mute still works: disabling the raw
       // mic track feeds silence through the graph.
-      const denoised = await createDenoisedStream(audioCtx, micStream);
+      const denoised = await createDenoisedStream(audioCtx, micStream, denoiseStrength.value);
       denoiseCleanup = denoised.cleanup;
+      denoiseSetStrength = denoised.setStrength;
       const track = denoised.stream.getAudioTracks()[0]!;
       producer = await sendTransport.produce({ track });
       if (producer.rtpSender) encryptSender(producer.rtpSender);
@@ -344,6 +350,7 @@ export const useVoiceStore = defineStore('voice', () => {
       await audioCtx?.close();
     } catch {/* ignore */}
     denoiseCleanup = null;
+    denoiseSetStrength = null;
     micStream = null;
     audioCtx = null;
     localAnalyser = null;
@@ -381,14 +388,31 @@ export const useVoiceStore = defineStore('voice', () => {
   function toggleDeafen(): void {
     setDeafened(!deafened.value);
   }
-  function setPushToTalk(on: boolean): void {
-    pushToTalk.value = on;
-    applyMicEnabled();
-  }
   function setPttHeld(held: boolean): void {
     pttHeld = held;
     applyMicEnabled();
   }
+
+  // Global push-to-talk key: while in a call in PTT mode, holding the configured
+  // key opens the mic. Ignored while typing in a field so the key still types.
+  function isTypingTarget(): boolean {
+    const el = document.activeElement as HTMLElement | null;
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+  }
+  function onPttKeyDown(e: KeyboardEvent): void {
+    if (e.repeat || !inCall.value || !pushToTalk.value) return;
+    if (!pttKey.value || e.code !== pttKey.value || isTypingTarget()) return;
+    e.preventDefault();
+    setPttHeld(true);
+  }
+  function onPttKeyUp(e: KeyboardEvent): void {
+    if (!pttKey.value || e.code !== pttKey.value) return;
+    setPttHeld(false);
+  }
+
+  // Re-gate the mic when the activation mode flips; apply the denoise slider live.
+  watch(voiceActivation, applyMicEnabled);
+  watch(denoiseStrength, (v) => denoiseSetStrength?.(v));
   function setVolume(userId: string, volume: number): void {
     const peer = peers.get(userId);
     if (peer) peer.volume = volume;
@@ -475,6 +499,8 @@ export const useVoiceStore = defineStore('voice', () => {
   function init(): void {
     if (unsub) return;
     unsub = onFrame((frame) => void handleFrame(frame));
+    window.addEventListener('keydown', onPttKeyDown);
+    window.addEventListener('keyup', onPttKeyUp);
   }
 
   return {
@@ -506,7 +532,6 @@ export const useVoiceStore = defineStore('voice', () => {
     setMuted,
     toggleDeafen,
     setDeafened,
-    setPushToTalk,
     setPttHeld,
     setVolume,
   };
