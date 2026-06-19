@@ -67,8 +67,8 @@ function occupantSpeaking(row: Row, userId: string): boolean {
   if (userId === session.user?.id) return voice.localSpeaking && !voice.micMuted;
   return voice.peers.get(userId)?.speaking ?? false;
 }
-function occupantName(userId: string, fallback: string): string {
-  return userId === session.user?.id ? 'You' : fallback;
+function occupantName(userId: string, displayName: string): string {
+  return userId === session.user?.id ? `${displayName} (you)` : displayName;
 }
 // Occupants to list under a row — only for voice-channel rows, else empty (so
 // the template can v-for without an illegal v-if on the same element).
@@ -435,7 +435,10 @@ function onDropOnRoot() {
               <IconLock v-if="row.item!.channel.private" class="h-4 w-4 shrink-0 opacity-60" />
               <IconVolume v-else-if="row.item!.channel.type === 'voice'" class="h-4 w-4 shrink-0 opacity-60" />
               <IconHash v-else class="h-4 w-4 shrink-0 opacity-60" />
-              <span class="min-w-0 grow truncate"><EmojiText :text="row.item!.channel.name" /></span>
+              <span
+                class="min-w-0 grow truncate"
+                :class="row.item!.channel.type === 'voice' && voice.activeRoomId === row.item!.channel.id ? 'font-medium text-green-600 dark:text-green-400' : ''"
+              ><EmojiText :text="row.item!.channel.name" /></span>
               <!-- Voice channel: live occupant count (green when I'm in it). -->
               <span
                 v-if="row.item!.channel.type === 'voice' && voiceOccupants(row.item!.channel.id).length"
