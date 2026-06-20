@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useMutation, useQuery, useQueryCache } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
@@ -17,6 +17,8 @@ import AvatarCropper from '../components/AvatarCropper.vue';
 import { addCustomEmoji, customEmoji, loadCustomEmoji, removeCustomEmoji } from '../lib/emoji/custom';
 import { resolveEmoji } from '../lib/emoji';
 import { NAME_COLORS } from '@notes/shared';
+import { isMobile } from '../lib/mobileNav';
+import IconChevronLeft from '~icons/mynaui/chevron-left';
 import {
   denoiseStrength,
   formatKeyCode,
@@ -46,6 +48,14 @@ const sections = [
   ...(isAdmin ? [{ id: 'invites', label: 'Invites' }, { id: 'users', label: 'Users' }] : []),
 ];
 const activeSection = ref('profile');
+// Mobile: the section menu is its own screen; tapping a section opens its content
+// full-screen over everything, with a back button. Desktop shows both at once.
+const mobileSectionOpen = ref(false);
+const activeLabel = computed(() => sections.find((s) => s.id === activeSection.value)?.label ?? 'Settings');
+function selectSection(id: string) {
+  activeSection.value = id;
+  mobileSectionOpen.value = true;
+}
 
 const theme = ref<Theme>(getTheme());
 const palette = ref<Palette>(getPalette());
@@ -426,8 +436,11 @@ async function importFiles(event: Event) {
       </div>
 
       <div class="flex min-h-0 flex-1">
-        <!-- Section nav -->
-        <nav class="w-52 shrink-0 space-y-0.5 overflow-y-auto border-r border-zinc-200 p-3 dark:border-zinc-800">
+        <!-- Section nav. Mobile: fills the page (its own screen); desktop: a rail. -->
+        <nav
+          class="space-y-0.5 overflow-y-auto border-r border-zinc-200 p-3 dark:border-zinc-800"
+          :class="isMobile ? 'w-full' : 'w-52 shrink-0'"
+        >
           <button
             v-for="s in sections"
             :key="s.id"
@@ -435,13 +448,26 @@ async function importFiles(event: Event) {
             :class="activeSection === s.id
               ? 'bg-zinc-200 font-medium text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
               : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'"
-            @click="activeSection = s.id"
+            @click="selectSection(s.id)"
           >
             {{ s.label }}
           </button>
         </nav>
 
-        <div class="min-w-0 grow overflow-y-auto p-6">
+        <!-- Section content. Mobile: full-screen over everything (incl. the app
+             sidebar) when a section is open, else hidden; desktop: inline. -->
+        <div
+          class="min-w-0 grow overflow-y-auto p-6"
+          :class="isMobile ? (mobileSectionOpen ? 'fixed inset-0 z-nav bg-zinc-50 dark:bg-zinc-950' : 'hidden') : ''"
+        >
+          <button
+            v-if="isMobile && mobileSectionOpen"
+            type="button"
+            class="mb-4 flex items-center gap-1 text-sm font-medium text-zinc-600 dark:text-zinc-300"
+            @click="mobileSectionOpen = false"
+          >
+            <IconChevronLeft class="h-5 w-5" /> {{ activeLabel }}
+          </button>
           <div class="mx-auto max-w-2xl space-y-8">
 
       <section v-show="activeSection === 'profile'" class="space-y-3">

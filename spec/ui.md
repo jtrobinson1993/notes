@@ -131,7 +131,24 @@ Create. One friend → a **DM**; several → a **group** (`chat.openGroup`).
 ## Settings
 
 `SettingsPage.vue` is split into **sections** (Profile, Appearance, **Security**
-— auto-lock + passkeys + recovery code, Privacy, Custom emoji, Import & export,
-plus Invites / Users for admins) navigated by a **left rail within the page** — one section
-shown at a time (`v-show`, so form state persists across switches), with the
-"Settings" title + close in a fixed top bar above the split.
+— auto-lock + passkeys + recovery code, Privacy, **Voice**, Custom emoji, Import &
+export, plus Invites / Users for admins) navigated by a **left rail within the
+page** — one section shown at a time (`v-show`, so form state persists across
+switches), with the "Settings" title + close in a fixed top bar above the split.
+
+## Mobile navigation (phones, `< md`)
+
+Phones (`lib/mobileNav.ts` — `isMobile` via `matchMedia`, `mobilePane`) show **one
+full-screen pane at a time** with a back stack; desktop is unchanged (all panes
+side-by-side).
+
+- **Chat:** the app sidebar (chat list) is the full-screen root. Tapping a chat
+  shows that chat's **channel list** full-screen (`ChatSidebar`'s mobile header
+  carries a back-to-chats button + the chat's name, since the chat header isn't
+  visible here). Tapping a channel shows its **messages** full-screen, with a
+  back button at the top-left of the chat header (left of the group icon) →
+  channel list. Panes hide/cover via `mobilePane` (`list` → `channels` →
+  `messages`); leaving `/chat` resets to `list`.
+- **Settings:** the section menu fills the page; tapping a section opens its
+  content **full-screen over everything** (incl. the app sidebar) with a
+  back-to-menu button (`mobileSectionOpen`).

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { TooltipProvider } from 'reka-ui';
 import type { Conversation } from '@notes/shared';
@@ -9,6 +9,7 @@ import { useNotesStore } from '../stores/notes';
 import NewChatModal from './NewChatModal.vue';
 import SidebarTooltip from './SidebarTooltip.vue';
 import { conversationInitial, conversationTitle } from '../lib/convName';
+import { isMobile, mobilePane, showChannels, showChatList } from '../lib/mobileNav';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
 import IconPanelLeftClose from '~icons/mynaui/panel-left-close';
 import IconMessagePlus from '~icons/mynaui/message-plus';
@@ -65,12 +66,31 @@ const activeConvId = computed(() => {
 });
 
 const isNotesActive = computed(() => router.currentRoute.value.path === '/');
+
+// --- Mobile: this sidebar is the full-screen chat-list pane. While drilled into
+// a chat's channels/messages it's hidden (those panes cover it); on desktop it's
+// always the normal rail. ---
+const onChatRoute = computed(() => router.currentRoute.value.path.startsWith('/chat/'));
+const navClass = computed(() => {
+  if (isMobile.value && onChatRoute.value) {
+    return mobilePane.value === 'list' ? 'w-full' : 'hidden';
+  }
+  return expanded.value ? 'w-56' : 'w-14';
+});
+// Leaving the chat area (e.g. to Notes/Settings) resets the pane so the sidebar
+// isn't stuck hidden.
+watch(
+  () => router.currentRoute.value.path,
+  (p) => {
+    if (!p.startsWith('/chat/')) showChatList();
+  },
+);
 </script>
 
 <template>
   <nav
     class="flex shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
-    :class="expanded ? 'w-56' : 'w-14'"
+    :class="navClass"
   >
     <TooltipProvider :delay-duration="0" :skip-delay-duration="0">
       <!-- Top: new chat -->
@@ -101,6 +121,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
             :to="`/chat/${conv.id}`"
             :aria-label="convName(conv)"
             class="relative flex items-center gap-2 p-1 text-sm"
+            @click="showChannels()"
             :class="[
               expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center',
               activeConvId === conv.id
