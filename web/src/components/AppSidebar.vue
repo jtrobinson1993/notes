@@ -129,7 +129,7 @@ watch(
             class="group relative flex items-center gap-2 text-sm"
             @click="showChannels()"
             :class="[
-              isMobile ? 'p-2' : 'p-1',
+              isMobile ? 'px-2 py-1' : 'p-1',
               expanded ? '' : 'justify-center',
               chatActive(conv.id) ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
@@ -171,7 +171,7 @@ watch(
             aria-label="Notes"
             class="group relative flex items-center gap-2 text-sm"
             :class="[
-              isMobile ? 'p-2' : 'p-1',
+              isMobile ? 'px-2 py-1' : 'p-1',
               expanded ? '' : 'justify-center',
               isNotesActive ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
