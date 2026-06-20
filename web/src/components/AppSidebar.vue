@@ -77,8 +77,8 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
       <div class="flex flex-col gap-1 p-2">
         <SidebarTooltip label="New chat" :disabled="expanded">
           <button
-            class="flex items-center gap-2 bg-blue-600 px-2 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            :class="expanded ? '' : 'justify-center'"
+            class="flex items-center gap-2 rounded-lg bg-blue-600 px-2 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            :class="expanded ? 'w-fit' : 'justify-center'"
             aria-label="New chat"
             @click="newChatOpen = true"
           >
