@@ -170,8 +170,8 @@ html.vt-exclude-root {
 /* Bouncy one-shot pop for a sidebar icon when its item becomes active. */
 @keyframes icon-pop {
   0%   { transform: scale(1); }
-  40%  { transform: scale(1.22); }
-  72%  { transform: scale(0.95); }
+  40%  { transform: scale(1.12); }
+  72%  { transform: scale(0.98); }
   100% { transform: scale(1); }
 }
 .icon-pop { animation: icon-pop 380ms ease-out; }
