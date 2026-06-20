@@ -90,7 +90,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
       <NewChatModal v-model:open="newChatOpen" />
 
       <!-- Conversations + Notes -->
-      <div class="min-h-0 grow overflow-y-auto">
+      <div class="flex min-h-0 grow flex-col gap-1 overflow-y-auto">
         <SidebarTooltip
           v-for="conv in sortedConversations"
           :key="conv.id"
@@ -108,7 +108,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
                 : 'text-zinc-700 dark:text-zinc-200',
             ]"
           >
-            <span class="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-300 text-xs font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-100">
+            <span class="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-300 text-xs font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-100">
               <img
                 v-if="convIcon(conv)"
                 :src="convIcon(conv) ?? undefined"
@@ -146,7 +146,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
                 : 'text-zinc-700 dark:text-zinc-200',
             ]"
           >
-            <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 dark:bg-zinc-800">
+            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-200 dark:bg-zinc-800">
               <IconPen class="h-4 w-4" />
             </span>
             <span v-if="expanded" class="truncate">Notes</span>
