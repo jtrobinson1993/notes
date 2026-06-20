@@ -131,14 +131,14 @@ watch(
             <ActiveBar :active="activeConvId === conv.id" />
             <span
               class="relative flex h-9 w-9 shrink-0 items-center justify-center bg-zinc-300 text-xs font-medium text-zinc-700 transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] dark:bg-zinc-700 dark:text-zinc-100"
-              :class="activeConvId === conv.id ? 'rounded-xl' : 'rounded-full group-hover:rounded-xl'"
+              :class="activeConvId === conv.id ? 'rounded-xl' : 'rounded-[18px] group-hover:rounded-xl'"
             >
               <img
                 v-if="convIcon(conv)"
                 :src="convIcon(conv) ?? undefined"
                 alt=""
                 class="absolute inset-0 h-full w-full object-cover transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-                :class="activeConvId === conv.id ? 'rounded-xl' : 'rounded-full group-hover:rounded-xl'"
+                :class="activeConvId === conv.id ? 'rounded-xl' : 'rounded-[18px] group-hover:rounded-xl'"
               />
               <template v-else>{{ convInitial(conv) }}</template>
               <span
@@ -172,7 +172,7 @@ watch(
             <ActiveBar :active="isNotesActive" />
             <span
               class="flex h-9 w-9 shrink-0 items-center justify-center bg-zinc-200 transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] dark:bg-zinc-700"
-              :class="isNotesActive ? 'rounded-xl' : 'rounded-full group-hover:rounded-xl'"
+              :class="isNotesActive ? 'rounded-xl' : 'rounded-[18px] group-hover:rounded-xl'"
             >
               <IconPen class="h-4 w-4" />
             </span>
