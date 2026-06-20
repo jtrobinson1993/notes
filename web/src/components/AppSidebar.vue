@@ -118,7 +118,7 @@ const navClass = computed(() => {
             class="group relative flex items-center gap-2 text-sm"
             @click="showChannels()"
             :class="[
-              isMobile ? 'px-2 py-1' : 'p-2',
+              'px-2 py-1',
               expanded ? '' : 'justify-center',
               chatActive(conv.id) ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
@@ -161,7 +161,7 @@ const navClass = computed(() => {
             class="group relative flex items-center gap-2 text-sm"
             @click="openPage()"
             :class="[
-              isMobile ? 'px-2 py-1' : 'p-2',
+              'px-2 py-1',
               expanded ? '' : 'justify-center',
               isNotesActive ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
