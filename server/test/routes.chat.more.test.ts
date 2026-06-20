@@ -16,7 +16,7 @@ function get(url: string, cookie: string) {
 describe('GET list endpoints', () => {
   it('GET /api/profile returns the display name (and the privacy fallback)', async () => {
     const named = authCookie(t.db, seedUser(t.db, { displayName: 'Alice' }));
-    expect((await get('/api/profile', named)).json()).toEqual({ displayName: 'Alice', nameColor: null, friendsOnly: true, linkPreviews: false });
+    expect((await get('/api/profile', named)).json()).toEqual({ displayName: 'Alice', handle: expect.any(String), nameColor: null, friendsOnly: true, linkPreviews: false });
 
     const id = seedUser(t.db, { id: 'abcdef000000' }); // no display name set
     const res = await get('/api/profile', authCookie(t.db, id));
@@ -29,7 +29,7 @@ describe('GET list endpoints', () => {
     makeFriends(t.db, me, f);
     const res = await get('/api/friends', authCookie(t.db, me));
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual([{ userId: 'fr', displayName: 'Buddy', publicKey: 'pk', online: false }]);
+    expect(res.json()).toEqual([{ userId: 'fr', displayName: 'Buddy', handle: expect.any(String), publicKey: 'pk', online: false }]);
   });
 
   it('GET /api/friends/requests shows incoming and outgoing requests', async () => {

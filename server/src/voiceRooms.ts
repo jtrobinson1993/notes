@@ -16,6 +16,8 @@ import type { SealedKey, SealedEpochKey, VoicePeer } from '@notes/shared';
 export interface VoicePeerInfo {
   userId: string;
   displayName: string;
+  /** public "Word#1234" handle */
+  handle: string;
   /** base64 X25519 public key — required so the owner can seal the media key to them */
   publicKey: string;
 }
@@ -101,7 +103,7 @@ export function createVoiceRooms(): VoiceRooms {
   }
 
   function rosterInfo(room: RoomState): VoicePeerInfo[] {
-    return [...room.peers.values()].map((p) => ({ userId: p.userId, displayName: p.displayName, publicKey: p.publicKey }));
+    return [...room.peers.values()].map((p) => ({ userId: p.userId, displayName: p.displayName, handle: p.handle, publicKey: p.publicKey }));
   }
 
   /** Build the rekey request for the room's next epoch over its current roster. */
@@ -182,7 +184,7 @@ export function createVoiceRooms(): VoiceRooms {
   function roster(roomId: string): VoicePeer[] {
     const room = rooms.get(roomId);
     if (!room) return [];
-    return [...room.peers.values()].map((p) => ({ userId: p.userId, displayName: p.displayName, producerId: p.producerId }));
+    return [...room.peers.values()].map((p) => ({ userId: p.userId, displayName: p.displayName, handle: p.handle, producerId: p.producerId }));
   }
 
   function epochOf(roomId: string): number {

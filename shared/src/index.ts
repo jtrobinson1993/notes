@@ -24,6 +24,8 @@ export interface UserInfo {
   username: string;
   role: Role;
   createdAt: number;
+  /** public "Word#1234" handle (the name shown to non-contacts) */
+  handle: string;
   /** base64 X25519 public key (for future sharing) */
   publicKey: string | null;
 }
@@ -175,6 +177,8 @@ export interface FriendRequest {
   /** the *other* party (sender if incoming, recipient if outgoing) */
   userId: string;
   displayName: string;
+  /** public "Word#1234" handle (shown before you're contacts and can decrypt the real name) */
+  handle: string;
   direction: 'incoming' | 'outgoing';
   createdAt: number;
 }
@@ -183,6 +187,8 @@ export interface FriendRequest {
 export interface Friend {
   userId: string;
   displayName: string;
+  /** public "Word#1234" handle */
+  handle: string;
   /** base64 X25519 public key */
   publicKey: string | null;
   online: boolean;
@@ -248,6 +254,8 @@ export function canManageMembers(role: ConversationRole): boolean {
 export interface ConversationMember {
   userId: string;
   displayName: string;
+  /** public "Word#1234" handle (shown to non-contacts; real name is decrypted client-side) */
+  handle: string;
   /** base64 X25519 public key */
   publicKey: string | null;
   /** chosen name color (a NAME_COLORS value), or null for the default */
@@ -473,6 +481,8 @@ export interface SealedEpochKey {
  *  (bio/avatar) is only ever distributed to accepted friends. */
 export interface ProfileInfo {
   displayName: string;
+  /** public "Word#1234" handle */
+  handle: string;
   nameColor: string | null;
   friendsOnly: boolean;
   /** opt-in (default off): generate link previews for my messages. A preview is
@@ -509,6 +519,8 @@ export interface SealedProfileKey {
 export interface ProfileView {
   userId: string;
   displayName: string;
+  /** public "Word#1234" handle */
+  handle: string;
   nameColor: string | null;
   encrypted: (ProfileCipher & { sealedKey: SealedKey }) | null;
 }
@@ -544,6 +556,8 @@ export interface VoiceRekeyMember {
 export interface VoicePeer {
   userId: string;
   displayName: string;
+  /** public "Word#1234" handle */
+  handle: string;
   /** the peer's current audio producer id, or null if not sending mic yet */
   producerId: string | null;
 }

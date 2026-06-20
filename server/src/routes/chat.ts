@@ -19,6 +19,7 @@ import type {
 import { canManageMembers, CHANNEL_NAME_MAX, CONVERSATION_NAME_MAX, MAX_CHANNELS_PER_CONVERSATION, NAME_COLORS } from '@notes/shared';
 import {
   effectiveDisplayName,
+  effectiveHandle,
   type ConversationRow,
   type DB,
   type MessageRow,
@@ -27,6 +28,7 @@ import {
 import type { Realtime } from '../realtime.js';
 import type { Push } from '../push.js';
 import { requireAuth } from '../session.js';
+import { isValidHandle } from '../handles.js';
 import { newId, newToken, now } from '../util.js';
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -125,6 +127,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       return {
         userId: m.user_id,
         displayName: u ? effectiveDisplayName(u) : `User-${m.user_id.slice(0, 6)}`,
+        handle: u ? effectiveHandle(u) : `User-${m.user_id.slice(0, 6)}`,
         publicKey: u?.public_key ?? null,
         nameColor: u?.name_color ?? null,
         linkPreviews: !!u && u.link_previews !== 0,
@@ -282,6 +285,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       id: reqId,
       userId: me,
       displayName: effectiveDisplayName(request.user!),
+      handle: effectiveHandle(request.user!),
       direction: 'incoming', // from the owner's perspective
       createdAt: now(),
     };
@@ -299,6 +303,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
         id: r.id,
         userId: otherId,
         displayName: other ? effectiveDisplayName(other) : `User-${otherId.slice(0, 6)}`,
+        handle: other ? effectiveHandle(other) : `User-${otherId.slice(0, 6)}`,
         direction: outgoing ? 'outgoing' : 'incoming',
         createdAt: r.created_at,
       };
@@ -321,6 +326,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const friend: Friend = {
       userId: otherId,
       displayName: other ? effectiveDisplayName(other) : `User-${otherId.slice(0, 6)}`,
+      handle: other ? effectiveHandle(other) : `User-${otherId.slice(0, 6)}`,
       publicKey: other?.public_key ?? null,
       online: hub.isOnline(otherId),
     };
@@ -330,6 +336,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       friend: {
         userId: me,
         displayName: effectiveDisplayName(request.user!),
+        handle: effectiveHandle(request.user!),
         publicKey: request.user!.public_key,
         online: hub.isOnline(me),
       },
@@ -355,6 +362,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       return {
         userId: row.friend_id,
         displayName: u ? effectiveDisplayName(u) : `User-${row.friend_id.slice(0, 6)}`,
+        handle: u ? effectiveHandle(u) : `User-${row.friend_id.slice(0, 6)}`,
         publicKey: u?.public_key ?? null,
         online: hub.isOnline(row.friend_id),
       };
@@ -376,6 +384,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
 
   function profileInfo(u: {
     id: string;
+    handle: string | null;
     display_name: string | null;
     name_color: string | null;
     profile_friends_only: number;
@@ -383,6 +392,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
   }): ProfileInfo {
     return {
       displayName: effectiveDisplayName(u),
+      handle: effectiveHandle(u),
       nameColor: u.name_color ?? null,
       friendsOnly: u.profile_friends_only !== 0,
       linkPreviews: u.link_previews !== 0,
@@ -391,6 +401,20 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
 
   app.get('/api/profile', { preHandler: requireAuth }, async (request) => {
     return profileInfo(request.user!);
+  });
+
+  // Public "Word#1234" handle: fetch fresh candidate options, or set the chosen one.
+  app.get('/api/handle/options', { preHandler: requireAuth }, async () => {
+    return { options: db.generateHandleOptions(3) };
+  });
+
+  app.put('/api/handle', { preHandler: requireAuth }, async (request, reply) => {
+    const { handle } = (request.body ?? {}) as { handle?: unknown };
+    if (!isValidHandle(handle)) return reply.code(400).send({ error: 'invalid handle' });
+    if (!db.setUserHandle(request.user!.id, handle)) {
+      return reply.code(409).send({ error: 'that handle is taken' });
+    }
+    return profileInfo({ ...request.user!, handle });
   });
 
   app.put('/api/profile', { preHandler: requireAuth }, async (request, reply) => {
@@ -538,6 +562,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const view: ProfileView = {
       userId: id,
       displayName: effectiveDisplayName(u),
+      handle: effectiveHandle(u),
       nameColor: u.name_color ?? null,
       encrypted:
         profile && myKey

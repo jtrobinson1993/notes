@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Role, WrappedKey, UserInfo, CredentialInfo, InviteInfo, NoteRecord } from '@notes/shared';
 import { now } from './util.js';
+import { generateUniqueHandles } from './handles.js';
 
 export interface UserRow {
   id: string;
@@ -12,6 +13,8 @@ export interface UserRow {
   wrapped_private_key: string | null;
   recovery_wrapped_mk: string | null;
   recovery_auth_hash: string | null;
+  /** Public "Word#1234" handle, shown to non-contacts (the only name the server reads). */
+  handle: string | null;
   display_name: string | null;
   name_color: string | null;
   /** 1 = only friends may receive the encrypted profile (default). */
@@ -174,6 +177,7 @@ CREATE TABLE IF NOT EXISTS users (
   wrapped_private_key TEXT,
   recovery_wrapped_mk TEXT,
   recovery_auth_hash TEXT,
+  handle TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS credentials (
@@ -436,6 +440,22 @@ export function openDb(dataDir: string) {
   if (!userCols.some((c) => c.name === 'link_previews')) {
     db.exec('ALTER TABLE users ADD COLUMN link_previews INTEGER NOT NULL DEFAULT 0');
   }
+  // Public "Word#1234" handle. Add the column, enforce uniqueness, then backfill
+  // every existing account with a distinct handle so the field is never null.
+  if (!userCols.some((c) => c.name === 'handle')) {
+    db.exec('ALTER TABLE users ADD COLUMN handle TEXT');
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle ON users(handle COLLATE NOCASE)');
+  {
+    const handleTaken = (h: string) =>
+      db.prepare('SELECT 1 FROM users WHERE handle = ? COLLATE NOCASE').get(h) !== undefined;
+    const setHandle = db.prepare('UPDATE users SET handle = ? WHERE id = ?');
+    const missing = db.prepare('SELECT id FROM users WHERE handle IS NULL').all() as { id: string }[];
+    for (const u of missing) {
+      const [h] = generateUniqueHandles(1, handleTaken);
+      if (h) setHandle.run(h, u.id);
+    }
+  }
 
   // Idempotent migration: add messages.edited_at (message editing).
   const msgCols = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
@@ -521,10 +541,32 @@ export function openDb(dataDir: string) {
     getUserByUsername(username: string): UserRow | undefined {
       return db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(username) as UserRow | undefined;
     },
-    createUser(u: { id: string; username: string; role: Role }): void {
-      db.prepare('INSERT INTO users (id, username, role, created_at) VALUES (?, ?, ?, ?)').run(
-        u.id, u.username, u.role, now(),
+    getUserByHandle(handle: string): UserRow | undefined {
+      return db.prepare('SELECT * FROM users WHERE handle = ? COLLATE NOCASE').get(handle) as UserRow | undefined;
+    },
+    handleTaken(handle: string): boolean {
+      return db.prepare('SELECT 1 FROM users WHERE handle = ? COLLATE NOCASE').get(handle) !== undefined;
+    },
+    /** `count` distinct, currently-free handles to offer the user. */
+    generateHandleOptions(count: number): string[] {
+      const taken = (h: string) => db.prepare('SELECT 1 FROM users WHERE handle = ? COLLATE NOCASE').get(h) !== undefined;
+      return generateUniqueHandles(count, taken);
+    },
+    /** Set a user's handle; returns false if it's already taken (unique index). */
+    setUserHandle(userId: string, handle: string): boolean {
+      try {
+        return db.prepare('UPDATE users SET handle = ? WHERE id = ?').run(handle, userId).changes > 0;
+      } catch {
+        return false;
+      }
+    },
+    createUser(u: { id: string; username: string; role: Role }): string {
+      const taken = (h: string) => db.prepare('SELECT 1 FROM users WHERE handle = ? COLLATE NOCASE').get(h) !== undefined;
+      const [handle] = generateUniqueHandles(1, taken);
+      db.prepare('INSERT INTO users (id, username, role, handle, created_at) VALUES (?, ?, ?, ?, ?)').run(
+        u.id, u.username, u.role, handle ?? null, now(),
       );
+      return handle ?? '';
     },
     setUserKeys(userId: string, keys: { publicKey: string; wrappedPrivateKey: WrappedKey; recoveryWrappedMk: WrappedKey; recoveryAuthHash: string }): void {
       db.prepare(
@@ -1424,8 +1466,14 @@ export function effectiveDisplayName(u: { id: string; display_name: string | nul
   return u.display_name && u.display_name.trim() ? u.display_name : `User-${u.id.slice(0, 6)}`;
 }
 
+/** The public "Word#1234" handle shown to non-contacts. Falls back to a neutral
+ *  id-derived label only if a handle was somehow never assigned. */
+export function effectiveHandle(u: { id: string; handle: string | null }): string {
+  return u.handle && u.handle.trim() ? u.handle : `User-${u.id.slice(0, 6)}`;
+}
+
 export function toUserInfo(u: UserRow): UserInfo {
-  return { id: u.id, username: u.username, role: u.role, createdAt: u.created_at, publicKey: u.public_key };
+  return { id: u.id, username: u.username, role: u.role, createdAt: u.created_at, handle: effectiveHandle(u), publicKey: u.public_key };
 }
 
 export function toCredentialInfo(c: CredentialRow): CredentialInfo {
