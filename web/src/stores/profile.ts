@@ -180,6 +180,12 @@ export const useProfileStore = defineStore('profile', () => {
     await Promise.all(userIds.map((id) => fetch(id).catch(() => {})));
   }
 
+  /** Decrypted avatar for a user — mine from my own profile, others' from cache. */
+  function avatarFor(userId: string): string | undefined {
+    if (userId === session.user?.id) return myData.value.avatar;
+    return cache.value[userId]?.data?.avatar;
+  }
+
   function invalidate(userId: string): void {
     delete cache.value[userId];
   }
@@ -213,6 +219,7 @@ export const useProfileStore = defineStore('profile', () => {
     fetch,
     displayNameFor,
     hydrate,
+    avatarFor,
     invalidate,
     reset,
   };

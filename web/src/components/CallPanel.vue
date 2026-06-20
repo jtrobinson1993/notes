@@ -7,6 +7,8 @@ import IconVolumeOff from '~icons/mynaui/volume-off';
 import IconHangup from '~icons/mynaui/telephone-off';
 import IconSignal from '~icons/mynaui/signal';
 import { useVoiceStore } from '../stores/voice';
+import { useProfileStore } from '../stores/profile';
+import { useSessionStore } from '../stores/session';
 import { formatKeyCode, pttKey } from '../lib/voicePrefs';
 import ChatAvatar from './ChatAvatar.vue';
 
@@ -15,6 +17,9 @@ import ChatAvatar from './ChatAvatar.vue';
 defineProps<{ collapsed?: boolean }>();
 
 const voice = useVoiceStore();
+const profile = useProfileStore();
+const session = useSessionStore();
+const myId = computed(() => session.user?.id ?? '');
 
 const qualityColor = computed(
   () =>
@@ -57,12 +62,12 @@ const btnActive = 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
       <!-- p-1 keeps the green speaking ring (ring-2) off the scroll clip edges. -->
       <ul class="mb-2 max-h-40 space-y-1 overflow-y-auto p-1">
         <li class="flex items-center gap-2">
-          <ChatAvatar name="You" class="h-7 w-7 text-xs" :class="voice.localSpeaking && !voice.micMuted ? 'ring-2 ring-green-500' : ''" />
+          <ChatAvatar :name="profile.myDisplayName" :seed="myId" :src="profile.avatarFor(myId)" class="h-7 w-7 text-xs" :class="voice.localSpeaking && !voice.micMuted ? 'ring-2 ring-green-500' : ''" />
           <span class="grow truncate text-sm">You</span>
           <IconMicOff v-if="voice.micMuted" class="h-4 w-4 text-red-500" :title="voice.deafened ? 'Mic muted (deafened)' : 'Muted'" />
         </li>
         <li v-for="p in voice.peerList" :key="p.userId" class="flex items-center gap-2">
-          <ChatAvatar :name="p.displayName" :seed="p.userId" class="h-7 w-7 text-xs" :class="p.speaking ? 'ring-2 ring-green-500' : ''" />
+          <ChatAvatar :name="p.displayName" :seed="p.userId" :src="profile.avatarFor(p.userId)" class="h-7 w-7 text-xs" :class="p.speaking ? 'ring-2 ring-green-500' : ''" />
           <span class="min-w-0 grow truncate text-sm">{{ p.displayName }}</span>
           <input
             type="range"

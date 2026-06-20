@@ -40,10 +40,12 @@ export const useVoiceStore = defineStore('voice', () => {
   const session = useSessionStore();
 
   // The server sends each peer's public handle in `displayName`; overlay the
-  // decrypted real name when we have it (call peers are contacts, so the chat
-  // store has usually already cached their profile).
+  // decrypted real name when we have it — my own from the profile store, others'
+  // from their cached (contact) profile.
   function withRealName<T extends { userId: string; displayName: string }>(p: T): T {
-    return { ...p, displayName: useProfileStore().displayNameFor(p.userId) ?? p.displayName };
+    const profile = useProfileStore();
+    const real = p.userId === session.user?.id ? profile.myDisplayName : profile.displayNameFor(p.userId);
+    return { ...p, displayName: real || p.displayName };
   }
 
   const activeRoomId = ref<string | null>(null);

@@ -4,13 +4,19 @@ import IconMicOff from '~icons/mynaui/microphone-off';
 import IconHeadphones from '~icons/mynaui/headphones';
 import IconVolumeOff from '~icons/mynaui/volume-off';
 import IconHangup from '~icons/mynaui/telephone-off';
+import { computed } from 'vue';
 import { useVoiceStore } from '../stores/voice';
+import { useProfileStore } from '../stores/profile';
+import { useSessionStore } from '../stores/session';
 import ChatAvatar from './ChatAvatar.vue';
 
 // In-call controls + speaking indicators as a top bar on mobile. Rendered in the
 // app's flex column above everything, so the rest of the app shrinks below it
 // (you can still see the top of the current screen).
 const voice = useVoiceStore();
+const profile = useProfileStore();
+const session = useSessionStore();
+const myId = computed(() => session.user?.id ?? '');
 
 const btn = 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg';
 const neutral = 'bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700';
@@ -26,7 +32,9 @@ const muted = 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400';
     <!-- Speaking indicators. p-0.5 keeps the ring off the scroll clip edge. -->
     <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-0.5">
       <ChatAvatar
-        name="You"
+        :name="profile.myDisplayName"
+        :seed="myId"
+        :src="profile.avatarFor(myId)"
         class="h-7 w-7 shrink-0 text-xs"
         :class="voice.localSpeaking && !voice.micMuted ? 'ring-2 ring-green-500' : ''"
       />
@@ -35,6 +43,7 @@ const muted = 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400';
         :key="p.userId"
         :name="p.displayName"
         :seed="p.userId"
+        :src="profile.avatarFor(p.userId)"
         class="h-7 w-7 shrink-0 text-xs"
         :class="p.speaking ? 'ring-2 ring-green-500' : ''"
       />
