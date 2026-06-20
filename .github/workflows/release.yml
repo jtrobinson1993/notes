@@ -2,7 +2,7 @@ name: Release
 
 # Build a multi-arch image and publish it to GHCR on every version tag, so the
 # production box never builds — a release is just `docker compose pull && up -d`.
-# Tag a known-good commit: `git tag v1.2.0 && git push --tags`.
+# Tag a known-good commit: `git tag v0.2.0 && git push --tags`.
 on:
   push:
     tags: ['v*.*.*']

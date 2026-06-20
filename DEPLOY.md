@@ -80,7 +80,7 @@ workflow: tag a known-good commit and it builds a multi-arch image to
 
 ```sh
 # on your dev machine: develop, test, then tag the release
-git tag v1.1.0 && git push --tags
+git tag v0.2.0 && git push --tags
 ```
 
 ```sh
@@ -92,7 +92,7 @@ cd notes && git pull && docker compose pull && docker compose up -d
 image; `up -d` swaps the container. The volume — and all data — is untouched;
 schema migrations run on boot. Downtime is a few seconds.
 
-**Rollback** is a one-liner: set `NOTES_TAG=v1.0.0` in `.env` and
+**Rollback** is a one-liner: set `NOTES_TAG=v0.1.0` in `.env` and
 `docker compose up -d`. No rebuild, since every version is a published image.
 
 > The GHCR image package must be **public** (it is, matching the public repo) so
