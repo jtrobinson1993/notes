@@ -96,14 +96,16 @@ export interface SeedUserOpts {
   username?: string;
   role?: 'admin' | 'member';
   displayName?: string;
+  handle?: string;
   publicKey?: string;
 }
 
-/** Insert a user (and optional display name / public key) directly. */
+/** Insert a user (and optional display name / handle / public key) directly. */
 export function seedUser(db: DB, opts: SeedUserOpts = {}): string {
   const id = opts.id ?? randomBytes(8).toString('hex');
   const username = opts.username ?? `user_${id.slice(0, 6)}`;
-  db.createUser({ id, username, role: opts.role ?? 'member' });
+  db.createUser({ id, username, role: opts.role ?? 'member' }); // auto-assigns a handle
+  if (opts.handle) db.setUserHandle(id, opts.handle);
   if (opts.displayName) db.setDisplayName(id, opts.displayName);
   if (opts.publicKey) {
     db.raw.prepare('UPDATE users SET public_key = ? WHERE id = ?').run(opts.publicKey, id);

@@ -494,6 +494,8 @@ export interface ProfileInfo {
  *  **profile key** and embedded whole (avatar is a small optimized data URL),
  *  so the server never sees any of it. */
 export interface ProfileData {
+  /** the real display name, shown only to contacts (the server never sees it) */
+  displayName?: string;
   bio?: string;
   /** small optimized avatar as a `data:image/webp` URL */
   avatar?: string;

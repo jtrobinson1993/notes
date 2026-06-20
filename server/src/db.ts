@@ -708,13 +708,13 @@ export function openDb(dataDir: string) {
     listShares(noteId: string) {
       return db
         .prepare(
-          `SELECT s.*, u.display_name AS recipient_display_name FROM note_shares s
+          `SELECT s.*, u.handle AS recipient_handle FROM note_shares s
            JOIN users u ON u.id = s.recipient_id WHERE s.note_id = ?`,
         )
         .all(noteId) as {
         note_id: string;
         recipient_id: string;
-        recipient_display_name: string | null;
+        recipient_handle: string | null;
         sealed_key: string;
         access: string;
         created_at: number;
@@ -727,7 +727,7 @@ export function openDb(dataDir: string) {
       return db
         .prepare(
           `SELECT n.id, n.ciphertext, n.iv, n.created_at, n.updated_at, s.sealed_key, s.access,
-                  n.user_id AS owner_id, u.display_name AS owner_display_name
+                  n.user_id AS owner_id, u.handle AS owner_handle
            FROM note_shares s
            JOIN notes n ON n.id = s.note_id AND n.deleted = 0
            JOIN users u ON u.id = n.user_id
@@ -742,7 +742,7 @@ export function openDb(dataDir: string) {
         sealed_key: string;
         access: string;
         owner_id: string;
-        owner_display_name: string | null;
+        owner_handle: string | null;
       }[];
     },
 
@@ -778,19 +778,19 @@ export function openDb(dataDir: string) {
     },
     /** People you may share with (v5): your friends OR anyone you share a
      *  conversation with (friends-of-friends in a common group). Deduped. */
-    listShareableMembers(userId: string): { id: string; display_name: string | null; public_key: string | null }[] {
+    listShareableMembers(userId: string): { id: string; handle: string | null; public_key: string | null }[] {
       return db
         .prepare(
-          `SELECT u.id, u.display_name, u.public_key FROM users u
+          `SELECT u.id, u.handle, u.public_key FROM users u
              WHERE u.id != ?
                AND ( u.id IN (SELECT friend_id FROM friends WHERE user_id = ?)
                   OR u.id IN (
                        SELECT cm2.user_id FROM conversation_members cm1
                          JOIN conversation_members cm2 ON cm1.conversation_id = cm2.conversation_id
                         WHERE cm1.user_id = ? AND cm2.user_id != ?) )
-             ORDER BY u.display_name`,
+             ORDER BY u.handle`,
         )
-        .all(userId, userId, userId, userId) as { id: string; display_name: string | null; public_key: string | null }[];
+        .all(userId, userId, userId, userId) as { id: string; handle: string | null; public_key: string | null }[];
     },
 
     getUserSetting(userId: string, key: string) {
@@ -837,7 +837,7 @@ export function openDb(dataDir: string) {
       if (row.expires_at < now()) return undefined;
       return JSON.parse(row.data) as T;
     },
-    setDisplayName(userId: string, displayName: string): void {
+    setDisplayName(userId: string, displayName: string | null): void {
       db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(displayName, userId);
     },
     setNameColor(userId: string, nameColor: string | null): void {

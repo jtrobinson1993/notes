@@ -124,10 +124,13 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     if (!mine) return null;
     const members: ConversationMember[] = db.listConversationMembers(conv.id).map((m) => {
       const u = db.getUser(m.user_id);
+      // displayName carries the public handle; the real (E2EE) name is overlaid
+      // client-side from the contact's decrypted profile.
+      const handle = u ? effectiveHandle(u) : `User-${m.user_id.slice(0, 6)}`;
       return {
         userId: m.user_id,
-        displayName: u ? effectiveDisplayName(u) : `User-${m.user_id.slice(0, 6)}`,
-        handle: u ? effectiveHandle(u) : `User-${m.user_id.slice(0, 6)}`,
+        displayName: handle,
+        handle,
         publicKey: u?.public_key ?? null,
         nameColor: u?.name_color ?? null,
         linkPreviews: !!u && u.link_previews !== 0,
@@ -284,7 +287,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const request_: FriendRequest = {
       id: reqId,
       userId: me,
-      displayName: effectiveDisplayName(request.user!),
+      // Not contacts yet → show the handle, not the (now E2EE) real name.
+      displayName: effectiveHandle(request.user!),
       handle: effectiveHandle(request.user!),
       direction: 'incoming', // from the owner's perspective
       createdAt: now(),
@@ -299,11 +303,12 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       const outgoing = r.from_user === me;
       const otherId = outgoing ? r.to_user : r.from_user;
       const other = db.getUser(otherId);
+      const handle = other ? effectiveHandle(other) : `User-${otherId.slice(0, 6)}`;
       return {
         id: r.id,
         userId: otherId,
-        displayName: other ? effectiveDisplayName(other) : `User-${otherId.slice(0, 6)}`,
-        handle: other ? effectiveHandle(other) : `User-${otherId.slice(0, 6)}`,
+        displayName: handle, // handle until we're contacts and can decrypt the real name
+        handle,
         direction: outgoing ? 'outgoing' : 'incoming',
         createdAt: r.created_at,
       };
@@ -323,20 +328,22 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     if (reverse) db.deleteFriendRequest(reverse.id);
 
     const other = db.getUser(otherId);
+    const otherHandle = other ? effectiveHandle(other) : `User-${otherId.slice(0, 6)}`;
     const friend: Friend = {
       userId: otherId,
-      displayName: other ? effectiveDisplayName(other) : `User-${otherId.slice(0, 6)}`,
-      handle: other ? effectiveHandle(other) : `User-${otherId.slice(0, 6)}`,
+      displayName: otherHandle,
+      handle: otherHandle,
       publicKey: other?.public_key ?? null,
       online: hub.isOnline(otherId),
     };
     // Push MY info to the other user.
+    const myHandle = effectiveHandle(request.user!);
     hub.sendToUser(otherId, {
       type: 'friend-accepted',
       friend: {
         userId: me,
-        displayName: effectiveDisplayName(request.user!),
-        handle: effectiveHandle(request.user!),
+        displayName: myHandle,
+        handle: myHandle,
         publicKey: request.user!.public_key,
         online: hub.isOnline(me),
       },
@@ -359,10 +366,11 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const me = request.user!.id;
     return db.listFriendRows(me).map((row): Friend => {
       const u = db.getUser(row.friend_id);
+      const handle = u ? effectiveHandle(u) : `User-${row.friend_id.slice(0, 6)}`;
       return {
         userId: row.friend_id,
-        displayName: u ? effectiveDisplayName(u) : `User-${row.friend_id.slice(0, 6)}`,
-        handle: u ? effectiveHandle(u) : `User-${row.friend_id.slice(0, 6)}`,
+        displayName: handle, // overlaid with the decrypted real name client-side
+        handle,
         publicKey: u?.public_key ?? null,
         online: hub.isOnline(row.friend_id),
       };
@@ -422,12 +430,19 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const b = request.body as Record<string, unknown> | null;
     // Both fields are optional; update whichever is present.
     if (b?.displayName !== undefined) {
-      if (typeof b.displayName !== 'string') return reply.code(400).send({ error: 'invalid display name' });
-      const trimmed = b.displayName.trim();
-      if (trimmed.length < 1 || trimmed.length > 50) {
-        return reply.code(400).send({ error: 'display name must be 1..50 chars' });
+      // null clears the legacy plaintext name (the real name is now E2EE in the
+      // profile blob); a string sets it (kept only for backwards-compat reads).
+      if (b.displayName === null) {
+        db.setDisplayName(me, null);
+      } else if (typeof b.displayName === 'string') {
+        const trimmed = b.displayName.trim();
+        if (trimmed.length < 1 || trimmed.length > 50) {
+          return reply.code(400).send({ error: 'display name must be 1..50 chars' });
+        }
+        db.setDisplayName(me, trimmed);
+      } else {
+        return reply.code(400).send({ error: 'invalid display name' });
       }
-      db.setDisplayName(me, trimmed);
     }
     if (b?.nameColor !== undefined) {
       const nc = b.nameColor;
@@ -561,7 +576,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const myKey = profile ? db.getProfileKeyFor(id, me) : undefined;
     const view: ProfileView = {
       userId: id,
-      displayName: effectiveDisplayName(u),
+      displayName: effectiveHandle(u), // real name lives in the encrypted blob below
       handle: effectiveHandle(u),
       nameColor: u.name_color ?? null,
       encrypted:

@@ -6,6 +6,7 @@ import { encryptProfile, generateProfileKey, sealProfileKey } from '../../src/li
 
 const api = vi.hoisted(() => ({
   profileGet: vi.fn(),
+  profileSet: vi.fn().mockResolvedValue({}),
   profileDataGet: vi.fn(),
   profileDataSet: vi.fn(),
   profileKeysAdd: vi.fn(),
@@ -36,7 +37,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   holder.friends = [];
   holder.conversations = [];
-  api.profileGet.mockResolvedValue({ displayName: 'Me', nameColor: null, friendsOnly: true, linkPreviews: false });
+  // displayName === handle ⇒ no legacy name to migrate into the encrypted blob.
+  api.profileGet.mockResolvedValue({ displayName: 'Wolf#0001', handle: 'Wolf#0001', nameColor: null, friendsOnly: true, linkPreviews: false });
   api.profileDataGet.mockResolvedValue({ profile: null });
   // The server echoes back the epoch it was sent.
   api.profileDataSet.mockImplementation(async (body: { epoch: number }) => ({ ok: true, epoch: body.epoch }));
@@ -76,6 +78,24 @@ describe('profile store', () => {
     });
     await store.load();
     expect(store.myData.bio).toBe('my secret bio');
+  });
+
+  it('migrates a legacy plaintext display name into the encrypted profile, then clears it', async () => {
+    api.profileGet.mockResolvedValueOnce({ displayName: 'Real Name', handle: 'Wolf#0001', nameColor: null, friendsOnly: true, linkPreviews: false });
+    const store = useProfileStore();
+    await store.load();
+    // The real name was encrypted into the profile blob…
+    expect(api.profileDataSet).toHaveBeenCalled();
+    expect(store.myData.displayName).toBe('Real Name');
+    // …and the server's plaintext copy was cleared.
+    expect(api.profileSet).toHaveBeenCalledWith({ displayName: null });
+  });
+
+  it('does not migrate when the display name already equals the handle', async () => {
+    const store = useProfileStore();
+    await store.load(); // beforeEach mock: displayName === handle
+    expect(api.profileDataSet).not.toHaveBeenCalled();
+    expect(api.profileSet).not.toHaveBeenCalled();
   });
 
   it('fetch() decrypts a contact profile sealed to my key', async () => {

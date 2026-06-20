@@ -23,23 +23,24 @@ describe('GET list endpoints', () => {
     expect(res.json().displayName).toBe('User-abcdef');
   });
 
-  it('GET /api/friends lists confirmed friends with display name + presence', async () => {
+  it('GET /api/friends lists confirmed friends by handle + presence', async () => {
     const me = seedUser(t.db);
-    const f = seedUser(t.db, { id: 'fr', displayName: 'Buddy', publicKey: 'pk' });
+    // displayName is now E2EE; the server only ever surfaces the public handle.
+    const f = seedUser(t.db, { id: 'fr', displayName: 'Buddy', handle: 'Otter#1111', publicKey: 'pk' });
     makeFriends(t.db, me, f);
     const res = await get('/api/friends', authCookie(t.db, me));
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual([{ userId: 'fr', displayName: 'Buddy', handle: expect.any(String), publicKey: 'pk', online: false }]);
+    expect(res.json()).toEqual([{ userId: 'fr', displayName: 'Otter#1111', handle: 'Otter#1111', publicKey: 'pk', online: false }]);
   });
 
-  it('GET /api/friends/requests shows incoming and outgoing requests', async () => {
+  it('GET /api/friends/requests shows incoming and outgoing requests by handle', async () => {
     const me = seedUser(t.db, { displayName: 'Me' });
-    const other = seedUser(t.db, { id: 'oth', displayName: 'Other' });
+    const other = seedUser(t.db, { id: 'oth', displayName: 'Other', handle: 'Fox#2222' });
     t.db.createFriendRequest({ id: 'r1', fromUser: other, toUser: me }); // incoming
     t.db.createFriendRequest({ id: 'r2', fromUser: me, toUser: other }); // outgoing (reverse)
     const res = await get('/api/friends/requests', authCookie(t.db, me));
     const byId = Object.fromEntries((res.json() as any[]).map((r) => [r.id, r]));
-    expect(byId.r1).toMatchObject({ direction: 'incoming', userId: 'oth', displayName: 'Other' });
+    expect(byId.r1).toMatchObject({ direction: 'incoming', userId: 'oth', displayName: 'Fox#2222', handle: 'Fox#2222' });
     expect(byId.r2).toMatchObject({ direction: 'outgoing', userId: 'oth' });
   });
 
@@ -52,8 +53,8 @@ describe('GET list endpoints', () => {
   });
 
   it('GET /api/conversations returns the caller’s DMs with members', async () => {
-    const me = seedUser(t.db, { displayName: 'Me' });
-    const friend = seedUser(t.db, { id: 'fr', displayName: 'Friend' });
+    const me = seedUser(t.db, { displayName: 'Me', handle: 'Wolf#0001' });
+    const friend = seedUser(t.db, { id: 'fr', displayName: 'Friend', handle: 'Bear#0002' });
     makeFriends(t.db, me, friend);
     t.db.createConversation({ id: 'c1', kind: 'dm', createdBy: me, dmKey: 'a:b' });
     t.db.addConversationMember({ conversationId: 'c1', userId: me, sealedKey: JSON.stringify(SEALED), epoch: 0 });
@@ -64,7 +65,7 @@ describe('GET list endpoints', () => {
     const list = res.json();
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ id: 'c1', kind: 'dm', sealedKey: SEALED });
-    expect(list[0].members.map((m: any) => m.displayName).sort()).toEqual(['Friend', 'Me']);
+    expect(list[0].members.map((m: any) => m.displayName).sort()).toEqual(['Bear#0002', 'Wolf#0001']);
   });
 
   it('GET /api/conversations omits a DM once the friendship is gone', async () => {

@@ -14,6 +14,19 @@ export const useFriendsStore = defineStore('friends', () => {
     friends.value = f;
     requests.value = r;
     invites.value = i;
+    void hydrateNames();
+  }
+
+  /** Overlay friends' decrypted real display names (the server only sends the
+   *  public handle). Pending requests stay as handles — you can't decrypt a
+   *  non-contact's profile. */
+  async function hydrateNames(): Promise<void> {
+    const profile = useProfileStore();
+    await profile.hydrate(friends.value.map((f) => f.userId));
+    for (const f of friends.value) {
+      const real = profile.displayNameFor(f.userId);
+      if (real && f.displayName !== real) f.displayName = real;
+    }
   }
 
   async function createInvite(): Promise<FriendInvite> {
@@ -93,6 +106,7 @@ export const useFriendsStore = defineStore('friends', () => {
     requests,
     invites,
     load,
+    hydrateNames,
     createInvite,
     deleteInvite,
     redeem,

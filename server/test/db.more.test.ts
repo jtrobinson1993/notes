@@ -50,14 +50,14 @@ describe('notes', () => {
 
 describe('shares', () => {
   it('upsert / get / list / delete and listSharedWith join', () => {
-    const owner = seedUser(t.db, { username: 'owner', displayName: 'Owner' });
-    const recipient = seedUser(t.db, { id: 'rcp', username: 'rcp', displayName: 'Rcp' });
+    const owner = seedUser(t.db, { username: 'owner', displayName: 'Owner', handle: 'Wolf#0001' });
+    const recipient = seedUser(t.db, { id: 'rcp', username: 'rcp', displayName: 'Rcp', handle: 'Otter#1111' });
     t.db.upsertNote({ id: 'n1', userId: owner, ciphertext: 'ct', iv: 'iv', wrappedKey: WK, createdAt: 1 });
     t.db.upsertShare({ noteId: 'n1', recipientId: recipient, sealedKey: 'sk', access: 'read' });
 
     expect(t.db.getShare('n1', recipient)).toMatchObject({ access: 'read', sealed_key: 'sk' });
-    expect(t.db.listShares('n1')[0]).toMatchObject({ recipient_display_name: 'Rcp', access: 'read' });
-    expect(t.db.listSharedWith(recipient)[0]).toMatchObject({ id: 'n1', owner_display_name: 'Owner', access: 'read' });
+    expect(t.db.listShares('n1')[0]).toMatchObject({ recipient_handle: 'Otter#1111', access: 'read' });
+    expect(t.db.listSharedWith(recipient)[0]).toMatchObject({ id: 'n1', owner_handle: 'Wolf#0001', access: 'read' });
 
     // Upsert again updates access in place.
     t.db.upsertShare({ noteId: 'n1', recipientId: recipient, sealedKey: 'sk2', access: 'write' });

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import type { ProfileData, SealedProfileKey } from '@notes/shared';
 import { api } from '../lib/api';
 import { ub64 } from '../lib/b64';
@@ -16,10 +16,13 @@ import { useChatStore } from './chat';
 import { useFriendsStore } from './friends';
 import { useSessionStore } from './session';
 
-/** A contact's profile as the viewer sees it: server-visible name/color, plus
- *  the decrypted bio/avatar when the viewer has access (else `data` is null). */
+/** A contact's profile as the viewer sees it. `displayName` is the decrypted
+ *  real name when the viewer is a contact, otherwise the public handle. `handle`
+ *  is always the public "Word#1234". `data` holds the decrypted bio/avatar (and
+ *  real name) when the viewer has access, else null. */
 export interface ProfileEntry {
   displayName: string;
+  handle: string;
   nameColor: string | null;
   data: ProfileData | null;
 }
@@ -31,10 +34,14 @@ export const useProfileStore = defineStore('profile', () => {
   // visibility, and rotation epoch.
   let profileKey: Uint8Array | null = null;
   const myData = ref<ProfileData>({});
+  const myHandle = ref('');
   const friendsOnly = ref(true);
   const linkPreviews = ref(false);
   const epoch = ref(0);
   const loaded = ref(false);
+
+  /** My real display name (E2EE), falling back to my public handle. */
+  const myDisplayName = computed(() => myData.value.displayName?.trim() || myHandle.value);
 
   // Decrypted profiles of other users, keyed by userId.
   const cache = ref<Record<string, ProfileEntry>>({});
@@ -42,6 +49,7 @@ export const useProfileStore = defineStore('profile', () => {
   /** Load my profile info + (if set) decrypt my own blob via the MK-wrapped key. */
   async function load(): Promise<void> {
     const info = await api.profileGet();
+    myHandle.value = info.handle;
     friendsOnly.value = info.friendsOnly;
     linkPreviews.value = info.linkPreviews;
     const { profile } = await api.profileDataGet();
@@ -51,6 +59,18 @@ export const useProfileStore = defineStore('profile', () => {
       epoch.value = profile.epoch;
     }
     loaded.value = true;
+    // One-time migration: an account from before display names were encrypted
+    // still has a legacy plaintext name on the server. Move it into the encrypted
+    // profile, then clear the plaintext so the server can no longer read it.
+    const legacy = info.displayName;
+    if (session.mk && !myData.value.displayName && legacy && legacy !== info.handle && !legacy.startsWith('User-')) {
+      try {
+        await save({ ...myData.value, displayName: legacy });
+        await api.profileSet({ displayName: null });
+      } catch {
+        /* best-effort; a later save retries the encryption */
+      }
+    }
   }
 
   /** Who may currently receive my profile: friends, plus group co-members when
@@ -138,9 +158,26 @@ export const useProfileStore = defineStore('profile', () => {
         data = null;
       }
     }
-    const entry: ProfileEntry = { displayName: view.displayName, nameColor: view.nameColor, data };
+    const entry: ProfileEntry = {
+      // view.displayName is the public handle; prefer the decrypted real name.
+      displayName: data?.displayName?.trim() || view.displayName,
+      handle: view.handle,
+      nameColor: view.nameColor,
+      data,
+    };
     cache.value[userId] = entry;
     return entry;
+  }
+
+  /** The decrypted real display name for a user, if I'm a contact and it's
+   *  cached. Null otherwise (caller falls back to the handle). */
+  function displayNameFor(userId: string): string | null {
+    return cache.value[userId]?.data?.displayName?.trim() || null;
+  }
+
+  /** Pre-fetch + cache profiles for these users so `displayNameFor` resolves. */
+  async function hydrate(userIds: string[]): Promise<void> {
+    await Promise.all(userIds.map((id) => fetch(id).catch(() => {})));
   }
 
   function invalidate(userId: string): void {
@@ -150,6 +187,7 @@ export const useProfileStore = defineStore('profile', () => {
   function reset(): void {
     profileKey = null;
     myData.value = {};
+    myHandle.value = '';
     friendsOnly.value = true;
     linkPreviews.value = false;
     epoch.value = 0;
@@ -159,6 +197,8 @@ export const useProfileStore = defineStore('profile', () => {
 
   return {
     myData,
+    myHandle,
+    myDisplayName,
     friendsOnly,
     linkPreviews,
     epoch,
@@ -171,6 +211,8 @@ export const useProfileStore = defineStore('profile', () => {
     rotate,
     distributeTo,
     fetch,
+    displayNameFor,
+    hydrate,
     invalidate,
     reset,
   };

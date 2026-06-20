@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { MemberInfo, NotesSyncResponse, SealedKey, ShareInfo, SharedNoteRecord, WrappedKey } from '@notes/shared';
-import { effectiveDisplayName, toNoteRecord, type DB } from '../db.js';
+import { effectiveHandle, toNoteRecord, type DB } from '../db.js';
 import { requireAuth } from '../session.js';
 import { now, validWrappedKey } from '../util.js';
 
@@ -116,7 +116,7 @@ export function noteRoutes(app: FastifyInstance, db: DB): void {
     return db.listShareableMembers(request.user!.id).map(
       (m): MemberInfo => ({
         id: m.id,
-        displayName: effectiveDisplayName({ id: m.id, display_name: m.display_name }),
+        displayName: effectiveHandle({ id: m.id, handle: m.handle }),
         publicKey: m.public_key,
       }),
     );
@@ -129,7 +129,7 @@ export function noteRoutes(app: FastifyInstance, db: DB): void {
         ciphertext: r.ciphertext,
         iv: r.iv,
         sealedKey: JSON.parse(r.sealed_key) as SealedKey,
-        ownerDisplayName: effectiveDisplayName({ id: r.owner_id, display_name: r.owner_display_name }),
+        ownerDisplayName: effectiveHandle({ id: r.owner_id, handle: r.owner_handle }),
         access: r.access as SharedNoteRecord['access'],
         createdAt: r.created_at,
         updatedAt: r.updated_at,
@@ -145,7 +145,7 @@ export function noteRoutes(app: FastifyInstance, db: DB): void {
       (s): ShareInfo => ({
         noteId: s.note_id,
         recipientId: s.recipient_id,
-        recipientDisplayName: effectiveDisplayName({ id: s.recipient_id, display_name: s.recipient_display_name }),
+        recipientDisplayName: effectiveHandle({ id: s.recipient_id, handle: s.recipient_handle }),
         access: s.access as ShareInfo['access'],
         createdAt: s.created_at,
       }),

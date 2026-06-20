@@ -1,14 +1,41 @@
 # Editable user profiles (v3.2)
 
-Builds on the v3 display name + name color with a richer, **end-to-end
-encrypted** profile: a **bio** and an **avatar**. The server stores only
-ciphertext — it never sees a user's bio or avatar.
+A user's **display name, bio, and avatar** are **end-to-end encrypted** and shown
+only to **contacts** — the server stores only ciphertext and never sees any of
+them. Everyone else (and the server) sees a public **handle**; name color is the
+one piece of plaintext profile metadata the server keeps.
+
+## Handles vs. the display name (v6)
+
+Identity is split into three parts so the server can route and label accounts
+without learning real names:
+
+- **Username** — the login credential. Unique, plaintext, **never shown to any
+  other user**.
+- **Handle** — a public `Word#1234` label (e.g. `Otter#0421`) from a curated
+  animal/nature word list (`server/handleWords.ts`, 3–10 chars, no profanity) plus
+  a 4-digit discriminator. **Unique, plaintext, server-visible**, and the name
+  shown to **non-contacts** (and the server) everywhere a person is surfaced —
+  friend requests, members you aren't friends with, share pickers. Generated at
+  signup (3 options to pick from; auto-assigned otherwise); changeable in Settings
+  (`generateHandleOptions` / `setUserHandle`; `GET /api/handle/options`,
+  `PUT /api/handle`, validated by `isValidHandle`). Backfilled for every existing
+  account by an idempotent migration.
+- **Display name** — the friendly real name, now part of the **encrypted**
+  `ProfileData` blob (below). Only **contacts** who hold the sealed profile key
+  decrypt it; the server can't read it. The client overlays each contact's
+  decrypted name over the handle it received from the server (`profile.hydrate` /
+  `displayNameFor`; the chat/friends/voice stores call it). A one-time client
+  migration moves any **legacy plaintext** display name into the encrypted blob
+  and then clears the server's copy (`PUT /api/profile { displayName: null }`).
+
+The rest of this doc covers the encrypted blob (bio + avatar + display name).
 
 ## Crypto model
 
 Each user has a per-user **profile key** (random 32-byte AES-256-GCM key,
-`profileCrypto.ts`). It encrypts a JSON `ProfileData { bio?, avatar? }` blob
-(the avatar is a small optimized `data:image/webp` URL embedded whole). The
+`profileCrypto.ts`). It encrypts a JSON `ProfileData { displayName?, bio?, avatar? }`
+blob (the avatar is a small optimized `data:image/webp` URL embedded whole). The
 profile key is distributed two ways — reusing the chat key machinery, not a
 second mechanism:
 
@@ -30,8 +57,8 @@ re-keying.)
 
 A **"Only allow friends to see my profile"** setting (default **on**;
 `users.profile_friends_only`). With it on, the profile key is only ever sealed to
-**accepted friends**; group co-members who aren't friends see just the display
-name + color. Turning it **off** widens distribution to **group co-members** as
+**accepted friends**; group co-members who aren't friends see just the **handle**
++ color. Turning it **off** widens distribution to **group co-members** as
 well. Tightening back to friends-only **immediately revokes** any sealed keys
 held by non-friend co-members (`deleteNonFriendProfileKeys`) — they lose the
 current blob at once; the next save re-seals to friends only.
@@ -61,9 +88,13 @@ current blob at once; the next save re-seals to friends only.
   recipient is a friend, or a co-member when not friends-only);
   `POST /api/profile/keys` (distribute to a new recipient at the current epoch);
   `PUT /api/profile/visibility` (toggle; tightening revokes non-friend keys);
-  `GET /api/users/:id/profile` → `ProfileView` (display name + color always for a
+  `GET /api/users/:id/profile` → `ProfileView` (**handle** + color always for a
   related user; the encrypted blob + **my** sealed key when I'm a recipient, else
-  `encrypted: null`; **403** with no relationship).
+  `encrypted: null` — and the real display name lives *inside* that blob; **403**
+  with no relationship).
+- `users.handle` (unique, indexed; migration backfills all rows). Identity
+  helpers `effectiveHandle()` (public name) vs `effectiveDisplayName()` (the
+  legacy plaintext, now only returned to the owner for one-time migration).
 
 ## Client (`stores/profile.ts`, UI)
 
