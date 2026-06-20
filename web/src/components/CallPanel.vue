@@ -32,7 +32,7 @@ const btnActive = 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
 <template>
   <div v-if="voice.inCall" class="shrink-0 border-t border-zinc-200 dark:border-zinc-800">
     <!-- Collapsed: just mic / deafen / hangup, stacked. -->
-    <div v-if="collapsed" class="flex flex-col items-center gap-1.5 p-1.5">
+    <div v-if="collapsed" class="flex flex-col items-center gap-1.5 px-1.5 pt-1.5">
       <button :class="[btnBase, voice.micMuted ? btnActive : btnNeutral]" :title="voice.muted ? 'Unmute' : 'Mute'" @click="voice.toggleMute()">
         <component :is="voice.micMuted ? IconMicOff : IconMic" class="h-4 w-4" />
       </button>

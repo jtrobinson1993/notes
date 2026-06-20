@@ -311,7 +311,7 @@ function onDropOnRoot() {
        the sidebar is a full-screen pane.) -->
   <aside
     v-if="!open && !mobile"
-    class="z-nav flex w-12 shrink-0 flex-col items-center border-r border-zinc-200 bg-zinc-50 py-2 dark:border-zinc-800 dark:bg-zinc-950"
+    class="z-nav flex w-12 shrink-0 flex-col items-center border-r border-zinc-200 bg-zinc-50 pt-2 dark:border-zinc-800 dark:bg-zinc-950"
   >
     <button
       class="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
