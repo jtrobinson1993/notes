@@ -264,13 +264,17 @@ function fmtSize(bytes: number): string {
       <span v-if="note.shared" class="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700 dark:bg-violet-950 dark:text-violet-300">
         {{ note.shared.ownerDisplayName }} · {{ note.shared.access === 'read' ? 'read-only' : 'can edit' }}
       </span>
-      <div class="flex shrink-0 gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
+      <!-- Mode toggle: inline on desktop; a floating control bottom-right on mobile. -->
+      <div
+        class="flex shrink-0 gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900"
+        :class="isMobile ? 'fixed bottom-4 right-4 z-nav shadow-lg' : ''"
+      >
         <button
           v-for="m in modes"
           :key="m.value"
           :title="m.title"
           class="flex items-center justify-center rounded-md py-1 text-sm text-zinc-500"
-          :class="[mode === m.value ? 'bg-white text-zinc-900 shadow dark:bg-zinc-700 dark:text-zinc-100' : '', isMobile ? 'px-2' : 'px-3']"
+          :class="[mode === m.value ? 'bg-white text-zinc-900 shadow dark:bg-zinc-700 dark:text-zinc-100' : '', isMobile ? 'px-2.5' : 'px-3']"
           @click="mode = m.value"
         >
           <component :is="m.icon" v-if="isMobile" class="h-4 w-4" />
