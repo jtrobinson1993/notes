@@ -126,9 +126,10 @@ watch(
           <RouterLink
             :to="`/chat/${conv.id}`"
             :aria-label="convName(conv)"
-            class="group relative flex items-center gap-2 p-1 text-sm"
+            class="group relative flex items-center gap-2 text-sm"
             @click="showChannels()"
             :class="[
+              isMobile ? 'p-2' : 'p-1',
               expanded ? '' : 'justify-center',
               chatActive(conv.id) ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
@@ -168,8 +169,9 @@ watch(
           <RouterLink
             to="/"
             aria-label="Notes"
-            class="group relative flex items-center gap-2 p-1 text-sm"
+            class="group relative flex items-center gap-2 text-sm"
             :class="[
+              isMobile ? 'p-2' : 'p-1',
               expanded ? '' : 'justify-center',
               isNotesActive ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
