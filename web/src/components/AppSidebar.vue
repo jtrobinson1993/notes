@@ -8,6 +8,7 @@ import { useSessionStore } from '../stores/session';
 import { useNotesStore } from '../stores/notes';
 import NewChatModal from './NewChatModal.vue';
 import SidebarTooltip from './SidebarTooltip.vue';
+import ActiveBar from './ActiveBar.vue';
 import { conversationInitial, conversationTitle } from '../lib/convName';
 import { isMobile, mobilePane, showChannels, showChatList } from '../lib/mobileNav';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
@@ -120,21 +121,24 @@ watch(
           <RouterLink
             :to="`/chat/${conv.id}`"
             :aria-label="convName(conv)"
-            class="relative flex items-center gap-2 p-1 text-sm"
+            class="group relative flex items-center gap-2 p-1 text-sm"
             @click="showChannels()"
             :class="[
-              expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center',
-              activeConvId === conv.id
-                ? 'bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
-                : 'text-zinc-700 dark:text-zinc-200',
+              expanded ? '' : 'justify-center',
+              activeConvId === conv.id ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
           >
-            <span class="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-300 text-xs font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-100">
+            <ActiveBar :active="activeConvId === conv.id" />
+            <span
+              class="relative flex h-9 w-9 shrink-0 items-center justify-center bg-zinc-300 text-xs font-medium text-zinc-700 transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] dark:bg-zinc-700 dark:text-zinc-100"
+              :class="activeConvId === conv.id ? 'rounded-xl' : 'rounded-full group-hover:rounded-xl'"
+            >
               <img
                 v-if="convIcon(conv)"
                 :src="convIcon(conv) ?? undefined"
                 alt=""
-                class="absolute inset-0 h-full w-full rounded-full object-cover"
+                class="absolute inset-0 h-full w-full object-cover transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                :class="activeConvId === conv.id ? 'rounded-xl' : 'rounded-full group-hover:rounded-xl'"
               />
               <template v-else>{{ convInitial(conv) }}</template>
               <span
@@ -159,15 +163,17 @@ watch(
           <RouterLink
             to="/"
             aria-label="Notes"
-            class="flex items-center gap-2 p-1 text-sm"
+            class="group relative flex items-center gap-2 p-1 text-sm"
             :class="[
-              expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center',
-              isNotesActive
-                ? 'bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
-                : 'text-zinc-700 dark:text-zinc-200',
+              expanded ? '' : 'justify-center',
+              isNotesActive ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
           >
-            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-200 dark:bg-zinc-700">
+            <ActiveBar :active="isNotesActive" />
+            <span
+              class="flex h-9 w-9 shrink-0 items-center justify-center bg-zinc-200 transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] dark:bg-zinc-700"
+              :class="isNotesActive ? 'rounded-xl' : 'rounded-full group-hover:rounded-xl'"
+            >
               <IconPen class="h-4 w-4" />
             </span>
             <span v-if="expanded" class="truncate">Notes</span>
