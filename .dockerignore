@@ -6,3 +6,8 @@ data
 .claude
 *.md
 !README.md
+# Never bake local secrets/config into the image — injected at runtime via
+# compose env_file instead.
+.env
+.env.*
+!.env.example

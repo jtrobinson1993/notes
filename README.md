@@ -14,11 +14,16 @@ ciphertext — it cannot read your notes. See [the spec](spec/README.md) for des
 Works anywhere Docker runs: Debian/Linux, Windows (Docker Desktop / WSL2), macOS.
 
 ```sh
-git clone git@github.com:jtrobinson1993/notes.git && cd notes
-APP_ORIGIN=https://notes.example.com docker compose up -d --build
+git clone https://github.com/jtrobinson1993/notes.git && cd notes
+cp .env.example .env        # set APP_ORIGIN to your public URL, then:
+docker compose up -d
 ```
 
-Or without compose:
+Compose runs the app behind **Caddy**, which gets HTTPS certificates
+automatically, and pulls a prebuilt image so nothing builds on the server. See
+[DEPLOY.md](DEPLOY.md) for the full server walkthrough (DNS, releases, rollback).
+
+Or a single container without compose (you supply your own TLS — see below):
 
 ```sh
 docker build -t notes .
@@ -35,8 +40,9 @@ from **Settings → Invites**.
 ### HTTPS is required
 
 Passkeys (WebAuthn) only work in a secure context: either `http://localhost`
-(fine for trying it out) or **HTTPS**. For a server on your LAN or the
-internet, put the app behind a reverse proxy with TLS, e.g. Caddy:
+(fine for trying it out) or **HTTPS**. The compose setup above handles this for
+you — Caddy is bundled and terminates TLS. If you run the single container
+without compose, put it behind your own reverse proxy with TLS, e.g. Caddy:
 
 ```
 notes.example.com {

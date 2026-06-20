@@ -1,14 +1,33 @@
+# Production compose for self-hosted "notes".
+#
+# Caddy terminates HTTPS (automatic Let's Encrypt) and reverse-proxies to the
+# app; nothing but Caddy is exposed to the internet. Everything is configured
+# through .env — copy .env.example to .env and set APP_ORIGIN, then:
+#
+#   docker compose up -d            # pulls the published image (no build on prod)
+#   docker compose pull && up -d    # release: grab the newest image and restart
+#
+# To run a locally-built image instead of the published one (dev/hacking):
+#   docker compose up -d --build
 services:
   notes:
+    image: ghcr.io/jtrobinson1993/notes:${NOTES_TAG:-latest}
     build: .
     container_name: notes
     restart: unless-stopped
+    # No plaintext host port — Caddy fronts the app over HTTPS. 3000 stays on the
+    # internal compose network only.
+    expose:
+      - '3000'
     ports:
-      - '3000:3000'
       # v6 voice: mediasoup RTC media (UDP, TCP fallback). Forward this range on
       # your router too; keep it in sync with VOICE_RTC_MIN/MAX_PORT.
       - '40000-40100:40000-40100/udp'
       - '40000-40100:40000-40100/tcp'
+    # Loads KLIPY_API_KEY, VAPID_*, and any other secrets/config into the
+    # container. Required because the published image carries no .env.
+    env_file:
+      - .env
     environment:
       # Must exactly match the URL you open the app at (passkeys are bound to it).
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
@@ -18,5 +37,25 @@ services:
     volumes:
       - notes-data:/data
 
+  caddy:
+    image: caddy:2
+    container_name: notes-caddy
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp' # HTTP/3
+    environment:
+      # Caddy uses this as the site address it serves + auto-provisions a cert for.
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - notes
+
 volumes:
   notes-data:
+  caddy-data:
+  caddy-config:
