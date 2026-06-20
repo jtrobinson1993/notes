@@ -85,6 +85,15 @@ describe('backspace at the end of formatted text deletes a letter, not the marku
     expect(v.state.doc.toString()).toBe('<u>ab</u>');
   });
 
+  it('removes the whole span (markers + content) when its last letter is backspaced', () => {
+    const doc = '<span style="color:var(--brand-purple)">ab</span>';
+    const v = makeEditor(doc, doc.length);
+    backspace(v); // 'b' → keep formatting
+    expect(v.state.doc.toString()).toBe('<span style="color:var(--brand-purple)">a</span>');
+    backspace(v); // last 'a' → tags go with it, nothing orphaned
+    expect(v.state.doc.toString()).toBe('');
+  });
+
   it('does not intercept plain text (no formatted container at the caret)', () => {
     const v = makeEditor('plain', 5);
     backspace(v); // smartBackspace returns false → default handles it (real editor)

@@ -691,17 +691,18 @@ const BREAKOUT_CONTAINERS = new Set([
   'Underline',
 ]);
 
-// Backspacing right after a concealed *closing* marker (e.g. `</span>`) must
-// delete the last letter of the content — not the whole atomic marker, which
-// would strip the formatting and dump raw markup on screen. Only fires when the
-// caret is exactly at a formatted container's end and the char to delete is real
-// content (not itself a concealed marker, i.e. a nested construct).
+// Backspacing at the trailing edge of a formatted span (e.g. `<span…>…</span>`)
+// must not chew the concealed, atomic markers — which CodeMirror's default
+// backspace deletes whole, stripping the formatting and dumping raw markup. When
+// there's >1 content char, delete the last *letter* (keep the formatting); when
+// the last char would empty the span, delete the **whole construct** (both
+// markers go with it, so nothing is left orphaned).
 const smartBackspace: Command = (view) => {
   const sel = view.state.selection.main;
   if (!sel.empty) return false;
   const pos = sel.head;
   for (let c: SyntaxNode | null = syntaxTree(view.state).resolveInner(pos, -1); c; c = c.parent) {
-    if (!BREAKOUT_CONTAINERS.has(c.name) || c.to !== pos) continue;
+    if (!BREAKOUT_CONTAINERS.has(c.name)) continue;
     let open: SyntaxNode | null = null;
     let close: SyntaxNode | null = null;
     for (let ch = c.firstChild; ch; ch = ch.nextSibling) {
@@ -710,7 +711,22 @@ const smartBackspace: Command = (view) => {
         close = ch;
       }
     }
-    if (!open || !close || open === close || close.from <= open.to) return false;
+    if (!open || !close || open === close) continue;
+    const contentLen = close.from - open.to;
+    // Only act at the span's trailing edge: after the close marker, just before
+    // it (visual end of content), or — when empty — the slot between the markers.
+    const trailing = pos === c.to || pos === close.from || (contentLen === 0 && pos === open.to);
+    if (!trailing) continue;
+    if (contentLen <= 1) {
+      // The (0- or 1-char) content empties the span → remove markers + content.
+      view.dispatch({
+        changes: { from: c.from, to: c.to },
+        selection: EditorSelection.cursor(c.from),
+        userEvent: 'delete.backward',
+        scrollIntoView: true,
+      });
+      return true;
+    }
     const delFrom = close.from - 1;
     if (coveredByConcealed(view, delFrom, close.from)) return false; // nested marker — leave it
     view.dispatch({
