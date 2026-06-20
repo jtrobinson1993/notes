@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useSessionStore } from '../stores/session';
+import { isMobile } from '../lib/mobileNav';
 import AppSidebar from './AppSidebar.vue';
+import MobileCallBar from './MobileCallBar.vue';
 import IncomingCallModal from './IncomingCallModal.vue';
 
 const session = useSessionStore();
@@ -23,7 +25,10 @@ async function unlock() {
 </script>
 
 <template>
-  <div class="flex h-full overflow-hidden">
+  <div class="flex h-full flex-col overflow-hidden">
+    <!-- Mobile: in-call controls as a top bar; the app shrinks below it. -->
+    <MobileCallBar v-if="session.loggedIn && isMobile" />
+    <div class="flex min-h-0 grow">
     <AppSidebar v-if="session.loggedIn" />
     <main class="relative min-h-0 min-w-0 grow overflow-y-auto">
       <div
@@ -45,6 +50,7 @@ async function unlock() {
       </div>
       <slot />
     </main>
+    </div>
     <IncomingCallModal v-if="session.loggedIn" />
   </div>
 </template>

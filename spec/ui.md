@@ -152,3 +152,8 @@ side-by-side).
 - **Settings:** the section menu fills the page; tapping a section opens its
   content **full-screen over everything** (incl. the app sidebar) with a
   back-to-menu button (`mobileSectionOpen`).
+- **In a call:** the call controls + speaking indicators move to a **top bar**
+  (`MobileCallBar`, in the app's flex column) so the rest of the app shrinks
+  below it; the in-sidebar `CallPanel` is hidden on mobile.
+- **Active-item indicators** (the morph + left pill) are **suppressed on mobile**
+  — the sidebar isn't visible while you're inside a chat.

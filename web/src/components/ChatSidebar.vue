@@ -509,8 +509,9 @@ function onDropOnRoot() {
       </template>
     </ul>
 
-    <!-- Active-call controls + roster, pinned to the sidebar bottom. -->
-    <CallPanel />
+    <!-- Active-call controls + roster, pinned to the sidebar bottom. On mobile the
+         in-call controls live in the top bar (MobileCallBar) instead. -->
+    <CallPanel v-if="!mobile" />
 
     <ChannelModal
       v-model:open="channelModalOpen"

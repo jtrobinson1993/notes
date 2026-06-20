@@ -66,7 +66,12 @@ const activeConvId = computed(() => {
   return m ? m[1] : null;
 });
 
-const isNotesActive = computed(() => router.currentRoute.value.path === '/');
+// Active-item indicators are pointless on mobile (the sidebar isn't visible
+// while you're inside a chat), so suppress them there.
+const isNotesActive = computed(() => !isMobile.value && router.currentRoute.value.path === '/');
+function chatActive(id: string): boolean {
+  return !isMobile.value && activeConvId.value === id;
+}
 
 // --- Mobile: this sidebar is the full-screen chat-list pane. While drilled into
 // a chat's channels/messages it's hidden (those panes cover it); on desktop it's
@@ -125,20 +130,20 @@ watch(
             @click="showChannels()"
             :class="[
               expanded ? '' : 'justify-center',
-              activeConvId === conv.id ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
+              chatActive(conv.id) ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
           >
-            <ActiveBar :active="activeConvId === conv.id" />
+            <ActiveBar :active="chatActive(conv.id)" />
             <span
               class="relative flex h-9 w-9 shrink-0 items-center justify-center bg-zinc-300 text-xs font-medium text-zinc-700 transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.8,0.5,1)] dark:bg-zinc-700 dark:text-zinc-100"
-              :class="activeConvId === conv.id ? 'rounded-xl icon-pop' : 'rounded-[18px] group-hover:rounded-xl'"
+              :class="chatActive(conv.id) ? 'rounded-xl icon-pop' : 'rounded-[18px] group-hover:rounded-xl'"
             >
               <img
                 v-if="convIcon(conv)"
                 :src="convIcon(conv) ?? undefined"
                 alt=""
                 class="absolute inset-0 h-full w-full object-cover transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.8,0.5,1)]"
-                :class="activeConvId === conv.id ? 'rounded-xl' : 'rounded-[18px] group-hover:rounded-xl'"
+                :class="chatActive(conv.id) ? 'rounded-xl' : 'rounded-[18px] group-hover:rounded-xl'"
               />
               <template v-else>{{ convInitial(conv) }}</template>
               <span

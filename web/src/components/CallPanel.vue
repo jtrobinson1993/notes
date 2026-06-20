@@ -54,7 +54,8 @@ const btnActive = 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
 
       <p v-if="voice.error" class="mb-2 text-xs text-red-600 dark:text-red-400">{{ voice.error }}</p>
 
-      <ul class="mb-2 max-h-40 space-y-1 overflow-y-auto">
+      <!-- p-1 keeps the green speaking ring (ring-2) off the scroll clip edges. -->
+      <ul class="mb-2 max-h-40 space-y-1 overflow-y-auto p-1">
         <li class="flex items-center gap-2">
           <ChatAvatar name="You" class="h-7 w-7 text-xs" :class="voice.localSpeaking && !voice.micMuted ? 'ring-2 ring-green-500' : ''" />
           <span class="grow truncate text-sm">You</span>
