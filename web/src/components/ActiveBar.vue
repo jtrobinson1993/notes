@@ -8,7 +8,7 @@ defineProps<{ active: boolean }>();
 
 <template>
   <Transition
-    enter-active-class="origin-left transition duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+    enter-active-class="origin-left transition duration-300 ease-[cubic-bezier(0.34,1.8,0.5,1)]"
     enter-from-class="scale-0 opacity-0"
     enter-to-class="scale-100 opacity-100"
     leave-active-class="origin-left transition duration-150 ease-in"
