@@ -83,6 +83,10 @@ workflow: tag a known-good commit and it builds a multi-arch image to
 git tag v0.2.0 && git push --tags
 ```
 
+A `vX.Y.Z` git tag publishes `ghcr.io/jtrobinson1993/notes:X.Y.Z` (the `v` is
+dropped — Docker convention) plus `:latest`. So `NOTES_TAG` below uses the
+unprefixed form, e.g. `0.2.0`.
+
 ```sh
 # on the server, once the workflow has published the image
 cd notes && git pull && docker compose pull && docker compose up -d
@@ -92,7 +96,7 @@ cd notes && git pull && docker compose pull && docker compose up -d
 image; `up -d` swaps the container. The volume — and all data — is untouched;
 schema migrations run on boot. Downtime is a few seconds.
 
-**Rollback** is a one-liner: set `NOTES_TAG=v0.1.0` in `.env` and
+**Rollback** is a one-liner: set `NOTES_TAG=0.1.0` in `.env` and
 `docker compose up -d`. No rebuild, since every version is a published image.
 
 > The GHCR image package must be **public** (it is, matching the public repo) so
