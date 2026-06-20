@@ -1,6 +1,6 @@
 import { cursorCharLeft, cursorCharRight, selectCharLeft, selectCharRight } from '@codemirror/commands';
 import { syntaxTree } from '@codemirror/language';
-import { EditorState, Prec, RangeSet, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
+import { EditorSelection, EditorState, Prec, RangeSet, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
 import { Decoration, type DecorationSet, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType, type Command } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import { colorFromOpenTag } from './syntax';
@@ -691,6 +691,41 @@ const BREAKOUT_CONTAINERS = new Set([
   'Underline',
 ]);
 
+// Backspacing right after a concealed *closing* marker (e.g. `</span>`) must
+// delete the last letter of the content — not the whole atomic marker, which
+// would strip the formatting and dump raw markup on screen. Only fires when the
+// caret is exactly at a formatted container's end and the char to delete is real
+// content (not itself a concealed marker, i.e. a nested construct).
+const smartBackspace: Command = (view) => {
+  const sel = view.state.selection.main;
+  if (!sel.empty) return false;
+  const pos = sel.head;
+  for (let c: SyntaxNode | null = syntaxTree(view.state).resolveInner(pos, -1); c; c = c.parent) {
+    if (!BREAKOUT_CONTAINERS.has(c.name) || c.to !== pos) continue;
+    let open: SyntaxNode | null = null;
+    let close: SyntaxNode | null = null;
+    for (let ch = c.firstChild; ch; ch = ch.nextSibling) {
+      if (/(Mark|Tag)$/.test(ch.name)) {
+        if (!open) open = ch;
+        close = ch;
+      }
+    }
+    if (!open || !close || open === close || close.from <= open.to) return false;
+    const delFrom = close.from - 1;
+    if (coveredByConcealed(view, delFrom, close.from)) return false; // nested marker — leave it
+    view.dispatch({
+      changes: { from: delFrom, to: close.from },
+      selection: EditorSelection.cursor(delFrom),
+      userEvent: 'delete.backward',
+      scrollIntoView: true,
+    });
+    return true;
+  }
+  return false;
+};
+
+const concealedBackspace = Prec.high(keymap.of([{ key: 'Backspace', run: smartBackspace }]));
+
 const whitespaceBreakout = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged || !tr.isUserEvent('input.type')) return tr;
   let pos: number | null = null;
@@ -806,5 +841,6 @@ export function livePreview(): Extension {
     whitespaceBreakout,
     newlineBreakout,
     concealedMotion,
+    concealedBackspace,
   ];
 }
