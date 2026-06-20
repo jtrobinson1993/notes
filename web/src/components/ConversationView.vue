@@ -679,6 +679,11 @@ async function sendGif(gif: GifRef) {
               v-if="(!isThread && threadReplies(row.msg.seq) > 0) || row.msg.editedAt"
               class="mt-1 flex items-center gap-2"
             >
+              <span
+                v-if="row.msg.editedAt"
+                class="select-none text-[11px] text-zinc-400 dark:text-zinc-500"
+                :title="`Edited ${formatTime(row.msg.editedAt)}`"
+              >(edited)</span>
               <button
                 v-if="!isThread && threadReplies(row.msg.seq) > 0"
                 class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950"
@@ -687,11 +692,6 @@ async function sendGif(gif: GifRef) {
                 <IconThread class="h-3.5 w-3.5" />
                 {{ threadReplies(row.msg.seq) }} {{ threadReplies(row.msg.seq) === 1 ? 'reply' : 'replies' }}
               </button>
-              <span
-                v-if="row.msg.editedAt"
-                class="select-none text-[11px] text-zinc-400 dark:text-zinc-500"
-                :title="`Edited ${formatTime(row.msg.editedAt)}`"
-              >(edited)</span>
             </div>
           </div>
         </div>
