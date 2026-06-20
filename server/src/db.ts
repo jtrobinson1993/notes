@@ -79,6 +79,9 @@ export interface ConversationMemberRow {
   epoch: number;
   last_read_seq: number;
   joined_at: number;
+  /** History floor: this member may only read messages with seq > since_seq.
+   *  0 = full history (original members + share-history joiners). */
+  since_seq: number;
   role: string;
 }
 
@@ -289,6 +292,7 @@ CREATE TABLE IF NOT EXISTS conversation_members (
   epoch INTEGER NOT NULL DEFAULT 0,
   last_read_seq INTEGER NOT NULL DEFAULT 0,
   joined_at INTEGER NOT NULL,
+  since_seq INTEGER NOT NULL DEFAULT 0,
   role TEXT NOT NULL DEFAULT 'member',
   PRIMARY KEY (conversation_id, user_id)
 );
@@ -454,6 +458,37 @@ export function openDb(dataDir: string) {
     for (const u of missing) {
       const [h] = generateUniqueHandles(1, handleTaken);
       if (h) setHandle.run(h, u.id);
+    }
+  }
+
+  // History floor per member: a fresh-history joiner may only read messages with
+  // seq > since_seq. Existing rows default to 0 (full history) — unchanged behavior.
+  const memberCols = db.prepare('PRAGMA table_info(conversation_members)').all() as { name: string }[];
+  if (!memberCols.some((c) => c.name === 'since_seq')) {
+    db.exec('ALTER TABLE conversation_members ADD COLUMN since_seq INTEGER NOT NULL DEFAULT 0');
+  }
+  // Backfill fresh-history joiners (idempotent — guarded by since_seq = 0): a
+  // member who never received the genesis (epoch 0) key joined without history,
+  // so they must not see messages from before they joined. Their floor is the max
+  // seq at join time. Original members + share-history joiners hold epoch 0, so
+  // they're skipped and keep full history. Runs every startup so it self-heals if
+  // the column was added in an earlier build before this backfill existed.
+  {
+    const freshMembers = db
+      .prepare(
+        `SELECT cm.conversation_id AS cid, cm.user_id AS uid, cm.joined_at AS joined
+           FROM conversation_members cm
+          WHERE cm.since_seq = 0
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_keys ck
+               WHERE ck.conversation_id = cm.conversation_id AND ck.user_id = cm.user_id AND ck.epoch = 0)`,
+      )
+      .all() as { cid: string; uid: string; joined: number }[];
+    const floorAt = db.prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM messages WHERE conversation_id = ? AND created_at <= ?');
+    const setSince = db.prepare('UPDATE conversation_members SET since_seq = ? WHERE conversation_id = ? AND user_id = ?');
+    for (const m of freshMembers) {
+      const { s } = floorAt.get(m.cid, m.joined) as { s: number };
+      if (s > 0) setSince.run(s, m.cid, m.uid);
     }
   }
 
@@ -1060,11 +1095,13 @@ export function openDb(dataDir: string) {
       role?: string;
       /** start unread baseline at the join point (e.g. a fresh-history joiner) */
       lastReadSeq?: number;
+      /** history floor: only messages with seq > sinceSeq are readable (0 = all) */
+      sinceSeq?: number;
     }): void {
       db.prepare(
-        `INSERT INTO conversation_members (conversation_id, user_id, sealed_key, epoch, last_read_seq, joined_at, role)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(m.conversationId, m.userId, m.sealedKey, m.epoch, m.lastReadSeq ?? 0, now(), m.role ?? 'member');
+        `INSERT INTO conversation_members (conversation_id, user_id, sealed_key, epoch, last_read_seq, joined_at, since_seq, role)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(m.conversationId, m.userId, m.sealedKey, m.epoch, m.lastReadSeq ?? 0, now(), m.sinceSeq ?? 0, m.role ?? 'member');
       // Mirror the current sealed key into the per-epoch store.
       db.prepare(
         `INSERT OR REPLACE INTO conversation_keys (conversation_id, user_id, epoch, sealed_key)
@@ -1352,15 +1389,17 @@ export function openDb(dataDir: string) {
     },
     /** A single channel's messages DESC by seq, optionally before an exclusive
      *  seq, for pagination. */
-    listMessages(channelId: string, before: number | undefined, limit: number): MessageRow[] {
+    // `sinceSeq` is the caller's history floor: only messages with seq > sinceSeq
+    // are returned, so a fresh-history joiner never receives pre-join ciphertext.
+    listMessages(channelId: string, before: number | undefined, limit: number, sinceSeq = 0): MessageRow[] {
       if (before !== undefined) {
         return db
-          .prepare('SELECT * FROM messages WHERE channel_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?')
-          .all(channelId, before, limit) as MessageRow[];
+          .prepare('SELECT * FROM messages WHERE channel_id = ? AND seq < ? AND seq > ? ORDER BY seq DESC LIMIT ?')
+          .all(channelId, before, sinceSeq, limit) as MessageRow[];
       }
       return db
-        .prepare('SELECT * FROM messages WHERE channel_id = ? ORDER BY seq DESC LIMIT ?')
-        .all(channelId, limit) as MessageRow[];
+        .prepare('SELECT * FROM messages WHERE channel_id = ? AND seq > ? ORDER BY seq DESC LIMIT ?')
+        .all(channelId, sinceSeq, limit) as MessageRow[];
     },
 
     // ---- Reactions (emoji encrypted with the conversation key) ----
@@ -1404,10 +1443,12 @@ export function openDb(dataDir: string) {
         db.prepare('DELETE FROM message_reactions WHERE id = ? AND user_id = ?').run(id, userId).changes > 0
       );
     },
-    listReactions(channelId: string, limit = 5000): ReactionRow[] {
+    // Gated by the caller's history floor (`sinceSeq`) like listMessages, so
+    // reactions on pre-join messages aren't leaked either.
+    listReactions(channelId: string, limit = 5000, sinceSeq = 0): ReactionRow[] {
       return db
-        .prepare('SELECT * FROM message_reactions WHERE channel_id = ? ORDER BY created_at ASC LIMIT ?')
-        .all(channelId, limit) as ReactionRow[];
+        .prepare('SELECT * FROM message_reactions WHERE channel_id = ? AND seq > ? ORDER BY created_at ASC LIMIT ?')
+        .all(channelId, sinceSeq, limit) as ReactionRow[];
     },
 
     // ---- Device links (cross-device onboarding) ----

@@ -764,6 +764,9 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
             epoch: epoch as number,
             role: 'member',
             lastReadSeq: history === 'fresh' ? lastSeq : 0,
+            // Fresh joiners can't read pre-join messages; share joiners get the
+            // prior epoch keys above, so they keep full history (floor 0).
+            sinceSeq: history === 'fresh' ? lastSeq : 0,
           });
         } else {
           db.setMemberEpochKey(id, k.userId, epoch as number, sk);
@@ -966,7 +969,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       const n = Number(q.before);
       if (Number.isFinite(n)) before = n;
     }
-    return db.listMessages(channelId, before, limit).map(toMessage);
+    const sinceSeq = db.getConversationMember(id, me)?.since_seq ?? 0;
+    return db.listMessages(channelId, before, limit, sinceSeq).map(toMessage);
   });
 
   app.post('/api/conversations/:id/messages', { preHandler: requireAuth }, async (request, reply) => {
@@ -1060,7 +1064,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const q = request.query as { channelId?: string };
     const channelId = resolveChannel(id, q.channelId, me);
     if (channelId === null) return reply.code(404).send({ error: 'channel not found' });
-    return db.listReactions(channelId).map(toReaction);
+    const sinceSeq = db.getConversationMember(id, me)?.since_seq ?? 0;
+    return db.listReactions(channelId, 5000, sinceSeq).map(toReaction);
   });
 
   app.post('/api/conversations/:id/messages/:seq/reactions', { preHandler: requireAuth }, async (request, reply) => {
