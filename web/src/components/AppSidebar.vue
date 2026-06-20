@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { TooltipProvider } from 'reka-ui';
 import type { Conversation } from '@notes/shared';
@@ -10,7 +10,7 @@ import NewChatModal from './NewChatModal.vue';
 import SidebarTooltip from './SidebarTooltip.vue';
 import ActiveBar from './ActiveBar.vue';
 import { conversationInitial, conversationTitle } from '../lib/convName';
-import { isMobile, mobilePane, showChannels, showChatList } from '../lib/mobileNav';
+import { homeOpen, isMobile, openPage, showChannels } from '../lib/mobileNav';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
 import IconPanelLeftClose from '~icons/mynaui/panel-left-close';
 import IconMessagePlus from '~icons/mynaui/message-plus';
@@ -73,24 +73,13 @@ function chatActive(id: string): boolean {
   return !isMobile.value && activeConvId.value === id;
 }
 
-// --- Mobile: this sidebar is the full-screen chat-list pane. While drilled into
-// a chat's channels/messages it's hidden (those panes cover it); on desktop it's
-// always the normal rail. ---
-const onChatRoute = computed(() => router.currentRoute.value.path.startsWith('/chat/'));
+// --- Mobile: this sidebar is the full-screen "home". It fills the screen while
+// home is open and is hidden once you've opened a page (chat/notes/settings),
+// which cover it; on desktop it's always the normal rail. ---
 const navClass = computed(() => {
-  if (isMobile.value && onChatRoute.value) {
-    return mobilePane.value === 'list' ? 'w-full' : 'hidden';
-  }
+  if (isMobile.value) return homeOpen.value ? 'w-full' : 'hidden';
   return expanded.value ? 'w-56' : 'w-14';
 });
-// Leaving the chat area (e.g. to Notes/Settings) resets the pane so the sidebar
-// isn't stuck hidden.
-watch(
-  () => router.currentRoute.value.path,
-  (p) => {
-    if (!p.startsWith('/chat/')) showChatList();
-  },
-);
 </script>
 
 <template>
@@ -170,6 +159,7 @@ watch(
             to="/"
             aria-label="Notes"
             class="group relative flex items-center gap-2 text-sm"
+            @click="openPage()"
             :class="[
               isMobile ? 'px-2 py-1' : 'p-1',
               expanded ? '' : 'justify-center',
@@ -228,6 +218,7 @@ watch(
             aria-label="Friends"
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
+            @click="openPage()"
           >
             <IconUsers class="h-5 w-5 shrink-0" />
             <span v-if="expanded" class="truncate">Friends</span>
@@ -238,6 +229,7 @@ watch(
             to="/settings"
             aria-label="Settings"
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
+            @click="openPage()"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
           >
             <IconCog class="h-5 w-5 shrink-0" />

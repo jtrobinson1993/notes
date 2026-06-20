@@ -14,7 +14,7 @@ import { useSessionStore } from '../stores/session';
 import { useVoiceStore } from '../stores/voice';
 import { useOrgStore, chKey, noteItemKey } from '../stores/organization';
 import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
-import { showChatList } from '../lib/mobileNav';
+import { goHome } from '../lib/mobileNav';
 import { conversationTitle } from '../lib/convName';
 import { canManageMembers, type ChannelInfo, type ChannelType, type Conversation } from '@notes/shared';
 import IconHash from '~icons/mynaui/hash';
@@ -339,8 +339,8 @@ function onDropOnRoot() {
       <button
         type="button"
         class="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
-        aria-label="Back to chats"
-        @click="showChatList()"
+        aria-label="Back to menu"
+        @click="goHome()"
       >
         <IconChevronLeft class="h-5 w-5" />
       </button>

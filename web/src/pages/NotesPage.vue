@@ -14,7 +14,7 @@ import { toPlainText } from '../lib/transfer';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import { useOrgStore, type OrgFolder } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
-import { isMobile } from '../lib/mobileNav';
+import { goHome, homeOpen, isMobile } from '../lib/mobileNav';
 import IconFolderMinus from '~icons/mynaui/folder-minus';
 import IconFolderPlus from '~icons/mynaui/folder-plus';
 import IconNote from '~icons/mynaui/file-text';
@@ -22,6 +22,7 @@ import IconPencil from '~icons/mynaui/pencil';
 import IconTrash from '~icons/mynaui/trash';
 import IconShare from '~icons/mynaui/share';
 import IconMenu from '~icons/mynaui/menu';
+import IconChevronLeft from '~icons/mynaui/chevron-left';
 
 // Folder being shared (opens FolderShareDialog).
 const shareFolder = ref<{ id: string; name: string } | null>(null);
@@ -238,13 +239,24 @@ function excerpt(body: string): string {
 
 <template>
   <AppLayout>
-    <div class="flex h-full">
+    <!-- On mobile this hides while the home (app sidebar) is open. -->
+    <div class="h-full" :class="isMobile && homeOpen ? 'hidden' : 'flex'">
       <aside
         class="relative flex w-full flex-col border-r border-zinc-200 md:w-[var(--sw)] dark:border-zinc-800"
         :class="{ 'hidden md:flex': selected }"
         :style="{ '--sw': `${sidebarWidth}px` }"
       >
-        <div class="flex gap-2 p-3">
+        <div class="flex items-center gap-2 p-3">
+          <!-- Mobile: back to the home menu (this list is full-screen). -->
+          <button
+            v-if="isMobile"
+            type="button"
+            class="-ml-1 shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            aria-label="Back to menu"
+            @click="goHome()"
+          >
+            <IconChevronLeft class="h-5 w-5" />
+          </button>
           <input
             v-model="search"
             placeholder="Search notes…"

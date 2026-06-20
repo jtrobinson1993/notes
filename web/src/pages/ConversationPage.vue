@@ -19,7 +19,7 @@ import IconUsers from '~icons/mynaui/users';
 import IconHash from '~icons/mynaui/hash';
 import IconPhone from '~icons/mynaui/telephone-call';
 import IconChevronLeft from '~icons/mynaui/chevron-left';
-import { isMobile, mobilePane, showChannels, showMessages } from '../lib/mobileNav';
+import { chatPane, homeOpen, isMobile, showChannels, showMessages } from '../lib/mobileNav';
 
 const route = useRoute();
 const router = useRouter();
@@ -62,16 +62,12 @@ function selectChannel(channelId: string) {
 const activeChannel = computed(() =>
   conversation.value?.channels?.find((c) => c.id === activeChannelId.value),
 );
-// Switching conversations closes any open note overlay. On mobile, entering a
-// chat shows its channel list first (tap a channel to drill into messages).
-watch(
-  convId,
-  () => {
-    openNoteId.value = null;
-    showChannels();
-  },
-  { immediate: true },
-);
+// Switching conversations closes any open note overlay. On mobile, switching to
+// a different chat resets to its channel list (tap a channel to view messages).
+watch(convId, () => {
+  openNoteId.value = null;
+  showChannels();
+});
 
 // The conversation name shown in the shared header above both panes. This header
 // is the visible one (the inner ConversationView is rendered with `hide-header`),
@@ -218,9 +214,9 @@ onBeforeUnmount(stopDrag);
 
 <template>
   <AppLayout>
-    <!-- On mobile the chat list pane (AppSidebar) shows alone; this page hides
-         until you drill into a chat. On desktop all panes render side-by-side. -->
-    <div class="h-full" :class="isMobile && mobilePane === 'list' ? 'hidden' : 'flex'">
+    <!-- On mobile the home (AppSidebar) shows alone; this page hides until you
+         open a chat. On desktop all panes render side-by-side. -->
+    <div class="h-full" :class="isMobile && homeOpen ? 'hidden' : 'flex'">
       <!-- Sidebar: channels + pins for groups, pins only for DMs (threads: none).
            Mobile: full-screen "channels" pane, hidden while viewing messages. -->
       <ChatSidebar
@@ -229,14 +225,14 @@ onBeforeUnmount(stopDrag);
         :active-channel-id="activeChannelId"
         :open-note-id="openNoteId"
         :mobile="isMobile"
-        :class="isMobile && mobilePane !== 'channels' ? 'hidden' : ''"
+        :class="isMobile && chatPane !== 'channels' ? 'hidden' : ''"
         @select="selectChannel($event)"
         @open-note="(id) => { openNoteId = id; showMessages(); }"
       />
 
       <div
         class="h-full min-w-0 grow flex-col"
-        :class="isMobile && mobilePane !== 'messages' ? 'hidden' : 'flex'"
+        :class="isMobile && chatPane !== 'messages' ? 'hidden' : 'flex'"
       >
       <!-- Shared conversation header, above both the chat and the thread panel. -->
       <header class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-2 py-2 dark:border-zinc-800">

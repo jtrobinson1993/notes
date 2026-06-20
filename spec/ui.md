@@ -138,20 +138,24 @@ switches), with the "Settings" title + close in a fixed top bar above the split.
 
 ## Mobile navigation (phones, `< md`)
 
-Phones (`lib/mobileNav.ts` — `isMobile` via `matchMedia`, `mobilePane`) show **one
-full-screen pane at a time** with a back stack; desktop is unchanged (all panes
-side-by-side).
+Phones (`lib/mobileNav.ts` — `isMobile` via `matchMedia`) show **one full-screen
+pane at a time** with a back stack; desktop is unchanged (all panes side-by-side).
 
-- **Chat:** the app sidebar (chat list) is the full-screen root. Tapping a chat
-  shows that chat's **channel list** full-screen (`ChatSidebar`'s mobile header
-  carries a back-to-chats button + the chat's name, since the chat header isn't
-  visible here). Tapping a channel shows its **messages** full-screen, with a
-  back button at the top-left of the chat header (left of the group icon) →
-  channel list. Panes hide/cover via `mobilePane` (`list` → `channels` →
-  `messages`); leaving `/chat` resets to `list`.
-- **Settings:** the section menu fills the page; tapping a section opens its
-  content **full-screen over everything** (incl. the app sidebar) with a
-  back-to-menu button (`mobileSectionOpen`).
+The **app sidebar is the mobile "home"** (chat list + nav). While `homeOpen` it
+fills the screen and every page (`ConversationPage`/`NotesPage`/`SettingsPage`/
+`FriendsPage` hide their root). Tapping a chat / Notes / Settings / Friends opens
+that page full-screen (`openPage` / `showChannels` set `homeOpen = false`); each
+page has a **back-to-menu** chevron at its top-left that calls `goHome`.
+
+- **Chat:** tapping a chat shows its **channel list** full-screen (`ChatSidebar`'s
+  mobile header has the back-to-menu chevron + the chat's name, since the chat
+  header isn't visible here). Tapping a channel shows its **messages** full-screen,
+  with a back button at the top-left of the chat header (→ channel list). Within a
+  chat, `chatPane` toggles `channels` ↔ `messages`.
+- **Notes / Settings / Friends:** the list / menu / page fills the screen with the
+  back-to-menu chevron; in Notes, tapping a note opens the editor full-screen with
+  its own back (`NoteEditor` `backable`), and in Settings a section opens
+  full-screen over everything with a back-to-menu (`mobileSectionOpen`).
 - **In a call:** the call controls + speaking indicators move to a **top bar**
   (`MobileCallBar`, in the app's flex column) so the rest of the app shrinks
   below it; the in-sidebar `CallPanel` is hidden on mobile.
