@@ -3,114 +3,111 @@
 How to run this on a real server (Debian assumed, but anything with Docker
 works), hook up a domain with HTTPS, and ship new versions.
 
+The committed `docker-compose.yml` is the production setup: it runs the app
+behind **Caddy**, which obtains and renews HTTPS certificates automatically. It
+pulls a prebuilt image from GHCR, so the server never compiles anything.
+
 ## 1. First deploy
 
 ```sh
 # on the server
-curl -fsSL https://get.docker.com | sh           # installs docker + compose plugin
-git clone git@github.com:jtrobinson1993/notes.git && cd notes
-APP_ORIGIN=https://notes.yourdomain.com docker compose up -d --build
+curl -fsSL https://get.docker.com | sh        # installs docker + compose plugin
+git clone https://github.com/jtrobinson1993/notes.git && cd notes
+cp .env.example .env                           # then edit it (see below)
+docker compose up -d
 ```
 
-The repo is private, so the server needs read access. Cleanest option is a
-**deploy key**: generate an SSH key on the server (`ssh-keygen -t ed25519`),
-then add the public half in GitHub → repo → Settings → Deploy keys
-(read-only). Alternatively `gh auth login` works.
+Edit `.env` and set at least:
 
-All state lives in the `notes-data` Docker volume — the SQLite database,
-attachment blobs, and the automatic daily backups. For disaster recovery, add
-a cron job that copies that volume (or `DATA_DIR`) somewhere off-machine.
-Everything in it is ciphertext, so the copies are E2E-encrypted by
-construction.
+- **`APP_ORIGIN`** — the exact public URL you'll open the app at
+  (`https://notes.yourdomain.com`). Passkeys are bound to it and Caddy gets the
+  certificate for it. Get this right before anyone registers (see the warning in
+  §2).
+- **`VOICE_ANNOUNCED_IP`** — only if you want voice: the host's public/LAN IP
+  that clients reach it at.
+
+That's the whole deploy. Caddy is already in the compose file, so HTTPS is on by
+default — there's nothing to wire up by hand.
+
+**State** lives entirely in the `notes-data` Docker volume — the SQLite
+database, attachment blobs, and automatic daily backups. For disaster recovery,
+add a cron job copying that volume (or `DATA_DIR`) off-machine. Everything in it
+is ciphertext, so the copies are E2E-encrypted by construction.
 
 ## 2. Domain + HTTPS
 
 DNS is one record: an **A record** for `notes.yourdomain.com` pointing at the
 server's public IP (plus AAAA for IPv6 if you have it).
 
-HTTPS is mandatory — passkeys (WebAuthn) refuse to work without it. Put
-**Caddy** in front; it obtains and renews Let's Encrypt certificates
-automatically. Compose setup:
-
-```yaml
-services:
-  notes:
-    build: .
-    restart: unless-stopped
-    environment:
-      APP_ORIGIN: https://notes.yourdomain.com
-    volumes:
-      - notes-data:/data
-    # no ports: — only Caddy is exposed
-
-  caddy:
-    image: caddy:2
-    restart: unless-stopped
-    ports: ['80:80', '443:443']
-    volumes:
-      - caddy-data:/data
-    command: caddy reverse-proxy --from notes.yourdomain.com --to notes:3000
-
-volumes:
-  notes-data:
-  caddy-data:
-```
-
-Requirements for Let's Encrypt: ports 80/443 reachable from the internet
-(router port-forward if home-hosted) and the DNS record resolving to the
-server.
+HTTPS is handled by the bundled Caddy service via Let's Encrypt. Requirements:
+ports **80 and 443** reachable from the internet (router port-forward if
+home-hosted) and the DNS record resolving to the server. No certificate files,
+renewals, or extra config — Caddy reads `APP_ORIGIN` from your `.env` and does
+the rest.
 
 Two things to be deliberate about:
 
-- **Pick the final hostname before anyone registers.** Passkeys are bound to
-  the origin; changing the domain later strands every passkey, leaving
-  recovery codes as the only way back in.
-- **Home server with a changing IP?** Use a dynamic-DNS updater — or skip
-  public exposure entirely with **Tailscale**: `tailscale cert` issues a valid
-  HTTPS certificate for the machine's tailnet hostname, only people on your
-  tailnet can reach the app, and nothing is open to the internet. Great fit
-  when only you and invited friends need access.
+- **Pick the final hostname before anyone registers.** Passkeys are bound to the
+  origin; changing the domain later strands every passkey, leaving recovery
+  codes as the only way back in.
+- **Home server with a changing IP?** Use a dynamic-DNS updater — or skip public
+  exposure entirely with **Tailscale**: `tailscale cert` issues a valid HTTPS
+  certificate for the machine's tailnet hostname, only people on your tailnet can
+  reach the app, and nothing is open to the internet. Great fit when only you and
+  invited friends need access. (With Tailscale you can drop the Caddy service and
+  point the app at the tailnet cert instead.)
+
+### Voice ports
+
+Voice media (mediasoup) is direct UDP/TCP to the host, not proxied by Caddy. The
+compose file publishes `40000-40100`; forward that same range on your router and
+keep it in sync with `VOICE_RTC_MIN/MAX_PORT` if you change it.
 
 ### Push notifications
 
 Background "new message" push works out of the box once the app is served over
-HTTPS (which the Caddy setup above gives you). On first boot the server
-generates a VAPID keypair into the data volume (`DATA_DIR/vapid.json`); users
-opt in under **Settings → Security → Notifications**. To pin a keypair
-explicitly, set `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` (see `.env.example`).
-Notifications are content-free by design — see
-[spec/notifications.md](spec/notifications.md).
+HTTPS (which the Caddy setup gives you). On first boot the server generates a
+VAPID keypair into the data volume (`DATA_DIR/vapid.json`); users opt in under
+**Settings → Security → Notifications**. To pin a keypair explicitly, set
+`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in `.env`. Notifications are
+content-free by design — see [spec/notifications.md](spec/notifications.md).
 
 ## 3. Releasing new versions
 
-Simplest loop that works:
+Releases are published as prebuilt images by the **Release** GitHub Actions
+workflow: tag a known-good commit and it builds a multi-arch image to
+`ghcr.io/jtrobinson1993/notes`.
 
 ```sh
-# on your dev machine: develop, test locally, then
-git tag v1.1.0 && git push --tags    # tag known-good points for rollback
-
-# on the server
-cd notes && git pull && docker compose up -d --build
+# on your dev machine: develop, test, then tag the release
+git tag v1.1.0 && git push --tags
 ```
-
-Compose rebuilds the image and swaps the container. The volume — and
-therefore all data — is untouched; schema migrations run on boot. Rollback is
-`git checkout v1.0.0 && docker compose up -d --build`. Downtime is a few
-seconds.
-
-### When pull-and-rebuild gets old: GHCR
-
-Add a GitHub Actions workflow that builds a multi-arch image on every tag and
-pushes it to `ghcr.io/jtrobinson1993/notes`. The server's compose file then
-uses `image: ghcr.io/jtrobinson1993/notes:latest` instead of `build: .`, and a
-release becomes:
 
 ```sh
-docker compose pull && docker compose up -d
+# on the server, once the workflow has published the image
+cd notes && git pull && docker compose pull && docker compose up -d
 ```
 
-(or fully automatic with Watchtower polling the registry). This also moves
-the npm install/build cycle off the production box.
+`git pull` refreshes the compose file; `docker compose pull` grabs the new
+image; `up -d` swaps the container. The volume — and all data — is untouched;
+schema migrations run on boot. Downtime is a few seconds.
 
-**Recommended path:** Caddy compose + manual tag-pull-rebuild now; add the
-GHCR workflow when releasing feels repetitive.
+**Rollback** is a one-liner: set `NOTES_TAG=v1.0.0` in `.env` and
+`docker compose up -d`. No rebuild, since every version is a published image.
+
+> The GHCR image package must be **public** (it is, matching the public repo) so
+> the server can `docker compose pull` without authenticating. If you ever make
+> it private, run a one-time `docker login ghcr.io` with a read-only PAT on the
+> server.
+
+### Building on the server instead
+
+If you'd rather not use the registry (or are hacking on a branch), the compose
+file still carries `build: .`, so `docker compose up -d --build` compiles and
+runs locally. That's the slower path — it runs the full `npm ci` + build on the
+box each release — but needs no published image.
+
+### Fully automatic updates
+
+Point **Watchtower** at the registry to poll and redeploy new images on its own,
+if you'd rather not run the release command by hand.
