@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui';
+import { isMobile } from '../lib/mobileNav';
 import ColorPalette from './ColorPalette.vue';
 import { EditorView, keymap, placeholder } from '@codemirror/view';
 import { EditorState, Compartment, Prec } from '@codemirror/state';
@@ -28,7 +29,7 @@ import {
   toggleUnderline,
   inListItem,
 } from '../lib/editor/commands';
-import { getLastColor, PRESET_COLORS, presetCss } from '../lib/editor/palette';
+import { getLastColor } from '../lib/editor/palette';
 import { detectEmojiTrigger } from '../lib/editor/emojiTrigger';
 import { loadUnicodeEmoji, type UnicodeEmoji } from '../lib/emoji/unicode';
 import { rankEmoji, recordEmojiUse, type EmojiCandidate } from '../lib/emoji/usage';
@@ -243,21 +244,21 @@ const autocompleteKeymap = Prec.highest(
 
 // ---- selection toolbar ----------------------------------------------------
 
-const isCoarse = matchMedia('(pointer: coarse)').matches;
 const toolbarVisible = ref(false);
 const toolbarPos = ref({ left: 0, top: 0 });
 const paletteOpen = ref(false);
 const focused = ref(false);
 
 function updateToolbar() {
-  if (!view || props.readonly || isCoarse || (props.mode ?? 'live') !== 'live') {
+  if (!view || props.readonly || (props.mode ?? 'live') !== 'live') {
     toolbarVisible.value = false;
     paletteOpen.value = false;
     return;
   }
   const range = view.state.selection.main;
-  // show on selection, or when the caret is inside already-formatted text
-  if (range.empty && !cursorInFormat(view.state)) {
+  // Show on a selection, or — desktop only — when the caret is inside
+  // already-formatted text. On mobile, only ever on an actual selection.
+  if (range.empty && (isMobile.value || !cursorInFormat(view.state))) {
     toolbarVisible.value = false;
     paletteOpen.value = false;
     return;
@@ -392,7 +393,7 @@ onBeforeUnmount(() => view?.destroy());
 
 <template>
   <div class="relative min-h-0" :class="submitOnEnter ? '' : 'h-full'">
-    <div ref="host" class="min-h-0" :class="[submitOnEnter ? '' : 'h-full', { 'pb-10': isCoarse && !readonly }]" />
+    <div ref="host" class="min-h-0" :class="submitOnEnter ? '' : 'h-full'" />
 
     <!-- desktop selection toolbar (Reka popover: collision-aware placement) -->
     <PopoverRoot :open="toolbarVisible">
@@ -410,7 +411,7 @@ onBeforeUnmount(() => view?.destroy());
           @open-auto-focus.prevent
           @close-auto-focus.prevent
           @interact-outside.prevent
-          @mousedown.prevent
+          @pointerdown.prevent
         >
           <button
             v-for="b in buttons"
@@ -474,7 +475,7 @@ onBeforeUnmount(() => view?.destroy());
           @open-auto-focus.prevent
           @close-auto-focus.prevent
           @interact-outside.prevent
-          @mousedown.prevent
+          @pointerdown.prevent
         >
           <ul class="max-h-56 overflow-y-auto text-sm">
             <li v-for="(item, i) in acItems" :key="item.key">
@@ -494,32 +495,5 @@ onBeforeUnmount(() => view?.destroy());
         </PopoverContent>
       </PopoverPortal>
     </PopoverRoot>
-
-    <!-- mobile formatting bar -->
-    <div
-      v-if="isCoarse && !readonly && focused && (mode ?? 'live') === 'live'"
-      class="absolute inset-x-0 bottom-0 z-nav flex items-center gap-1 overflow-x-auto border-t border-zinc-200 bg-white/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95"
-      @mousedown.prevent
-      @touchstart.stop
-    >
-      <button
-        v-for="b in buttons"
-        :key="b.title"
-        :title="b.title"
-        class="flex h-8 w-8 shrink-0 items-center justify-center rounded text-sm text-zinc-600 dark:text-zinc-300"
-        :class="b.cls"
-        @click="run(b.cmd)"
-      >
-        {{ b.label }}
-      </button>
-      <button
-        v-for="p in PRESET_COLORS"
-        :key="p.name"
-        :title="p.name"
-        class="h-6 w-6 shrink-0 rounded-full border border-zinc-300 dark:border-zinc-600"
-        :style="{ background: presetCss(p) }"
-        @click="pickColor(presetCss(p))"
-      />
-    </div>
   </div>
 </template>

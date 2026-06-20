@@ -24,6 +24,7 @@ import { joinText } from '../lib/systemMessages';
 import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 import { useProfileStore } from '../stores/profile';
+import { isMobile } from '../lib/mobileNav';
 import { conversationTitle } from '../lib/convName';
 
 // Renders one conversation (DM, group, or a thread). The parent owns routing and
@@ -506,7 +507,7 @@ async function sendGif(gif: GifRef) {
         </button>
       </div>
 
-      <div ref="scroller" class="min-h-0 grow overflow-y-auto py-2" @scroll="onScroll">
+      <div ref="scroller" class="min-h-0 grow overflow-y-auto" :class="isMobile ? 'pt-2' : 'py-2'" @scroll="onScroll">
         <!-- Older messages auto-load as the user scrolls up; this just reflects
              the in-flight fetch and marks the start of history. -->
         <div v-if="loadingOlder" class="flex justify-center py-2 text-xs text-zinc-400">Loading…</div>
