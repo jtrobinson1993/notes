@@ -677,7 +677,7 @@ async function sendGif(gif: GifRef) {
             <!-- Thread indicator + "edited" note, on one line. -->
             <div
               v-if="(!isThread && threadReplies(row.msg.seq) > 0) || row.msg.editedAt"
-              class="mt-1 flex items-center gap-2"
+              class="mt-1 flex items-center gap-1"
             >
               <span
                 v-if="row.msg.editedAt"
