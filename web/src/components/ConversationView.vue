@@ -539,7 +539,7 @@ async function sendGif(gif: GifRef) {
         <div
           v-else
           :data-seq="row.msg.seq"
-          class="group relative flex items-start gap-3 px-4 py-0.5 transition-colors [-webkit-touch-callout:none] hover:bg-black/5 dark:hover:bg-white/5"
+          class="group relative flex items-start gap-3 px-4 py-0.5 [-webkit-touch-callout:none] hover:bg-black/5 dark:hover:bg-white/5"
           :class="row.isStart ? 'mt-3' : ''"
           @pointerdown="onRowPointerDown($event, row.msg)"
           @pointermove="onRowPointerMove"
