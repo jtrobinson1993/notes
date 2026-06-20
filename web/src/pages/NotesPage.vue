@@ -14,6 +14,7 @@ import { toPlainText } from '../lib/transfer';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import { useOrgStore, type OrgFolder } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
+import { goHome, homeOpen, isMobile } from '../lib/mobileNav';
 import IconFolderMinus from '~icons/mynaui/folder-minus';
 import IconFolderPlus from '~icons/mynaui/folder-plus';
 import IconNote from '~icons/mynaui/file-text';
@@ -21,6 +22,7 @@ import IconPencil from '~icons/mynaui/pencil';
 import IconTrash from '~icons/mynaui/trash';
 import IconShare from '~icons/mynaui/share';
 import IconMenu from '~icons/mynaui/menu';
+import IconChevronLeft from '~icons/mynaui/chevron-left';
 
 // Folder being shared (opens FolderShareDialog).
 const shareFolder = ref<{ id: string; name: string } | null>(null);
@@ -182,7 +184,7 @@ function onDropOnRoot() {
 // there are none). Desktop only: on mobile the list is the landing view.
 let autoOpened = false;
 async function autoOpen() {
-  if (autoOpened || selectedId.value || !matchMedia('(min-width: 640px)').matches) return;
+  if (autoOpened || selectedId.value || isMobile.value) return;
   autoOpened = true;
   selectedId.value = notes.sorted[0]?.id ?? (await notes.create());
 }
@@ -237,13 +239,24 @@ function excerpt(body: string): string {
 
 <template>
   <AppLayout>
-    <div class="flex h-full">
+    <!-- On mobile this hides while the home (app sidebar) is open. -->
+    <div class="h-full" :class="isMobile && homeOpen ? 'hidden' : 'flex'">
       <aside
-        class="relative flex w-full flex-col border-r border-zinc-200 sm:w-[var(--sw)] dark:border-zinc-800"
-        :class="{ 'hidden sm:flex': selected }"
+        class="relative flex w-full flex-col border-r border-zinc-200 md:w-[var(--sw)] dark:border-zinc-800"
+        :class="{ 'hidden md:flex': selected }"
         :style="{ '--sw': `${sidebarWidth}px` }"
       >
-        <div class="flex gap-2 p-3">
+        <div class="flex items-center gap-2 p-3">
+          <!-- Mobile: back to the home menu (this list is full-screen). -->
+          <button
+            v-if="isMobile"
+            type="button"
+            class="-ml-1 shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            aria-label="Back to menu"
+            @click="goHome()"
+          >
+            <IconChevronLeft class="h-5 w-5" />
+          </button>
           <input
             v-model="search"
             placeholder="Search notes…"
@@ -420,18 +433,12 @@ function excerpt(body: string): string {
             </li>
           </template>
         </ul>
-        <ResizeHandle class="hidden sm:block" :active="resizing" @start="startResize" />
+        <ResizeHandle class="hidden md:block" :active="resizing" @start="startResize" />
       </aside>
 
-      <section class="min-w-0 grow" :class="{ 'hidden sm:block': !selected }">
+      <section class="min-w-0 grow" :class="{ 'hidden md:block': !selected }">
         <div v-if="selected" class="h-full">
-          <button
-            class="px-4 pt-3 text-sm text-zinc-500 sm:hidden"
-            @click="selectedId = null"
-          >
-            ← All notes
-          </button>
-          <NoteEditor :note="selected" @deleted="selectedId = null" />
+          <NoteEditor :note="selected" backable @deleted="selectedId = null" @back="selectedId = null" />
         </div>
         <div v-else class="flex h-full items-center justify-center text-sm text-zinc-400">
           Select or create a note

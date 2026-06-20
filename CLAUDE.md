@@ -49,11 +49,16 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
 
 ## Invariants
 
-- **Never show a username to other users.** The username is a login credential;
-  the only name other users ever see is the editable **display name** (with the
-  neutral `User-<id-prefix>` fallback — never the username). This holds
-  everywhere a user is surfaced to another user: chat (members, friend requests,
-  reply quotes) and note sharing (pickers, "shared by" labels) alike.
+- **Never show a username to other users.** The username is a login credential
+  and is never shown to anyone else. The name other users see is the user's
+  public **handle** (`Word#1234`) by default; **contacts** additionally see the
+  user's **end-to-end-encrypted display name**, which the client overlays over the
+  handle (the server never sees the display name). `User-<id-prefix>` is only a
+  last-resort fallback if a handle is somehow unset — never the username. This
+  holds everywhere a user is surfaced to another user: chat (members, friend
+  requests, reply quotes), voice, and note sharing (pickers, "shared by" labels).
+  Server responses carry the handle in `displayName`; the client hydrates the
+  real name from the decrypted profile.
 
 - **Friends-gate all 1:1 reach.** A user may only **DM** or **share a note** with
   a current **friend** — the server enforces friendship on DM creation and on

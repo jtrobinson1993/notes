@@ -167,6 +167,15 @@ html.vt-exclude-root {
 .app-drawer[data-state='open'] { animation: drawer-in 220ms cubic-bezier(0.32, 0.72, 0, 1); }
 .app-drawer[data-state='closed'] { animation: drawer-out 200ms ease-in forwards; }
 
+/* Bouncy one-shot pop for a sidebar icon when its item becomes active. */
+@keyframes icon-pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.12); }
+  72%  { transform: scale(0.98); }
+  100% { transform: scale(1); }
+}
+.icon-pop { animation: icon-pop 380ms ease-out; }
+
 /* Minimal typography for rendered Markdown */
 .md-preview {
   @apply text-[15px] leading-relaxed;

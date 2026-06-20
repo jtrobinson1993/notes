@@ -1,6 +1,6 @@
 import { cursorCharLeft, cursorCharRight, selectCharLeft, selectCharRight } from '@codemirror/commands';
 import { syntaxTree } from '@codemirror/language';
-import { EditorState, Prec, RangeSet, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
+import { EditorSelection, EditorState, Prec, RangeSet, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
 import { Decoration, type DecorationSet, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType, type Command } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import { colorFromOpenTag } from './syntax';
@@ -691,6 +691,57 @@ const BREAKOUT_CONTAINERS = new Set([
   'Underline',
 ]);
 
+// Backspacing at the trailing edge of a formatted span (e.g. `<span…>…</span>`)
+// must not chew the concealed, atomic markers — which CodeMirror's default
+// backspace deletes whole, stripping the formatting and dumping raw markup. When
+// there's >1 content char, delete the last *letter* (keep the formatting); when
+// the last char would empty the span, delete the **whole construct** (both
+// markers go with it, so nothing is left orphaned).
+const smartBackspace: Command = (view) => {
+  const sel = view.state.selection.main;
+  if (!sel.empty) return false;
+  const pos = sel.head;
+  for (let c: SyntaxNode | null = syntaxTree(view.state).resolveInner(pos, -1); c; c = c.parent) {
+    if (!BREAKOUT_CONTAINERS.has(c.name)) continue;
+    let open: SyntaxNode | null = null;
+    let close: SyntaxNode | null = null;
+    for (let ch = c.firstChild; ch; ch = ch.nextSibling) {
+      if (/(Mark|Tag)$/.test(ch.name)) {
+        if (!open) open = ch;
+        close = ch;
+      }
+    }
+    if (!open || !close || open === close) continue;
+    const contentLen = close.from - open.to;
+    // Only act at the span's trailing edge: after the close marker, just before
+    // it (visual end of content), or — when empty — the slot between the markers.
+    const trailing = pos === c.to || pos === close.from || (contentLen === 0 && pos === open.to);
+    if (!trailing) continue;
+    if (contentLen <= 1) {
+      // The (0- or 1-char) content empties the span → remove markers + content.
+      view.dispatch({
+        changes: { from: c.from, to: c.to },
+        selection: EditorSelection.cursor(c.from),
+        userEvent: 'delete.backward',
+        scrollIntoView: true,
+      });
+      return true;
+    }
+    const delFrom = close.from - 1;
+    if (coveredByConcealed(view, delFrom, close.from)) return false; // nested marker — leave it
+    view.dispatch({
+      changes: { from: delFrom, to: close.from },
+      selection: EditorSelection.cursor(delFrom),
+      userEvent: 'delete.backward',
+      scrollIntoView: true,
+    });
+    return true;
+  }
+  return false;
+};
+
+const concealedBackspace = Prec.high(keymap.of([{ key: 'Backspace', run: smartBackspace }]));
+
 const whitespaceBreakout = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged || !tr.isUserEvent('input.type')) return tr;
   let pos: number | null = null;
@@ -806,5 +857,6 @@ export function livePreview(): Extension {
     whitespaceBreakout,
     newlineBreakout,
     concealedMotion,
+    concealedBackspace,
   ];
 }

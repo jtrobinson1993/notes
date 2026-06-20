@@ -63,7 +63,7 @@ describe('auth — every chat route rejects the unauthenticated', () => {
     const me = seedUser(t.db, { displayName: 'Me' });
     const res = await inject({ method: 'GET', url: '/api/profile', cookie: authCookie(t.db, me) });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ displayName: 'Me', nameColor: null, friendsOnly: true, linkPreviews: false });
+    expect(res.json()).toEqual({ displayName: 'Me', handle: expect.any(String), nameColor: null, friendsOnly: true, linkPreviews: false });
   });
 
   it('rejects a cross-origin mutating request (CSRF guard)', async () => {
@@ -449,7 +449,7 @@ describe('profile', () => {
     const me = seedUser(t.db);
     const res = await inject({ method: 'PUT', url: '/api/profile', cookie: authCookie(t.db, me), payload: { displayName: '  Alice  ' } });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ displayName: 'Alice', nameColor: null, friendsOnly: true, linkPreviews: false });
+    expect(res.json()).toEqual({ displayName: 'Alice', handle: expect.any(String), nameColor: null, friendsOnly: true, linkPreviews: false });
   });
 
   it('sets and validates the name color', async () => {

@@ -82,6 +82,30 @@ describe('add member', () => {
     expect(forC?.lastReadSeq).toBe(forC?.lastSeq);
   });
 
+  it('does not serve a fresh-history joiner any pre-join messages', async () => {
+    // Two messages exist before c joins.
+    await inject('POST', `/api/conversations/${convId}/messages`, ownerCookie, { ciphertext: 'old1', iv: 'i', epoch: 0 });
+    await inject('POST', `/api/conversations/${convId}/messages`, ownerCookie, { ciphertext: 'old2', iv: 'i', epoch: 0 });
+    await inject('POST', `/api/conversations/${convId}/members`, ownerCookie, {
+      userId: c, epoch: 1, history: 'fresh', keys: keysFor([owner, a, b, c]),
+    });
+    // A message posted after c joins.
+    await inject('POST', `/api/conversations/${convId}/messages`, ownerCookie, { ciphertext: 'new', iv: 'i', epoch: 1 });
+
+    const cMsgs = (await inject('GET', `/api/conversations/${convId}/messages`, authCookie(t.db, c))).json() as { ciphertext: string }[];
+    expect(cMsgs.map((m) => m.ciphertext)).toEqual(['new']); // the server never sends old1/old2
+    // The owner (full history) still sees everything.
+    const ownerMsgs = (await inject('GET', `/api/conversations/${convId}/messages`, ownerCookie)).json() as { ciphertext: string }[];
+    expect(ownerMsgs.map((m) => m.ciphertext).sort()).toEqual(['new', 'old1', 'old2']);
+  });
+
+  it('still serves a share-history joiner the full history', async () => {
+    await inject('POST', `/api/conversations/${convId}/messages`, ownerCookie, { ciphertext: 'old', iv: 'i', epoch: 0 });
+    await inject('POST', `/api/conversations/${convId}/members`, ownerCookie, addBody('share'));
+    const cMsgs = (await inject('GET', `/api/conversations/${convId}/messages`, authCookie(t.db, c))).json() as { ciphertext: string }[];
+    expect(cMsgs.map((m) => m.ciphertext)).toEqual(['old']);
+  });
+
   it('rejects the wrong epoch, a non-friend, an existing member, and bad coverage', async () => {
     expect((await inject('POST', `/api/conversations/${convId}/members`, ownerCookie, addBody('share', 2))).statusCode).toBe(409);
     expect((await inject('POST', `/api/conversations/${convId}/members`, ownerCookie, { ...addBody('share'), userId: a })).statusCode).toBe(409);

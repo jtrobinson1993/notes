@@ -16,9 +16,9 @@ function inject(method: string, url: string, cookie?: string, payload?: unknown)
 
 beforeEach(async () => {
   t = await makeApp();
-  me = seedUser(t.db, { username: 'me', displayName: 'Me', publicKey: 'pk-me' });
-  friend = seedUser(t.db, { username: 'frienduser', displayName: 'Buddy', publicKey: 'pk-fr' });
-  stranger = seedUser(t.db, { username: 'stranger', displayName: 'Stranger', publicKey: 'pk-st' });
+  me = seedUser(t.db, { username: 'me', displayName: 'Me', handle: 'Wolf#0001', publicKey: 'pk-me' });
+  friend = seedUser(t.db, { username: 'frienduser', displayName: 'Buddy', handle: 'Otter#1111', publicKey: 'pk-fr' });
+  stranger = seedUser(t.db, { username: 'stranger', displayName: 'Stranger', handle: 'Fox#2222', publicKey: 'pk-st' });
   makeFriends(t.db, me, friend);
   meCookie = authCookie(t.db, me);
   t.db.upsertNote({ id: 'n1', userId: me, ciphertext: 'ct', iv: 'iv', wrappedKey: WK, createdAt: 1 });
@@ -29,11 +29,12 @@ const share = (recipientId: string, cookie = meCookie) =>
   inject('POST', '/api/notes/n1/shares', cookie, { recipientId, sealedKey: SEALED, access: 'read' });
 
 describe('GET /api/members', () => {
-  it('lists only the caller\'s friends, by display name (never username)', async () => {
+  it('lists only the caller\'s friends, by handle (never username or real name)', async () => {
     const members = (await inject('GET', '/api/members', meCookie)).json() as { id: string; displayName: string }[];
     expect(members).toHaveLength(1);
-    expect(members[0]).toMatchObject({ id: friend, displayName: 'Buddy' });
+    expect(members[0]).toMatchObject({ id: friend, displayName: 'Otter#1111' });
     expect(JSON.stringify(members)).not.toContain('frienduser'); // no username leak
+    expect(JSON.stringify(members)).not.toContain('Buddy'); // no plaintext real-name leak
   });
 });
 
@@ -41,7 +42,7 @@ describe('POST /api/notes/:id/shares (friends-gated)', () => {
   it('shares with a friend', async () => {
     expect((await share(friend)).statusCode).toBe(200);
     const shares = (await inject('GET', '/api/notes/n1/shares', meCookie)).json() as { recipientDisplayName: string }[];
-    expect(shares[0]).toMatchObject({ recipientId: friend, recipientDisplayName: 'Buddy' });
+    expect(shares[0]).toMatchObject({ recipientId: friend, recipientDisplayName: 'Otter#1111' });
   });
 
   it('refuses to share with a non-friend', async () => {
@@ -68,10 +69,10 @@ describe('POST /api/notes/:id/shares (friends-gated)', () => {
 });
 
 describe('GET /api/shared', () => {
-  it('shows the owner by display name, not username', async () => {
+  it('shows the owner by handle, not username or real name', async () => {
     await share(friend);
     const shared = (await inject('GET', '/api/shared', authCookie(t.db, friend))).json() as { ownerDisplayName: string }[];
-    expect(shared[0]).toMatchObject({ id: 'n1', ownerDisplayName: 'Me' });
+    expect(shared[0]).toMatchObject({ id: 'n1', ownerDisplayName: 'Wolf#0001' });
     expect(JSON.stringify(shared)).not.toContain('"me"'); // owner username not exposed
   });
 });

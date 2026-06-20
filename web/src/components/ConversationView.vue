@@ -24,6 +24,7 @@ import { joinText } from '../lib/systemMessages';
 import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
 import { useProfileStore } from '../stores/profile';
+import { isMobile } from '../lib/mobileNav';
 import { conversationTitle } from '../lib/convName';
 
 // Renders one conversation (DM, group, or a thread). The parent owns routing and
@@ -506,7 +507,7 @@ async function sendGif(gif: GifRef) {
         </button>
       </div>
 
-      <div ref="scroller" class="min-h-0 grow overflow-y-auto py-2" @scroll="onScroll">
+      <div ref="scroller" class="min-h-0 grow overflow-y-auto" :class="isMobile ? 'pt-2' : 'py-2'" @scroll="onScroll">
         <!-- Older messages auto-load as the user scrolls up; this just reflects
              the in-flight fetch and marks the start of history. -->
         <div v-if="loadingOlder" class="flex justify-center py-2 text-xs text-zinc-400">Loading…</div>
@@ -538,7 +539,7 @@ async function sendGif(gif: GifRef) {
         <div
           v-else
           :data-seq="row.msg.seq"
-          class="group relative flex items-start gap-3 px-4 py-0.5 transition-colors [-webkit-touch-callout:none] hover:bg-black/5 dark:hover:bg-white/5"
+          class="group relative flex items-start gap-3 px-4 py-0.5 [-webkit-touch-callout:none] hover:bg-black/5 dark:hover:bg-white/5"
           :class="row.isStart ? 'mt-3' : ''"
           @pointerdown="onRowPointerDown($event, row.msg)"
           @pointermove="onRowPointerMove"
@@ -648,11 +649,6 @@ async function sendGif(gif: GifRef) {
                 >
                   No link preview — every member needs link previews enabled (Settings → Privacy).
                 </p>
-                <span
-                  v-if="row.msg.editedAt"
-                  class="ml-1 select-none align-baseline text-[11px] text-zinc-400 dark:text-zinc-500"
-                  :title="`Edited ${formatTime(row.msg.editedAt)}`"
-                >(edited)</span>
               </template>
             </div>
             <!-- Reaction pills: grouped by emoji; click toggles mine. A new pill
@@ -678,15 +674,25 @@ async function sendGif(gif: GifRef) {
                 </Transition>
               </button>
             </TransitionGroup>
-            <!-- Thread indicator: open the thread rooted on this message. -->
-            <button
-              v-if="!isThread && threadReplies(row.msg.seq) > 0"
-              class="mt-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950"
-              @click="openThreadFor(row.msg.seq)"
+            <!-- Thread indicator + "edited" note, on one line. -->
+            <div
+              v-if="(!isThread && threadReplies(row.msg.seq) > 0) || row.msg.editedAt"
+              class="mt-1 flex items-center gap-1"
             >
-              <IconThread class="h-3.5 w-3.5" />
-              {{ threadReplies(row.msg.seq) }} {{ threadReplies(row.msg.seq) === 1 ? 'reply' : 'replies' }}
-            </button>
+              <span
+                v-if="row.msg.editedAt"
+                class="select-none text-[11px] text-zinc-400 dark:text-zinc-500"
+                :title="`Edited ${formatTime(row.msg.editedAt)}`"
+              >(edited)</span>
+              <button
+                v-if="!isThread && threadReplies(row.msg.seq) > 0"
+                class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950"
+                @click="openThreadFor(row.msg.seq)"
+              >
+                <IconThread class="h-3.5 w-3.5" />
+                {{ threadReplies(row.msg.seq) }} {{ threadReplies(row.msg.seq) === 1 ? 'reply' : 'replies' }}
+              </button>
+            </div>
           </div>
         </div>
         </template>

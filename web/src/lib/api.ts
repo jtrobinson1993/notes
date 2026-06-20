@@ -171,8 +171,12 @@ export const api = {
 
   // ---- v3 chat: profile ----
   profileGet: () => req<ProfileInfo>('GET', '/api/profile'),
-  profileSet: (patch: { displayName?: string; nameColor?: string | null }) =>
+  profileSet: (patch: { displayName?: string | null; nameColor?: string | null }) =>
     req<ProfileInfo>('PUT', '/api/profile', patch),
+
+  // ---- Public "Word#1234" handle ----
+  handleOptions: () => req<{ options: string[] }>('GET', '/api/handle/options'),
+  handleSet: (handle: string) => req<ProfileInfo>('PUT', '/api/handle', { handle }),
 
   // ---- v3.2: E2EE profiles (bio + avatar) ----
   profileDataGet: () =>

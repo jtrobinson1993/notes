@@ -5,6 +5,7 @@ import type { ServerFrame, VoicePeer } from '@notes/shared';
 import { api } from '../lib/api';
 import { onFrame } from '../lib/chatSocket';
 import { useSessionStore } from './session';
+import { useProfileStore } from './profile';
 import { generateMediaKey, sealMediaKey, unsealMediaKey } from '../lib/voiceCrypto';
 import { decryptReceiver, dropFrameKey, encryptSender, resetVoiceWorker, setFrameKey, setSendEpoch, voiceE2eeSupported } from '../lib/voiceTransform';
 import { startRingtone, stopRingtone } from '../lib/ringtone';
@@ -37,6 +38,15 @@ const SPEAKING_THRESHOLD = 0.02; // RMS over [0,1]
 
 export const useVoiceStore = defineStore('voice', () => {
   const session = useSessionStore();
+
+  // The server sends each peer's public handle in `displayName`; overlay the
+  // decrypted real name when we have it — my own from the profile store, others'
+  // from their cached (contact) profile.
+  function withRealName<T extends { userId: string; displayName: string }>(p: T): T {
+    const profile = useProfileStore();
+    const real = p.userId === session.user?.id ? profile.myDisplayName : profile.displayNameFor(p.userId);
+    return { ...p, displayName: real || p.displayName };
+  }
 
   const activeRoomId = ref<string | null>(null);
   const activeRoomName = ref<string | null>(null);
@@ -74,14 +84,14 @@ export const useVoiceStore = defineStore('voice', () => {
   }
   async function loadPresence(roomId: string): Promise<void> {
     try {
-      presence.set(roomId, (await api.voicePresence(roomId)).peers);
+      presence.set(roomId, (await api.voicePresence(roomId)).peers.map(withRealName));
     } catch {
       /* not accessible / offline — leave as-is */
     }
   }
   function presenceAdd(roomId: string, peer: VoicePeer): void {
     const list = presence.get(roomId) ?? [];
-    if (!list.some((p) => p.userId === peer.userId)) presence.set(roomId, [...list, peer]);
+    if (!list.some((p) => p.userId === peer.userId)) presence.set(roomId, [...list, withRealName(peer)]);
   }
   function presenceRemove(roomId: string, userId: string): void {
     presence.set(roomId, (presence.get(roomId) ?? []).filter((p) => p.userId !== userId));
@@ -220,7 +230,7 @@ export const useVoiceStore = defineStore('voice', () => {
         // Presence is tracked for every room (sidebar), even ones I'm not in.
         presenceAdd(frame.roomId, frame.peer);
         if (frame.roomId === active && frame.peer.userId !== session.user?.id) {
-          peers.set(frame.peer.userId, { ...frame.peer, speaking: false, volume: 1 });
+          peers.set(frame.peer.userId, { ...withRealName(frame.peer), speaking: false, volume: 1 });
           if (outgoingCall.value?.conversationId === active) outgoingCall.value = null; // call connected
         }
         break;
@@ -300,7 +310,7 @@ export const useVoiceStore = defineStore('voice', () => {
       device = new Device();
       await device.load({ routerRtpCapabilities: resp.routerRtpCapabilities as unknown as msTypes.RtpCapabilities });
 
-      for (const p of resp.peers) peers.set(p.userId, { ...p, speaking: false, volume: 1 });
+      for (const p of resp.peers) peers.set(p.userId, { ...withRealName(p), speaking: false, volume: 1 });
       const { privateKey, publicKey } = await session.getKeyPair();
       for (const k of resp.mediaKeys) await onKeyEpoch(k.epoch, await unsealMediaKey(k.sealedKey, privateKey, publicKey));
 

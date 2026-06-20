@@ -19,6 +19,7 @@ import type {
 import { canManageMembers, CHANNEL_NAME_MAX, CONVERSATION_NAME_MAX, MAX_CHANNELS_PER_CONVERSATION, NAME_COLORS } from '@notes/shared';
 import {
   effectiveDisplayName,
+  effectiveHandle,
   type ConversationRow,
   type DB,
   type MessageRow,
@@ -27,6 +28,7 @@ import {
 import type { Realtime } from '../realtime.js';
 import type { Push } from '../push.js';
 import { requireAuth } from '../session.js';
+import { isValidHandle } from '../handles.js';
 import { newId, newToken, now } from '../util.js';
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -122,9 +124,13 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     if (!mine) return null;
     const members: ConversationMember[] = db.listConversationMembers(conv.id).map((m) => {
       const u = db.getUser(m.user_id);
+      // displayName carries the public handle; the real (E2EE) name is overlaid
+      // client-side from the contact's decrypted profile.
+      const handle = u ? effectiveHandle(u) : `User-${m.user_id.slice(0, 6)}`;
       return {
         userId: m.user_id,
-        displayName: u ? effectiveDisplayName(u) : `User-${m.user_id.slice(0, 6)}`,
+        displayName: handle,
+        handle,
         publicKey: u?.public_key ?? null,
         nameColor: u?.name_color ?? null,
         linkPreviews: !!u && u.link_previews !== 0,
@@ -281,7 +287,9 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const request_: FriendRequest = {
       id: reqId,
       userId: me,
-      displayName: effectiveDisplayName(request.user!),
+      // Not contacts yet → show the handle, not the (now E2EE) real name.
+      displayName: effectiveHandle(request.user!),
+      handle: effectiveHandle(request.user!),
       direction: 'incoming', // from the owner's perspective
       createdAt: now(),
     };
@@ -295,10 +303,12 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       const outgoing = r.from_user === me;
       const otherId = outgoing ? r.to_user : r.from_user;
       const other = db.getUser(otherId);
+      const handle = other ? effectiveHandle(other) : `User-${otherId.slice(0, 6)}`;
       return {
         id: r.id,
         userId: otherId,
-        displayName: other ? effectiveDisplayName(other) : `User-${otherId.slice(0, 6)}`,
+        displayName: handle, // handle until we're contacts and can decrypt the real name
+        handle,
         direction: outgoing ? 'outgoing' : 'incoming',
         createdAt: r.created_at,
       };
@@ -318,18 +328,22 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     if (reverse) db.deleteFriendRequest(reverse.id);
 
     const other = db.getUser(otherId);
+    const otherHandle = other ? effectiveHandle(other) : `User-${otherId.slice(0, 6)}`;
     const friend: Friend = {
       userId: otherId,
-      displayName: other ? effectiveDisplayName(other) : `User-${otherId.slice(0, 6)}`,
+      displayName: otherHandle,
+      handle: otherHandle,
       publicKey: other?.public_key ?? null,
       online: hub.isOnline(otherId),
     };
     // Push MY info to the other user.
+    const myHandle = effectiveHandle(request.user!);
     hub.sendToUser(otherId, {
       type: 'friend-accepted',
       friend: {
         userId: me,
-        displayName: effectiveDisplayName(request.user!),
+        displayName: myHandle,
+        handle: myHandle,
         publicKey: request.user!.public_key,
         online: hub.isOnline(me),
       },
@@ -352,9 +366,11 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const me = request.user!.id;
     return db.listFriendRows(me).map((row): Friend => {
       const u = db.getUser(row.friend_id);
+      const handle = u ? effectiveHandle(u) : `User-${row.friend_id.slice(0, 6)}`;
       return {
         userId: row.friend_id,
-        displayName: u ? effectiveDisplayName(u) : `User-${row.friend_id.slice(0, 6)}`,
+        displayName: handle, // overlaid with the decrypted real name client-side
+        handle,
         publicKey: u?.public_key ?? null,
         online: hub.isOnline(row.friend_id),
       };
@@ -376,6 +392,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
 
   function profileInfo(u: {
     id: string;
+    handle: string | null;
     display_name: string | null;
     name_color: string | null;
     profile_friends_only: number;
@@ -383,6 +400,7 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
   }): ProfileInfo {
     return {
       displayName: effectiveDisplayName(u),
+      handle: effectiveHandle(u),
       nameColor: u.name_color ?? null,
       friendsOnly: u.profile_friends_only !== 0,
       linkPreviews: u.link_previews !== 0,
@@ -393,17 +411,38 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     return profileInfo(request.user!);
   });
 
+  // Public "Word#1234" handle: fetch fresh candidate options, or set the chosen one.
+  app.get('/api/handle/options', { preHandler: requireAuth }, async () => {
+    return { options: db.generateHandleOptions(3) };
+  });
+
+  app.put('/api/handle', { preHandler: requireAuth }, async (request, reply) => {
+    const { handle } = (request.body ?? {}) as { handle?: unknown };
+    if (!isValidHandle(handle)) return reply.code(400).send({ error: 'invalid handle' });
+    if (!db.setUserHandle(request.user!.id, handle)) {
+      return reply.code(409).send({ error: 'that handle is taken' });
+    }
+    return profileInfo({ ...request.user!, handle });
+  });
+
   app.put('/api/profile', { preHandler: requireAuth }, async (request, reply) => {
     const me = request.user!.id;
     const b = request.body as Record<string, unknown> | null;
     // Both fields are optional; update whichever is present.
     if (b?.displayName !== undefined) {
-      if (typeof b.displayName !== 'string') return reply.code(400).send({ error: 'invalid display name' });
-      const trimmed = b.displayName.trim();
-      if (trimmed.length < 1 || trimmed.length > 50) {
-        return reply.code(400).send({ error: 'display name must be 1..50 chars' });
+      // null clears the legacy plaintext name (the real name is now E2EE in the
+      // profile blob); a string sets it (kept only for backwards-compat reads).
+      if (b.displayName === null) {
+        db.setDisplayName(me, null);
+      } else if (typeof b.displayName === 'string') {
+        const trimmed = b.displayName.trim();
+        if (trimmed.length < 1 || trimmed.length > 50) {
+          return reply.code(400).send({ error: 'display name must be 1..50 chars' });
+        }
+        db.setDisplayName(me, trimmed);
+      } else {
+        return reply.code(400).send({ error: 'invalid display name' });
       }
-      db.setDisplayName(me, trimmed);
     }
     if (b?.nameColor !== undefined) {
       const nc = b.nameColor;
@@ -537,7 +576,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const myKey = profile ? db.getProfileKeyFor(id, me) : undefined;
     const view: ProfileView = {
       userId: id,
-      displayName: effectiveDisplayName(u),
+      displayName: effectiveHandle(u), // real name lives in the encrypted blob below
+      handle: effectiveHandle(u),
       nameColor: u.name_color ?? null,
       encrypted:
         profile && myKey
@@ -724,6 +764,9 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
             epoch: epoch as number,
             role: 'member',
             lastReadSeq: history === 'fresh' ? lastSeq : 0,
+            // Fresh joiners can't read pre-join messages; share joiners get the
+            // prior epoch keys above, so they keep full history (floor 0).
+            sinceSeq: history === 'fresh' ? lastSeq : 0,
           });
         } else {
           db.setMemberEpochKey(id, k.userId, epoch as number, sk);
@@ -926,7 +969,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
       const n = Number(q.before);
       if (Number.isFinite(n)) before = n;
     }
-    return db.listMessages(channelId, before, limit).map(toMessage);
+    const sinceSeq = db.getConversationMember(id, me)?.since_seq ?? 0;
+    return db.listMessages(channelId, before, limit, sinceSeq).map(toMessage);
   });
 
   app.post('/api/conversations/:id/messages', { preHandler: requireAuth }, async (request, reply) => {
@@ -1020,7 +1064,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const q = request.query as { channelId?: string };
     const channelId = resolveChannel(id, q.channelId, me);
     if (channelId === null) return reply.code(404).send({ error: 'channel not found' });
-    return db.listReactions(channelId).map(toReaction);
+    const sinceSeq = db.getConversationMember(id, me)?.since_seq ?? 0;
+    return db.listReactions(channelId, 5000, sinceSeq).map(toReaction);
   });
 
   app.post('/api/conversations/:id/messages/:seq/reactions', { preHandler: requireAuth }, async (request, reply) => {

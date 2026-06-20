@@ -14,8 +14,11 @@ import { useSessionStore } from '../stores/session';
 import { useVoiceStore } from '../stores/voice';
 import { useOrgStore, chKey, noteItemKey } from '../stores/organization';
 import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
+import { goHome } from '../lib/mobileNav';
+import { conversationTitle } from '../lib/convName';
 import { canManageMembers, type ChannelInfo, type ChannelType, type Conversation } from '@notes/shared';
 import IconHash from '~icons/mynaui/hash';
+import IconChevronLeft from '~icons/mynaui/chevron-left';
 import IconLock from '~icons/mynaui/lock';
 import IconShare from '~icons/mynaui/share';
 import IconUsers from '~icons/mynaui/users';
@@ -34,7 +37,7 @@ import IconX from '~icons/mynaui/x';
 // distinct from note folders, personal like pins) group channels AND pinned
 // notes. Channel create/rename/delete are server-side (managers); the folder
 // arrangement, ordering, and pins are personal to each member.
-const props = defineProps<{ conversation: Conversation; activeChannelId: string; openNoteId?: string | null }>();
+const props = defineProps<{ conversation: Conversation; activeChannelId: string; openNoteId?: string | null; mobile?: boolean }>();
 const emit = defineEmits<{ select: [channelId: string]; openNote: [noteId: string] }>();
 
 // A channel is "active" only when no note overlay is open; the open note row
@@ -91,6 +94,8 @@ const manageChannel = ref<ChannelInfo | null>(null);
 
 const convId = computed(() => props.conversation.id);
 const isGroup = computed(() => props.conversation.kind === 'group');
+// Mobile header title (the chat header isn't visible on the channels pane).
+const chatTitle = computed(() => conversationTitle(props.conversation, session.user?.id));
 const canManage = computed(() => canManageMembers(props.conversation.myRole));
 
 const STORAGE_KEY = 'chat:channels:open';
@@ -302,10 +307,11 @@ function onDropOnRoot() {
 </script>
 
 <template>
-  <!-- Collapsed: a slim rail with just the open toggle. -->
+  <!-- Collapsed: a slim rail with just the open toggle. (Never on mobile, where
+       the sidebar is a full-screen pane.) -->
   <aside
-    v-if="!open"
-    class="z-nav flex w-12 shrink-0 flex-col items-center border-r border-zinc-200 bg-zinc-50 py-2 dark:border-zinc-800 dark:bg-zinc-950"
+    v-if="!open && !mobile"
+    class="z-nav flex w-12 shrink-0 flex-col items-center border-r border-zinc-200 bg-zinc-50 pt-2 dark:border-zinc-800 dark:bg-zinc-950"
   >
     <button
       class="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
@@ -319,12 +325,27 @@ function onDropOnRoot() {
     <CallPanel collapsed class="mt-auto w-full" />
   </aside>
 
-  <!-- Open: the unified channel/note tree. -->
+  <!-- Open: the unified channel/note tree. Full-width on mobile (a screen of its
+       own); a resizable rail on desktop. -->
   <aside
     v-else
-    class="relative z-nav flex w-[var(--sw)] shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
-    :style="{ '--sw': `${sidebarWidth}px` }"
+    class="relative z-nav flex flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
+    :class="mobile ? 'w-full' : 'w-[var(--sw)] shrink-0'"
+    :style="mobile ? undefined : { '--sw': `${sidebarWidth}px` }"
   >
+    <!-- Mobile-only header: back to the chat list + the chat's name (the main
+         chat header isn't visible while you're on this pane). -->
+    <header v-if="mobile" class="flex items-center gap-2 border-b border-zinc-200 px-2 py-2 dark:border-zinc-800">
+      <button
+        type="button"
+        class="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        aria-label="Back to menu"
+        @click="goHome()"
+      >
+        <IconChevronLeft class="h-5 w-5" />
+      </button>
+      <span class="min-w-0 grow truncate font-semibold">{{ chatTitle }}</span>
+    </header>
     <header class="flex items-center gap-0.5 px-2 py-2">
       <button
         class="flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
@@ -488,8 +509,9 @@ function onDropOnRoot() {
       </template>
     </ul>
 
-    <!-- Active-call controls + roster, pinned to the sidebar bottom. -->
-    <CallPanel />
+    <!-- Active-call controls + roster, pinned to the sidebar bottom. On mobile the
+         in-call controls live in the top bar (MobileCallBar) instead. -->
+    <CallPanel v-if="!mobile" />
 
     <ChannelModal
       v-model:open="channelModalOpen"
@@ -516,6 +538,6 @@ function onDropOnRoot() {
       @update:open="(v) => { if (!v) shareFolderTarget = null; }"
     />
     <PinPickerModal v-model:open="pinPickerOpen" :conversation-id="convId" @open-note="emit('openNote', $event)" @pinned="onNotePinned" />
-    <ResizeHandle :active="resizing" @start="startResize" />
+    <ResizeHandle v-if="!mobile" :active="resizing" @start="startResize" />
   </aside>
 </template>

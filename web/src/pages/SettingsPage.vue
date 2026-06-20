@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useMutation, useQuery, useQueryCache } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
@@ -11,11 +11,14 @@ import { exportNotesZip, parseImportFiles, type ExportFormat } from '../lib/tran
 import { useNotesStore } from '../stores/notes';
 import { useSessionStore } from '../stores/session';
 import { useProfileStore } from '../stores/profile';
+import { useChatStore } from '../stores/chat';
 import { MAX_AVATAR_INPUT_BYTES } from '../lib/avatar';
 import AvatarCropper from '../components/AvatarCropper.vue';
 import { addCustomEmoji, customEmoji, loadCustomEmoji, removeCustomEmoji } from '../lib/emoji/custom';
 import { resolveEmoji } from '../lib/emoji';
 import { NAME_COLORS } from '@notes/shared';
+import { goHome, homeOpen, isMobile } from '../lib/mobileNav';
+import IconChevronLeft from '~icons/mynaui/chevron-left';
 import {
   denoiseStrength,
   formatKeyCode,
@@ -29,6 +32,7 @@ import IconX from '~icons/mynaui/x';
 
 const session = useSessionStore();
 const notes = useNotesStore();
+const chat = useChatStore();
 const queryCache = useQueryCache();
 const isAdmin = session.user?.role === 'admin';
 
@@ -44,6 +48,14 @@ const sections = [
   ...(isAdmin ? [{ id: 'invites', label: 'Invites' }, { id: 'users', label: 'Users' }] : []),
 ];
 const activeSection = ref('profile');
+// Mobile: the section menu is its own screen; tapping a section opens its content
+// full-screen over everything, with a back button. Desktop shows both at once.
+const mobileSectionOpen = ref(false);
+const activeLabel = computed(() => sections.find((s) => s.id === activeSection.value)?.label ?? 'Settings');
+function selectSection(id: string) {
+  activeSection.value = id;
+  mobileSectionOpen.value = true;
+}
 
 const theme = ref<Theme>(getTheme());
 const palette = ref<Palette>(getPalette());
@@ -101,24 +113,39 @@ async function addEmoji() {
 
 const nameColor = ref<string | null>(null);
 
+// Public "Word#1234" handle (shown to non-contacts) + regenerate flow.
+const handle = ref('');
+const handleOptions = ref<string[]>([]);
+const handleBusy = ref(false);
+const handleMsg = ref('');
+
 useQuery({
   key: ['profile'],
   query: async () => {
     const p = await api.profileGet();
-    displayName.value = p.displayName;
+    handle.value = p.handle;
     nameColor.value = p.nameColor;
     return p;
   },
 });
 
+// The display name is now end-to-end encrypted (in the profile blob), shared
+// only with contacts — the server can't read it. Saving it clears any legacy
+// plaintext copy the server may still hold.
 async function saveDisplayName() {
   const name = displayName.value.trim();
   if (!name) return;
   displayNameBusy.value = true;
   displayNameMsg.value = '';
   try {
-    const p = await api.profileSet({ displayName: name });
-    displayName.value = p.displayName;
+    await profile.save({ ...profile.myData, displayName: name });
+    try {
+      await api.profileSet({ displayName: null });
+    } catch {
+      /* clearing the legacy copy is best-effort */
+    }
+    displayName.value = name;
+    chat.hydrateNames();
     displayNameOk.value = true;
     displayNameMsg.value = 'Saved.';
   } catch (e) {
@@ -126,6 +153,32 @@ async function saveDisplayName() {
     displayNameMsg.value = e instanceof Error ? e.message : 'could not save';
   } finally {
     displayNameBusy.value = false;
+  }
+}
+
+async function loadHandleOptions() {
+  handleBusy.value = true;
+  handleMsg.value = '';
+  try {
+    handleOptions.value = (await api.handleOptions()).options;
+  } finally {
+    handleBusy.value = false;
+  }
+}
+
+async function chooseHandle(h: string) {
+  handleBusy.value = true;
+  handleMsg.value = '';
+  try {
+    const p = await api.handleSet(h);
+    handle.value = p.handle;
+    profile.myHandle = p.handle;
+    handleOptions.value = [];
+    handleMsg.value = 'Handle updated.';
+  } catch (e) {
+    handleMsg.value = e instanceof Error ? e.message : 'could not set handle';
+  } finally {
+    handleBusy.value = false;
   }
 }
 
@@ -154,6 +207,7 @@ useQuery({
   key: ['profile-data'],
   query: async () => {
     if (!profile.loaded) await profile.load();
+    displayName.value = profile.myData.displayName ?? '';
     bio.value = profile.myData.bio ?? '';
     avatar.value = profile.myData.avatar;
     return true;
@@ -368,9 +422,20 @@ async function importFiles(event: Event) {
 
 <template>
   <AppLayout>
-    <div class="flex h-full flex-col">
-      <div class="flex shrink-0 items-center justify-between border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
+    <!-- On mobile this hides while the home (app sidebar) is open. -->
+    <div class="h-full flex-col" :class="isMobile && homeOpen ? 'hidden' : 'flex'">
+      <div class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
+        <button
+          v-if="isMobile"
+          type="button"
+          class="-ml-2 shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          aria-label="Back to menu"
+          @click="goHome()"
+        >
+          <IconChevronLeft class="h-5 w-5" />
+        </button>
         <h1 class="text-2xl font-bold">Settings</h1>
+        <span class="grow" />
         <RouterLink
           to="/"
           title="Back to notes"
@@ -382,8 +447,11 @@ async function importFiles(event: Event) {
       </div>
 
       <div class="flex min-h-0 flex-1">
-        <!-- Section nav -->
-        <nav class="w-52 shrink-0 space-y-0.5 overflow-y-auto border-r border-zinc-200 p-3 dark:border-zinc-800">
+        <!-- Section nav. Mobile: fills the page (its own screen); desktop: a rail. -->
+        <nav
+          class="space-y-0.5 overflow-y-auto border-r border-zinc-200 p-3 dark:border-zinc-800"
+          :class="isMobile ? 'w-full' : 'w-52 shrink-0'"
+        >
           <button
             v-for="s in sections"
             :key="s.id"
@@ -391,19 +459,34 @@ async function importFiles(event: Event) {
             :class="activeSection === s.id
               ? 'bg-zinc-200 font-medium text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
               : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'"
-            @click="activeSection = s.id"
+            @click="selectSection(s.id)"
           >
             {{ s.label }}
           </button>
         </nav>
 
-        <div class="min-w-0 grow overflow-y-auto p-6">
+        <!-- Section content. Mobile: full-screen over everything (incl. the app
+             sidebar) when a section is open, else hidden; desktop: inline. -->
+        <div
+          class="min-w-0 grow overflow-y-auto p-6"
+          :class="isMobile ? (mobileSectionOpen ? 'fixed inset-0 z-nav bg-zinc-50 dark:bg-zinc-950' : 'hidden') : ''"
+        >
+          <button
+            v-if="isMobile && mobileSectionOpen"
+            type="button"
+            class="mb-4 flex items-center gap-1 text-sm font-medium text-zinc-600 dark:text-zinc-300"
+            @click="mobileSectionOpen = false"
+          >
+            <IconChevronLeft class="h-5 w-5" /> {{ activeLabel }}
+          </button>
           <div class="mx-auto max-w-2xl space-y-8">
 
       <section v-show="activeSection === 'profile'" class="space-y-3">
         <h2 class="text-lg font-semibold">Profile</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
-          This is the name other users see in chats and friend requests. Your username is never shown to them.
+          Your display name is <strong>end-to-end encrypted</strong> and shown only to your contacts —
+          the server can't read it. Everyone else (and the server) sees your public handle below.
+          Your username is never shown to anyone.
         </p>
         <form class="flex gap-2" @submit.prevent="saveDisplayName">
           <input
@@ -422,6 +505,50 @@ async function importFiles(event: Event) {
         <p v-if="displayNameMsg" class="text-sm" :class="displayNameOk ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'">
           {{ displayNameMsg }}
         </p>
+
+        <!-- Public handle: server-visible, shown to non-contacts. -->
+        <div class="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <p class="text-sm">Public handle</p>
+              <p class="text-xs text-zinc-500 dark:text-zinc-400">
+                Shown to people who aren't your contacts (and the only name the server can see).
+                Share it so friends can recognise you: “<span class="font-medium">{{ handle }}</span> is me”.
+              </p>
+            </div>
+            <span class="shrink-0 rounded-lg bg-zinc-100 px-2.5 py-1 font-mono text-sm dark:bg-zinc-800">{{ handle }}</span>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              :disabled="handleBusy"
+              class="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              @click="loadHandleOptions"
+            >
+              {{ handleBusy ? '…' : 'Change handle' }}
+            </button>
+            <template v-for="opt in handleOptions" :key="opt">
+              <button
+                type="button"
+                :disabled="handleBusy"
+                class="rounded-lg border border-blue-300 bg-blue-50 px-2.5 py-1 font-mono text-sm text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                @click="chooseHandle(opt)"
+              >
+                {{ opt }}
+              </button>
+            </template>
+            <button
+              v-if="handleOptions.length"
+              type="button"
+              :disabled="handleBusy"
+              class="text-xs text-zinc-500 hover:underline dark:text-zinc-400"
+              @click="loadHandleOptions"
+            >
+              More options
+            </button>
+          </div>
+          <p v-if="handleMsg" class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ handleMsg }}</p>
+        </div>
 
         <div>
           <p class="mb-1.5 text-sm text-zinc-500 dark:text-zinc-400">Name color (shown to others in chat)</p>

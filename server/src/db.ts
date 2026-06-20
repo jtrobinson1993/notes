@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Role, WrappedKey, UserInfo, CredentialInfo, InviteInfo, NoteRecord } from '@notes/shared';
 import { now } from './util.js';
+import { generateUniqueHandles } from './handles.js';
 
 export interface UserRow {
   id: string;
@@ -12,6 +13,8 @@ export interface UserRow {
   wrapped_private_key: string | null;
   recovery_wrapped_mk: string | null;
   recovery_auth_hash: string | null;
+  /** Public "Word#1234" handle, shown to non-contacts (the only name the server reads). */
+  handle: string | null;
   display_name: string | null;
   name_color: string | null;
   /** 1 = only friends may receive the encrypted profile (default). */
@@ -76,6 +79,9 @@ export interface ConversationMemberRow {
   epoch: number;
   last_read_seq: number;
   joined_at: number;
+  /** History floor: this member may only read messages with seq > since_seq.
+   *  0 = full history (original members + share-history joiners). */
+  since_seq: number;
   role: string;
 }
 
@@ -174,6 +180,7 @@ CREATE TABLE IF NOT EXISTS users (
   wrapped_private_key TEXT,
   recovery_wrapped_mk TEXT,
   recovery_auth_hash TEXT,
+  handle TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS credentials (
@@ -285,6 +292,7 @@ CREATE TABLE IF NOT EXISTS conversation_members (
   epoch INTEGER NOT NULL DEFAULT 0,
   last_read_seq INTEGER NOT NULL DEFAULT 0,
   joined_at INTEGER NOT NULL,
+  since_seq INTEGER NOT NULL DEFAULT 0,
   role TEXT NOT NULL DEFAULT 'member',
   PRIMARY KEY (conversation_id, user_id)
 );
@@ -436,6 +444,53 @@ export function openDb(dataDir: string) {
   if (!userCols.some((c) => c.name === 'link_previews')) {
     db.exec('ALTER TABLE users ADD COLUMN link_previews INTEGER NOT NULL DEFAULT 0');
   }
+  // Public "Word#1234" handle. Add the column, enforce uniqueness, then backfill
+  // every existing account with a distinct handle so the field is never null.
+  if (!userCols.some((c) => c.name === 'handle')) {
+    db.exec('ALTER TABLE users ADD COLUMN handle TEXT');
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle ON users(handle COLLATE NOCASE)');
+  {
+    const handleTaken = (h: string) =>
+      db.prepare('SELECT 1 FROM users WHERE handle = ? COLLATE NOCASE').get(h) !== undefined;
+    const setHandle = db.prepare('UPDATE users SET handle = ? WHERE id = ?');
+    const missing = db.prepare('SELECT id FROM users WHERE handle IS NULL').all() as { id: string }[];
+    for (const u of missing) {
+      const [h] = generateUniqueHandles(1, handleTaken);
+      if (h) setHandle.run(h, u.id);
+    }
+  }
+
+  // History floor per member: a fresh-history joiner may only read messages with
+  // seq > since_seq. Existing rows default to 0 (full history) — unchanged behavior.
+  const memberCols = db.prepare('PRAGMA table_info(conversation_members)').all() as { name: string }[];
+  if (!memberCols.some((c) => c.name === 'since_seq')) {
+    db.exec('ALTER TABLE conversation_members ADD COLUMN since_seq INTEGER NOT NULL DEFAULT 0');
+  }
+  // Backfill fresh-history joiners (idempotent — guarded by since_seq = 0): a
+  // member who never received the genesis (epoch 0) key joined without history,
+  // so they must not see messages from before they joined. Their floor is the max
+  // seq at join time. Original members + share-history joiners hold epoch 0, so
+  // they're skipped and keep full history. Runs every startup so it self-heals if
+  // the column was added in an earlier build before this backfill existed.
+  {
+    const freshMembers = db
+      .prepare(
+        `SELECT cm.conversation_id AS cid, cm.user_id AS uid, cm.joined_at AS joined
+           FROM conversation_members cm
+          WHERE cm.since_seq = 0
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_keys ck
+               WHERE ck.conversation_id = cm.conversation_id AND ck.user_id = cm.user_id AND ck.epoch = 0)`,
+      )
+      .all() as { cid: string; uid: string; joined: number }[];
+    const floorAt = db.prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM messages WHERE conversation_id = ? AND created_at <= ?');
+    const setSince = db.prepare('UPDATE conversation_members SET since_seq = ? WHERE conversation_id = ? AND user_id = ?');
+    for (const m of freshMembers) {
+      const { s } = floorAt.get(m.cid, m.joined) as { s: number };
+      if (s > 0) setSince.run(s, m.cid, m.uid);
+    }
+  }
 
   // Idempotent migration: add messages.edited_at (message editing).
   const msgCols = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
@@ -521,10 +576,32 @@ export function openDb(dataDir: string) {
     getUserByUsername(username: string): UserRow | undefined {
       return db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(username) as UserRow | undefined;
     },
-    createUser(u: { id: string; username: string; role: Role }): void {
-      db.prepare('INSERT INTO users (id, username, role, created_at) VALUES (?, ?, ?, ?)').run(
-        u.id, u.username, u.role, now(),
+    getUserByHandle(handle: string): UserRow | undefined {
+      return db.prepare('SELECT * FROM users WHERE handle = ? COLLATE NOCASE').get(handle) as UserRow | undefined;
+    },
+    handleTaken(handle: string): boolean {
+      return db.prepare('SELECT 1 FROM users WHERE handle = ? COLLATE NOCASE').get(handle) !== undefined;
+    },
+    /** `count` distinct, currently-free handles to offer the user. */
+    generateHandleOptions(count: number): string[] {
+      const taken = (h: string) => db.prepare('SELECT 1 FROM users WHERE handle = ? COLLATE NOCASE').get(h) !== undefined;
+      return generateUniqueHandles(count, taken);
+    },
+    /** Set a user's handle; returns false if it's already taken (unique index). */
+    setUserHandle(userId: string, handle: string): boolean {
+      try {
+        return db.prepare('UPDATE users SET handle = ? WHERE id = ?').run(handle, userId).changes > 0;
+      } catch {
+        return false;
+      }
+    },
+    createUser(u: { id: string; username: string; role: Role }): string {
+      const taken = (h: string) => db.prepare('SELECT 1 FROM users WHERE handle = ? COLLATE NOCASE').get(h) !== undefined;
+      const [handle] = generateUniqueHandles(1, taken);
+      db.prepare('INSERT INTO users (id, username, role, handle, created_at) VALUES (?, ?, ?, ?, ?)').run(
+        u.id, u.username, u.role, handle ?? null, now(),
       );
+      return handle ?? '';
     },
     setUserKeys(userId: string, keys: { publicKey: string; wrappedPrivateKey: WrappedKey; recoveryWrappedMk: WrappedKey; recoveryAuthHash: string }): void {
       db.prepare(
@@ -666,13 +743,13 @@ export function openDb(dataDir: string) {
     listShares(noteId: string) {
       return db
         .prepare(
-          `SELECT s.*, u.display_name AS recipient_display_name FROM note_shares s
+          `SELECT s.*, u.handle AS recipient_handle FROM note_shares s
            JOIN users u ON u.id = s.recipient_id WHERE s.note_id = ?`,
         )
         .all(noteId) as {
         note_id: string;
         recipient_id: string;
-        recipient_display_name: string | null;
+        recipient_handle: string | null;
         sealed_key: string;
         access: string;
         created_at: number;
@@ -685,7 +762,7 @@ export function openDb(dataDir: string) {
       return db
         .prepare(
           `SELECT n.id, n.ciphertext, n.iv, n.created_at, n.updated_at, s.sealed_key, s.access,
-                  n.user_id AS owner_id, u.display_name AS owner_display_name
+                  n.user_id AS owner_id, u.handle AS owner_handle
            FROM note_shares s
            JOIN notes n ON n.id = s.note_id AND n.deleted = 0
            JOIN users u ON u.id = n.user_id
@@ -700,7 +777,7 @@ export function openDb(dataDir: string) {
         sealed_key: string;
         access: string;
         owner_id: string;
-        owner_display_name: string | null;
+        owner_handle: string | null;
       }[];
     },
 
@@ -736,19 +813,19 @@ export function openDb(dataDir: string) {
     },
     /** People you may share with (v5): your friends OR anyone you share a
      *  conversation with (friends-of-friends in a common group). Deduped. */
-    listShareableMembers(userId: string): { id: string; display_name: string | null; public_key: string | null }[] {
+    listShareableMembers(userId: string): { id: string; handle: string | null; public_key: string | null }[] {
       return db
         .prepare(
-          `SELECT u.id, u.display_name, u.public_key FROM users u
+          `SELECT u.id, u.handle, u.public_key FROM users u
              WHERE u.id != ?
                AND ( u.id IN (SELECT friend_id FROM friends WHERE user_id = ?)
                   OR u.id IN (
                        SELECT cm2.user_id FROM conversation_members cm1
                          JOIN conversation_members cm2 ON cm1.conversation_id = cm2.conversation_id
                         WHERE cm1.user_id = ? AND cm2.user_id != ?) )
-             ORDER BY u.display_name`,
+             ORDER BY u.handle`,
         )
-        .all(userId, userId, userId, userId) as { id: string; display_name: string | null; public_key: string | null }[];
+        .all(userId, userId, userId, userId) as { id: string; handle: string | null; public_key: string | null }[];
     },
 
     getUserSetting(userId: string, key: string) {
@@ -795,7 +872,7 @@ export function openDb(dataDir: string) {
       if (row.expires_at < now()) return undefined;
       return JSON.parse(row.data) as T;
     },
-    setDisplayName(userId: string, displayName: string): void {
+    setDisplayName(userId: string, displayName: string | null): void {
       db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(displayName, userId);
     },
     setNameColor(userId: string, nameColor: string | null): void {
@@ -1018,11 +1095,13 @@ export function openDb(dataDir: string) {
       role?: string;
       /** start unread baseline at the join point (e.g. a fresh-history joiner) */
       lastReadSeq?: number;
+      /** history floor: only messages with seq > sinceSeq are readable (0 = all) */
+      sinceSeq?: number;
     }): void {
       db.prepare(
-        `INSERT INTO conversation_members (conversation_id, user_id, sealed_key, epoch, last_read_seq, joined_at, role)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(m.conversationId, m.userId, m.sealedKey, m.epoch, m.lastReadSeq ?? 0, now(), m.role ?? 'member');
+        `INSERT INTO conversation_members (conversation_id, user_id, sealed_key, epoch, last_read_seq, joined_at, since_seq, role)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(m.conversationId, m.userId, m.sealedKey, m.epoch, m.lastReadSeq ?? 0, now(), m.sinceSeq ?? 0, m.role ?? 'member');
       // Mirror the current sealed key into the per-epoch store.
       db.prepare(
         `INSERT OR REPLACE INTO conversation_keys (conversation_id, user_id, epoch, sealed_key)
@@ -1310,15 +1389,17 @@ export function openDb(dataDir: string) {
     },
     /** A single channel's messages DESC by seq, optionally before an exclusive
      *  seq, for pagination. */
-    listMessages(channelId: string, before: number | undefined, limit: number): MessageRow[] {
+    // `sinceSeq` is the caller's history floor: only messages with seq > sinceSeq
+    // are returned, so a fresh-history joiner never receives pre-join ciphertext.
+    listMessages(channelId: string, before: number | undefined, limit: number, sinceSeq = 0): MessageRow[] {
       if (before !== undefined) {
         return db
-          .prepare('SELECT * FROM messages WHERE channel_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?')
-          .all(channelId, before, limit) as MessageRow[];
+          .prepare('SELECT * FROM messages WHERE channel_id = ? AND seq < ? AND seq > ? ORDER BY seq DESC LIMIT ?')
+          .all(channelId, before, sinceSeq, limit) as MessageRow[];
       }
       return db
-        .prepare('SELECT * FROM messages WHERE channel_id = ? ORDER BY seq DESC LIMIT ?')
-        .all(channelId, limit) as MessageRow[];
+        .prepare('SELECT * FROM messages WHERE channel_id = ? AND seq > ? ORDER BY seq DESC LIMIT ?')
+        .all(channelId, sinceSeq, limit) as MessageRow[];
     },
 
     // ---- Reactions (emoji encrypted with the conversation key) ----
@@ -1362,10 +1443,12 @@ export function openDb(dataDir: string) {
         db.prepare('DELETE FROM message_reactions WHERE id = ? AND user_id = ?').run(id, userId).changes > 0
       );
     },
-    listReactions(channelId: string, limit = 5000): ReactionRow[] {
+    // Gated by the caller's history floor (`sinceSeq`) like listMessages, so
+    // reactions on pre-join messages aren't leaked either.
+    listReactions(channelId: string, limit = 5000, sinceSeq = 0): ReactionRow[] {
       return db
-        .prepare('SELECT * FROM message_reactions WHERE channel_id = ? ORDER BY created_at ASC LIMIT ?')
-        .all(channelId, limit) as ReactionRow[];
+        .prepare('SELECT * FROM message_reactions WHERE channel_id = ? AND seq > ? ORDER BY created_at ASC LIMIT ?')
+        .all(channelId, sinceSeq, limit) as ReactionRow[];
     },
 
     // ---- Device links (cross-device onboarding) ----
@@ -1424,8 +1507,14 @@ export function effectiveDisplayName(u: { id: string; display_name: string | nul
   return u.display_name && u.display_name.trim() ? u.display_name : `User-${u.id.slice(0, 6)}`;
 }
 
+/** The public "Word#1234" handle shown to non-contacts. Falls back to a neutral
+ *  id-derived label only if a handle was somehow never assigned. */
+export function effectiveHandle(u: { id: string; handle: string | null }): string {
+  return u.handle && u.handle.trim() ? u.handle : `User-${u.id.slice(0, 6)}`;
+}
+
 export function toUserInfo(u: UserRow): UserInfo {
-  return { id: u.id, username: u.username, role: u.role, createdAt: u.created_at, publicKey: u.public_key };
+  return { id: u.id, username: u.username, role: u.role, createdAt: u.created_at, handle: effectiveHandle(u), publicKey: u.public_key };
 }
 
 export function toCredentialInfo(c: CredentialRow): CredentialInfo {

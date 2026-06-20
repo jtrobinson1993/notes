@@ -260,6 +260,24 @@ export const useChatStore = defineStore('chat', () => {
       await unsealChannelKeys(conv);
       await refreshGroupIcon(conv); // keys are now available
     }
+    void hydrateNames(); // overlay decrypted real names (server sent handles)
+  }
+
+  /** Overlay contacts' decrypted real display names onto member lists — the
+   *  server only ever sends the public handle. Idempotent; re-run after a
+   *  (re)load or a `profile-updated` event. Non-contacts keep their handle. */
+  async function hydrateNames(): Promise<void> {
+    const profile = useProfileStore();
+    const meId = session.user?.id;
+    const others = new Set<string>();
+    for (const c of conversations.value) for (const m of c.members) if (m.userId !== meId) others.add(m.userId);
+    await profile.hydrate([...others]);
+    for (const c of conversations.value) {
+      for (const m of c.members) {
+        const real = m.userId === meId ? profile.myDisplayName : profile.displayNameFor(m.userId);
+        if (real && m.displayName !== real) m.displayName = real;
+      }
+    }
   }
 
   /** Open (or create) a 1:1 DM with a friend; returns the conversation id. */
@@ -744,6 +762,7 @@ export const useChatStore = defineStore('chat', () => {
     setActive,
     setActiveChannel,
     loadConversations,
+    hydrateNames,
     openDm,
     openGroup,
     openThread,
@@ -794,7 +813,11 @@ export function startChat(): void {
     // A new friend should receive my profile key; a contact's profile change
     // invalidates its cached decryption.
     if (frame.type === 'friend-accepted') void profile.distributeTo(frame.friend);
-    else if (frame.type === 'profile-updated') profile.invalidate(frame.userId);
+    else if (frame.type === 'profile-updated') {
+      profile.invalidate(frame.userId);
+      void chat.hydrateNames(); // a contact may have changed their real name
+      void friends.hydrateNames();
+    }
   };
 
   unsubConnect?.();
@@ -803,6 +826,9 @@ export function startChat(): void {
       await chat.loadConversations();
       await friends.load();
       await profile.load();
+      // Profile is loaded → overlay decrypted real names over the handles.
+      void chat.hydrateNames();
+      void friends.hydrateNames();
       void loadCustomEmoji();
       void loadEmojiUsage();
       if (chat.activeId) {

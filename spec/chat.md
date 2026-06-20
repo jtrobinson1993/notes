@@ -91,6 +91,15 @@ epoch. Clients keep every epoch key sealed to them, so:
   *Share* → also seal every prior epoch key to the joiner (back-scroll readable).
   *Start fresh* → only the new epoch key (unread starts at the latest seq;
   earlier messages aren't decryptable).
+- **The server enforces the fresh boundary** (not just the missing keys): each
+  member has a **history floor** `since_seq` (`conversation_members.since_seq`,
+  0 = full history). A fresh-history join sets it to the conversation's max seq at
+  join time; share-history joins and original members stay at 0. `listMessages` /
+  `listReactions` only return rows with `seq > since_seq`, so a fresh joiner is
+  **never even sent** pre-join ciphertext (no "could not be decrypted" leak, and
+  no metadata about messages they can't read). A one-time, idempotent migration
+  backfills the floor for existing fresh joiners (detected as members lacking the
+  genesis epoch-0 key), using the max seq at their `joined_at`.
 
 The server validates each re-key: the `keys` must cover **exactly** the expected
 member set, `epoch` must be `current + 1`, and a share-history join's `priorKeys`

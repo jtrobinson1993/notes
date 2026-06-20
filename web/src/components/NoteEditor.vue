@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch, type Component } from 'vue';
+import { isMobile } from '../lib/mobileNav';
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -21,6 +22,10 @@ import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import { useOrgStore } from '../stores/organization';
 import IconFolder from '~icons/mynaui/folder';
 import IconX from '~icons/mynaui/x';
+import IconChevronLeft from '~icons/mynaui/chevron-left';
+import IconPencil from '~icons/mynaui/pencil';
+import IconCode from '~icons/mynaui/code';
+import IconBookOpen from '~icons/mynaui/book-open';
 import ColorPalette from './ColorPalette.vue';
 import EmojiInput from './EmojiInput.vue';
 import EmojiText from './EmojiText.vue';
@@ -30,9 +35,10 @@ import ShareDialog from './ShareDialog.vue';
 import HistoryDialog from './HistoryDialog.vue';
 
 // `closable` shows a ✕ next to the kebab — used when the editor is opened as an
-// overlay over a chat; emits `close` when clicked.
-const props = defineProps<{ note: DecryptedNote; closable?: boolean }>();
-const emit = defineEmits<{ deleted: []; close: [] }>();
+// overlay over a chat; emits `close` when clicked. `backable` shows a mobile-only
+// back chevron at the start of the header (notes page full-screen flow); emits `back`.
+const props = defineProps<{ note: DecryptedNote; closable?: boolean; backable?: boolean }>();
+const emit = defineEmits<{ deleted: []; close: []; back: [] }>();
 
 const notes = useNotesStore();
 const org = useOrgStore();
@@ -73,10 +79,10 @@ const MODE_KEY = 'notes:editor-mode';
 const stored = localStorage.getItem(MODE_KEY);
 const mode = ref<Mode>(stored === 'source' || stored === 'reading' ? stored : 'live');
 watch(mode, (m) => localStorage.setItem(MODE_KEY, m));
-const modes: { value: Mode; label: string; title: string }[] = [
-  { value: 'live', label: 'Live', title: 'Live preview — formatting applied as you type' },
-  { value: 'source', label: 'Source', title: 'Raw Markdown source' },
-  { value: 'reading', label: 'Reading', title: 'Rendered, read-only view' },
+const modes: { value: Mode; label: string; title: string; icon: Component }[] = [
+  { value: 'live', label: 'Live', title: 'Live preview — formatting applied as you type', icon: IconPencil },
+  { value: 'source', label: 'Source', title: 'Raw Markdown source', icon: IconCode },
+  { value: 'reading', label: 'Reading', title: 'Rendered, read-only view', icon: IconBookOpen },
 ];
 
 const readonly = computed(() => props.note.shared?.access === 'read');
@@ -238,6 +244,16 @@ function fmtSize(bytes: number): string {
 <template>
   <div class="flex h-full flex-col p-4">
     <div class="mb-2 flex items-center gap-1">
+      <!-- Mobile: back to the notes list (this editor is full-screen). -->
+      <button
+        v-if="backable && isMobile"
+        type="button"
+        class="-ml-1 shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+        aria-label="Back to notes"
+        @click="emit('back')"
+      >
+        <IconChevronLeft class="h-5 w-5" />
+      </button>
       <EmojiInput
         v-model="title"
         placeholder="Untitled"
@@ -248,16 +264,21 @@ function fmtSize(bytes: number): string {
       <span v-if="note.shared" class="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700 dark:bg-violet-950 dark:text-violet-300">
         {{ note.shared.ownerDisplayName }} · {{ note.shared.access === 'read' ? 'read-only' : 'can edit' }}
       </span>
-      <div class="flex shrink-0 gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
+      <!-- Mode toggle: inline on desktop; a floating control bottom-right on mobile. -->
+      <div
+        class="flex shrink-0 gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900"
+        :class="isMobile ? 'fixed bottom-4 right-4 z-nav shadow-lg' : ''"
+      >
         <button
           v-for="m in modes"
           :key="m.value"
           :title="m.title"
-          class="rounded-md px-3 py-1 text-sm text-zinc-500"
-          :class="mode === m.value ? 'bg-white text-zinc-900 shadow dark:bg-zinc-700 dark:text-zinc-100' : ''"
+          class="flex items-center justify-center rounded-md py-1 text-sm text-zinc-500"
+          :class="[mode === m.value ? 'bg-white text-zinc-900 shadow dark:bg-zinc-700 dark:text-zinc-100' : '', isMobile ? 'px-2.5' : 'px-3']"
           @click="mode = m.value"
         >
-          {{ m.label }}
+          <component :is="m.icon" v-if="isMobile" class="h-4 w-4" />
+          <template v-else>{{ m.label }}</template>
         </button>
       </div>
       <span class="shrink-0 px-1 text-xs text-zinc-400">

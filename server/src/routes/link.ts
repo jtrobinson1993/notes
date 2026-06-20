@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
 import type { SealedKey } from '@notes/shared';
-import { effectiveDisplayName, toUserInfo, type DB } from '../db.js';
+import { effectiveHandle, toUserInfo, type DB } from '../db.js';
 import type { Config } from '../config.js';
 import { requireAuth, startSession } from '../session.js';
 import { newId, newToken, now, sha256b64 } from '../util.js';
@@ -97,7 +97,7 @@ export function linkRoutes(app: FastifyInstance, db: DB, config: Config): void {
     return {
       status: 'sealed',
       sealedMk: JSON.parse(link.sealed_mk) as SealedKey,
-      user: { ...toUserInfo(u), displayName: effectiveDisplayName(u) },
+      user: { ...toUserInfo(u), displayName: effectiveHandle(u) },
     };
   });
 

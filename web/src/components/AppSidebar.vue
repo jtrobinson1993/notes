@@ -8,7 +8,9 @@ import { useSessionStore } from '../stores/session';
 import { useNotesStore } from '../stores/notes';
 import NewChatModal from './NewChatModal.vue';
 import SidebarTooltip from './SidebarTooltip.vue';
+import ActiveBar from './ActiveBar.vue';
 import { conversationInitial, conversationTitle } from '../lib/convName';
+import { homeOpen, isMobile, openPage, showChannels } from '../lib/mobileNav';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
 import IconPanelLeftClose from '~icons/mynaui/panel-left-close';
 import IconMessagePlus from '~icons/mynaui/message-plus';
@@ -64,13 +66,26 @@ const activeConvId = computed(() => {
   return m ? m[1] : null;
 });
 
-const isNotesActive = computed(() => router.currentRoute.value.path === '/');
+// Active-item indicators are pointless on mobile (the sidebar isn't visible
+// while you're inside a chat), so suppress them there.
+const isNotesActive = computed(() => !isMobile.value && router.currentRoute.value.path === '/');
+function chatActive(id: string): boolean {
+  return !isMobile.value && activeConvId.value === id;
+}
+
+// --- Mobile: this sidebar is the full-screen "home". It fills the screen while
+// home is open and is hidden once you've opened a page (chat/notes/settings),
+// which cover it; on desktop it's always the normal rail. ---
+const navClass = computed(() => {
+  if (isMobile.value) return homeOpen.value ? 'w-full' : 'hidden';
+  return expanded.value ? 'w-56' : 'w-14';
+});
 </script>
 
 <template>
   <nav
     class="flex shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
-    :class="expanded ? 'w-56' : 'w-14'"
+    :class="navClass"
   >
     <TooltipProvider :delay-duration="0" :skip-delay-duration="0">
       <!-- Top: new chat -->
@@ -78,7 +93,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
         <SidebarTooltip label="New chat" :disabled="expanded">
           <button
             class="flex items-center gap-2 rounded-lg bg-blue-600 px-2 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            :class="expanded ? '' : 'justify-center'"
+            :class="expanded ? 'w-fit pr-3' : 'justify-center'"
             aria-label="New chat"
             @click="newChatOpen = true"
           >
@@ -90,7 +105,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
       <NewChatModal v-model:open="newChatOpen" />
 
       <!-- Conversations + Notes -->
-      <div class="min-h-0 grow overflow-y-auto px-2">
+      <div class="flex min-h-0 grow flex-col gap-1 overflow-y-auto">
         <SidebarTooltip
           v-for="conv in sortedConversations"
           :key="conv.id"
@@ -100,20 +115,25 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
           <RouterLink
             :to="`/chat/${conv.id}`"
             :aria-label="convName(conv)"
-            class="relative flex items-center gap-2 rounded-lg px-2 py-2 text-sm"
+            class="group relative flex items-center gap-2 text-sm"
+            @click="showChannels()"
             :class="[
-              expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center',
-              activeConvId === conv.id
-                ? 'bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
-                : 'text-zinc-700 dark:text-zinc-200',
+              'px-2 py-1',
+              expanded ? '' : 'justify-center',
+              chatActive(conv.id) ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
           >
-            <span class="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-300 text-xs font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-100">
+            <ActiveBar :active="chatActive(conv.id)" />
+            <span
+              class="relative flex h-9 w-9 shrink-0 items-center justify-center bg-zinc-300 text-xs font-medium text-zinc-700 transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.8,0.5,1)] dark:bg-zinc-700 dark:text-zinc-100"
+              :class="chatActive(conv.id) ? 'rounded-xl icon-pop' : 'rounded-[18px] group-hover:rounded-xl'"
+            >
               <img
                 v-if="convIcon(conv)"
                 :src="convIcon(conv) ?? undefined"
                 alt=""
-                class="absolute inset-0 h-full w-full rounded-full object-cover"
+                class="absolute inset-0 h-full w-full object-cover transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.8,0.5,1)]"
+                :class="chatActive(conv.id) ? 'rounded-xl' : 'rounded-[18px] group-hover:rounded-xl'"
               />
               <template v-else>{{ convInitial(conv) }}</template>
               <span
@@ -138,15 +158,19 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
           <RouterLink
             to="/"
             aria-label="Notes"
-            class="mt-1 flex items-center gap-2 rounded-lg px-2 py-2 text-sm"
+            class="group relative flex items-center gap-2 text-sm"
+            @click="openPage()"
             :class="[
-              expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center',
-              isNotesActive
-                ? 'bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
-                : 'text-zinc-700 dark:text-zinc-200',
+              'px-2 py-1',
+              expanded ? '' : 'justify-center',
+              isNotesActive ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
             ]"
           >
-            <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-200 dark:bg-zinc-800">
+            <ActiveBar :active="isNotesActive" />
+            <span
+              class="flex h-9 w-9 shrink-0 items-center justify-center bg-zinc-200 transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.8,0.5,1)] dark:bg-zinc-700"
+              :class="isNotesActive ? 'rounded-xl icon-pop' : 'rounded-[18px] group-hover:rounded-xl'"
+            >
               <IconPen class="h-4 w-4" />
             </span>
             <span v-if="expanded" class="truncate">Notes</span>
@@ -194,6 +218,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
             aria-label="Friends"
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
+            @click="openPage()"
           >
             <IconUsers class="h-5 w-5 shrink-0" />
             <span v-if="expanded" class="truncate">Friends</span>
@@ -204,6 +229,7 @@ const isNotesActive = computed(() => router.currentRoute.value.path === '/');
             to="/settings"
             aria-label="Settings"
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
+            @click="openPage()"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
           >
             <IconCog class="h-5 w-5 shrink-0" />
