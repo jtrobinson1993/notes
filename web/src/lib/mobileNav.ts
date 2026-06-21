@@ -1,34 +1,32 @@
 import { ref } from 'vue';
 
 // Mobile (phone) navigation. On desktop these are ignored (every pane renders
-// side-by-side). On a phone we show one full-screen pane at a time with a back
-// stack; `< md` (768px) is "mobile".
+// side-by-side). On a phone the shell shows the narrow icon rail (the "main
+// menu") beside an *intermediary* list — the chat's channel list or the notes
+// list. Opening a *leaf* that should own the whole screen — a channel's
+// messages or a single note — hides the rail for a full-screen view, with a
+// back control that returns to the list (and the rail).
 //
-// The app sidebar is the mobile "home" (chat list + nav). When `homeOpen` is
-// true it fills the screen and the current page is hidden; tapping a chat / Notes
-// / Settings / Friends opens that page full-screen (`homeOpen = false`), and each
-// page has a back button that returns home (`goHome`).
+// The rail is never shown full-screen on its own, so there's no blank
+// "menu only" landing state; the app restores your last route on launch.
 
-export const homeOpen = ref(true);
-
-/** Within a chat: the channel list vs a channel's messages. */
+/** Within a chat: the channel list (rail visible) vs a channel's messages
+ *  (full screen). */
 export type ChatPane = 'channels' | 'messages';
 export const chatPane = ref<ChatPane>('channels');
 
-export function goHome(): void {
-  homeOpen.value = true;
-}
-/** Open a non-chat page (Notes/Settings/Friends) full-screen. */
-export function openPage(): void {
-  homeOpen.value = false;
-}
+/** Notes: whether a single note is open full-screen (rail hidden). Synced to the
+ *  notes page's selection so the rail knows to step aside. */
+export const noteOpen = ref(false);
+
 export function showChannels(): void {
-  homeOpen.value = false;
   chatPane.value = 'channels';
 }
 export function showMessages(): void {
-  homeOpen.value = false;
   chatPane.value = 'messages';
+}
+export function closeNote(): void {
+  noteOpen.value = false;
 }
 
 /** Reactive "the viewport is phone-sized" (< 768px). */

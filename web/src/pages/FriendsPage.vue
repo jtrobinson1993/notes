@@ -4,8 +4,6 @@ import { useRouter } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import { useChatStore } from '../stores/chat';
 import { useFriendsStore } from '../stores/friends';
-import { goHome, homeOpen, isMobile } from '../lib/mobileNav';
-import IconChevronLeft from '~icons/mynaui/chevron-left';
 
 const friends = useFriendsStore();
 const chat = useChatStore();
@@ -99,17 +97,8 @@ function fmtExpiry(ts: number): string {
 
 <template>
   <AppLayout>
-    <div class="mx-auto h-full max-w-2xl space-y-8 overflow-y-auto p-6" :class="{ 'hidden': isMobile && homeOpen }">
+    <div class="mx-auto h-full max-w-2xl space-y-8 overflow-y-auto p-6">
       <div class="flex items-center gap-2">
-        <button
-          v-if="isMobile"
-          type="button"
-          class="-ml-2 shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          aria-label="Back to menu"
-          @click="goHome()"
-        >
-          <IconChevronLeft class="h-5 w-5" />
-        </button>
         <h1 class="text-2xl font-bold">Friends</h1>
         <span class="grow" />
         <RouterLink

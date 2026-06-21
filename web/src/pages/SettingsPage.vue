@@ -17,7 +17,7 @@ import AvatarCropper from '../components/AvatarCropper.vue';
 import { addCustomEmoji, customEmoji, loadCustomEmoji, removeCustomEmoji } from '../lib/emoji/custom';
 import { resolveEmoji } from '../lib/emoji';
 import { NAME_COLORS } from '@notes/shared';
-import { goHome, homeOpen, isMobile } from '../lib/mobileNav';
+import { isMobile } from '../lib/mobileNav';
 import IconChevronLeft from '~icons/mynaui/chevron-left';
 import {
   denoiseStrength,
@@ -425,18 +425,8 @@ async function importFiles(event: Event) {
 
 <template>
   <AppLayout>
-    <!-- On mobile this hides while the home (app sidebar) is open. -->
-    <div class="h-full flex-col" :class="isMobile && homeOpen ? 'hidden' : 'flex'">
+    <div class="flex h-full flex-col">
       <div class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
-        <button
-          v-if="isMobile"
-          type="button"
-          class="-ml-2 shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          aria-label="Back to menu"
-          @click="goHome()"
-        >
-          <IconChevronLeft class="h-5 w-5" />
-        </button>
         <h1 class="text-2xl font-bold">Settings</h1>
         <span class="grow" />
         <RouterLink

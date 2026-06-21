@@ -19,7 +19,7 @@ import IconUsers from '~icons/mynaui/users';
 import IconHash from '~icons/mynaui/hash';
 import IconPhone from '~icons/mynaui/telephone-call';
 import IconChevronLeft from '~icons/mynaui/chevron-left';
-import { chatPane, homeOpen, isMobile, showChannels, showMessages } from '../lib/mobileNav';
+import { chatPane, isMobile, showChannels, showMessages } from '../lib/mobileNav';
 
 const route = useRoute();
 const router = useRouter();
@@ -214,9 +214,9 @@ onBeforeUnmount(stopDrag);
 
 <template>
   <AppLayout>
-    <!-- On mobile the home (AppSidebar) shows alone; this page hides until you
-         open a chat. On desktop all panes render side-by-side. -->
-    <div class="h-full" :class="isMobile && homeOpen ? 'hidden' : 'flex'">
+    <!-- Mobile: the channel list shows beside the rail; the messages pane takes
+         the whole screen (rail hidden). Desktop: all panes side-by-side. -->
+    <div class="flex h-full">
       <!-- Sidebar: channels + pins for groups, pins only for DMs (threads: none).
            Mobile: full-screen "channels" pane, hidden while viewing messages. -->
       <ChatSidebar

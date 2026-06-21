@@ -14,11 +14,9 @@ import { useSessionStore } from '../stores/session';
 import { useVoiceStore } from '../stores/voice';
 import { useOrgStore, chKey, noteItemKey } from '../stores/organization';
 import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
-import { goHome } from '../lib/mobileNav';
 import { conversationTitle } from '../lib/convName';
 import { canManageMembers, type ChannelInfo, type ChannelType, type Conversation } from '@notes/shared';
 import IconHash from '~icons/mynaui/hash';
-import IconChevronLeft from '~icons/mynaui/chevron-left';
 import IconLock from '~icons/mynaui/lock';
 import IconShare from '~icons/mynaui/share';
 import IconUsers from '~icons/mynaui/users';
@@ -335,15 +333,7 @@ function onDropOnRoot() {
   >
     <!-- Mobile-only header: back to the chat list + the chat's name (the main
          chat header isn't visible while you're on this pane). -->
-    <header v-if="mobile" class="flex items-center gap-2 border-b border-zinc-200 px-2 py-2 dark:border-zinc-800">
-      <button
-        type="button"
-        class="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
-        aria-label="Back to menu"
-        @click="goHome()"
-      >
-        <IconChevronLeft class="h-5 w-5" />
-      </button>
+    <header v-if="mobile" class="flex items-center gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
       <span class="min-w-0 grow truncate font-semibold">{{ chatTitle }}</span>
     </header>
     <header class="flex items-center gap-0.5 px-2 py-2">

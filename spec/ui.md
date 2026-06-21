@@ -138,26 +138,31 @@ switches), with the "Settings" title + close in a fixed top bar above the split.
 
 ## Mobile navigation (phones, `< md`)
 
-Phones (`lib/mobileNav.ts` — `isMobile` via `matchMedia`) show **one full-screen
-pane at a time** with a back stack; desktop is unchanged (all panes side-by-side).
+Phones (`lib/mobileNav.ts` — `isMobile` via `matchMedia`) keep the **narrow icon
+rail** (the app sidebar) visible beside an **intermediary list** — a chat's
+**channel list** or the **notes list** — and give the whole screen to a **leaf**
+(a channel's messages or an open note), where the rail steps aside. Desktop is
+unchanged (all panes side-by-side). There is **no full-width "menu only"
+state**: the rail always sits next to a list, and the app **restores your last
+route on launch** (`last-route` in `router.ts`; the PWA opens at `/`).
 
-The **app sidebar is the mobile "home"** (chat list + nav). While `homeOpen` it
-fills the screen and every page (`ConversationPage`/`NotesPage`/`SettingsPage`/
-`FriendsPage` hide their root). Tapping a chat / Notes / Settings / Friends opens
-that page full-screen (`openPage` / `showChannels` set `homeOpen = false`); each
-page has a **back-to-menu** chevron at its top-left that calls `goHome`.
+The rail (`AppSidebar`) is a fixed `w-14` icon strip on mobile (never the desktop
+`expanded` width); it's hidden (`railHidden`) only when a leaf owns the screen.
 
-- **Chat:** tapping a chat shows its **channel list** full-screen (`ChatSidebar`'s
-  mobile header has the back-to-menu chevron + the chat's name, since the chat
-  header isn't visible here). Tapping a channel shows its **messages** full-screen,
-  with a back button at the top-left of the chat header (→ channel list). Within a
-  chat, `chatPane` toggles `channels` ↔ `messages`.
-- **Notes / Settings / Friends:** the list / menu / page fills the screen with the
-  back-to-menu chevron; in Notes, tapping a note opens the editor full-screen with
-  its own back (`NoteEditor` `backable`), and in Settings a section opens
-  full-screen over everything with a back-to-menu (`mobileSectionOpen`).
+- **Chat:** tapping a chat in the rail shows its **channel list** beside the rail
+  (`chatPane = 'channels'`; `ChatSidebar`'s mobile header shows the chat's name).
+  Tapping a channel shows its **messages** full-screen (`chatPane = 'messages'` →
+  rail hidden), with a back button in the chat header (→ channel list). `railHidden`
+  also requires the conversation to actually exist, so a missing/not-yet-loaded
+  chat can't blank the screen.
+- **Notes:** the notes list shows beside the rail; tapping a note opens the editor
+  full-screen (`noteOpen` → rail hidden) with its own back (`NoteEditor` `backable`,
+  which clears the selection). The open note is persisted (`notes:last-open`) and
+  reopened on launch; tapping **Notes** in the rail (`closeNote`) returns to the list.
+- **Settings / Friends:** full pages shown beside the rail (no leaf); Settings'
+  per-section drill-down is unchanged (`mobileSectionOpen`).
 - **In a call:** the call controls + speaking indicators move to a **top bar**
   (`MobileCallBar`, in the app's flex column) so the rest of the app shrinks
   below it; the in-sidebar `CallPanel` is hidden on mobile.
-- **Active-item indicators** (the morph + left pill) are **suppressed on mobile**
-  — the sidebar isn't visible while you're inside a chat.
+- **Active-item indicators** (the morph + left pill) show on mobile too, since the
+  rail stays visible next to the list.
