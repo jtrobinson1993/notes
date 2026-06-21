@@ -153,7 +153,7 @@ const navClass = computed(() => {
               <template v-else>{{ convInitial(conv) }}</template>
               <span
                 v-if="chat.unreadCount(conv.id) > 0 && !expanded"
-                class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-semibold text-white"
+                class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white"
               >
                 {{ chat.unreadCount(conv.id) }}
               </span>
@@ -161,7 +161,7 @@ const navClass = computed(() => {
             <span v-if="expanded" class="min-w-0 grow truncate">{{ convName(conv) }}</span>
             <span
               v-if="chat.unreadCount(conv.id) > 0 && expanded"
-              class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-semibold text-white"
+              class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white"
             >
               {{ chat.unreadCount(conv.id) }}
             </span>

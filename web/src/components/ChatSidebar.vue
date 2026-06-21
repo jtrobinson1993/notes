@@ -463,7 +463,7 @@ function onDropOnRoot() {
               </span>
               <span
                 v-else-if="unread(row.item!.channel) > 0 && row.item!.channel.id !== activeChannelId"
-                class="ml-1 shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+                class="ml-1 shrink-0 rounded-full bg-red-500 px-1.5 text-[10px] font-semibold leading-4 text-white"
               >{{ unread(row.item!.channel) > 99 ? '99+' : unread(row.item!.channel) }}</span>
             </template>
             <template v-else>

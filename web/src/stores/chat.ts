@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { reactive, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import type {
   AttachmentRef,
   ChannelInfo,
@@ -746,6 +746,12 @@ export const useChatStore = defineStore('chat', () => {
     return chans.reduce((sum, ch) => sum + Math.max(0, ch.lastSeq - ch.lastReadSeq), 0);
   }
 
+  /** Unread across every conversation (excluding threads) — drives the browser
+   *  tab title and the installed-PWA app-icon badge. */
+  const totalUnread = computed(() =>
+    conversations.value.filter((c) => c.kind !== 'thread').reduce((sum, c) => sum + unreadCount(c.id), 0),
+  );
+
   function reset(): void {
     conversations.value = [];
     messages.value = {};
@@ -791,6 +797,7 @@ export const useChatStore = defineStore('chat', () => {
     markRead,
     handleFrame,
     unreadCount,
+    totalUnread,
     reset,
   };
 });
