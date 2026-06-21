@@ -66,6 +66,22 @@ Voice media (mediasoup) is direct UDP/TCP to the host, not proxied by Caddy. The
 compose file publishes `40000-40100`; forward that same range on your router and
 keep it in sync with `VOICE_RTC_MIN/MAX_PORT` if you change it.
 
+**On Linux, reserve the range from the ephemeral pool.** `40000-40100` falls
+inside the kernel's default ephemeral port range (`32768-60999`), so a transient
+outbound connection can grab one of those ports just as Docker tries to bind it —
+`docker compose up` then fails intermittently with `failed to bind host port
+0.0.0.0:400xx: address already in use`. Tell the kernel not to hand those ports
+out as ephemeral:
+
+```sh
+echo 'net.ipv4.ip_local_reserved_ports = 40000-40100' \
+  | sudo tee /etc/sysctl.d/99-notes-voice-ports.conf
+sudo sysctl --system
+```
+
+(Adjust the range if you change `VOICE_RTC_MIN/MAX_PORT`. Skip it if you don't
+use voice.)
+
 ### Push notifications
 
 Background "new message" push works out of the box once the app is served over
