@@ -325,8 +325,10 @@ html.vt-exclude-root {
 
 /* Inline images + click-to-load video embeds */
 .cm-image-widget { display: inline-block; max-width: 100%; }
+/* Exclude inline emoji (`.chat-emoji`) — they shouldn't get the block-image
+   margins/rounding, which gave custom emotes rounded-square corners. */
 .cm-image-widget img,
-.md-preview img {
+.md-preview img:not(.chat-emoji) {
   @apply my-1 max-h-96 max-w-full rounded-lg;
 }
 .spoiler-image-revealed img { cursor: default; }
