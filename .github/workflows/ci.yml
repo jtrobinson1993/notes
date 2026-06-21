@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# Least privilege: every job here only reads the repo.
+permissions:
+  contents: read
+
 jobs:
   unit:
     name: Unit + integration (Vitest)
