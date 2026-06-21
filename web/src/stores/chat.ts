@@ -229,6 +229,9 @@ export const useChatStore = defineStore('chat', () => {
     if (idx >= 0) conversations.value[idx] = conv;
     else conversations.value = [...conversations.value, conv];
     void refreshGroupIcon(conv);
+    // The server only sends handles; overlay contacts' decrypted real names so a
+    // freshly created/opened DM shows the right name without a full page reload.
+    void hydrateNames();
   }
 
   /** Rename a group (owner/admin). Empty clears back to the member-derived title. */

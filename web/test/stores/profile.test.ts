@@ -80,6 +80,29 @@ describe('profile store', () => {
     expect(store.myData.bio).toBe('my secret bio');
   });
 
+  it('updateProfileData keeps the encrypted display name when editing avatar/bio', async () => {
+    const store = useProfileStore();
+    await store.load();
+    await store.save({ displayName: 'Real Name', bio: 'old bio' });
+
+    // Editing the avatar (and clearing the bio) must not drop the display name —
+    // otherwise a blank name gets re-distributed to every contact, who then fall
+    // back to showing the bare handle even after a refresh.
+    await store.updateProfileData({ avatar: 'data:image/webp;base64,QQ', bio: undefined });
+    expect(store.myData.displayName).toBe('Real Name');
+    expect(store.myData.avatar).toBe('data:image/webp;base64,QQ');
+    expect(store.myData.bio).toBeUndefined();
+
+    // The persisted + redistributed blob still carries the name (decrypt on reload).
+    const body = api.profileDataSet.mock.calls.at(-1)![0];
+    store.reset();
+    api.profileDataGet.mockResolvedValue({
+      profile: { ciphertext: body.ciphertext, iv: body.iv, epoch: body.epoch, ownerWrappedKey: body.ownerWrappedKey },
+    });
+    await store.load();
+    expect(store.myData.displayName).toBe('Real Name');
+  });
+
   it('migrates a legacy plaintext display name into the encrypted profile, then clears it', async () => {
     api.profileGet.mockResolvedValueOnce({ displayName: 'Real Name', handle: 'Wolf#0001', nameColor: null, friendsOnly: true, linkPreviews: false });
     const store = useProfileStore();

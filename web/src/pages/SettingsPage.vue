@@ -138,7 +138,7 @@ async function saveDisplayName() {
   displayNameBusy.value = true;
   displayNameMsg.value = '';
   try {
-    await profile.save({ ...profile.myData, displayName: name });
+    await profile.updateProfileData({ displayName: name });
     try {
       await api.profileSet({ displayName: null });
     } catch {
@@ -250,11 +250,14 @@ async function saveProfile() {
   profileBusy.value = true;
   profileMsg.value = '';
   try {
-    const data: { bio?: string; avatar?: string } = {};
+    // Merge into the existing blob so we never drop the encrypted display name
+    // (omitting it here re-distributed a blank name to every contact). `undefined`
+    // clears the field; the display name is left untouched.
     const trimmed = bio.value.trim();
-    if (trimmed) data.bio = trimmed.slice(0, BIO_MAX);
-    if (avatar.value) data.avatar = avatar.value;
-    await profile.save(data);
+    await profile.updateProfileData({
+      bio: trimmed ? trimmed.slice(0, BIO_MAX) : undefined,
+      avatar: avatar.value || undefined,
+    });
     profileOk.value = true;
     profileMsg.value = 'Profile saved.';
     profileDirty.value = false;
