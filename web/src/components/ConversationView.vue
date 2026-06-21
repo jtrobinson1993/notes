@@ -263,10 +263,40 @@ function atBottom(): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
 }
 
+// Whether the view is currently pinned to the bottom (updated as the user
+// scrolls). A monotonic token lets a newer scroll/channel-switch cancel an older
+// pending "re-pin after images load".
+const pinned = ref(true);
+let scrollToken = 0;
+
 async function scrollToBottom() {
+  const token = ++scrollToken;
+  pinned.value = true;
   await nextTick();
   const el = scroller.value;
-  if (el) el.scrollTop = el.scrollHeight;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+  // Late-loading content (avatars, custom emoji, link embeds, attachments) grows
+  // the height after first paint, which would leave us parked above the bottom.
+  // Re-pin to the bottom as those images settle — so opening a chat lands on the
+  // latest message — unless a newer scroll superseded us or the user scrolled away.
+  const imgs = Array.from(el.querySelectorAll('img')).filter((i) => !i.complete);
+  if (!imgs.length) return;
+  await Promise.race([
+    Promise.all(
+      imgs.map(
+        (i) =>
+          new Promise<void>((res) => {
+            i.addEventListener('load', () => res(), { once: true });
+            i.addEventListener('error', () => res(), { once: true });
+          }),
+      ),
+    ),
+    new Promise((res) => setTimeout(res, 1500)),
+  ]);
+  if (token === scrollToken && pinned.value && scroller.value) {
+    scroller.value.scrollTop = scroller.value.scrollHeight;
+  }
 }
 
 async function markReadHere() {
@@ -338,7 +368,9 @@ const LOAD_OLDER_THRESHOLD_PX = 200;
 
 function onScroll() {
   const el = scroller.value;
-  if (el && el.scrollTop < LOAD_OLDER_THRESHOLD_PX) void loadOlder();
+  if (!el) return;
+  pinned.value = atBottom(); // user scrolling away unpins; back to bottom re-pins
+  if (el.scrollTop < LOAD_OLDER_THRESHOLD_PX) void loadOlder();
   if (atBottom()) void markReadHere();
 }
 
