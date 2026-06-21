@@ -1,0 +1,10 @@
+# Install to /etc/systemd/system/netlify-ddns.service
+[Unit]
+Description=Update Netlify DNS A record with current public IP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/netlify-ddns.env
+ExecStart=/usr/local/bin/netlify-ddns.sh

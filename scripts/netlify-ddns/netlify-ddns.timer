@@ -1,0 +1,12 @@
+# Install to /etc/systemd/system/netlify-ddns.timer, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now netlify-ddns.timer
+[Unit]
+Description=Run netlify-ddns every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

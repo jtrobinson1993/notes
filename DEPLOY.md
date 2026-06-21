@@ -50,7 +50,10 @@ Two things to be deliberate about:
 - **Pick the final hostname before anyone registers.** Passkeys are bound to the
   origin; changing the domain later strands every passkey, leaving recovery
   codes as the only way back in.
-- **Home server with a changing IP?** Use a dynamic-DNS updater — or skip public
+- **Home server with a changing IP?** Use a dynamic-DNS updater. If your domain
+  is on **Netlify DNS**, there's a ready-made one in
+  [`scripts/netlify-ddns/`](scripts/netlify-ddns/) — a systemd timer that keeps
+  your `A` record pointed at the host's current public IP. Otherwise, skip public
   exposure entirely with **Tailscale**: `tailscale cert` issues a valid HTTPS
   certificate for the machine's tailnet hostname, only people on your tailnet can
   reach the app, and nothing is open to the internet. Great fit when only you and
