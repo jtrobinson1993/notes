@@ -5,7 +5,7 @@ import MarkdownEditor from './MarkdownEditor.vue';
 import ChatAvatar from './ChatAvatar.vue';
 import ProfileDialog from './ProfileDialog.vue';
 import EmojiPicker from './EmojiPicker.vue';
-import ChatAttachment from './ChatAttachment.vue';
+import ChatAttachments from './ChatAttachments.vue';
 import LinkPreviewCard from './LinkPreviewCard.vue';
 import MessageActionsSheet from './MessageActionsSheet.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
@@ -669,10 +669,9 @@ async function sendGif(gif: GifRef) {
                   class="mt-1 w-full max-w-[260px] rounded-lg bg-zinc-100 dark:bg-zinc-800"
                   loading="lazy"
                 />
-                <ChatAttachment
-                  v-for="a in row.msg.attachments"
-                  :key="a.id"
-                  :attachment="a"
+                <ChatAttachments
+                  v-if="row.msg.attachments?.length"
+                  :attachments="row.msg.attachments"
                 />
                 <LinkPreviewCard v-if="row.msg.linkPreview" :preview="row.msg.linkPreview" />
                 <p
