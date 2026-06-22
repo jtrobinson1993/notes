@@ -411,7 +411,11 @@ attachment is **effectively conversation-keyed** (the same indirection notes
 use), without a second key-distribution mechanism.
 
 The composer (`+` button) uploads each picked file immediately and stages it as
-a removable chip; **Send** embeds the staged refs with the (optional) text.
+a removable chip — image chips show a **thumbnail preview** (an object URL from
+the original picked bytes, revoked on remove/send/unmount), others an icon and
+name. Picking files also **moves focus to the composer** so Enter sends rather
+than re-triggering the attach button. **Send** embeds the staged refs with the
+(optional) text.
 Rendering splits a message's refs (`ChatAttachments.vue`): images collapse into a
 single **image grid**, other files follow as download chips. Each blob is
 decrypted locally (`decryptAttachment` → `lib/attachments.ts`) to an object URL,

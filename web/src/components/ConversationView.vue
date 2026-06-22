@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import MarkdownView from './MarkdownView.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import ChatAvatar from './ChatAvatar.vue';
@@ -49,8 +49,30 @@ const scroller = ref<HTMLElement>();
 const composer = ref<{ insertText: (s: string) => void; focus: () => void; focusEnd: () => void }>();
 const fileInput = ref<HTMLInputElement>();
 const staged = ref<AttachmentRef[]>([]);
+// Local object-URL thumbnails for staged images, keyed by ref id. Made from the
+// originally-picked File (no re-decrypt needed) and revoked on remove/send/unmount.
+const stagedPreviews = ref<Record<string, string>>({});
 const attaching = ref(false);
 const attachError = ref('');
+
+/** Drop a staged image's preview URL, if any, freeing the blob. */
+function revokePreview(id: string) {
+  const url = stagedPreviews.value[id];
+  if (url) {
+    URL.revokeObjectURL(url);
+    delete stagedPreviews.value[id];
+  }
+}
+
+/** Clear all staged attachments and their previews (after a send). */
+function clearStaged() {
+  for (const id of Object.keys(stagedPreviews.value)) revokePreview(id);
+  staged.value = [];
+}
+
+onBeforeUnmount(() => {
+  for (const id of Object.keys(stagedPreviews.value)) revokePreview(id);
+});
 const replyingTo = ref<ReplyRef | null>(null);
 // When set, the composer is editing this message's text (not sending a new one).
 // `original` is the text as-sent, to detect a no-op save.
@@ -439,7 +461,7 @@ async function send() {
     }
     await chat.sendMessage(convId.value, chanId.value, body, Object.keys(opts).length ? opts : undefined);
     text.value = '';
-    staged.value = [];
+    clearStaged();
     replyingTo.value = null;
     await scrollToBottom();
   } finally {
@@ -454,12 +476,18 @@ async function onPickFiles(e: Event) {
   const input = e.target as HTMLInputElement;
   const files = input.files;
   if (!files?.length) return;
+  // Hand focus to the composer so Enter sends the message rather than
+  // re-triggering the (now-focused) attach button.
+  composer.value?.focus();
   attaching.value = true;
   attachError.value = '';
   const failed: string[] = [];
   for (const file of files) {
     try {
-      staged.value.push(await encryptAndUploadFile(file));
+      const ref = await encryptAndUploadFile(file);
+      // Thumbnail from the original picked bytes — no round-trip decrypt.
+      if (ref.type.startsWith('image/')) stagedPreviews.value[ref.id] = URL.createObjectURL(file);
+      staged.value.push(ref);
     } catch (err) {
       failed.push(`${file.name} — ${err instanceof Error ? err.message : 'upload failed'}`);
     }
@@ -470,6 +498,7 @@ async function onPickFiles(e: Event) {
 }
 
 function removeStaged(id: string) {
+  revokePreview(id);
   staged.value = staged.value.filter((a) => a.id !== id);
 }
 
@@ -756,9 +785,15 @@ async function sendGif(gif: GifRef) {
           <span
             v-for="a in staged"
             :key="a.id"
-            class="flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50 py-1 pl-2 pr-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+            class="flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50 py-1 pl-1.5 pr-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
           >
-            <IconImage v-if="a.type.startsWith('image/')" class="h-3.5 w-3.5 shrink-0" />
+            <img
+              v-if="stagedPreviews[a.id]"
+              :src="stagedPreviews[a.id]"
+              :alt="a.name"
+              class="h-10 w-10 shrink-0 rounded-md object-cover"
+            />
+            <IconImage v-else-if="a.type.startsWith('image/')" class="h-3.5 w-3.5 shrink-0" />
             <IconPaperclip v-else class="h-3.5 w-3.5 shrink-0" />
             <span class="max-w-[160px] truncate">{{ a.name }}</span>
             <button class="flex items-center rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Remove" @click="removeStaged(a.id)"><IconX class="h-3.5 w-3.5" /></button>
