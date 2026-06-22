@@ -1,5 +1,5 @@
 import type { AttachmentRef } from '@notes/shared';
-import { encryptBlob } from './crypto';
+import { decryptBlob, encryptBlob } from './crypto';
 import { nameForType } from './fileMeta';
 import { optimizeImage } from './imageOptimize';
 import { optimizeImages } from './privacy';
@@ -30,4 +30,12 @@ export async function encryptAndUploadFile(file: File): Promise<AttachmentRef> {
   const { ciphertext, key, iv } = await encryptBlob(data);
   const { id } = await api.attachmentUpload(ciphertext);
   return { id, name, type, size: data.length, key, iv };
+}
+
+/** Download one attachment's ciphertext and decrypt it locally to its bytes.
+ *  Decryption is local, so there's no remote render (no IP leak). Shared by the
+ *  inline image grid and the file-download chip. */
+export async function decryptAttachment(ref: AttachmentRef): Promise<Uint8Array> {
+  const ct = await api.attachmentDownload(ref.id);
+  return decryptBlob(ct, ref.key, ref.iv);
 }
