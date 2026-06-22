@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
 // An in-memory settings store standing in for the server, so we can exercise the
@@ -23,6 +23,14 @@ beforeEach(() => {
   store.clear();
   localStorage.clear();
   vi.clearAllMocks();
+});
+
+afterEach(() => {
+  // Cancel any pending ~800ms debounced push before the next test. Otherwise an
+  // orphaned timer fires later — during a *different* test — and clobbers the
+  // shared `store`, which flaked the persistence round-trip under suite load.
+  // $dispose stops the store's scope, firing its onScopeDispose (clears the timer).
+  useOrgStore().$dispose();
 });
 
 describe('organization store — folders', () => {
@@ -171,9 +179,9 @@ describe('organization store — encrypted persistence', () => {
     const f = org1.createFolder('Work');
     org1.setNoteFolder('n1', f);
     org1.pin('conv1', 'note', 'n1');
-    // Flush the debounced push.
-    // The remote push is debounced ~800ms; wait comfortably past it (the default
-    // 1s waitFor can race the debounce under full-suite load).
+    // The remote push is debounced ~800ms; wait comfortably past it. With stray
+    // timers from earlier tests now cancelled in afterEach, nothing else can
+    // overwrite this test's blob between the push and the reload below.
     await vi.waitFor(() => expect(api.settingPut).toHaveBeenCalled(), { timeout: 3000 });
 
     // The persisted blob is ciphertext, not plaintext folder names.
