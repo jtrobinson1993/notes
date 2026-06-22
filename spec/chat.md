@@ -412,13 +412,25 @@ use), without a second key-distribution mechanism.
 
 The composer (`+` button) uploads each picked file immediately and stages it as
 a removable chip; **Send** embeds the staged refs with the (optional) text.
-Rendering (`ChatAttachment.vue`) decrypts the blob locally to an object URL —
-images inline, other files as a download chip. Decryption is local, so (like
-note attachments) there's **no remote fetch and no IP leak**. The per-file size
-cap mirrors the server's 32 MiB.
+Rendering splits a message's refs (`ChatAttachments.vue`): images collapse into a
+single **image grid**, other files follow as download chips. Each blob is
+decrypted locally (`decryptAttachment` → `lib/attachments.ts`) to an object URL,
+so (like note attachments) there's **no remote fetch and no IP leak**. The
+per-file size cap mirrors the server's 32 MiB.
 
-An inline image is **clickable**: it opens `ImageLightbox.vue`, a full-bleed
-viewer (reka-ui Dialog; Escape / overlay-click / close-button dismiss). A plain
+A message's images render as a **grid** (`ChatImageGrid.vue`): one image shows at
+its natural aspect; two or four tile in two columns, everything else in three
+(square, cover-cropped thumbnails). Past **5** images the first five tiles show
+and the remainder collapse behind a **`+N`** badge on the last visible tile —
+clicking it opens the lightbox at that image so the arrows reveal the rest. The
+visible-count / overflow / column math is the pure, unit-tested
+`lib/imageGallery.ts` (`galleryLayout`); `stepIndex` clamps lightbox paging to
+the batch (no wrap).
+
+Clicking a tile opens `ImageLightbox.vue`, a full-bleed viewer (reka-ui Dialog;
+Escape / overlay-click / close-button dismiss) shared across the batch:
+**left/right arrows** (and the **←/→ keys**) page through the message's images,
+hidden at the ends. Swapping the shown image resets zoom/pan. A plain
 **click toggles** between fit-to-screen and a zoomed-in view anchored on the
 cursor; **click-and-hold drags** to pan once zoomed (the wheel also zooms toward
 the cursor). The pan/zoom math is the pure, unit-tested `lib/imageZoom.ts`
@@ -428,13 +440,15 @@ file metadata — name, pixel **dimensions** (read from the loaded image's natur
 size), **size**, and **format** (`formatBytes` / `formatMime` in
 `lib/fileMeta.ts`, also unit-tested).
 
-Opening/closing **morphs** the thumbnail into the modal image via the View
-Transitions API: both elements share a temporary `view-transition-name` (per
-attachment id, assigned only while a transition is in flight), and the
+Opening/closing **morphs** the active thumbnail into the modal image via the View
+Transitions API: both elements share a temporary `view-transition-name` (keyed to
+the **currently-shown** image's attachment id, assigned only while a transition is
+in flight — so paging between photos doesn't morph, only open/close, and an image
+hidden behind `+N` simply cross-fades since it has no tile to pair with). The
 open/close state change is wrapped in `withViewTransition`
 (`lib/viewTransition.ts`, which feature-detects and respects
 `prefers-reduced-motion`, otherwise mutating directly). The lightbox is **fully
-controlled** by `ChatAttachment` so it can't tear down before the morph captures
+controlled** by `ChatImageGrid` so it can't tear down before the morph captures
 its snapshot. The transition captures **only the image** (`excludeRoot` drops the
 default whole-page `root` snapshot); the backdrop and chrome stay live and fade
 with their own CSS, so the blur ramps smoothly and the chrome fades in after the
