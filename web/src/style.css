@@ -121,6 +121,18 @@ body {
   @apply bg-zinc-50 text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100;
 }
 
+/* Inset the app shell from the device safe areas (notch / translucent status
+   bar / home indicator). `viewport-fit=cover` + the translucent iOS status bar
+   make the webview full-bleed, so the chrome pads itself; the body background
+   (theme-aware) shows through the insets. Zero on devices without safe areas
+   (desktop), so it's inert there. */
+.app-safe {
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+}
+
 /* Tailwind v4 preflight sets cursor: default on buttons; restore pointer for
    everything clickable (incl. reka-ui triggers/menu items, which render with
    role attributes rather than <button>). */

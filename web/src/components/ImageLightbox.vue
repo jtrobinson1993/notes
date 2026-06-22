@@ -145,7 +145,7 @@ function onWheel(e: WheelEvent) {
     <DialogPortal>
       <DialogOverlay class="lb-overlay fixed inset-0 z-lightbox bg-black/80 backdrop-blur-sm" />
       <DialogContent
-        class="fixed inset-0 z-lightbox flex items-center justify-center overflow-hidden focus:outline-none"
+        class="app-safe fixed inset-0 z-lightbox flex items-center justify-center overflow-hidden focus:outline-none"
         @pointerdown.self="close"
       >
         <DialogTitle class="sr-only">{{ alt || 'Image' }}</DialogTitle>

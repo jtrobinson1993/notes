@@ -462,7 +462,7 @@ async function importFiles(event: Event) {
              sidebar) when a section is open, else hidden; desktop: inline. -->
         <div
           class="min-w-0 grow overflow-y-auto p-6"
-          :class="isMobile ? (mobileSectionOpen ? 'fixed inset-0 z-nav bg-zinc-50 dark:bg-zinc-950' : 'hidden') : ''"
+          :class="isMobile ? (mobileSectionOpen ? 'app-safe fixed inset-0 z-nav bg-zinc-50 dark:bg-zinc-950' : 'hidden') : ''"
         >
           <button
             v-if="isMobile && mobileSectionOpen"

@@ -50,5 +50,9 @@ watch(
 </script>
 
 <template>
-  <RouterView />
+  <!-- Inset every page from the device safe areas (one boundary for the whole
+       app, incl. pre-auth pages). env() insets are 0 on desktop, so it's inert. -->
+  <div class="app-safe h-full">
+    <RouterView />
+  </div>
 </template>

@@ -3,7 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#18181b" />
+    <!-- Theme-color tracks the app's light/dark themes so the mobile browser /
+         status-bar chrome matches (light: zinc-50, dark: zinc-950). -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b" />
+    <!-- Installable PWA: launch chrome-less on Android (mobile-web-app-capable)
+         and iOS (apple-*), with an edge-to-edge translucent iOS status bar that
+         pairs with viewport-fit=cover + the safe-area insets in style.css. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Notes" />
+    <!-- Don't auto-link phone numbers in message text on iOS. -->
+    <meta name="format-detection" content="telephone=no" />
     <link rel="icon" href="/icons/icon-192.png" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <title>Notes</title>
