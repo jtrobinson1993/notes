@@ -10,7 +10,7 @@ import NewChatModal from './NewChatModal.vue';
 import SidebarTooltip from './SidebarTooltip.vue';
 import ActiveBar from './ActiveBar.vue';
 import { conversationInitial, conversationTitle } from '../lib/convName';
-import { homeOpen, isMobile, openPage, showChannels } from '../lib/mobileNav';
+import { chatPane, closeNote, isMobile, noteOpen, showChannels } from '../lib/mobileNav';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
 import IconPanelLeftClose from '~icons/mynaui/panel-left-close';
 import IconMessagePlus from '~icons/mynaui/message-plus';
@@ -32,11 +32,13 @@ async function logout() {
 }
 
 const STORAGE_KEY = 'sidebar-expanded';
-const expanded = ref(localStorage.getItem(STORAGE_KEY) === '1');
+const expandedPref = ref(localStorage.getItem(STORAGE_KEY) === '1');
+// The rail only ever expands on desktop; a phone keeps it a narrow icon strip.
+const expanded = computed(() => !isMobile.value && expandedPref.value);
 
 function toggle() {
-  expanded.value = !expanded.value;
-  localStorage.setItem(STORAGE_KEY, expanded.value ? '1' : '0');
+  expandedPref.value = !expandedPref.value;
+  localStorage.setItem(STORAGE_KEY, expandedPref.value ? '1' : '0');
 }
 
 const newChatOpen = ref(false);
@@ -66,19 +68,32 @@ const activeConvId = computed(() => {
   return m ? m[1] : null;
 });
 
-// Active-item indicators are pointless on mobile (the sidebar isn't visible
-// while you're inside a chat), so suppress them there.
-const isNotesActive = computed(() => !isMobile.value && router.currentRoute.value.path === '/');
+// Highlight the active conversation/Notes in the rail — it stays visible beside
+// the list on mobile too, so the indicator is meaningful there.
+const isNotesActive = computed(() => router.currentRoute.value.path === '/');
 function chatActive(id: string): boolean {
-  return !isMobile.value && activeConvId.value === id;
+  return activeConvId.value === id;
 }
 
-// --- Mobile: this sidebar is the full-screen "home". It fills the screen while
-// home is open and is hidden once you've opened a page (chat/notes/settings),
-// which cover it; on desktop it's always the normal rail. ---
+// --- Mobile: the rail is a narrow icon strip shown beside an intermediary list
+// (chat channels / notes list). It steps aside (hidden) only when a leaf owns
+// the whole screen — a channel's messages or an open note — so you never land on
+// a bare full-width menu. On desktop it's always the normal rail. ---
+const railHidden = computed(() => {
+  if (!isMobile.value) return false;
+  const p = router.currentRoute.value.path;
+  if (p.startsWith('/chat/')) {
+    // Only step aside for a real, loaded conversation's messages — otherwise a
+    // missing/not-yet-loaded chat would hide the rail into a blank screen.
+    const id = activeConvId.value;
+    return chatPane.value === 'messages' && !!id && chat.conversations.some((c) => c.id === id);
+  }
+  if (p === '/') return noteOpen.value;
+  return false; // friends/settings keep the rail for navigation
+});
 const navClass = computed(() => {
-  if (isMobile.value) return homeOpen.value ? 'w-full' : 'hidden';
-  return expanded.value ? 'w-56' : 'w-14';
+  if (isMobile.value) return railHidden.value ? 'hidden' : 'w-14';
+  return expandedPref.value ? 'w-56' : 'w-14';
 });
 </script>
 
@@ -138,7 +153,7 @@ const navClass = computed(() => {
               <template v-else>{{ convInitial(conv) }}</template>
               <span
                 v-if="chat.unreadCount(conv.id) > 0 && !expanded"
-                class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-semibold text-white"
+                class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white"
               >
                 {{ chat.unreadCount(conv.id) }}
               </span>
@@ -146,7 +161,7 @@ const navClass = computed(() => {
             <span v-if="expanded" class="min-w-0 grow truncate">{{ convName(conv) }}</span>
             <span
               v-if="chat.unreadCount(conv.id) > 0 && expanded"
-              class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-semibold text-white"
+              class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white"
             >
               {{ chat.unreadCount(conv.id) }}
             </span>
@@ -159,7 +174,7 @@ const navClass = computed(() => {
             to="/"
             aria-label="Notes"
             class="group relative flex items-center gap-2 text-sm"
-            @click="openPage()"
+            @click="closeNote()"
             :class="[
               'px-2 py-1',
               expanded ? '' : 'justify-center',
@@ -189,7 +204,7 @@ const navClass = computed(() => {
         >
           {{ notes.syncError ? 'offline' : 'syncing…' }}
         </p>
-        <SidebarTooltip :label="expanded ? 'Collapse' : 'Expand'" :disabled="expanded">
+        <SidebarTooltip v-if="!isMobile" :label="expanded ? 'Collapse' : 'Expand'" :disabled="expanded">
           <button
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
@@ -218,7 +233,6 @@ const navClass = computed(() => {
             aria-label="Friends"
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
-            @click="openPage()"
           >
             <IconUsers class="h-5 w-5 shrink-0" />
             <span v-if="expanded" class="truncate">Friends</span>
@@ -229,7 +243,6 @@ const navClass = computed(() => {
             to="/settings"
             aria-label="Settings"
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
-            @click="openPage()"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
           >
             <IconCog class="h-5 w-5 shrink-0" />

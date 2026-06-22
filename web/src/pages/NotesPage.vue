@@ -14,7 +14,7 @@ import { toPlainText } from '../lib/transfer';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import { useOrgStore, type OrgFolder } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
-import { goHome, homeOpen, isMobile } from '../lib/mobileNav';
+import { isMobile, noteOpen } from '../lib/mobileNav';
 import IconFolderMinus from '~icons/mynaui/folder-minus';
 import IconFolderPlus from '~icons/mynaui/folder-plus';
 import IconNote from '~icons/mynaui/file-text';
@@ -22,7 +22,6 @@ import IconPencil from '~icons/mynaui/pencil';
 import IconTrash from '~icons/mynaui/trash';
 import IconShare from '~icons/mynaui/share';
 import IconMenu from '~icons/mynaui/menu';
-import IconChevronLeft from '~icons/mynaui/chevron-left';
 
 // Folder being shared (opens FolderShareDialog).
 const shareFolder = ref<{ id: string; name: string } | null>(null);
@@ -180,12 +179,20 @@ function onDropOnRoot() {
   endDrag();
 }
 
-// Open the most recently edited note once notes are ready (or a fresh note if
-// there are none). Desktop only: on mobile the list is the landing view.
+// Open a note once notes are ready: prefer the note you had open last (restores
+// your last view on launch), else — desktop only — the most recently edited (or
+// a fresh one). On mobile with nothing to restore, the list is the landing view.
+const LAST_NOTE_KEY = 'notes:last-open';
 let autoOpened = false;
 async function autoOpen() {
-  if (autoOpened || selectedId.value || isMobile.value) return;
+  if (autoOpened || selectedId.value) return;
   autoOpened = true;
+  const last = localStorage.getItem(LAST_NOTE_KEY);
+  if (last && notes.notes.has(last)) {
+    selectedId.value = last;
+    return;
+  }
+  if (isMobile.value) return;
   selectedId.value = notes.sorted[0]?.id ?? (await notes.create());
 }
 
@@ -222,6 +229,17 @@ watch(
 
 const selected = computed(() => (selectedId.value ? (notes.notes.get(selectedId.value) ?? null) : null));
 
+// Mobile: an open note is a full-screen leaf, so the rail steps aside. Tapping
+// the Notes tab in the rail closes the note (`noteOpen` → false) to reveal the
+// list again. Persist the open note so launching restores it.
+watch(selectedId, (id) => {
+  noteOpen.value = !!id;
+  localStorage.setItem(LAST_NOTE_KEY, id ?? '');
+});
+watch(noteOpen, (open) => {
+  if (!open && isMobile.value) selectedId.value = null;
+});
+
 async function newNote() {
   selectedId.value = await notes.create();
 }
@@ -240,23 +258,13 @@ function excerpt(body: string): string {
 <template>
   <AppLayout>
     <!-- On mobile this hides while the home (app sidebar) is open. -->
-    <div class="h-full" :class="isMobile && homeOpen ? 'hidden' : 'flex'">
+    <div class="flex h-full">
       <aside
         class="relative flex w-full flex-col border-r border-zinc-200 md:w-[var(--sw)] dark:border-zinc-800"
         :class="{ 'hidden md:flex': selected }"
         :style="{ '--sw': `${sidebarWidth}px` }"
       >
         <div class="flex items-center gap-2 p-3">
-          <!-- Mobile: back to the home menu (this list is full-screen). -->
-          <button
-            v-if="isMobile"
-            type="button"
-            class="-ml-1 shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            aria-label="Back to menu"
-            @click="goHome()"
-          >
-            <IconChevronLeft class="h-5 w-5" />
-          </button>
           <input
             v-model="search"
             placeholder="Search notes…"

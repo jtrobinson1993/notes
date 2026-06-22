@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { reactive, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import type {
   AttachmentRef,
   ChannelInfo,
@@ -229,6 +229,9 @@ export const useChatStore = defineStore('chat', () => {
     if (idx >= 0) conversations.value[idx] = conv;
     else conversations.value = [...conversations.value, conv];
     void refreshGroupIcon(conv);
+    // The server only sends handles; overlay contacts' decrypted real names so a
+    // freshly created/opened DM shows the right name without a full page reload.
+    void hydrateNames();
   }
 
   /** Rename a group (owner/admin). Empty clears back to the member-derived title. */
@@ -743,6 +746,12 @@ export const useChatStore = defineStore('chat', () => {
     return chans.reduce((sum, ch) => sum + Math.max(0, ch.lastSeq - ch.lastReadSeq), 0);
   }
 
+  /** Unread across every conversation (excluding threads) — drives the browser
+   *  tab title and the installed-PWA app-icon badge. */
+  const totalUnread = computed(() =>
+    conversations.value.filter((c) => c.kind !== 'thread').reduce((sum, c) => sum + unreadCount(c.id), 0),
+  );
+
   function reset(): void {
     conversations.value = [];
     messages.value = {};
@@ -788,6 +797,7 @@ export const useChatStore = defineStore('chat', () => {
     markRead,
     handleFrame,
     unreadCount,
+    totalUnread,
     reset,
   };
 });

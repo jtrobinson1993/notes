@@ -105,11 +105,21 @@ export const useProfileStore = defineStore('profile', () => {
     epoch.value = res.epoch;
   }
 
-  /** Save my profile (bio/avatar). Generates the profile key on first use. */
+  /** Save my profile (bio/avatar). Generates the profile key on first use.
+   *  Replaces the blob wholesale — callers must include every field they want to
+   *  keep; prefer `updateProfileData` to avoid accidentally dropping one. */
   async function save(data: ProfileData): Promise<void> {
     myData.value = data;
     if (!profileKey) profileKey = generateProfileKey();
     await persist(epoch.value);
+  }
+
+  /** Merge a partial update into my profile blob and persist, preserving fields
+   *  the patch omits — so editing the avatar/bio can never wipe the encrypted
+   *  display name (the bug where a contact's name reverted to their handle after
+   *  the owner changed their avatar). A field set to `undefined` clears it. */
+  async function updateProfileData(patch: Partial<ProfileData>): Promise<void> {
+    await save({ ...myData.value, ...patch });
   }
 
   async function setVisibility(v: boolean): Promise<void> {
@@ -212,6 +222,7 @@ export const useProfileStore = defineStore('profile', () => {
     cache,
     load,
     save,
+    updateProfileData,
     setVisibility,
     setLinkPreviews,
     rotate,

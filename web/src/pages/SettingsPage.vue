@@ -17,7 +17,7 @@ import AvatarCropper from '../components/AvatarCropper.vue';
 import { addCustomEmoji, customEmoji, loadCustomEmoji, removeCustomEmoji } from '../lib/emoji/custom';
 import { resolveEmoji } from '../lib/emoji';
 import { NAME_COLORS } from '@notes/shared';
-import { goHome, homeOpen, isMobile } from '../lib/mobileNav';
+import { isMobile } from '../lib/mobileNav';
 import IconChevronLeft from '~icons/mynaui/chevron-left';
 import {
   denoiseStrength,
@@ -138,7 +138,7 @@ async function saveDisplayName() {
   displayNameBusy.value = true;
   displayNameMsg.value = '';
   try {
-    await profile.save({ ...profile.myData, displayName: name });
+    await profile.updateProfileData({ displayName: name });
     try {
       await api.profileSet({ displayName: null });
     } catch {
@@ -250,11 +250,14 @@ async function saveProfile() {
   profileBusy.value = true;
   profileMsg.value = '';
   try {
-    const data: { bio?: string; avatar?: string } = {};
+    // Merge into the existing blob so we never drop the encrypted display name
+    // (omitting it here re-distributed a blank name to every contact). `undefined`
+    // clears the field; the display name is left untouched.
     const trimmed = bio.value.trim();
-    if (trimmed) data.bio = trimmed.slice(0, BIO_MAX);
-    if (avatar.value) data.avatar = avatar.value;
-    await profile.save(data);
+    await profile.updateProfileData({
+      bio: trimmed ? trimmed.slice(0, BIO_MAX) : undefined,
+      avatar: avatar.value || undefined,
+    });
     profileOk.value = true;
     profileMsg.value = 'Profile saved.';
     profileDirty.value = false;
@@ -422,18 +425,8 @@ async function importFiles(event: Event) {
 
 <template>
   <AppLayout>
-    <!-- On mobile this hides while the home (app sidebar) is open. -->
-    <div class="h-full flex-col" :class="isMobile && homeOpen ? 'hidden' : 'flex'">
+    <div class="flex h-full flex-col">
       <div class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
-        <button
-          v-if="isMobile"
-          type="button"
-          class="-ml-2 shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          aria-label="Back to menu"
-          @click="goHome()"
-        >
-          <IconChevronLeft class="h-5 w-5" />
-        </button>
         <h1 class="text-2xl font-bold">Settings</h1>
         <span class="grow" />
         <RouterLink
@@ -469,7 +462,7 @@ async function importFiles(event: Event) {
              sidebar) when a section is open, else hidden; desktop: inline. -->
         <div
           class="min-w-0 grow overflow-y-auto p-6"
-          :class="isMobile ? (mobileSectionOpen ? 'fixed inset-0 z-nav bg-zinc-50 dark:bg-zinc-950' : 'hidden') : ''"
+          :class="isMobile ? (mobileSectionOpen ? 'app-safe fixed inset-0 z-nav bg-zinc-50 dark:bg-zinc-950' : 'hidden') : ''"
         >
           <button
             v-if="isMobile && mobileSectionOpen"

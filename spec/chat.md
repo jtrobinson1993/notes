@@ -684,6 +684,11 @@ refetch the channel list after a create/rename/reorder/delete.
   unread, with a conversation's unread = the **sum of its channels'** unread.
   Channel actions (`createChannel`/`renameChannel`/`reorderChannels`/
   `deleteChannel`) plus an `activeChannelId` for reconnect backfill.
+- Unread is surfaced as a **red** count badge on the conversation (rail) and
+  channel (`ChatSidebar`) rows. The store also exposes `totalUnread` (sum across
+  non-thread conversations); `App.vue` mirrors it into the **browser tab title**
+  (`(n) …`) and the installed-PWA **app-icon badge** (`navigator.setAppBadge`,
+  cleared at zero; a no-op where the Badging API is unavailable).
 - `ConversationView` takes a `channelId` prop (default = general) and
   re-activates when the channel changes. The active channel lives in the **route**
   (`/chat/:id` = general, `/chat/:id/:channelId` = an extra channel), so a refresh

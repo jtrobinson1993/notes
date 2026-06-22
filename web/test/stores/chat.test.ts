@@ -584,3 +584,17 @@ describe('private channels — grant / revoke (v5)', () => {
     expect(api.conversations).toHaveBeenCalled();
   });
 });
+
+describe('totalUnread', () => {
+  it('sums unread across conversations and ignores threads', async () => {
+    const kp = await myKeyPair();
+    const sealed = await sealKey(kp.publicKey, generateConversationKey());
+    const store = useChatStore();
+    store.conversations = [
+      convTo(kp.publicKey, sealed, { id: 'a', lastSeq: 5, lastReadSeq: 2 }), // 3 unread
+      convTo(kp.publicKey, sealed, { id: 'b', lastSeq: 4, lastReadSeq: 4 }), // caught up
+      convTo(kp.publicKey, sealed, { id: 't', kind: 'thread', lastSeq: 9, lastReadSeq: 0 }), // excluded
+    ];
+    expect(store.totalUnread).toBe(3);
+  });
+});

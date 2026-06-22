@@ -34,7 +34,7 @@ const open = defineModel<boolean>('open', { default: false });
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-modal bg-black/40 backdrop-blur-xs" />
       <DialogContent
-        class="fixed inset-0 z-modal flex flex-col bg-white shadow-xl dark:bg-zinc-900 sm:inset-auto sm:left-1/2 sm:top-1/2 sm:max-h-[80vh] sm:w-[90vw] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
+        class="app-safe fixed inset-0 z-modal flex flex-col bg-white shadow-xl dark:bg-zinc-900 sm:inset-auto sm:left-1/2 sm:top-1/2 sm:max-h-[80vh] sm:w-[90vw] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
         :class="maxWidth"
       >
         <div class="flex items-start gap-3 p-5 pb-3">
