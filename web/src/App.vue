@@ -27,10 +27,6 @@ watch(
   { immediate: true },
 );
 
-for (const event of ['pointerdown', 'keydown', 'wheel'] as const) {
-  window.addEventListener(event, () => session.touch(), { passive: true });
-}
-
 // Chat (and decrypted notes) must not outlive the master key: connect the chat
 // socket when the session unlocks, tear it down on lock/logout.
 watch(

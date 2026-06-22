@@ -18,7 +18,6 @@ import { deriveRecoveryAuthKey, generateRecoveryCode, parseRecoveryCode } from '
 import { authenticatePasskey, registerPasskey } from '../lib/webauthn';
 
 const MK_STORAGE_KEY = 'notes:mk';
-const AUTOLOCK_KEY = 'notes:autolock-minutes';
 
 export const useSessionStore = defineStore('session', () => {
   const ready = ref(false);
@@ -26,10 +25,13 @@ export const useSessionStore = defineStore('session', () => {
   const appName = ref('Notes');
   const user = ref<UserInfo | null>(null);
   const hasKeys = ref(false);
+  // The master key lives only in memory for the session, mirrored into
+  // sessionStorage so an in-tab reload restores it without re-prompting. There
+  // is no inactivity auto-lock: the device's own lock screen is the security
+  // boundary, and the key is dropped when the tab/app fully closes
+  // (sessionStorage is per-tab) or on a manual Lock. It is deliberately never
+  // written to persistent storage, which would expose it to XSS at rest.
   const mk = ref<Uint8Array | null>(null);
-  const autoLockMinutes = ref(Number(localStorage.getItem(AUTOLOCK_KEY) ?? 15));
-  let lastActivity = Date.now();
-  let lockTimer: ReturnType<typeof setInterval> | null = null;
 
   const loggedIn = computed(() => user.value !== null);
   const unlocked = computed(() => mk.value !== null);
@@ -38,13 +40,10 @@ export const useSessionStore = defineStore('session', () => {
     mk.value = bytes;
     if (bytes) sessionStorage.setItem(MK_STORAGE_KEY, b64(bytes));
     else sessionStorage.removeItem(MK_STORAGE_KEY);
-    touch();
   }
 
-  function touch(): void {
-    lastActivity = Date.now();
-  }
-
+  /** Manual lock (the sidebar "Lock now"): drop the key from memory and the
+   *  per-tab sessionStorage mirror. */
   function lock(): void {
     setMk(null);
     keyPair = null;
@@ -65,20 +64,6 @@ export const useSessionStore = defineStore('session', () => {
     return keyPair;
   }
 
-  function startLockTimer(): void {
-    if (lockTimer) return;
-    lockTimer = setInterval(() => {
-      if (mk.value && autoLockMinutes.value > 0 && Date.now() - lastActivity > autoLockMinutes.value * 60_000) {
-        lock();
-      }
-    }, 10_000);
-  }
-
-  function setAutoLock(minutes: number): void {
-    autoLockMinutes.value = minutes;
-    localStorage.setItem(AUTOLOCK_KEY, String(minutes));
-  }
-
   async function init(): Promise<void> {
     if (ready.value) return;
     try {
@@ -94,7 +79,6 @@ export const useSessionStore = defineStore('session', () => {
       // 401 -> not logged in; network error -> handled by pages
     } finally {
       ready.value = true;
-      startLockTimer();
     }
   }
 
@@ -226,9 +210,9 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   return {
-    ready, needsSetup, appName, user, hasKeys, mk, autoLockMinutes,
+    ready, needsSetup, appName, user, hasKeys, mk,
     loggedIn, unlocked,
-    init, touch, lock, setAutoLock, setMk, getKeyPair,
+    init, lock, setMk, getKeyPair,
     loginWithPasskey, register, setupKeys, recover, rotateRecoveryCode, addPasskey, unwrapWithPrf, logout,
   };
 });

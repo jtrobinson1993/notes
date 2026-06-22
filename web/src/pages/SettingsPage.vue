@@ -59,7 +59,6 @@ function selectSection(id: string) {
 
 const theme = ref<Theme>(getTheme());
 const palette = ref<Palette>(getPalette());
-const autoLock = ref(String(session.autoLockMinutes));
 const displayName = ref('');
 const displayNameMsg = ref('');
 const displayNameOk = ref(false);
@@ -331,10 +330,6 @@ function applyTheme() {
 
 function applyPalette() {
   setPalette(palette.value);
-}
-
-function applyAutoLock() {
-  session.setAutoLock(Number(autoLock.value));
 }
 
 async function rotateCode() {
@@ -653,20 +648,8 @@ async function importFiles(event: Event) {
         </div>
       </section>
 
-      <!-- Security: auto-lock + passkeys + recovery code -->
+      <!-- Security: passkeys + recovery code -->
       <section v-show="activeSection === 'security'" class="space-y-3">
-        <h2 class="text-lg font-semibold">Auto-lock</h2>
-        <div class="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          <span class="text-sm">Auto-lock after inactivity</span>
-          <select v-model="autoLock" class="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900" @change="applyAutoLock">
-            <option value="1">1 minute</option>
-            <option value="5">5 minutes</option>
-            <option value="15">15 minutes</option>
-            <option value="60">1 hour</option>
-            <option value="0">Never</option>
-          </select>
-        </div>
-
         <h2 class="text-lg font-semibold">Notifications</h2>
         <div class="flex items-center justify-between gap-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <div>

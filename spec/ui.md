@@ -131,7 +131,7 @@ Create. One friend → a **DM**; several → a **group** (`chat.openGroup`).
 ## Settings
 
 `SettingsPage.vue` is split into **sections** (Profile, Appearance, **Security**
-— auto-lock + passkeys + recovery code, Privacy, **Voice**, Custom emoji, Import &
+— passkeys + recovery code, Privacy, **Voice**, Custom emoji, Import &
 export, plus Invites / Users for admins) navigated by a **left rail within the
 page** — one section shown at a time (`v-show`, so form state persists across
 switches), with the "Settings" title + close in a fixed top bar above the split.
