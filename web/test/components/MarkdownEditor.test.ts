@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import MarkdownEditor from '../../src/components/MarkdownEditor.vue';
+import { isMobile } from '../../src/lib/mobileNav';
 
 const wrappers: VueWrapper[] = [];
 function makeComposer(props: Record<string, unknown> = {}) {
@@ -22,6 +23,7 @@ function pressKey(w: VueWrapper, key: string) {
 
 afterEach(() => {
   for (const w of wrappers.splice(0)) w.unmount();
+  isMobile.value = false;
 });
 
 describe('MarkdownEditor composer mode', () => {
@@ -57,5 +59,26 @@ describe('MarkdownEditor composer mode', () => {
     const w = makeComposer({ modelValue: 'typing' });
     pressKey(w, 'ArrowUp');
     expect(w.emitted('editLast')).toBeUndefined();
+  });
+});
+
+describe('MarkdownEditor composer mode on mobile', () => {
+  it('Enter inserts a newline instead of submitting', () => {
+    isMobile.value = true;
+    const w = makeComposer({ modelValue: 'hello' });
+    pressEnter(w);
+    expect(w.emitted('submit')).toBeUndefined();
+    const updates = w.emitted('update:modelValue') as string[][] | undefined;
+    expect(updates?.at(-1)?.[0]).toContain('\n');
+  });
+
+  it('Cmd/Ctrl+Enter still submits on mobile', () => {
+    isMobile.value = true;
+    const w = makeComposer({ modelValue: 'hello' });
+    const content = w.element.querySelector('.cm-content') as HTMLElement;
+    // jsdom reports a non-mac platform, so CodeMirror's "Mod" maps to Ctrl.
+    content.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+    expect(w.emitted('submit')).toHaveLength(1);
+    expect(w.emitted('update:modelValue')).toBeUndefined();
   });
 });

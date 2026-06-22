@@ -112,9 +112,30 @@
 }
 
 html,
-body,
-#app {
+body {
   height: 100%;
+}
+
+/* The app shell tracks the *visual* viewport height (set by trackViewportHeight
+   in JS) so it shrinks to the space above the on-screen keyboard instead of
+   being covered by it — keeping the chat header and the message composer in
+   view on mobile. Falls back to 100% before the var is set and on browsers
+   without visualViewport (where it equals the layout viewport anyway). */
+#app {
+  height: var(--app-height, 100%);
+}
+
+/* iOS Safari zooms the page when you focus a form control whose font is under
+   16px (text-base / 1rem at the default root size, which is the zoom
+   threshold). Bump editable controls to text-base on touch devices (coarse
+   pointers) so tapping an input or the chat composer never triggers that zoom. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select,
+  .cm-content {
+    @apply text-base;
+  }
 }
 
 body {

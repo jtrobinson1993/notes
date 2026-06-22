@@ -368,11 +368,17 @@ preview: code blocks, spoilers, colors, the selection toolbar), not a plain
   pane" to **auto-grow up to `max-height: 40vh`, then scroll**. Inside a list,
   **Enter continues the list** (new item, via `insertNewlineContinueMarkup`)
   instead of sending; **Cmd/Ctrl+Enter sends** regardless of list context.
+  **On mobile** (`isMobile`) **Enter inserts a newline** instead of sending —
+  the on-screen keyboard's return key behaves as expected, and sending is done
+  with the visible Send button (below); **Cmd/Ctrl+Enter still sends**.
 - **`placeholder`** — composer shows `Message…`.
 
-There is **no visible Send button** — Enter sends. An `sr-only` submit button
-remains for screen-reader/keyboard users. The composer's only visible controls
-are attach (📎) and the emoji/GIF picker.
+On **desktop** there is **no visible Send button** — Enter sends, and an
+`sr-only` submit button remains for screen-reader/keyboard users. On **mobile**
+a **visible Send button** (paper-plane icon, disabled until there's text or a
+staged attachment) sits at the end of the composer row, since Enter inserts a
+newline there. The composer's other visible controls are attach (📎) and the
+emoji/GIF picker.
 
 Messages already render through the same token renderer (`MarkdownView`), so a
 sent message renders with identical formatting to the live preview — no
