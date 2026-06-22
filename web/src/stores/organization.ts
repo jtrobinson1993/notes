@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, ref } from 'vue';
+import { computed, onScopeDispose, ref } from 'vue';
 import { api } from '../lib/api';
 import { unwrapKey, wrapKey } from '../lib/crypto';
 import { useSessionStore } from './session';
@@ -155,6 +155,12 @@ export const useOrgStore = defineStore('organization', () => {
     if (pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(() => void pushRemote(), 800);
   }
+  // Drop a still-pending debounced push if the store's scope is torn down (e.g.
+  // $dispose between tests), so an orphaned timer can't fire later and clobber a
+  // newer state. Harmless in the app, where the store lives for the session.
+  onScopeDispose(() => {
+    if (pushTimer) clearTimeout(pushTimer);
+  });
   async function pushRemote(): Promise<void> {
     if (!session.mk) return;
     const wrapped = await wrapKey(session.mk, new TextEncoder().encode(JSON.stringify(snapshot())), INFO_SETTINGS);

@@ -2,6 +2,8 @@
 import { computed, ref, watch } from 'vue';
 import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui';
 import IconX from '~icons/mynaui/x';
+import IconChevronLeft from '~icons/mynaui/chevron-left';
+import IconChevronRight from '~icons/mynaui/chevron-right';
 import { formatBytes, formatMime } from '../lib/fileMeta';
 import {
   CLICK_ZOOM,
@@ -31,10 +33,16 @@ const props = defineProps<{
   size?: number;
   type?: string;
   viewTransitionName?: string;
+  /** When viewing a multi-image batch: whether an earlier/later image exists.
+   *  Arrows (and ←/→ keys) only show/fire when the matching flag is set. */
+  hasPrev?: boolean;
+  hasNext?: boolean;
 }>();
-const emit = defineEmits<{ 'update:open': [boolean] }>();
+const emit = defineEmits<{ 'update:open': [boolean]; prev: []; next: [] }>();
 
 const close = () => emit('update:open', false);
+const goPrev = () => props.hasPrev && emit('prev');
+const goNext = () => props.hasNext && emit('next');
 
 const img = ref<HTMLImageElement | null>(null);
 const scale = ref(MIN_SCALE);
@@ -75,16 +83,24 @@ function onLoad(e: Event) {
   dims.value = { w: el.naturalWidth, h: el.naturalHeight };
 }
 
-// Fresh image each time it opens.
-watch(
-  () => props.open,
-  (v) => {
-    if (v) {
-      reset();
-      dims.value = null;
-    }
-  },
-);
+// Fresh image each time it opens — and each time we navigate to a different
+// image in the batch (the src swap), so zoom/pan don't carry across photos.
+watch([() => props.open, () => props.src], ([open]) => {
+  if (open) {
+    reset();
+    dims.value = null;
+  }
+});
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'ArrowLeft' && props.hasPrev) {
+    e.preventDefault();
+    goPrev();
+  } else if (e.key === 'ArrowRight' && props.hasNext) {
+    e.preventDefault();
+    goNext();
+  }
+}
 
 /** Cursor offset from the image's current on-screen centre, in px. */
 function relToCentre(e: PointerEvent | MouseEvent): Point {
@@ -147,6 +163,7 @@ function onWheel(e: WheelEvent) {
       <DialogContent
         class="app-safe fixed inset-0 z-lightbox flex items-center justify-center overflow-hidden focus:outline-none"
         @pointerdown.self="close"
+        @keydown="onKeydown"
       >
         <DialogTitle class="sr-only">{{ alt || 'Image' }}</DialogTitle>
         <img
@@ -176,6 +193,26 @@ function onWheel(e: WheelEvent) {
           @click="close"
         >
           <IconX class="h-6 w-6" />
+        </button>
+        <!-- Batch navigation. Hidden at the ends so you can't step past the
+             first/last image; ←/→ keys mirror these (see onKeydown). -->
+        <button
+          v-if="hasPrev"
+          type="button"
+          class="lb-chrome absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 hover:bg-white/15 hover:text-white focus:outline-none sm:left-4"
+          aria-label="Previous image"
+          @click="goPrev"
+        >
+          <IconChevronLeft class="h-7 w-7" />
+        </button>
+        <button
+          v-if="hasNext"
+          type="button"
+          class="lb-chrome absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white/80 hover:bg-white/15 hover:text-white focus:outline-none sm:right-4"
+          aria-label="Next image"
+          @click="goNext"
+        >
+          <IconChevronRight class="h-7 w-7" />
         </button>
         <div
           v-if="name"

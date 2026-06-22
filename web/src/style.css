@@ -144,7 +144,7 @@ select:not(:disabled) {
 }
 
 /* Image lightbox (ImageLightbox.vue). The open/close morph captures only the
-   image (ChatAttachment passes excludeRoot), so the rest of the page stays live
+   image (ChatImageGrid passes excludeRoot), so the rest of the page stays live
    and the backdrop + chrome animate with these CSS fades instead of a flat root
    cross-fade. `vt-exclude-root` drops the default root snapshot for the duration. */
 html.vt-exclude-root {

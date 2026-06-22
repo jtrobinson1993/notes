@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import MarkdownView from './MarkdownView.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import ChatAvatar from './ChatAvatar.vue';
 import ProfileDialog from './ProfileDialog.vue';
 import EmojiPicker from './EmojiPicker.vue';
-import ChatAttachment from './ChatAttachment.vue';
+import ChatAttachments from './ChatAttachments.vue';
 import LinkPreviewCard from './LinkPreviewCard.vue';
 import MessageActionsSheet from './MessageActionsSheet.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
@@ -46,11 +46,49 @@ const reachedStart = ref(false);
 const text = ref('');
 const sending = ref(false);
 const scroller = ref<HTMLElement>();
+const content = ref<HTMLElement>();
 const composer = ref<{ insertText: (s: string) => void; focus: () => void; focusEnd: () => void }>();
 const fileInput = ref<HTMLInputElement>();
 const staged = ref<AttachmentRef[]>([]);
+// Local object-URL thumbnails for staged images, keyed by ref id. Made from the
+// originally-picked File (no re-decrypt needed) and revoked on remove/send/unmount.
+const stagedPreviews = ref<Record<string, string>>({});
 const attaching = ref(false);
 const attachError = ref('');
+
+/** Drop a staged image's preview URL, if any, freeing the blob. */
+function revokePreview(id: string) {
+  const url = stagedPreviews.value[id];
+  if (url) {
+    URL.revokeObjectURL(url);
+    delete stagedPreviews.value[id];
+  }
+}
+
+/** Clear all staged attachments and their previews (after a send). */
+function clearStaged() {
+  for (const id of Object.keys(stagedPreviews.value)) revokePreview(id);
+  staged.value = [];
+}
+
+// While pinned to the bottom, keep glued there as the content height changes —
+// the robust counterpart to scrollToBottom's one-shot image-wait, since chat
+// images and avatars decrypt asynchronously and only mount (growing the height)
+// after the initial scroll. Gated on `pinned` so a user who scrolled up is never
+// yanked down.
+let contentObserver: ResizeObserver | null = null;
+onMounted(() => {
+  if (!content.value || typeof ResizeObserver === 'undefined') return;
+  contentObserver = new ResizeObserver(() => {
+    if (pinned.value && scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight;
+  });
+  contentObserver.observe(content.value);
+});
+
+onBeforeUnmount(() => {
+  contentObserver?.disconnect();
+  for (const id of Object.keys(stagedPreviews.value)) revokePreview(id);
+});
 const replyingTo = ref<ReplyRef | null>(null);
 // When set, the composer is editing this message's text (not sending a new one).
 // `original` is the text as-sent, to detect a no-op save.
@@ -439,7 +477,7 @@ async function send() {
     }
     await chat.sendMessage(convId.value, chanId.value, body, Object.keys(opts).length ? opts : undefined);
     text.value = '';
-    staged.value = [];
+    clearStaged();
     replyingTo.value = null;
     await scrollToBottom();
   } finally {
@@ -454,12 +492,18 @@ async function onPickFiles(e: Event) {
   const input = e.target as HTMLInputElement;
   const files = input.files;
   if (!files?.length) return;
+  // Hand focus to the composer so Enter sends the message rather than
+  // re-triggering the (now-focused) attach button.
+  composer.value?.focus();
   attaching.value = true;
   attachError.value = '';
   const failed: string[] = [];
   for (const file of files) {
     try {
-      staged.value.push(await encryptAndUploadFile(file));
+      const ref = await encryptAndUploadFile(file);
+      // Thumbnail from the original picked bytes — no round-trip decrypt.
+      if (ref.type.startsWith('image/')) stagedPreviews.value[ref.id] = URL.createObjectURL(file);
+      staged.value.push(ref);
     } catch (err) {
       failed.push(`${file.name} — ${err instanceof Error ? err.message : 'upload failed'}`);
     }
@@ -470,6 +514,7 @@ async function onPickFiles(e: Event) {
 }
 
 function removeStaged(id: string) {
+  revokePreview(id);
   staged.value = staged.value.filter((a) => a.id !== id);
 }
 
@@ -540,6 +585,11 @@ async function sendGif(gif: GifRef) {
       </div>
 
       <div ref="scroller" class="min-h-0 grow overflow-y-auto" :class="isMobile ? 'pt-2' : 'py-2'" @scroll="onScroll">
+        <!-- Content wrapper (min-h-full so the empty/loading states still center)
+             whose height a ResizeObserver watches — re-pinning to the bottom as
+             late async content (decrypted images, avatars, link previews) grows
+             it, so a refresh lands on the latest message. -->
+        <div ref="content" class="min-h-full">
         <!-- Older messages auto-load as the user scrolls up; this just reflects
              the in-flight fetch and marks the start of history. -->
         <div v-if="loadingOlder" class="flex justify-center py-2 text-xs text-zinc-400">Loading…</div>
@@ -669,10 +719,9 @@ async function sendGif(gif: GifRef) {
                   class="mt-1 w-full max-w-[260px] rounded-lg bg-zinc-100 dark:bg-zinc-800"
                   loading="lazy"
                 />
-                <ChatAttachment
-                  v-for="a in row.msg.attachments"
-                  :key="a.id"
-                  :attachment="a"
+                <ChatAttachments
+                  v-if="row.msg.attachments?.length"
+                  :attachments="row.msg.attachments"
                 />
                 <LinkPreviewCard v-if="row.msg.linkPreview" :preview="row.msg.linkPreview" />
                 <p
@@ -728,6 +777,7 @@ async function sendGif(gif: GifRef) {
           </div>
         </div>
         </template>
+        </div>
       </div>
 
       <div class="shrink-0 p-3">
@@ -757,9 +807,15 @@ async function sendGif(gif: GifRef) {
           <span
             v-for="a in staged"
             :key="a.id"
-            class="flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50 py-1 pl-2 pr-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+            class="flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50 py-1 pl-1.5 pr-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
           >
-            <IconImage v-if="a.type.startsWith('image/')" class="h-3.5 w-3.5 shrink-0" />
+            <img
+              v-if="stagedPreviews[a.id]"
+              :src="stagedPreviews[a.id]"
+              :alt="a.name"
+              class="h-10 w-10 shrink-0 rounded-md object-cover"
+            />
+            <IconImage v-else-if="a.type.startsWith('image/')" class="h-3.5 w-3.5 shrink-0" />
             <IconPaperclip v-else class="h-3.5 w-3.5 shrink-0" />
             <span class="max-w-[160px] truncate">{{ a.name }}</span>
             <button class="flex items-center rounded px-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Remove" @click="removeStaged(a.id)"><IconX class="h-3.5 w-3.5" /></button>

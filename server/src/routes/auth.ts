@@ -51,6 +51,18 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     appName: config.appName,
   }));
 
+  // Non-consuming check so the invite page can send an already-used or expired
+  // link to the login page instead of showing a doomed signup form. Returns only
+  // a boolean (no detail to aid token guessing); mirrors the gate in
+  // /api/register/options. Before first-run setup any token is moot (no invite
+  // required), so report valid and let the setup flow proceed.
+  app.get('/api/invite/:token', authLimit, async (request) => {
+    if (db.userCount() === 0) return { valid: true };
+    const { token } = request.params as { token: string };
+    const invite = db.getInviteByToken(token);
+    return { valid: !!invite && !invite.used_by && invite.expires_at >= now() };
+  });
+
   // ---- Registration (first-run setup or via invite) ----
 
   app.post('/api/register/options', authLimit, async (request, reply) => {

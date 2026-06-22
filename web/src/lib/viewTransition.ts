@@ -1,6 +1,6 @@
 /**
  * Thin wrapper around the View Transitions API used for the chat image → modal
- * morph (`ChatAttachment.vue` / `ImageLightbox.vue`). Kept DOM-light and
+ * morph (`ChatImageGrid.vue` / `ImageLightbox.vue`). Kept DOM-light and
  * dependency-injectable so the support/motion gating is unit-testable.
  */
 
