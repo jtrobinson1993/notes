@@ -29,6 +29,9 @@ router.beforeEach(async (to) => {
   if (!session.needsSetup && to.path === '/setup') return '/';
   if (!to.meta.public && !session.loggedIn) return '/login';
   if ((to.path === '/login' || to.path === '/recover') && session.loggedIn) return '/';
+  // An already-signed-in user following an invite link (e.g. an autofilled
+  // original invite) belongs in the app, not the invited-user signup flow.
+  if (to.path.startsWith('/invite/') && session.loggedIn) return '/';
   // Cold start lands on '/'; redirect once to the last open view if there is one.
   if (!restoredInitial) {
     restoredInitial = true;

@@ -77,6 +77,10 @@ export interface InviteWithUrl extends InviteInfo {
 export const api = {
   meta: () => req<MetaResponse>('GET', '/api/meta'),
 
+  // Non-consuming validity check for an invite token (used/expired/unknown → false).
+  inviteStatus: (token: string) =>
+    req<{ valid: boolean }>('GET', `/api/invite/${encodeURIComponent(token)}`),
+
   registerOptions: (username: string, inviteToken?: string) =>
     req<{ regId: string; options: Record<string, unknown> }>('POST', '/api/register/options', { username, inviteToken }),
   registerVerify: (regId: string, response: unknown, credentialName?: string) =>

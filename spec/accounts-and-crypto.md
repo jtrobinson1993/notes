@@ -47,7 +47,13 @@ per-recipient. v3 chat reuses this verbatim for conversation keys.
 - **Install:** Docker; all data in a single mounted volume (SQLite + config).
 - **Admin bootstrap** on first run; the admin creates/revokes invite links and
   removes users.
-- **Signup via invite:** passkey registration + a one-time recovery code.
+- **Signup via invite:** passkey registration + a one-time recovery code. An
+  invite is **one-time** — `markInviteUsed` records `used_by` on registration, and
+  both `register/options` and `register/verify` reject a used/expired token. The
+  invite page first calls the **non-consuming** `GET /api/invite/:token` (returns
+  only `{ valid }`) and redirects a used/expired/unknown link to **login** rather
+  than re-showing the signup flow; a router guard likewise bounces an
+  already-signed-in user off `/invite/*` to the app.
 - **Login** with passkey; add/remove additional passkeys; **recover** with the
   recovery code (which re-registers a passkey).
 - **Sessions:** server session cookie (`notes_session`, httpOnly, SameSite=Lax);
