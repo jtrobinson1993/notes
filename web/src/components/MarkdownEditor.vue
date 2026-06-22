@@ -99,13 +99,17 @@ const editorTheme = EditorView.theme({
 // In composer mode, Enter submits and Shift+Enter inserts a newline — except
 // inside a list, where Enter continues the list (new item) and Cmd/Ctrl+Enter
 // sends regardless of list context. Bound ahead of defaultKeymap so it wins for
-// the bare Enter key.
+// the bare Enter key. On mobile (no comfortable Shift+Enter, and a visible Send
+// button next to the composer) Enter inserts a newline instead of sending, so
+// the on-screen keyboard's return key behaves as expected; Cmd/Ctrl+Enter and
+// the Send button send.
 const submitKeymap = keymap.of([
   { key: 'Mod-Enter', run: () => (emit('submit'), true) },
   {
     key: 'Enter',
     run: (v) => {
       if (inListItem(v.state)) return insertNewlineContinueMarkup(v);
+      if (isMobile.value) return insertNewlineAndIndent(v);
       emit('submit');
       return true;
     },

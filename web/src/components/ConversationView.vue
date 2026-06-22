@@ -19,6 +19,7 @@ import IconX from '~icons/mynaui/x';
 import IconImage from '~icons/mynaui/image';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import IconPaperclipSolid from '~icons/mynaui/paperclip-solid';
+import IconSend from '~icons/mynaui/send-solid';
 import type { AttachmentRef, Conversation, GifRef, LinkPreview, ReplyRef, SystemEvent } from '@notes/shared';
 import { joinText } from '../lib/systemMessages';
 import { HISTORY_LIMIT, useChatStore, type ChatMessageView } from '../stores/chat';
@@ -840,8 +841,9 @@ async function sendGif(gif: GifRef) {
             <IconPaperclipSolid class="h-5 w-5" />
           </button>
           <!-- Reuse the v2.1 live editor as the composer: code blocks, spoilers,
-               colors, and the selection toolbar all come for free. Enter sends;
-               Shift+Enter inserts a newline. -->
+               colors, and the selection toolbar all come for free. Desktop:
+               Enter sends, Shift+Enter inserts a newline. Mobile: Enter inserts
+               a newline and the Send button (right) sends. -->
           <div class="flex min-w-0 grow cursor-text items-center self-stretch px-1" @click="composer?.focus()">
             <MarkdownEditor
               ref="composer"
@@ -855,8 +857,22 @@ async function sendGif(gif: GifRef) {
             />
           </div>
           <EmojiPicker gifs @pick="insertEmoji" @gif="sendGif" />
-          <!-- Enter sends; this submit stays for screen-reader/keyboard users. -->
+          <!-- Mobile: Enter inserts a newline, so a visible Send button is the
+               way to send. Desktop: Enter sends, so this stays an off-screen
+               control for screen-reader/keyboard users. -->
           <button
+            v-if="isMobile"
+            type="button"
+            :disabled="(!text.trim() && !staged.length) || sending"
+            title="Send message"
+            aria-label="Send message"
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-blue-600 hover:bg-zinc-200/70 disabled:opacity-40 dark:text-blue-400 dark:hover:bg-zinc-700/70"
+            @click="send"
+          >
+            <IconSend class="h-5 w-5" />
+          </button>
+          <button
+            v-else
             :disabled="(!text.trim() && !staged.length) || sending"
             class="sr-only"
             aria-label="Send message"

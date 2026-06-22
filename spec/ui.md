@@ -166,3 +166,17 @@ The rail (`AppSidebar`) is a fixed `w-14` icon strip on mobile (never the deskto
   below it; the in-sidebar `CallPanel` is hidden on mobile.
 - **Active-item indicators** (the morph + left pill) show on mobile too, since the
   rail stays visible next to the list.
+
+### On-screen keyboard & input zoom
+
+- **App height tracks the visual viewport.** `lib/viewport.ts`
+  (`trackViewportHeight`, wired in `main.ts`) keeps a `--app-height` CSS variable
+  in sync with `window.visualViewport.height`, and the app root uses
+  `height: var(--app-height, 100%)` (`style.css`). When the on-screen keyboard
+  opens it shrinks the visual viewport, so the shell resizes to the space above
+  the keyboard and the chat header + message composer stay visible (instead of
+  being covered, which `100vh`/`100%` would allow). Only height is set — never a
+  transform on the root, which would break `position: fixed` modals/lightbox.
+- **No focus zoom on iOS.** A `@media (pointer: coarse)` rule bumps editable
+  controls (`input`, `textarea`, `select`, `.cm-content`) to `text-base` (1rem),
+  at/above the 16px threshold below which iOS Safari auto-zooms on focus.
