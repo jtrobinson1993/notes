@@ -9,8 +9,12 @@ the server only ever stores ciphertext, wrapped keys, and WebAuthn public keys.
 Priorities: modern, boring, widely supported (Chrome, Firefox-based Zen, Safari).
 
 - **Master key (MK):** random 256-bit, generated client-side at signup. Never
-  leaves the client unwrapped. Held in memory for the session with a
-  configurable auto-lock.
+  leaves the client unwrapped. Held in memory for the session (mirrored into
+  per-tab `sessionStorage` so an in-tab reload restores it without re-prompting)
+  and dropped when the tab/app fully closes or on a manual **Lock**. There is
+  **no inactivity auto-lock** — the device's own lock screen is the boundary —
+  and MK is deliberately never written to persistent storage, which would expose
+  it to XSS at rest.
 - **Key wrapping:**
   - *Passkey:* WebAuthn **PRF extension** output → HKDF-SHA-256 → wraps MK
     (AES-256-GCM). One wrapped copy per registered passkey. Passkeys without PRF

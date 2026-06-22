@@ -41,8 +41,8 @@ Shipped in [#15](https://github.com/jtrobinson1993/notes/pull/15) (merged
   button, subtle input tint, themed editor placeholder.
 - **App header dropped:** Lock / Settings / Sign out moved into the sidebar; a
   shared conversation header now sits above the chat + thread panes.
-- **Settings restructured** into sections with a left-rail nav; auto-lock,
-  passkeys, and recovery grouped under a **Security** tab.
+- **Settings restructured** into sections with a left-rail nav; passkeys and
+  recovery grouped under a **Security** tab.
 
 Deferred items (link previews) moved to [v3.4](#v34--deferred-backlog).
 
