@@ -420,9 +420,10 @@ per-file size cap mirrors the server's 32 MiB.
 
 A message's images render as a **grid** (`ChatImageGrid.vue`): one image shows at
 its natural aspect; two or four tile in two columns, everything else in three
-(square, cover-cropped thumbnails). Past **5** images the first five tiles show
-and the remainder collapse behind a **`+N`** badge on the last visible tile —
-clicking it opens the lightbox at that image so the arrows reveal the rest. The
+(square, cover-cropped thumbnails). Past **6** images the first six tiles show
+(two even rows of three) and the remainder collapse behind a **`+N`** badge on
+the last visible tile — clicking it opens the lightbox at that image so the
+arrows reveal the rest. The
 visible-count / overflow / column math is the pure, unit-tested
 `lib/imageGallery.ts` (`galleryLayout`); `stepIndex` clamps lightbox paging to
 the batch (no wrap).

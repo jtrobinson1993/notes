@@ -5,8 +5,9 @@
  */
 
 /** Beyond this many images in one message, extra tiles collapse behind a
- *  `+N` overlay on the last visible tile. */
-export const MAX_GALLERY_TILES = 5;
+ *  `+N` overlay on the last visible tile. Six so the collapsed grid fills two
+ *  even rows of three rather than a lopsided 3 + 2. */
+export const MAX_GALLERY_TILES = 6;
 
 export interface GalleryLayout {
   /** How many thumbnails to actually render (never more than the cap). */
@@ -21,8 +22,8 @@ export interface GalleryLayout {
  * Decide how to lay out `count` images:
  * - 1 image renders on its own (natural aspect; `cols` is 1).
  * - 2 or 4 tile in two columns; everything else in three.
- * - More than `MAX_GALLERY_TILES` shows the first `MAX_GALLERY_TILES` tiles and
- *   stacks the remainder under a `+N` badge on the last visible one.
+ * - More than `MAX_GALLERY_TILES` (6) shows the first six tiles (two even rows of
+ *   three) and stacks the remainder under a `+N` badge on the last visible one.
  */
 export function galleryLayout(count: number): GalleryLayout {
   const visibleCount = Math.min(count, MAX_GALLERY_TILES);

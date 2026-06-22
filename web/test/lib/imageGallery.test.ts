@@ -11,15 +11,17 @@ describe('galleryLayout', () => {
     expect(galleryLayout(4)).toMatchObject({ cols: 2, visibleCount: 4, overflow: 0 });
   });
 
-  it('tiles 3 and 5 images in three columns', () => {
+  it('tiles 3, 5, and 6 images in three columns', () => {
     expect(galleryLayout(3)).toMatchObject({ cols: 3, visibleCount: 3 });
     expect(galleryLayout(5)).toMatchObject({ cols: 3, visibleCount: 5, overflow: 0 });
+    // Six fills two even rows of three with no overflow badge.
+    expect(galleryLayout(6)).toMatchObject({ cols: 3, visibleCount: 6, overflow: 0 });
   });
 
   it('caps visible tiles and reports the remainder as overflow past the cap', () => {
-    // 8 images → show 5, the 5th carries a "+3" badge.
-    expect(galleryLayout(8)).toMatchObject({ visibleCount: MAX_GALLERY_TILES, overflow: 3 });
-    expect(galleryLayout(6).overflow).toBe(1);
+    // 8 images → show 6, the 6th carries a "+2" badge.
+    expect(galleryLayout(8)).toMatchObject({ visibleCount: MAX_GALLERY_TILES, overflow: 2 });
+    expect(galleryLayout(7).overflow).toBe(1);
   });
 
   it('never shows negative overflow', () => {
