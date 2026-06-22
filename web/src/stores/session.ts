@@ -98,9 +98,11 @@ export const useSessionStore = defineStore('session', () => {
     return 'ok';
   }
 
-  /** Create the account + first passkey (setup or invite signup). */
-  async function register(username: string, inviteToken?: string): Promise<{ credentialId: string; prf: Uint8Array | null }> {
-    const { regId, options } = await api.registerOptions(username, inviteToken);
+  /** Create the account + first passkey (setup or invite signup). The account's
+   *  identifier — the auto-generated "Word#1234" handle — is assigned server-side;
+   *  there is no user-chosen username. */
+  async function register(inviteToken?: string): Promise<{ credentialId: string; prf: Uint8Array | null }> {
+    const { regId, options } = await api.registerOptions(inviteToken);
     const { response, prf } = await registerPasskey(options);
     const result = await api.registerVerify(regId, response, deviceName());
     user.value = result.user;
@@ -145,12 +147,12 @@ export const useSessionStore = defineStore('session', () => {
     return recovery.code;
   }
 
-  /** Recovery: authenticate with the recovery code, unwrap the master key,
-   * register a fresh passkey, wrap the MK to it, and rotate the code. */
-  async function recover(username: string, code: string): Promise<string> {
+  /** Recovery: authenticate with the handle + recovery code, unwrap the master
+   * key, register a fresh passkey, wrap the MK to it, and rotate the code. */
+  async function recover(handle: string, code: string): Promise<string> {
     const secret = parseRecoveryCode(code);
     const authKey = await deriveRecoveryAuthKey(secret);
-    const result = await api.recoveryLogin(username, b64(authKey));
+    const result = await api.recoveryLogin(handle, b64(authKey));
     user.value = result.user;
     const masterKey = await unwrapKey(secret, result.recoveryWrappedMk, INFO_RECOVERY_WRAP);
 

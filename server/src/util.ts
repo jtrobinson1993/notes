@@ -16,11 +16,6 @@ export function now(): number {
   return Date.now();
 }
 
-const USERNAME_RE = /^[a-zA-Z0-9_-]{3,32}$/;
-export function validUsername(u: unknown): u is string {
-  return typeof u === 'string' && USERNAME_RE.test(u);
-}
-
 /** Validates the shape of a client-supplied WrappedKey. */
 export function validWrappedKey(w: unknown): boolean {
   if (typeof w !== 'object' || w === null) return false;

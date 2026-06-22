@@ -21,7 +21,6 @@ export type Role = 'admin' | 'member';
 
 export interface UserInfo {
   id: string;
-  username: string;
   role: Role;
   createdAt: number;
   /** public "Word#1234" handle (the name shown to non-contacts) */

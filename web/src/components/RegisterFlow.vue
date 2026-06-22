@@ -12,7 +12,6 @@ const session = useSessionStore();
 const profile = useProfileStore();
 const router = useRouter();
 
-const username = ref('');
 const displayName = ref('');
 const error = ref('');
 const busy = ref(false);
@@ -30,7 +29,7 @@ async function submit() {
   error.value = '';
   busy.value = true;
   try {
-    const { credentialId, prf } = await session.register(username.value.trim(), props.inviteToken);
+    const { credentialId, prf } = await session.register(props.inviteToken);
     recoveryCode.value = await session.setupKeys(credentialId, prf);
     // Encrypt the display name into the profile (E2EE; the server can't read it).
     // The handle is the only name the server sees. Don't strand a just-created
@@ -86,20 +85,6 @@ function finish() {
     <p class="mb-6 text-zinc-500 dark:text-zinc-400">{{ subtitle }}</p>
 
     <form v-if="step === 'form'" class="space-y-4" @submit.prevent="submit">
-      <div>
-        <label class="mb-1 block text-sm font-medium" for="username">Username</label>
-        <input
-          id="username"
-          v-model="username"
-          required
-          minlength="3"
-          maxlength="32"
-          pattern="[A-Za-z0-9_\-]+"
-          autocomplete="username"
-          class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
-        />
-        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Used to sign in; never shown to other users.</p>
-      </div>
       <div>
         <label class="mb-1 block text-sm font-medium" for="displayName">Display name</label>
         <input

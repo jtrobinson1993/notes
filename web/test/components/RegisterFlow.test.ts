@@ -29,12 +29,11 @@ beforeEach(() => vi.clearAllMocks());
 describe('RegisterFlow', () => {
   it('registers, encrypts the display name, then shows the handle picker', async () => {
     const w = mountFlow();
-    await w.find('#username').setValue('bob');
     await w.find('#displayName').setValue('  Bob the Builder  ');
     await w.find('form').trigger('submit');
     await flushPromises();
 
-    expect(session.register).toHaveBeenCalledWith('bob', undefined);
+    expect(session.register).toHaveBeenCalledWith(undefined);
     // The display name is encrypted into the profile (not sent as plaintext).
     expect(profile.save).toHaveBeenCalledWith({ displayName: 'Bob the Builder' });
     // Now on the handle-pick step, showing the auto-assigned handle + options.
@@ -51,7 +50,6 @@ describe('RegisterFlow', () => {
   it('reaches the handle step even if encrypting the name fails (account already exists)', async () => {
     profile.save.mockRejectedValueOnce(new Error('boom'));
     const w = mountFlow();
-    await w.find('#username').setValue('bob');
     await w.find('#displayName').setValue('Bob');
     await w.find('form').trigger('submit');
     await flushPromises();

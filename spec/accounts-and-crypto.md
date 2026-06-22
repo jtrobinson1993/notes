@@ -126,8 +126,12 @@ channel — **is** a compromise and is out of scope.
 
 ## Server-side identity tables
 
-- `users` — id, username, role, `public_key` (X25519), `wrapped_private_key`,
-  `recovery_wrapped_mk`, `recovery_auth_hash`, and (v3) `display_name`.
+- `users` — id, role, `public_key` (X25519), `wrapped_private_key`,
+  `recovery_wrapped_mk`, `recovery_auth_hash`, the public `handle`, and (v3)
+  `display_name`. There is **no username**: the auto-generated `handle`
+  (`Word#1234`) is the sole identifier. (The legacy `username` column — a
+  login-only, server-readable name — was dropped via a table rebuild; login is
+  passkey/discoverable and recovery keys off the handle.)
 - `credentials` — one row per passkey, each with its own `wrapped_mk` (this is
   how multi-device works: any registered passkey can unwrap MK).
 - `sessions`, `invites` (admin signup invites), `challenges` (WebAuthn).

@@ -50,8 +50,8 @@ describe('notes', () => {
 
 describe('shares', () => {
   it('upsert / get / list / delete and listSharedWith join', () => {
-    const owner = seedUser(t.db, { username: 'owner', displayName: 'Owner', handle: 'Wolf#0001' });
-    const recipient = seedUser(t.db, { id: 'rcp', username: 'rcp', displayName: 'Rcp', handle: 'Otter#1111' });
+    const owner = seedUser(t.db, { displayName: 'Owner', handle: 'Wolf#0001' });
+    const recipient = seedUser(t.db, { id: 'rcp', displayName: 'Rcp', handle: 'Otter#1111' });
     t.db.upsertNote({ id: 'n1', userId: owner, ciphertext: 'ct', iv: 'iv', wrappedKey: WK, createdAt: 1 });
     t.db.upsertShare({ noteId: 'n1', recipientId: recipient, sealedKey: 'sk', access: 'read' });
 

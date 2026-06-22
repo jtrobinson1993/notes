@@ -37,16 +37,17 @@ declines** — so a leaked code can't silently add anyone.
   enumeration; redemptions rate-limited. (This is the chat-side answer to the
   curious-host threat model — see [security.md](security.md).)
 
-## Display name vs username
+## Display name vs handle
 
-Each user has an editable **display name** — the only name other users ever see
-(friend lists, DMs, member lists). The **username stays a login credential and
-is never exposed to other users**. **Registration captures the display name up
-front** (a required field in `RegisterFlow.vue`, persisted via `profileSet`
-once the new session is authenticated) so accounts aren't nameless; it's also
-editable later in Settings → Profile. When a user still has no display name
-(legacy/empty), the server shows a neutral `User-<id-prefix>` fallback —
-**never** the username.
+Each user has an editable **display name** — shown to contacts (friend lists,
+DMs, member lists) — overlaid on the public **handle** (`Word#1234`) the server
+and non-contacts see. There is **no username**: the handle is the sole
+identifier (login is passkey/discoverable, recovery keys off the handle).
+**Registration captures the display name up front** (a required field in
+`RegisterFlow.vue`, persisted via `profileSet` once the new session is
+authenticated) so accounts aren't nameless; it's also editable later in
+Settings → Profile. When a user still has no display name (legacy/empty), the
+server shows a neutral `User-<id-prefix>` fallback.
 
 Each user may also pick a **name color** shown to others in chat. Choices are
 restricted to the curated **`NAME_COLORS`** palette (the `--brand-*` accents,
@@ -187,7 +188,7 @@ a crypto seal→unseal→encrypt→decrypt round-trip; server boots and enforces
 
 - `users` — gains a nullable **`display_name`** column (idempotent
   `ALTER TABLE` guarded by `PRAGMA table_info`). Effective name =
-  `display_name ?? 'User-'+id.slice(0,6)` (never the username).
+  `display_name ?? 'User-'+id.slice(0,6)` (never any login identifier).
 - `friend_invites(id, token UNIQUE, created_by, created_at, expires_at)` —
   **reusable** (no `used_by`); **hard-purged** on expiry by `purgeExpiredInvites()`
   (hourly sweep + lazy on lookup).
@@ -334,7 +335,7 @@ protocol ping/pong).
 - `accept` clears any reverse-direction friend request to avoid an orphan.
 - Confirmed safe in review: IDOR/membership on every conversation route, seq
   atomicity, `dm_key` idempotency race-safety, fan-out membership scoping, SQL
-  parameterization, no username leakage.
+  parameterization, no real-name leakage (only the public handle is exposed).
 
 ### Files
 

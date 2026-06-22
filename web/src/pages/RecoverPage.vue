@@ -7,7 +7,7 @@ import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
 const session = useSessionStore();
 const router = useRouter();
 
-const username = ref('');
+const handle = ref('');
 const code = ref('');
 const error = ref('');
 const busy = ref(false);
@@ -18,7 +18,7 @@ async function recover() {
   error.value = '';
   busy.value = true;
   try {
-    newCode.value = await session.recover(username.value.trim(), code.value);
+    newCode.value = await session.recover(handle.value.trim(), code.value);
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'recovery failed';
   } finally {
@@ -38,14 +38,16 @@ async function recover() {
       </p>
       <form class="space-y-4" @submit.prevent="recover">
         <div>
-          <label class="mb-1 block text-sm font-medium" for="username">Username</label>
+          <label class="mb-1 block text-sm font-medium" for="handle">Handle</label>
           <input
-            id="username"
-            v-model="username"
+            id="handle"
+            v-model="handle"
             required
+            placeholder="Word#1234"
             autocomplete="username"
-            class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
+            class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 font-mono outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
           />
+          <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Your public handle, e.g. <span class="font-mono">Word#1234</span>.</p>
         </div>
         <div>
           <label class="mb-1 block text-sm font-medium" for="code">Recovery code</label>

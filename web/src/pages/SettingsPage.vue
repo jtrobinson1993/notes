@@ -343,8 +343,8 @@ async function copyInvite(invite: { id: string; url: string }) {
   setTimeout(() => (copiedInvite.value = ''), 2000);
 }
 
-function confirmDeleteUser(id: string, username: string) {
-  if (confirm(`Remove ${username} and all their (encrypted) notes from this server?`)) {
+function confirmDeleteUser(id: string, handle: string) {
+  if (confirm(`Remove ${handle} and all their (encrypted) notes from this server?`)) {
     deleteUser.mutate(id);
   }
 }
@@ -474,7 +474,6 @@ async function importFiles(event: Event) {
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
           Your display name is <strong>end-to-end encrypted</strong> and shown only to your contacts —
           the server can't read it. Everyone else (and the server) sees your public handle below.
-          Your username is never shown to anyone.
         </p>
         <form class="flex gap-2" @submit.prevent="saveDisplayName">
           <input
@@ -999,13 +998,13 @@ async function importFiles(event: Event) {
           <ul class="divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-900 dark:border-zinc-800">
             <li v-for="u in users" :key="u.id" class="flex items-center gap-3 p-3">
               <div class="grow">
-                <p class="text-sm font-medium">{{ u.username }} <span v-if="u.role === 'admin'" class="text-xs text-zinc-400">(admin)</span></p>
+                <p class="text-sm font-medium font-mono">{{ u.handle }} <span v-if="u.role === 'admin'" class="font-sans text-xs text-zinc-400">(admin)</span></p>
                 <p class="text-xs text-zinc-500">Joined {{ fmtDate(u.createdAt) }}</p>
               </div>
               <button
                 v-if="u.id !== session.user?.id"
                 class="text-sm text-red-500 hover:underline"
-                @click="confirmDeleteUser(u.id, u.username)"
+                @click="confirmDeleteUser(u.id, u.handle)"
               >
                 Remove
               </button>

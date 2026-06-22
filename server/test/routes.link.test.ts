@@ -62,7 +62,7 @@ describe('device link — auth on the logged-in side', () => {
 
 describe('device link — full flow', () => {
   it('seal → poll → complete issues a working session for the sealing account', async () => {
-    const owner = seedUser(t.db, { username: 'owner', displayName: 'Owner', handle: 'Wolf#0001' });
+    const owner = seedUser(t.db, { displayName: 'Owner', handle: 'Wolf#0001' });
     const ownerCookie = authCookie(t.db, owner);
     const { code, secret } = await initLink();
 
@@ -78,7 +78,7 @@ describe('device link — full flow', () => {
     const polled = await inject({ method: 'POST', url: `/api/link/${code}/poll`, payload: { secret } });
     expect(polled.json().status).toBe('sealed');
     expect(polled.json().sealedMk).toEqual(SEALED);
-    expect(polled.json().user).toMatchObject({ id: owner, username: 'owner', displayName: 'Wolf#0001' });
+    expect(polled.json().user).toMatchObject({ id: owner, displayName: 'Wolf#0001' });
 
     // New device completes → gets a session.
     const done = await inject({ method: 'POST', url: `/api/link/${code}/complete`, payload: { secret } });

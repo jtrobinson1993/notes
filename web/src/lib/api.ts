@@ -81,8 +81,8 @@ export const api = {
   inviteStatus: (token: string) =>
     req<{ valid: boolean }>('GET', `/api/invite/${encodeURIComponent(token)}`),
 
-  registerOptions: (username: string, inviteToken?: string) =>
-    req<{ regId: string; options: Record<string, unknown> }>('POST', '/api/register/options', { username, inviteToken }),
+  registerOptions: (inviteToken?: string) =>
+    req<{ regId: string; options: Record<string, unknown> }>('POST', '/api/register/options', { inviteToken }),
   registerVerify: (regId: string, response: unknown, credentialName?: string) =>
     req<{ user: UserInfo; credentialId: string }>('POST', '/api/register/verify', { regId, response, credentialName }),
 
@@ -91,8 +91,8 @@ export const api = {
     req<LoginVerifyResponse>('POST', '/api/login/verify', { authId, response }),
   logout: () => req<{ ok: true }>('POST', '/api/logout'),
 
-  recoveryLogin: (username: string, authKey: string) =>
-    req<{ user: UserInfo; recoveryWrappedMk: WrappedKey }>('POST', '/api/recovery/login', { username, authKey }),
+  recoveryLogin: (handle: string, authKey: string) =>
+    req<{ user: UserInfo; recoveryWrappedMk: WrappedKey }>('POST', '/api/recovery/login', { handle, authKey }),
 
   me: () => req<MeResponse>('GET', '/api/me'),
   putKeys: (keys: UserKeys) => req<{ ok: true }>('PUT', '/api/me/keys', keys),

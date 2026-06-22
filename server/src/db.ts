@@ -7,7 +7,6 @@ import { generateUniqueHandles } from './handles.js';
 
 export interface UserRow {
   id: string;
-  username: string;
   role: Role;
   public_key: string | null;
   wrapped_private_key: string | null;
@@ -174,7 +173,6 @@ export interface NoteRow {
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
-  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   role TEXT NOT NULL,
   public_key TEXT,
   wrapped_private_key TEXT,
@@ -461,6 +459,42 @@ export function openDb(dataDir: string) {
     }
   }
 
+  // Drop the legacy `username` column entirely. The username was a login-only,
+  // server-readable identifier; the handle is now the sole identifier (login is
+  // passkey/discoverable, recovery keys off the handle). SQLite can't DROP COLUMN
+  // here — the inline UNIQUE on username keeps an implicit index — so rebuild the
+  // table without it. Runs once: skipped after the column is gone.
+  if (userCols.some((c) => c.name === 'username')) {
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(`CREATE TABLE users_rebuild (
+        id TEXT PRIMARY KEY,
+        role TEXT NOT NULL,
+        public_key TEXT,
+        wrapped_private_key TEXT,
+        recovery_wrapped_mk TEXT,
+        recovery_auth_hash TEXT,
+        handle TEXT,
+        display_name TEXT,
+        name_color TEXT,
+        profile_friends_only INTEGER NOT NULL DEFAULT 1,
+        link_previews INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );`);
+      db.exec(`INSERT INTO users_rebuild
+        (id, role, public_key, wrapped_private_key, recovery_wrapped_mk, recovery_auth_hash,
+         handle, display_name, name_color, profile_friends_only, link_previews, created_at)
+        SELECT id, role, public_key, wrapped_private_key, recovery_wrapped_mk, recovery_auth_hash,
+         handle, display_name, name_color, profile_friends_only, link_previews, created_at
+        FROM users;`);
+      db.exec('DROP TABLE users;');
+      db.exec('ALTER TABLE users_rebuild RENAME TO users;');
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle ON users(handle COLLATE NOCASE);');
+    })();
+    db.pragma('foreign_key_check');
+    db.pragma('foreign_keys = ON');
+  }
+
   // History floor per member: a fresh-history joiner may only read messages with
   // seq > since_seq. Existing rows default to 0 (full history) — unchanged behavior.
   const memberCols = db.prepare('PRAGMA table_info(conversation_members)').all() as { name: string }[];
@@ -573,9 +607,6 @@ export function openDb(dataDir: string) {
     getUser(id: string): UserRow | undefined {
       return db.prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow | undefined;
     },
-    getUserByUsername(username: string): UserRow | undefined {
-      return db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(username) as UserRow | undefined;
-    },
     getUserByHandle(handle: string): UserRow | undefined {
       return db.prepare('SELECT * FROM users WHERE handle = ? COLLATE NOCASE').get(handle) as UserRow | undefined;
     },
@@ -595,11 +626,16 @@ export function openDb(dataDir: string) {
         return false;
       }
     },
-    createUser(u: { id: string; username: string; role: Role }): string {
+    /** Create a user with a unique "Word#1234" handle (the sole identifier).
+     *  A caller may pass a `handle` (minted earlier, e.g. for the WebAuthn label
+     *  at register/options); it's reused unless already taken by a race, in which
+     *  case a fresh one is minted. */
+    createUser(u: { id: string; role: Role; handle?: string }): string {
       const taken = (h: string) => db.prepare('SELECT 1 FROM users WHERE handle = ? COLLATE NOCASE').get(h) !== undefined;
-      const [handle] = generateUniqueHandles(1, taken);
-      db.prepare('INSERT INTO users (id, username, role, handle, created_at) VALUES (?, ?, ?, ?, ?)').run(
-        u.id, u.username, u.role, handle ?? null, now(),
+      let handle = u.handle && !taken(u.handle) ? u.handle : undefined;
+      if (!handle) [handle] = generateUniqueHandles(1, taken);
+      db.prepare('INSERT INTO users (id, role, handle, created_at) VALUES (?, ?, ?, ?)').run(
+        u.id, u.role, handle ?? null, now(),
       );
       return handle ?? '';
     },
@@ -795,10 +831,10 @@ export function openDb(dataDir: string) {
       db.prepare('DELETE FROM attachments WHERE id = ?').run(id);
     },
 
-    listMembers(): { id: string; username: string; public_key: string | null }[] {
-      return db.prepare('SELECT id, username, public_key FROM users ORDER BY username').all() as {
+    listMembers(): { id: string; handle: string | null; public_key: string | null }[] {
+      return db.prepare('SELECT id, handle, public_key FROM users ORDER BY handle').all() as {
         id: string;
-        username: string;
+        handle: string | null;
         public_key: string | null;
       }[];
     },
@@ -1501,8 +1537,8 @@ export function openDb(dataDir: string) {
   };
 }
 
-/** The display name shown to OTHER users. Never falls back to the username:
- * usernames are login identifiers and must not be exposed to other users. */
+/** The display name shown to OTHER users. Falls back only to a neutral,
+ * id-derived label — never to any login identifier. */
 export function effectiveDisplayName(u: { id: string; display_name: string | null }): string {
   return u.display_name && u.display_name.trim() ? u.display_name : `User-${u.id.slice(0, 6)}`;
 }
@@ -1514,7 +1550,7 @@ export function effectiveHandle(u: { id: string; handle: string | null }): strin
 }
 
 export function toUserInfo(u: UserRow): UserInfo {
-  return { id: u.id, username: u.username, role: u.role, createdAt: u.created_at, handle: effectiveHandle(u), publicKey: u.public_key };
+  return { id: u.id, role: u.role, createdAt: u.created_at, handle: effectiveHandle(u), publicKey: u.public_key };
 }
 
 export function toCredentialInfo(c: CredentialRow): CredentialInfo {
