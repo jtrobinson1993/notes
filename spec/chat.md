@@ -317,6 +317,12 @@ protocol ping/pong).
   and shows an **"End of message history"** marker. Scroll anchoring is preserved
   by measuring height before the loading indicator renders and restoring
   `scrollTop = scrollHeight − prevHeight` after the rows prepend (no jump).
+- **Stick-to-bottom:** opening a chat (and any new message while already at the
+  bottom) scrolls to the latest message. Because images and avatars **decrypt
+  asynchronously** and only mount — growing the scroll height — *after* that first
+  scroll, a `ResizeObserver` on the message-list content re-pins to the bottom as
+  the height settles. It's gated on a `pinned` flag (set from the scroll position),
+  so a user who has scrolled up is never yanked back down.
 
 ### Security decisions from review
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import MarkdownView from './MarkdownView.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import ChatAvatar from './ChatAvatar.vue';
@@ -46,6 +46,7 @@ const reachedStart = ref(false);
 const text = ref('');
 const sending = ref(false);
 const scroller = ref<HTMLElement>();
+const content = ref<HTMLElement>();
 const composer = ref<{ insertText: (s: string) => void; focus: () => void; focusEnd: () => void }>();
 const fileInput = ref<HTMLInputElement>();
 const staged = ref<AttachmentRef[]>([]);
@@ -70,7 +71,22 @@ function clearStaged() {
   staged.value = [];
 }
 
+// While pinned to the bottom, keep glued there as the content height changes —
+// the robust counterpart to scrollToBottom's one-shot image-wait, since chat
+// images and avatars decrypt asynchronously and only mount (growing the height)
+// after the initial scroll. Gated on `pinned` so a user who scrolled up is never
+// yanked down.
+let contentObserver: ResizeObserver | null = null;
+onMounted(() => {
+  if (!content.value || typeof ResizeObserver === 'undefined') return;
+  contentObserver = new ResizeObserver(() => {
+    if (pinned.value && scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight;
+  });
+  contentObserver.observe(content.value);
+});
+
 onBeforeUnmount(() => {
+  contentObserver?.disconnect();
   for (const id of Object.keys(stagedPreviews.value)) revokePreview(id);
 });
 const replyingTo = ref<ReplyRef | null>(null);
@@ -569,6 +585,11 @@ async function sendGif(gif: GifRef) {
       </div>
 
       <div ref="scroller" class="min-h-0 grow overflow-y-auto" :class="isMobile ? 'pt-2' : 'py-2'" @scroll="onScroll">
+        <!-- Content wrapper (min-h-full so the empty/loading states still center)
+             whose height a ResizeObserver watches — re-pinning to the bottom as
+             late async content (decrypted images, avatars, link previews) grows
+             it, so a refresh lands on the latest message. -->
+        <div ref="content" class="min-h-full">
         <!-- Older messages auto-load as the user scrolls up; this just reflects
              the in-flight fetch and marks the start of history. -->
         <div v-if="loadingOlder" class="flex justify-center py-2 text-xs text-zinc-400">Loading…</div>
@@ -756,6 +777,7 @@ async function sendGif(gif: GifRef) {
           </div>
         </div>
         </template>
+        </div>
       </div>
 
       <div class="shrink-0 p-3">
