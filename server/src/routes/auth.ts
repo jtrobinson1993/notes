@@ -44,9 +44,10 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
   // The unauthenticated credential ceremony (register / login / recovery) is the
   // brute-force surface, so it gets a tighter ceiling than the global limit —
   // still liberal (a real login is two requests, so ~30 attempts/min by default).
-  const authLimit = {
-    config: { rateLimit: { max: Math.max(30, Math.ceil(config.rateLimitMax / 10)), timeWindow: '1 minute' } },
+  const authRateLimit = {
+    rateLimit: { max: Math.max(30, Math.ceil(config.rateLimitMax / 10)), timeWindow: '1 minute' },
   };
+  const authLimit = { config: authRateLimit };
 
   app.get('/api/meta', async () => ({
     needsSetup: db.userCount() === 0,
@@ -372,7 +373,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     return { regId, options };
   });
 
-  app.post('/api/me/credentials/verify', { preHandler: requireAuth, config: authLimit.config }, async (request, reply) => {
+  app.post('/api/me/credentials/verify', { preHandler: requireAuth, config: authRateLimit }, async (request, reply) => {
     const { regId, response, credentialName } = request.body as {
       regId?: unknown;
       response?: RegistrationResponseJSON;
