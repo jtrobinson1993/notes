@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { effectiveDisplayName } from '../src/db.js';
+import { effectiveDisplayName, effectiveHandle } from '../src/db.js';
 import { makeDb, seedUser, type TestDb } from '../../test/helpers/server.js';
 
 let t: TestDb;
@@ -8,29 +8,35 @@ beforeEach(() => {
 });
 afterEach(() => t.cleanup());
 
-describe('users + display name', () => {
-  it('stores and reads back a user', () => {
-    const id = seedUser(t.db, { username: 'alice', role: 'admin' });
+describe('users + handle + display name', () => {
+  it('stores a user with an auto-assigned handle (the sole identifier; no username)', () => {
+    const id = seedUser(t.db, { role: 'admin' });
     const u = t.db.getUser(id)!;
-    expect(u.username).toBe('alice');
     expect(u.role).toBe('admin');
+    expect(u.handle).toBeTruthy(); // auto-assigned "Word#1234"
+    expect('username' in u).toBe(false);
   });
 
-  it('username lookup is case-insensitive (UNIQUE NOCASE)', () => {
-    seedUser(t.db, { username: 'Alice' });
-    expect(t.db.getUserByUsername('alice')).toBeDefined();
+  it('handle lookup is case-insensitive (UNIQUE NOCASE)', () => {
+    seedUser(t.db, { handle: 'Otter#1234' });
+    expect(t.db.getUserByHandle('otter#1234')).toBeDefined();
+  });
+
+  it('assigns a distinct handle to each user', () => {
+    const a = t.db.getUser(seedUser(t.db))!;
+    const b = t.db.getUser(seedUser(t.db))!;
+    expect(a.handle).not.toBe(b.handle);
   });
 
   it('effectiveDisplayName uses the set name, else a stable User-xxxxxx fallback', () => {
-    const id = seedUser(t.db, { id: 'abcdef123456', username: 'bob' });
+    const id = seedUser(t.db, { id: 'abcdef123456' });
     expect(effectiveDisplayName(t.db.getUser(id)!)).toBe('User-abcdef');
     t.db.setDisplayName(id, 'Bobby');
     expect(effectiveDisplayName(t.db.getUser(id)!)).toBe('Bobby');
   });
 
-  it('never falls back to the username (privacy)', () => {
-    const id = seedUser(t.db, { username: 'secret-login-name' });
-    expect(effectiveDisplayName(t.db.getUser(id)!)).not.toContain('secret-login-name');
+  it('effectiveHandle falls back to a neutral id label, never a login identifier', () => {
+    expect(effectiveHandle({ id: 'abcdef123456', handle: null })).toBe('User-abcdef');
   });
 });
 

@@ -65,6 +65,8 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 export interface MeResponse {
   user: UserInfo;
   hasKeys: boolean;
+  /** whether the user has set the optional password fallback */
+  hasPassword: boolean;
   wrappedPrivateKey: WrappedKey | null;
   recoveryWrappedMk: WrappedKey | null;
   sessionRecovery: boolean;
@@ -81,8 +83,8 @@ export const api = {
   inviteStatus: (token: string) =>
     req<{ valid: boolean }>('GET', `/api/invite/${encodeURIComponent(token)}`),
 
-  registerOptions: (username: string, inviteToken?: string) =>
-    req<{ regId: string; options: Record<string, unknown> }>('POST', '/api/register/options', { username, inviteToken }),
+  registerOptions: (inviteToken?: string) =>
+    req<{ regId: string; options: Record<string, unknown> }>('POST', '/api/register/options', { inviteToken }),
   registerVerify: (regId: string, response: unknown, credentialName?: string) =>
     req<{ user: UserInfo; credentialId: string }>('POST', '/api/register/verify', { regId, response, credentialName }),
 
@@ -91,8 +93,17 @@ export const api = {
     req<LoginVerifyResponse>('POST', '/api/login/verify', { authId, response }),
   logout: () => req<{ ok: true }>('POST', '/api/logout'),
 
-  recoveryLogin: (username: string, authKey: string) =>
-    req<{ user: UserInfo; recoveryWrappedMk: WrappedKey }>('POST', '/api/recovery/login', { username, authKey }),
+  recoveryLogin: (handle: string, authKey: string) =>
+    req<{ user: UserInfo; recoveryWrappedMk: WrappedKey }>('POST', '/api/recovery/login', { handle, authKey }),
+
+  // Password fallback (for users without a working passkey).
+  passwordOptions: (handle: string) =>
+    req<{ salt: string }>('POST', '/api/password/options', { handle }),
+  passwordLogin: (handle: string, authKey: string) =>
+    req<{ user: UserInfo; passwordWrappedMk: WrappedKey }>('POST', '/api/password/login', { handle, authKey }),
+  passwordSet: (body: { salt: string; passwordWrappedMk: WrappedKey; passwordAuthHash: string }) =>
+    req<{ ok: true }>('PUT', '/api/me/password', body),
+  passwordClear: () => req<{ ok: true }>('DELETE', '/api/me/password'),
 
   me: () => req<MeResponse>('GET', '/api/me'),
   putKeys: (keys: UserKeys) => req<{ ok: true }>('PUT', '/api/me/keys', keys),

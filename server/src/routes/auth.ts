@@ -12,11 +12,13 @@ import type { LoginVerifyResponse, WrappedKey } from '@notes/shared';
 import type { Config } from './../config.js';
 import { toCredentialInfo, toUserInfo, type DB, type CredentialRow } from '../db.js';
 import { endSession, requireAuth, startSession } from '../session.js';
-import { newId, now, sha256b64, validUsername, validWrappedKey } from '../util.js';
+import { newId, now, sha256b64, validWrappedKey } from '../util.js';
 
 interface RegChallenge {
   challenge: string;
-  username: string;
+  /** The auto-generated "Word#1234" handle minted for this signup (also the
+   *  WebAuthn label). Null when adding a passkey to an existing account. */
+  handle: string | null;
   inviteId: string | null;
   /** set when adding a passkey to an existing logged-in account */
   userId: string | null;
@@ -66,10 +68,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
   // ---- Registration (first-run setup or via invite) ----
 
   app.post('/api/register/options', authLimit, async (request, reply) => {
-    const { username, inviteToken } = request.body as { username?: unknown; inviteToken?: unknown };
-    if (!validUsername(username)) {
-      return reply.code(400).send({ error: 'username must be 3-32 chars: letters, digits, - or _' });
-    }
+    const { inviteToken } = request.body as { inviteToken?: unknown };
     let inviteId: string | null = null;
     if (db.userCount() > 0) {
       const invite = typeof inviteToken === 'string' ? db.getInviteByToken(inviteToken) : undefined;
@@ -78,14 +77,15 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
       }
       inviteId = invite.id;
     }
-    if (db.getUserByUsername(username)) {
-      return reply.code(409).send({ error: 'username already taken' });
-    }
+
+    // No user-chosen username: mint the auto-generated "Word#1234" handle now so
+    // it can serve as the WebAuthn label, and carry it through to createUser.
+    const [handle] = db.generateHandleOptions(1);
 
     const options = await generateRegistrationOptions({
       rpName: config.appName,
       rpID: config.rpId,
-      userName: username,
+      userName: handle ?? 'notes user',
       attestationType: 'none',
       authenticatorSelection: {
         residentKey: 'required',
@@ -96,7 +96,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     db.putChallenge({
       id: regId,
       type: 'register',
-      data: { challenge: options.challenge, username, inviteId, userId: null } satisfies RegChallenge,
+      data: { challenge: options.challenge, handle: handle ?? null, inviteId, userId: null } satisfies RegChallenge,
     });
     return { regId, options };
   });
@@ -125,10 +125,6 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     }
     const { credential } = verification.registrationInfo;
 
-    // Re-check invite/username inside this request to avoid races.
-    if (db.getUserByUsername(ch.username)) {
-      return reply.code(409).send({ error: 'username already taken' });
-    }
     const firstUser = db.userCount() === 0;
     if (!firstUser) {
       if (!ch.inviteId) return reply.code(403).send({ error: 'invite required' });
@@ -139,7 +135,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     }
 
     const userId = newId();
-    db.createUser({ id: userId, username: ch.username, role: firstUser ? 'admin' : 'member' });
+    db.createUser({ id: userId, role: firstUser ? 'admin' : 'member', handle: ch.handle ?? undefined });
     db.createCredential({
       id: credential.id,
       userId,
@@ -209,29 +205,83 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
   // ---- Recovery-code login ----
 
   app.post('/api/recovery/login', authLimit, async (request, reply) => {
-    const { username, authKey } = request.body as { username?: unknown; authKey?: unknown };
-    if (!validUsername(username) || typeof authKey !== 'string' || authKey.length > 256) {
-      return reply.code(400).send({ error: 'missing username or authKey' });
+    const { handle, authKey } = request.body as { handle?: unknown; authKey?: unknown };
+    if (typeof handle !== 'string' || handle.length < 1 || handle.length > 64 || typeof authKey !== 'string' || authKey.length > 256) {
+      return reply.code(400).send({ error: 'missing handle or authKey' });
     }
-    const att = recoveryAttempts.get(username.toLowerCase());
+    const key = handle.toLowerCase();
+    const att = recoveryAttempts.get(key);
     if (att && att.count >= 5 && att.resetAt > now()) {
       return reply.code(429).send({ error: 'too many attempts, try again later' });
     }
 
-    const user = db.getUserByUsername(username);
+    const user = db.getUserByHandle(handle);
     const expected = user?.recovery_auth_hash;
     const ok = expected !== null && expected !== undefined && expected === sha256b64(Buffer.from(authKey, 'base64'));
     if (!ok) {
       const cur = att && att.resetAt > now() ? att : { count: 0, resetAt: now() + 15 * 60_000 };
-      recoveryAttempts.set(username.toLowerCase(), { count: cur.count + 1, resetAt: cur.resetAt });
+      recoveryAttempts.set(key, { count: cur.count + 1, resetAt: cur.resetAt });
       return reply.code(401).send({ error: 'recovery failed' });
     }
-    recoveryAttempts.delete(username.toLowerCase());
+    recoveryAttempts.delete(key);
 
     startSession(db, config, reply, user!.id, true);
     return {
       user: toUserInfo(user!),
       recoveryWrappedMk: JSON.parse(user!.recovery_wrapped_mk!) as WrappedKey,
+    };
+  });
+
+  // ---- Password-fallback login (for users without a working passkey) ----
+
+  // Per-handle throttle, mirroring recoveryAttempts. The password is never sent
+  // to the server (only an Argon2id-derived auth key), so this guards online
+  // guessing; the memory-hard KDF guards offline guessing of a leaked blob.
+  const passwordAttempts = new Map<string, { count: number; resetAt: number }>();
+
+  // Return the Argon2id salt for a handle so the client can derive the auth key.
+  // For a handle with no password (or an unknown handle) return a *deterministic*
+  // salt so the response never reveals whether an account or password exists;
+  // the login step then fails uniformly at the auth-hash check.
+  app.post('/api/password/options', authLimit, async (request, reply) => {
+    const { handle } = request.body as { handle?: unknown };
+    if (typeof handle !== 'string' || handle.length < 1 || handle.length > 64) {
+      return reply.code(400).send({ error: 'missing handle' });
+    }
+    const user = db.getUserByHandle(handle);
+    // Decoy is a deterministic 16-byte salt, base64-encoded exactly like a real
+    // one, so the response shape is identical whether or not a password exists.
+    const decoy = Buffer.from(sha256b64(Buffer.from(`notes:pw-decoy:${handle.toLowerCase()}`)), 'base64')
+      .subarray(0, 16)
+      .toString('base64');
+    return { salt: user?.password_salt ?? decoy };
+  });
+
+  app.post('/api/password/login', authLimit, async (request, reply) => {
+    const { handle, authKey } = request.body as { handle?: unknown; authKey?: unknown };
+    if (typeof handle !== 'string' || handle.length < 1 || handle.length > 64 || typeof authKey !== 'string' || authKey.length > 256) {
+      return reply.code(400).send({ error: 'missing handle or authKey' });
+    }
+    const key = handle.toLowerCase();
+    const att = passwordAttempts.get(key);
+    if (att && att.count >= 5 && att.resetAt > now()) {
+      return reply.code(429).send({ error: 'too many attempts, try again later' });
+    }
+
+    const user = db.getUserByHandle(handle);
+    const expected = user?.password_auth_hash;
+    const ok = expected !== null && expected !== undefined && expected === sha256b64(Buffer.from(authKey, 'base64'));
+    if (!ok) {
+      const cur = att && att.resetAt > now() ? att : { count: 0, resetAt: now() + 15 * 60_000 };
+      passwordAttempts.set(key, { count: cur.count + 1, resetAt: cur.resetAt });
+      return reply.code(401).send({ error: 'login failed' });
+    }
+    passwordAttempts.delete(key);
+
+    startSession(db, config, reply, user!.id);
+    return {
+      user: toUserInfo(user!),
+      passwordWrappedMk: JSON.parse(user!.password_wrapped_mk!) as WrappedKey,
     };
   });
 
@@ -242,10 +292,36 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     return {
       user: toUserInfo(u),
       hasKeys: u.recovery_auth_hash !== null,
+      hasPassword: u.password_auth_hash !== null,
       wrappedPrivateKey: u.wrapped_private_key ? (JSON.parse(u.wrapped_private_key) as WrappedKey) : null,
       recoveryWrappedMk: u.recovery_wrapped_mk ? (JSON.parse(u.recovery_wrapped_mk) as WrappedKey) : null,
       sessionRecovery: request.sessionRecovery,
     };
+  });
+
+  // Set/replace (PUT) or remove (DELETE) the optional password fallback. The
+  // client must be unlocked to PUT (it wraps MK under the password key); the
+  // server only ever stores the salt, the wrapped MK, and the auth-key hash.
+  app.put('/api/me/password', { preHandler: requireAuth }, async (request, reply) => {
+    const b = request.body as Record<string, unknown>;
+    if (
+      typeof b.salt !== 'string' || b.salt.length < 1 || b.salt.length > 64 ||
+      !validWrappedKey(b.passwordWrappedMk) ||
+      typeof b.passwordAuthHash !== 'string' || b.passwordAuthHash.length > 64
+    ) {
+      return reply.code(400).send({ error: 'invalid password payload' });
+    }
+    db.setUserPassword(request.user!.id, {
+      salt: b.salt,
+      wrappedMk: b.passwordWrappedMk as WrappedKey,
+      authHash: b.passwordAuthHash,
+    });
+    return { ok: true };
+  });
+
+  app.delete('/api/me/password', { preHandler: requireAuth }, async (request) => {
+    db.clearUserPassword(request.user!.id);
+    return { ok: true };
   });
 
   app.put('/api/me/keys', { preHandler: requireAuth }, async (request, reply) => {
@@ -279,7 +355,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     const options = await generateRegistrationOptions({
       rpName: config.appName,
       rpID: config.rpId,
-      userName: user.username,
+      userName: user.handle ?? 'notes user',
       attestationType: 'none',
       excludeCredentials: existing.map((c) => ({
         id: c.id,
@@ -291,7 +367,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     db.putChallenge({
       id: regId,
       type: 'register',
-      data: { challenge: options.challenge, username: user.username, inviteId: null, userId: user.id } satisfies RegChallenge,
+      data: { challenge: options.challenge, handle: null, inviteId: null, userId: user.id } satisfies RegChallenge,
     });
     return { regId, options };
   });

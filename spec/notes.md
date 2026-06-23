@@ -17,7 +17,8 @@ See [accounts-and-crypto.md](accounts-and-crypto.md) for the key model,
   enforces friendship on `POST /api/notes/:id/shares` (non-friend → 403), and the
   picker (`/api/members`, `ShareDialog.vue`) lists only the caller's friends. All
   three surfaces — the picker, the recipient list, and the "shared by" label —
-  show **display names, never usernames** (matching the chat rule).
+  show the **display name / public handle, never any login identifier** (matching
+  the chat rule).
 - **Encrypted attachments** — a per-attachment key stored *inside* the encrypted
   note payload (so sharing a note shares its attachments); images embed via
   `attachment:` URLs. 32 MiB cap.

@@ -7,12 +7,17 @@ import { generateUniqueHandles } from './handles.js';
 
 export interface UserRow {
   id: string;
-  username: string;
   role: Role;
   public_key: string | null;
   wrapped_private_key: string | null;
   recovery_wrapped_mk: string | null;
   recovery_auth_hash: string | null;
+  /** Optional password fallback (for users without a working passkey): the
+   *  Argon2id salt, MK wrapped by the password-derived key, and the sha256 of the
+   *  password auth key. All null unless the user has set a password. */
+  password_salt: string | null;
+  password_wrapped_mk: string | null;
+  password_auth_hash: string | null;
   /** Public "Word#1234" handle, shown to non-contacts (the only name the server reads). */
   handle: string | null;
   display_name: string | null;
@@ -174,7 +179,6 @@ export interface NoteRow {
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
-  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   role TEXT NOT NULL,
   public_key TEXT,
   wrapped_private_key TEXT,
@@ -461,6 +465,52 @@ export function openDb(dataDir: string) {
     }
   }
 
+  // Drop the legacy `username` column entirely. The username was a login-only,
+  // server-readable identifier; the handle is now the sole identifier (login is
+  // passkey/discoverable, recovery keys off the handle). SQLite can't DROP COLUMN
+  // here — the inline UNIQUE on username keeps an implicit index — so rebuild the
+  // table without it. Runs once: skipped after the column is gone.
+  if (userCols.some((c) => c.name === 'username')) {
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(`CREATE TABLE users_rebuild (
+        id TEXT PRIMARY KEY,
+        role TEXT NOT NULL,
+        public_key TEXT,
+        wrapped_private_key TEXT,
+        recovery_wrapped_mk TEXT,
+        recovery_auth_hash TEXT,
+        handle TEXT,
+        display_name TEXT,
+        name_color TEXT,
+        profile_friends_only INTEGER NOT NULL DEFAULT 1,
+        link_previews INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );`);
+      db.exec(`INSERT INTO users_rebuild
+        (id, role, public_key, wrapped_private_key, recovery_wrapped_mk, recovery_auth_hash,
+         handle, display_name, name_color, profile_friends_only, link_previews, created_at)
+        SELECT id, role, public_key, wrapped_private_key, recovery_wrapped_mk, recovery_auth_hash,
+         handle, display_name, name_color, profile_friends_only, link_previews, created_at
+        FROM users;`);
+      db.exec('DROP TABLE users;');
+      db.exec('ALTER TABLE users_rebuild RENAME TO users;');
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle ON users(handle COLLATE NOCASE);');
+    })();
+    db.pragma('foreign_key_check');
+    db.pragma('foreign_keys = ON');
+  }
+
+  // Optional password fallback (Argon2id salt + MK wrapped by the password key +
+  // sha256 of the password auth key). Null unless the user set a password. Added
+  // after the username rebuild so the rebuild's column list stays self-contained.
+  const userCols2 = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
+  if (!userCols2.some((c) => c.name === 'password_salt')) {
+    db.exec('ALTER TABLE users ADD COLUMN password_salt TEXT');
+    db.exec('ALTER TABLE users ADD COLUMN password_wrapped_mk TEXT');
+    db.exec('ALTER TABLE users ADD COLUMN password_auth_hash TEXT');
+  }
+
   // History floor per member: a fresh-history joiner may only read messages with
   // seq > since_seq. Existing rows default to 0 (full history) — unchanged behavior.
   const memberCols = db.prepare('PRAGMA table_info(conversation_members)').all() as { name: string }[];
@@ -573,9 +623,6 @@ export function openDb(dataDir: string) {
     getUser(id: string): UserRow | undefined {
       return db.prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow | undefined;
     },
-    getUserByUsername(username: string): UserRow | undefined {
-      return db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(username) as UserRow | undefined;
-    },
     getUserByHandle(handle: string): UserRow | undefined {
       return db.prepare('SELECT * FROM users WHERE handle = ? COLLATE NOCASE').get(handle) as UserRow | undefined;
     },
@@ -595,11 +642,16 @@ export function openDb(dataDir: string) {
         return false;
       }
     },
-    createUser(u: { id: string; username: string; role: Role }): string {
+    /** Create a user with a unique "Word#1234" handle (the sole identifier).
+     *  A caller may pass a `handle` (minted earlier, e.g. for the WebAuthn label
+     *  at register/options); it's reused unless already taken by a race, in which
+     *  case a fresh one is minted. */
+    createUser(u: { id: string; role: Role; handle?: string }): string {
       const taken = (h: string) => db.prepare('SELECT 1 FROM users WHERE handle = ? COLLATE NOCASE').get(h) !== undefined;
-      const [handle] = generateUniqueHandles(1, taken);
-      db.prepare('INSERT INTO users (id, username, role, handle, created_at) VALUES (?, ?, ?, ?, ?)').run(
-        u.id, u.username, u.role, handle ?? null, now(),
+      let handle = u.handle && !taken(u.handle) ? u.handle : undefined;
+      if (!handle) [handle] = generateUniqueHandles(1, taken);
+      db.prepare('INSERT INTO users (id, role, handle, created_at) VALUES (?, ?, ?, ?)').run(
+        u.id, u.role, handle ?? null, now(),
       );
       return handle ?? '';
     },
@@ -607,6 +659,18 @@ export function openDb(dataDir: string) {
       db.prepare(
         'UPDATE users SET public_key = ?, wrapped_private_key = ?, recovery_wrapped_mk = ?, recovery_auth_hash = ? WHERE id = ?',
       ).run(keys.publicKey, JSON.stringify(keys.wrappedPrivateKey), JSON.stringify(keys.recoveryWrappedMk), keys.recoveryAuthHash, userId);
+    },
+    /** Set (or replace) the user's optional password fallback. */
+    setUserPassword(userId: string, p: { salt: string; wrappedMk: WrappedKey; authHash: string }): void {
+      db.prepare(
+        'UPDATE users SET password_salt = ?, password_wrapped_mk = ?, password_auth_hash = ? WHERE id = ?',
+      ).run(p.salt, JSON.stringify(p.wrappedMk), p.authHash, userId);
+    },
+    /** Remove the user's password fallback (passkey/recovery remain). */
+    clearUserPassword(userId: string): void {
+      db.prepare(
+        'UPDATE users SET password_salt = NULL, password_wrapped_mk = NULL, password_auth_hash = NULL WHERE id = ?',
+      ).run(userId);
     },
     listUsers(): UserRow[] {
       return db.prepare('SELECT * FROM users ORDER BY created_at').all() as UserRow[];
@@ -795,10 +859,10 @@ export function openDb(dataDir: string) {
       db.prepare('DELETE FROM attachments WHERE id = ?').run(id);
     },
 
-    listMembers(): { id: string; username: string; public_key: string | null }[] {
-      return db.prepare('SELECT id, username, public_key FROM users ORDER BY username').all() as {
+    listMembers(): { id: string; handle: string | null; public_key: string | null }[] {
+      return db.prepare('SELECT id, handle, public_key FROM users ORDER BY handle').all() as {
         id: string;
-        username: string;
+        handle: string | null;
         public_key: string | null;
       }[];
     },
@@ -1501,8 +1565,8 @@ export function openDb(dataDir: string) {
   };
 }
 
-/** The display name shown to OTHER users. Never falls back to the username:
- * usernames are login identifiers and must not be exposed to other users. */
+/** The display name shown to OTHER users. Falls back only to a neutral,
+ * id-derived label — never to any login identifier. */
 export function effectiveDisplayName(u: { id: string; display_name: string | null }): string {
   return u.display_name && u.display_name.trim() ? u.display_name : `User-${u.id.slice(0, 6)}`;
 }
@@ -1514,7 +1578,7 @@ export function effectiveHandle(u: { id: string; handle: string | null }): strin
 }
 
 export function toUserInfo(u: UserRow): UserInfo {
-  return { id: u.id, username: u.username, role: u.role, createdAt: u.created_at, handle: effectiveHandle(u), publicKey: u.public_key };
+  return { id: u.id, role: u.role, createdAt: u.created_at, handle: effectiveHandle(u), publicKey: u.public_key };
 }
 
 export function toCredentialInfo(c: CredentialRow): CredentialInfo {

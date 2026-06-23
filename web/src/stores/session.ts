@@ -7,6 +7,7 @@ import {
   generateKeyPair,
   generateMasterKey,
   INFO_MK_WRAP,
+  INFO_PASSWORD_WRAP,
   INFO_PRIVATE_KEY,
   INFO_RECOVERY_WRAP,
   sha256b64,
@@ -15,6 +16,7 @@ import {
 } from '../lib/crypto';
 import { clearCache } from '../lib/idb';
 import { deriveRecoveryAuthKey, generateRecoveryCode, parseRecoveryCode } from '../lib/recovery';
+import { derivePasswordAuthKey, derivePasswordKey, generatePasswordSalt } from '../lib/password';
 import { authenticatePasskey, registerPasskey } from '../lib/webauthn';
 
 const MK_STORAGE_KEY = 'notes:mk';
@@ -25,6 +27,8 @@ export const useSessionStore = defineStore('session', () => {
   const appName = ref('Notes');
   const user = ref<UserInfo | null>(null);
   const hasKeys = ref(false);
+  /** Whether the user has set the optional password fallback. */
+  const hasPassword = ref(false);
   // The master key lives only in memory for the session, mirrored into
   // sessionStorage so an in-tab reload restores it without re-prompting. There
   // is no inactivity auto-lock: the device's own lock screen is the security
@@ -73,6 +77,7 @@ export const useSessionStore = defineStore('session', () => {
       const me = await api.me();
       user.value = me.user;
       hasKeys.value = me.hasKeys;
+      hasPassword.value = me.hasPassword;
       const stored = sessionStorage.getItem(MK_STORAGE_KEY);
       if (stored) mk.value = ub64(stored);
     } catch {
@@ -95,12 +100,54 @@ export const useSessionStore = defineStore('session', () => {
     setMk(await unwrapKey(prf, result.wrappedMk, INFO_MK_WRAP));
     const me = await api.me();
     hasKeys.value = me.hasKeys;
+    hasPassword.value = me.hasPassword;
     return 'ok';
   }
 
-  /** Create the account + first passkey (setup or invite signup). */
-  async function register(username: string, inviteToken?: string): Promise<{ credentialId: string; prf: Uint8Array | null }> {
-    const { regId, options } = await api.registerOptions(username, inviteToken);
+  /** Password-fallback login: derive the Argon2id key from the handle's salt +
+   *  the password, prove it to the server, and unwrap MK from the returned blob.
+   *  For users whose passkey can't produce the PRF output (e.g. Firefox/Linux
+   *  without a syncing provider). */
+  async function loginWithPassword(handle: string, password: string): Promise<void> {
+    const { salt } = await api.passwordOptions(handle);
+    const passwordKey = await derivePasswordKey(password, ub64(salt));
+    const authKey = await derivePasswordAuthKey(passwordKey);
+    const result = await api.passwordLogin(handle, b64(authKey));
+    user.value = result.user;
+    needsSetup.value = false;
+    setMk(await unwrapKey(passwordKey, result.passwordWrappedMk, INFO_PASSWORD_WRAP));
+    const me = await api.me();
+    hasKeys.value = me.hasKeys;
+    hasPassword.value = me.hasPassword;
+  }
+
+  /** Set (or replace) the optional password fallback. Requires an unlocked
+   *  session: a copy of MK is wrapped under the password-derived key. There is
+   *  NO password reset — losing the password, passkey, and recovery code all at
+   *  once is unrecoverable. */
+  async function setPassword(password: string): Promise<void> {
+    if (!mk.value) throw new Error('unlock first');
+    const salt = generatePasswordSalt();
+    const passwordKey = await derivePasswordKey(password, salt);
+    const [passwordWrappedMk, authKey] = await Promise.all([
+      wrapKey(passwordKey, mk.value, INFO_PASSWORD_WRAP),
+      derivePasswordAuthKey(passwordKey),
+    ]);
+    await api.passwordSet({ salt: b64(salt), passwordWrappedMk, passwordAuthHash: await sha256b64(authKey) });
+    hasPassword.value = true;
+  }
+
+  /** Remove the password fallback (passkey + recovery code remain). */
+  async function removePassword(): Promise<void> {
+    await api.passwordClear();
+    hasPassword.value = false;
+  }
+
+  /** Create the account + first passkey (setup or invite signup). The account's
+   *  identifier — the auto-generated "Word#1234" handle — is assigned server-side;
+   *  there is no user-chosen username. */
+  async function register(inviteToken?: string): Promise<{ credentialId: string; prf: Uint8Array | null }> {
+    const { regId, options } = await api.registerOptions(inviteToken);
     const { response, prf } = await registerPasskey(options);
     const result = await api.registerVerify(regId, response, deviceName());
     user.value = result.user;
@@ -145,12 +192,12 @@ export const useSessionStore = defineStore('session', () => {
     return recovery.code;
   }
 
-  /** Recovery: authenticate with the recovery code, unwrap the master key,
-   * register a fresh passkey, wrap the MK to it, and rotate the code. */
-  async function recover(username: string, code: string): Promise<string> {
+  /** Recovery: authenticate with the handle + recovery code, unwrap the master
+   * key, register a fresh passkey, wrap the MK to it, and rotate the code. */
+  async function recover(handle: string, code: string): Promise<string> {
     const secret = parseRecoveryCode(code);
     const authKey = await deriveRecoveryAuthKey(secret);
-    const result = await api.recoveryLogin(username, b64(authKey));
+    const result = await api.recoveryLogin(handle, b64(authKey));
     user.value = result.user;
     const masterKey = await unwrapKey(secret, result.recoveryWrappedMk, INFO_RECOVERY_WRAP);
 
@@ -205,15 +252,17 @@ export const useSessionStore = defineStore('session', () => {
       setMk(null);
       user.value = null;
       hasKeys.value = false;
+      hasPassword.value = false;
       await clearCache();
     }
   }
 
   return {
-    ready, needsSetup, appName, user, hasKeys, mk,
+    ready, needsSetup, appName, user, hasKeys, hasPassword, mk,
     loggedIn, unlocked,
     init, lock, setMk, getKeyPair,
-    loginWithPasskey, register, setupKeys, recover, rotateRecoveryCode, addPasskey, unwrapWithPrf, logout,
+    loginWithPasskey, loginWithPassword, register, setupKeys, recover, rotateRecoveryCode,
+    addPasskey, setPassword, removePassword, unwrapWithPrf, logout,
   };
 });
 

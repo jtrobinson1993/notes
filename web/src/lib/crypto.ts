@@ -9,6 +9,7 @@ export const INFO_MK_WRAP = 'notes:wrap:mk:v1';
 export const INFO_NOTE_KEY = 'notes:wrap:note-key:v1';
 export const INFO_PRIVATE_KEY = 'notes:wrap:x25519:v1';
 export const INFO_RECOVERY_WRAP = 'notes:wrap:recovery:v1';
+export const INFO_PASSWORD_WRAP = 'notes:wrap:password:v1';
 export const INFO_SEAL = 'notes:seal:x25519:v1';
 
 export function randomBytes(n: number): Uint8Array {

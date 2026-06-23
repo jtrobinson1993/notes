@@ -72,8 +72,8 @@ describe('createPush — VAPID key resolution', () => {
 
 describe('notifyNewMessage', () => {
   function seedWithSub(online: Set<string>) {
-    const sender = seedUser(t.db, { username: 'sender' });
-    const recipient = seedUser(t.db, { username: 'recipient' });
+    const sender = seedUser(t.db, {});
+    const recipient = seedUser(t.db, {});
     t.db.addPushSubscription({ userId: recipient, endpoint: 'https://push.example/abc', p256dh: 'p', auth: 'a' });
     const push = createPush(t.db, makeConfig(t.dir), fakeRealtime(online));
     return { sender, recipient, push };
