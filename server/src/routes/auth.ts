@@ -372,7 +372,7 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     return { regId, options };
   });
 
-  app.post('/api/me/credentials/verify', { preHandler: requireAuth }, async (request, reply) => {
+  app.post('/api/me/credentials/verify', { preHandler: requireAuth, config: authLimit.config }, async (request, reply) => {
     const { regId, response, credentialName } = request.body as {
       regId?: unknown;
       response?: RegistrationResponseJSON;

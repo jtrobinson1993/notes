@@ -18,8 +18,19 @@ const LINK_TTL = 5 * 60_000; // 5 minutes
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
 function makeCode(): string {
+  const n = CODE_ALPHABET.length;
+  // Largest multiple of n that fits in a byte; reject bytes at/above it so the
+  // modulo below is unbiased (rejection sampling) rather than favouring the
+  // first 256 % n letters of the alphabet.
+  const limit = Math.floor(256 / n) * n;
   let s = '';
-  for (const b of randomBytes(8)) s += CODE_ALPHABET[b % CODE_ALPHABET.length];
+  while (s.length < 8) {
+    for (const b of randomBytes(8)) {
+      if (b >= limit) continue;
+      s += CODE_ALPHABET[b % n];
+      if (s.length === 8) break;
+    }
+  }
   return s;
 }
 

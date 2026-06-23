@@ -117,7 +117,9 @@ export function createRealtime(db: DB, config: Config): Realtime {
   function register(app: FastifyInstance): void {
     app.get(
       '/api/ws',
-      { websocket: true },
+      // Rate-limit the upgrade handshake (per-IP, at the global ceiling) to cap
+      // connection churn; the limiter runs in the onRequest hook before upgrade.
+      { websocket: true, config: { rateLimit: { max: config.rateLimitMax, timeWindow: '1 minute' } } },
       // The handler signature for @fastify/websocket v11 is (socket, request).
       (socket: WebSocket, request) => {
         const user = authenticate(request as never);
