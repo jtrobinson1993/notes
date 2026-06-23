@@ -26,15 +26,26 @@ function toObsidian(body: string): string {
   return body.replace(/\|\|([^|\n]+(?:\|[^|\n]+)*)\|\|/g, '$1');
 }
 
+/** Apply a global replace until it reaches a fixed point, so overlapping or
+ * nested matches (e.g. `<<u>u>`) can't survive a single pass and re-form a tag.
+ * Closes the incomplete-multi-character-sanitization class for tag stripping. */
+function stripAll(s: string, re: RegExp): string {
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(re, '');
+  } while (s !== prev);
+  return s;
+}
+
 function toStandardMarkdown(body: string): string {
-  return body
-    .replace(/<\/?(?:u|span)(?:\s[^<>]*)?>/gi, '')
+  return stripAll(body, /<\/?(?:u|span)(?:\s[^<>]*)?>/gi)
     .replace(/==([^=\n]+(?:=[^=\n]+)*)==/g, '$1')
     .replace(/\|\|([^|\n]+(?:\|[^|\n]+)*)\|\|/g, '$1');
 }
 
 export function toPlainText(body: string): string {
-  return toStandardMarkdown(body)
+  const s = toStandardMarkdown(body)
     .replace(/^```[^\n]*$/gm, '')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
@@ -44,8 +55,8 @@ export function toPlainText(body: string): string {
     .replace(/(\*|_)(.+?)\1/g, '$2')
     .replace(/~~(.+?)~~/g, '$1')
     .replace(/`([^`\n]+)`/g, '$1')
-    .replace(/^ {0,3}([-*_]){3,}\s*$/gm, '')
-    .replace(/<[^<>]+>/g, '');
+    .replace(/^ {0,3}([-*_]){3,}\s*$/gm, '');
+  return stripAll(s, /<[^<>]+>/g);
 }
 
 export function convertBody(body: string, format: ExportFormat): string {
