@@ -12,6 +12,12 @@ export interface UserRow {
   wrapped_private_key: string | null;
   recovery_wrapped_mk: string | null;
   recovery_auth_hash: string | null;
+  /** Optional password fallback (for users without a working passkey): the
+   *  Argon2id salt, MK wrapped by the password-derived key, and the sha256 of the
+   *  password auth key. All null unless the user has set a password. */
+  password_salt: string | null;
+  password_wrapped_mk: string | null;
+  password_auth_hash: string | null;
   /** Public "Word#1234" handle, shown to non-contacts (the only name the server reads). */
   handle: string | null;
   display_name: string | null;
@@ -495,6 +501,16 @@ export function openDb(dataDir: string) {
     db.pragma('foreign_keys = ON');
   }
 
+  // Optional password fallback (Argon2id salt + MK wrapped by the password key +
+  // sha256 of the password auth key). Null unless the user set a password. Added
+  // after the username rebuild so the rebuild's column list stays self-contained.
+  const userCols2 = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
+  if (!userCols2.some((c) => c.name === 'password_salt')) {
+    db.exec('ALTER TABLE users ADD COLUMN password_salt TEXT');
+    db.exec('ALTER TABLE users ADD COLUMN password_wrapped_mk TEXT');
+    db.exec('ALTER TABLE users ADD COLUMN password_auth_hash TEXT');
+  }
+
   // History floor per member: a fresh-history joiner may only read messages with
   // seq > since_seq. Existing rows default to 0 (full history) — unchanged behavior.
   const memberCols = db.prepare('PRAGMA table_info(conversation_members)').all() as { name: string }[];
@@ -643,6 +659,18 @@ export function openDb(dataDir: string) {
       db.prepare(
         'UPDATE users SET public_key = ?, wrapped_private_key = ?, recovery_wrapped_mk = ?, recovery_auth_hash = ? WHERE id = ?',
       ).run(keys.publicKey, JSON.stringify(keys.wrappedPrivateKey), JSON.stringify(keys.recoveryWrappedMk), keys.recoveryAuthHash, userId);
+    },
+    /** Set (or replace) the user's optional password fallback. */
+    setUserPassword(userId: string, p: { salt: string; wrappedMk: WrappedKey; authHash: string }): void {
+      db.prepare(
+        'UPDATE users SET password_salt = ?, password_wrapped_mk = ?, password_auth_hash = ? WHERE id = ?',
+      ).run(p.salt, JSON.stringify(p.wrappedMk), p.authHash, userId);
+    },
+    /** Remove the user's password fallback (passkey/recovery remain). */
+    clearUserPassword(userId: string): void {
+      db.prepare(
+        'UPDATE users SET password_salt = NULL, password_wrapped_mk = NULL, password_auth_hash = NULL WHERE id = ?',
+      ).run(userId);
     },
     listUsers(): UserRow[] {
       return db.prepare('SELECT * FROM users ORDER BY created_at').all() as UserRow[];

@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useMutation, useQuery, useQueryCache } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
+import { MIN_PASSWORD_LENGTH } from '../lib/password';
 import { api } from '../lib/api';
 import { disablePush, enablePush, pushState, type PushState } from '../lib/push';
 import { clickToLoadEmbeds, clickToLoadImages, optimizeImages, setClickToLoadEmbeds, setClickToLoadImages, setOptimizeImages } from '../lib/privacy';
@@ -66,6 +67,11 @@ const displayNameBusy = ref(false);
 const newPasskeyName = ref('');
 const passkeyError = ref('');
 const newRecoveryCode = ref('');
+const password = ref('');
+const passwordConfirm = ref('');
+const passwordBusy = ref(false);
+const passwordError = ref('');
+const passwordOk = ref('');
 const copiedInvite = ref('');
 
 // Background push notifications (content-free; see lib/push.ts).
@@ -335,6 +341,45 @@ function applyPalette() {
 async function rotateCode() {
   if (!confirm('Generate a new recovery code? The old one will stop working.')) return;
   newRecoveryCode.value = await session.rotateRecoveryCode();
+}
+
+async function savePassword() {
+  passwordError.value = '';
+  passwordOk.value = '';
+  if (password.value.length < MIN_PASSWORD_LENGTH) {
+    passwordError.value = `Use at least ${MIN_PASSWORD_LENGTH} characters.`;
+    return;
+  }
+  if (password.value !== passwordConfirm.value) {
+    passwordError.value = 'Passwords do not match.';
+    return;
+  }
+  passwordBusy.value = true;
+  try {
+    await session.setPassword(password.value);
+    password.value = '';
+    passwordConfirm.value = '';
+    passwordOk.value = 'Password saved.';
+  } catch (e) {
+    passwordError.value = e instanceof Error ? e.message : 'could not save password';
+  } finally {
+    passwordBusy.value = false;
+  }
+}
+
+async function removePassword() {
+  if (!confirm("Remove your password? You'll only be able to sign in with a passkey or recovery code.")) return;
+  passwordError.value = '';
+  passwordOk.value = '';
+  passwordBusy.value = true;
+  try {
+    await session.removePassword();
+    passwordOk.value = 'Password removed.';
+  } catch (e) {
+    passwordError.value = e instanceof Error ? e.message : 'could not remove password';
+  } finally {
+    passwordBusy.value = false;
+  }
 }
 
 async function copyInvite(invite: { id: string; url: string }) {
@@ -920,6 +965,59 @@ async function importFiles(event: Event) {
           Generate new recovery code
         </button>
         <RecoveryCodeCard v-if="newRecoveryCode" :code="newRecoveryCode" />
+      </section>
+
+      <section v-show="activeSection === 'security'" class="space-y-3">
+        <h2 class="text-lg font-semibold">Password</h2>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400">
+          An optional way to sign in if your passkey ever stops working (for example a browser
+          without biometric/PRF support). <strong>Passkeys are still recommended</strong> — ideally
+          a password saved in a password manager <em>plus</em> a passkey.
+        </p>
+        <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200">
+          <strong>There is no password reset.</strong> Your notes are end-to-end encrypted, so the
+          server can't recover them. If you lose your password, passkey, <em>and</em> recovery code,
+          your account is gone for good.
+        </div>
+        <p v-if="session.hasPassword" class="text-sm text-green-700 dark:text-green-400">A password is set.</p>
+        <div class="space-y-2" :class="{ 'opacity-50': !session.unlocked }">
+          <input
+            v-model="password"
+            type="password"
+            autocomplete="new-password"
+            :placeholder="session.hasPassword ? 'New password (min 16 characters)' : 'Password (min 16 characters)'"
+            :disabled="!session.unlocked || passwordBusy"
+            class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <input
+            v-model="passwordConfirm"
+            type="password"
+            autocomplete="new-password"
+            placeholder="Confirm password"
+            :disabled="!session.unlocked || passwordBusy"
+            class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <div class="flex gap-2">
+            <button
+              :disabled="!session.unlocked || passwordBusy"
+              class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              @click="savePassword"
+            >
+              {{ passwordBusy ? 'Saving…' : session.hasPassword ? 'Change password' : 'Set password' }}
+            </button>
+            <button
+              v-if="session.hasPassword"
+              :disabled="passwordBusy"
+              class="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              @click="removePassword"
+            >
+              Remove password
+            </button>
+          </div>
+          <p v-if="!session.unlocked" class="text-xs text-zinc-500 dark:text-zinc-400">Unlock first to set a password.</p>
+          <p v-if="passwordError" class="text-sm text-red-600 dark:text-red-400">{{ passwordError }}</p>
+          <p v-if="passwordOk" class="text-sm text-green-700 dark:text-green-400">{{ passwordOk }}</p>
+        </div>
       </section>
 
       <section v-show="activeSection === 'data'" class="space-y-3">

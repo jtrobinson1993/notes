@@ -232,6 +232,59 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     };
   });
 
+  // ---- Password-fallback login (for users without a working passkey) ----
+
+  // Per-handle throttle, mirroring recoveryAttempts. The password is never sent
+  // to the server (only an Argon2id-derived auth key), so this guards online
+  // guessing; the memory-hard KDF guards offline guessing of a leaked blob.
+  const passwordAttempts = new Map<string, { count: number; resetAt: number }>();
+
+  // Return the Argon2id salt for a handle so the client can derive the auth key.
+  // For a handle with no password (or an unknown handle) return a *deterministic*
+  // salt so the response never reveals whether an account or password exists;
+  // the login step then fails uniformly at the auth-hash check.
+  app.post('/api/password/options', authLimit, async (request, reply) => {
+    const { handle } = request.body as { handle?: unknown };
+    if (typeof handle !== 'string' || handle.length < 1 || handle.length > 64) {
+      return reply.code(400).send({ error: 'missing handle' });
+    }
+    const user = db.getUserByHandle(handle);
+    // Decoy is a deterministic 16-byte salt, base64-encoded exactly like a real
+    // one, so the response shape is identical whether or not a password exists.
+    const decoy = Buffer.from(sha256b64(Buffer.from(`notes:pw-decoy:${handle.toLowerCase()}`)), 'base64')
+      .subarray(0, 16)
+      .toString('base64');
+    return { salt: user?.password_salt ?? decoy };
+  });
+
+  app.post('/api/password/login', authLimit, async (request, reply) => {
+    const { handle, authKey } = request.body as { handle?: unknown; authKey?: unknown };
+    if (typeof handle !== 'string' || handle.length < 1 || handle.length > 64 || typeof authKey !== 'string' || authKey.length > 256) {
+      return reply.code(400).send({ error: 'missing handle or authKey' });
+    }
+    const key = handle.toLowerCase();
+    const att = passwordAttempts.get(key);
+    if (att && att.count >= 5 && att.resetAt > now()) {
+      return reply.code(429).send({ error: 'too many attempts, try again later' });
+    }
+
+    const user = db.getUserByHandle(handle);
+    const expected = user?.password_auth_hash;
+    const ok = expected !== null && expected !== undefined && expected === sha256b64(Buffer.from(authKey, 'base64'));
+    if (!ok) {
+      const cur = att && att.resetAt > now() ? att : { count: 0, resetAt: now() + 15 * 60_000 };
+      passwordAttempts.set(key, { count: cur.count + 1, resetAt: cur.resetAt });
+      return reply.code(401).send({ error: 'login failed' });
+    }
+    passwordAttempts.delete(key);
+
+    startSession(db, config, reply, user!.id);
+    return {
+      user: toUserInfo(user!),
+      passwordWrappedMk: JSON.parse(user!.password_wrapped_mk!) as WrappedKey,
+    };
+  });
+
   // ---- Current user & keys ----
 
   app.get('/api/me', { preHandler: requireAuth }, async (request) => {
@@ -239,10 +292,36 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     return {
       user: toUserInfo(u),
       hasKeys: u.recovery_auth_hash !== null,
+      hasPassword: u.password_auth_hash !== null,
       wrappedPrivateKey: u.wrapped_private_key ? (JSON.parse(u.wrapped_private_key) as WrappedKey) : null,
       recoveryWrappedMk: u.recovery_wrapped_mk ? (JSON.parse(u.recovery_wrapped_mk) as WrappedKey) : null,
       sessionRecovery: request.sessionRecovery,
     };
+  });
+
+  // Set/replace (PUT) or remove (DELETE) the optional password fallback. The
+  // client must be unlocked to PUT (it wraps MK under the password key); the
+  // server only ever stores the salt, the wrapped MK, and the auth-key hash.
+  app.put('/api/me/password', { preHandler: requireAuth }, async (request, reply) => {
+    const b = request.body as Record<string, unknown>;
+    if (
+      typeof b.salt !== 'string' || b.salt.length < 1 || b.salt.length > 64 ||
+      !validWrappedKey(b.passwordWrappedMk) ||
+      typeof b.passwordAuthHash !== 'string' || b.passwordAuthHash.length > 64
+    ) {
+      return reply.code(400).send({ error: 'invalid password payload' });
+    }
+    db.setUserPassword(request.user!.id, {
+      salt: b.salt,
+      wrappedMk: b.passwordWrappedMk as WrappedKey,
+      authHash: b.passwordAuthHash,
+    });
+    return { ok: true };
+  });
+
+  app.delete('/api/me/password', { preHandler: requireAuth }, async (request) => {
+    db.clearUserPassword(request.user!.id);
+    return { ok: true };
   });
 
   app.put('/api/me/keys', { preHandler: requireAuth }, async (request, reply) => {
