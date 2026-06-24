@@ -1,9 +1,18 @@
 // Keeps the `--app-height` CSS custom property in sync with the *visual*
 // viewport height — the area actually visible to the user, which shrinks when
-// the mobile on-screen keyboard opens. `window.innerHeight` (and `100vh`) keep
-// reporting the full layout viewport, so without this the chat composer ends up
-// hidden behind the keyboard. The app shell uses `height: var(--app-height)`
-// (see style.css) so it resizes to the visible region instead.
+// the mobile on-screen keyboard opens. This is the keyboard-fit path for iOS
+// Safari, which ignores the viewport `interactive-widget` directive: there the
+// keyboard overlays the page, `window.innerHeight` (and `100vh`) keep reporting
+// the full layout viewport, and without this the chat composer ends up hidden
+// behind the keyboard. The app shell uses `height: var(--app-height)` (see
+// style.css) so it resizes to the visible region instead.
+//
+// Android Chrome instead honours `interactive-widget=resizes-content` (set in
+// index.html), so the keyboard shrinks the *layout* viewport directly; there the
+// visual viewport equals the layout viewport, so this tracking is a harmless
+// no-op that matches `100%`. (The default `resizes-visual` left the layout
+// viewport full-height while only the visual viewport shrank, so the shell was
+// shorter than `body` — a tall blank strip and scrollable gap below it.)
 //
 // We deliberately set height only (not a transform): a transform on the app
 // root would establish a containing block and break `position: fixed` modals,

@@ -169,14 +169,24 @@ The rail (`AppSidebar`) is a fixed `w-14` icon strip on mobile (never the deskto
 
 ### On-screen keyboard & input zoom
 
-- **App height tracks the visual viewport.** `lib/viewport.ts`
-  (`trackViewportHeight`, wired in `main.ts`) keeps a `--app-height` CSS variable
-  in sync with `window.visualViewport.height`, and the app root uses
-  `height: var(--app-height, 100%)` (`style.css`). When the on-screen keyboard
-  opens it shrinks the visual viewport, so the shell resizes to the space above
-  the keyboard and the chat header + message composer stay visible (instead of
-  being covered, which `100vh`/`100%` would allow). Only height is set — never a
-  transform on the root, which would break `position: fixed` modals/lightbox.
+- **Keyboard resizes the layout viewport (Android).** The viewport meta in
+  `index.html` sets `interactive-widget=resizes-content`, so when the on-screen
+  keyboard opens Android Chrome shrinks the *layout* viewport — `100%`/`#app`
+  resize to the space above the keyboard and `body`/`#app` stay the same height.
+  Without it (the default `resizes-visual`) only the visual viewport shrank while
+  `body` stayed full-height, leaving a tall blank strip and a scrollable gap
+  below the shell.
+- **App height tracks the visual viewport (iOS).** iOS Safari ignores
+  `interactive-widget`, so `lib/viewport.ts` (`trackViewportHeight`, wired in
+  `main.ts`) keeps a `--app-height` CSS variable in sync with
+  `window.visualViewport.height`, and the app root uses
+  `height: var(--app-height, 100%)` (`style.css`). When the keyboard opens it
+  shrinks the visual viewport, so the shell resizes to the space above the
+  keyboard and the chat header + message composer stay visible (instead of being
+  covered, which `100vh`/`100%` would allow). Only height is set — never a
+  transform on the root, which would break `position: fixed` modals/lightbox. On
+  Android the visual viewport equals the (already shrunk) layout viewport, so
+  this tracking is a harmless no-op.
 - **No focus zoom on iOS.** A `@media (pointer: coarse)` rule bumps editable
   controls (`input`, `textarea`, `select`, `.cm-content`) to `text-base` (1rem),
   at/above the 16px threshold below which iOS Safari auto-zooms on focus.

@@ -2,7 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- interactive-widget=resizes-content: when the on-screen keyboard opens on
+         Android Chrome, shrink the *layout* viewport (so `100%`/`#app` resize to
+         the space above the keyboard) instead of the default `resizes-visual`,
+         which leaves the layout viewport full-height — that left a tall blank
+         strip below the shell and a scrollable gap on Android. iOS Safari ignores
+         this directive, so the visualViewport tracking in lib/viewport.ts remains
+         the keyboard-fit path there. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <!-- Theme-color tracks the app's light/dark themes so the mobile browser /
          status-bar chrome matches (light: zinc-50, dark: zinc-950). -->
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa" />

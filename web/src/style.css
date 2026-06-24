@@ -119,8 +119,11 @@ body {
 /* The app shell tracks the *visual* viewport height (set by trackViewportHeight
    in JS) so it shrinks to the space above the on-screen keyboard instead of
    being covered by it — keeping the chat header and the message composer in
-   view on mobile. Falls back to 100% before the var is set and on browsers
-   without visualViewport (where it equals the layout viewport anyway). */
+   view on mobile (the iOS path). On Android the layout viewport itself shrinks
+   for the keyboard via `interactive-widget=resizes-content` (index.html), so the
+   var simply equals the full height there and `body`/`#app` stay in sync.
+   Falls back to 100% before the var is set and on browsers without
+   visualViewport (where it equals the layout viewport anyway). */
 #app {
   height: var(--app-height, 100%);
 }
