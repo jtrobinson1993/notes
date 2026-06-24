@@ -14,7 +14,7 @@ vi.mock('../../src/lib/api', () => ({
 }));
 
 import { api } from '../../src/lib/api';
-import { urlBase64ToUint8Array, isPushSupported, pushState, enablePush, disablePush } from '../../src/lib/push';
+import { urlBase64ToUint8Array, isPushSupported, pushState, enablePush, disablePush, shouldOfferPush } from '../../src/lib/push';
 
 const apiMock = api as unknown as {
   pushKey: ReturnType<typeof vi.fn>;
@@ -134,5 +134,27 @@ describe('disablePush', () => {
     expect(state).toBe('off');
     expect(sub.unsubscribe).toHaveBeenCalled();
     expect(apiMock.pushUnsubscribe).toHaveBeenCalledWith('https://push.example.com/sub/xyz');
+  });
+});
+
+describe('shouldOfferPush', () => {
+  const base = { supported: true, permission: 'default' as NotificationPermission, hasServerKey: true, seen: false };
+
+  it('offers when supported, undecided, server-capable, and not yet asked', () => {
+    expect(shouldOfferPush(base)).toBe(true);
+  });
+
+  it('does not offer once the user has already been asked on this device', () => {
+    expect(shouldOfferPush({ ...base, seen: true })).toBe(false);
+  });
+
+  it('does not offer when permission is already granted or denied', () => {
+    expect(shouldOfferPush({ ...base, permission: 'granted' })).toBe(false);
+    expect(shouldOfferPush({ ...base, permission: 'denied' })).toBe(false);
+  });
+
+  it('does not offer when unsupported or the server cannot deliver', () => {
+    expect(shouldOfferPush({ ...base, supported: false })).toBe(false);
+    expect(shouldOfferPush({ ...base, hasServerKey: false })).toBe(false);
   });
 });

@@ -68,6 +68,17 @@ lives in **Settings → Security → Notifications**, with copy that states the
 content-free posture. Everything degrades gracefully where the Push API is
 unavailable (e.g. a non-installed iOS context).
 
+**First-open prompt.** `NotificationOptIn.vue` (mounted in `App.vue` while
+signed in) asks **once per device** whether to turn notifications on, then
+records the choice in `localStorage` (`NOTIF_OPTIN_SEEN_KEY`,
+`notes:notif-optin-seen`) so it never re-appears — whichever option is picked
+(Enable, Not now, or dismiss). The pure `shouldOfferPush` gates it: only when the
+platform supports push, the OS permission is still `default` (undecided), the
+server has a VAPID key (push can actually be delivered), and the device hasn't
+been asked before. **Enable** calls `enablePush` from the button click (a user
+gesture, as browsers require for the permission request). The Settings toggle
+remains the way to change the choice later.
+
 ## Requirements & limits
 
 - **HTTPS only** — Web Push needs a secure context (localhost excepted for dev).

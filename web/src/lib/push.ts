@@ -84,6 +84,24 @@ export async function enablePush(): Promise<PushState> {
   return 'on';
 }
 
+/** localStorage flag recording that we've already shown the first-open
+ *  notification opt-in on this device (set whichever option the user picks, so
+ *  the prompt never nags again). */
+export const NOTIF_OPTIN_SEEN_KEY = 'notes:notif-optin-seen';
+
+/** Whether to offer the first-open opt-in prompt. Only when the platform
+ *  supports push, the user hasn't decided at the OS level yet (permission still
+ *  `default`), the server can actually deliver (a VAPID key exists), and we
+ *  haven't already asked on this device. Pure so it's unit-testable. */
+export function shouldOfferPush(opts: {
+  supported: boolean;
+  permission: NotificationPermission;
+  hasServerKey: boolean;
+  seen: boolean;
+}): boolean {
+  return opts.supported && opts.permission === 'default' && opts.hasServerKey && !opts.seen;
+}
+
 /** Unsubscribe locally and tell the server to forget the endpoint. */
 export async function disablePush(): Promise<PushState> {
   const reg = await readyRegistration();
