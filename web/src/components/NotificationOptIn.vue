@@ -14,7 +14,6 @@ import IconX from '~icons/mynaui/x';
  * Settings toggle remains the way to change this later.
  */
 const show = ref(false);
-const busy = ref(false);
 
 onMounted(async () => {
   if (typeof window === 'undefined' || !isPushSupported()) return;
@@ -49,25 +48,25 @@ function dismiss() {
   markSeen();
 }
 
-async function enable() {
-  busy.value = true;
-  try {
-    await enablePush(); // requests OS permission + subscribes with the server
-  } catch {
-    /* server error subscribing — the choice is still recorded below */
-  } finally {
-    busy.value = false;
-    markSeen();
-  }
+function enable() {
+  // Dismiss immediately, whichever option is chosen — then request OS permission
+  // + subscribe in the background (the prompt shouldn't linger behind it).
+  markSeen();
+  void enablePush().catch(() => {
+    /* server error / permission refused — the choice is already recorded */
+  });
 }
 </script>
 
 <template>
+  <!-- Slide up from the bottom edge and settle with a slight overshoot bounce
+       (the back-ease cubic-bezier overshoots past its resting point); slides
+       back down on dismiss. -->
   <Transition
-    enter-active-class="transition duration-200 ease-out"
-    enter-from-class="translate-y-3 opacity-0"
-    leave-active-class="transition duration-150 ease-in"
-    leave-to-class="translate-y-3 opacity-0"
+    enter-active-class="transition-transform duration-500 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+    enter-from-class="translate-y-full"
+    leave-active-class="transition-transform duration-200 ease-in"
+    leave-to-class="translate-y-full"
   >
     <div
       v-if="show"
@@ -90,16 +89,14 @@ async function enable() {
           <div class="mt-2.5 flex items-center gap-2">
             <button
               type="button"
-              :disabled="busy"
-              class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
               @click="enable"
             >
               Enable
             </button>
             <button
               type="button"
-              :disabled="busy"
-              class="rounded-lg px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 dark:text-zinc-300 dark:hover:bg-zinc-700"
+              class="rounded-lg px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
               @click="dismiss"
             >
               Not now
