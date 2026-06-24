@@ -11,15 +11,26 @@ message. So a push **never carries plaintext**. The payload is only a routing
 hint:
 
 ```json
-{ "type": "message", "conversationId": "<id>" }
+{ "type": "message", "conversationId": "<id>", "channelId": "<id>", "seq": 42 }
 ```
 
 The service worker shows a generic **"New message"** (never the text or the
-sender's name), and on click focuses an open tab / opens the app at
-`/chat/:conversationId`, where the client connects and decrypts as usual. This is
-the same posture as E2EE messengers like Signal — the notification is a doorbell,
-not the message. `conversationId` is metadata the server already routes on (it
-maps messages to members), so the push leaks nothing new.
+sender's name). On click it builds the in-app path with the pure `pushTargetUrl`
+(`lib/pushTarget.ts`) and **deep-links to the exact message**: the conversation,
+the **channel** segment when it isn't the general channel, and `?m=<seq>` so the
+client scrolls to and flashes that message. A **reply-thread** message routes to
+the *parent* conversation with `threadParentSeq` → `?thread=<parentSeq>`, which
+opens that thread's panel (the seq scrolls within it). The client connects and
+decrypts as usual. This is the same posture as E2EE messengers like Signal — the
+notification is a doorbell, not the message. All these fields are metadata the
+server already routes on (it maps messages to members/channels), so the push
+leaks nothing new.
+
+The click prefers a **soft navigation**: an open tab is focused and the worker
+`postMessage`s the path, which the app routes in-app (so it opens the channel,
+the thread panel, and scrolls without a reload — and, on mobile, lands on the
+**messages** pane rather than the channel list). With no open tab it cold-starts
+at the deep link via `openWindow`.
 
 ## Service worker
 
@@ -56,6 +67,17 @@ endpoint; `pushState` reports `unsupported` / `denied` / `off` / `on`. The opt-i
 lives in **Settings → Security → Notifications**, with copy that states the
 content-free posture. Everything degrades gracefully where the Push API is
 unavailable (e.g. a non-installed iOS context).
+
+**First-open prompt.** `NotificationOptIn.vue` (mounted in `App.vue` while
+signed in) asks **once per device** whether to turn notifications on, then
+records the choice in `localStorage` (`NOTIF_OPTIN_SEEN_KEY`,
+`notes:notif-optin-seen`) so it never re-appears — whichever option is picked
+(Enable, Not now, or dismiss). The pure `shouldOfferPush` gates it: only when the
+platform supports push, the OS permission is still `default` (undecided), the
+server has a VAPID key (push can actually be delivered), and the device hasn't
+been asked before. **Enable** calls `enablePush` from the button click (a user
+gesture, as browsers require for the permission request). The Settings toggle
+remains the way to change the choice later.
 
 ## Requirements & limits
 

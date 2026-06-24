@@ -1,6 +1,6 @@
-# Notes
+# Accord
 
-Self-hosted, end-to-end encrypted note-taking for a small private group.
+Self-hosted, end-to-end encrypted notes &amp; chat for a small private group.
 Passkey-only sign-in, invite-only registration, Markdown notes with tags and
 an Obsidian-style live-preview editor (concealed markup, formatting shortcuts,
 colors, spoilers, syntax-highlighted code blocks, click-to-load video embeds),
@@ -61,7 +61,7 @@ existing passkeys.
 | `APP_ORIGIN` | `http://localhost:3000` | Public URL of the app (WebAuthn origin) |
 | `PORT` | `3000` | Listen port |
 | `DATA_DIR` | `/data` (in Docker) | Where the SQLite database lives |
-| `APP_NAME` | `Notes` | Display name |
+| `APP_NAME` | `Accord` | Display name |
 | `BACKUP_INTERVAL_HOURS` | `24` | Periodic SQLite backup interval (0 disables) |
 | `BACKUP_KEEP` | `14` | Number of backups to retain |
 | `VOICE_ANNOUNCED_IP` | `127.0.0.1` | Public/LAN IP clients reach for voice media — set for non-local calls |

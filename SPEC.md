@@ -1,4 +1,4 @@
-# notes — Spec
+# Accord — Spec
 
 The spec is split by app area under [`spec/`](spec/). Start at
 **[spec/README.md](spec/README.md)** for the index and tech stack.

@@ -1,4 +1,4 @@
-# notes — Spec
+# Accord — Spec
 
 Self-hosted, end-to-end encrypted **notes + chat** app for a small private group
 (invite-only, never many users). The server stores only ciphertext.

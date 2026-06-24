@@ -23,10 +23,18 @@ export default defineConfig({
         // precache with them — cache on demand the first time one is rendered.
         globIgnores: ['**/emoji/**'],
       },
+      // Register the service worker in dev too, so Web Push / notifications can be
+      // exercised locally. Without this the SW never registers on the dev server,
+      // `navigator.serviceWorker.ready` never resolves, and Settings is stuck on
+      // "Not supported here". (Prod always registers it.)
+      devOptions: {
+        enabled: true,
+        type: 'module',
+      },
       manifest: {
-        name: 'Notes',
-        short_name: 'Notes',
-        description: 'Self-hosted end-to-end encrypted notes',
+        name: 'Accord',
+        short_name: 'Accord',
+        description: 'Self-hosted, end-to-end encrypted notes & chat',
         theme_color: '#18181b',
         background_color: '#18181b',
         display: 'standalone',

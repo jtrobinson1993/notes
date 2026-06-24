@@ -4,6 +4,7 @@ import { useSessionStore } from './stores/session';
 import { useNotesStore } from './stores/notes';
 import { startChat, stopChat, useChatStore } from './stores/chat';
 import { useVoiceStore } from './stores/voice';
+import NotificationOptIn from './components/NotificationOptIn.vue';
 
 const session = useSessionStore();
 const notes = useNotesStore();
@@ -12,7 +13,7 @@ const chat = useChatStore();
 
 // Surface total unread in the browser tab title and (when installed) the PWA
 // app-icon badge, so new messages are visible without the tab focused.
-const baseTitle = document.title || 'notes';
+const baseTitle = document.title || 'Accord';
 watch(
   () => chat.totalUnread,
   (n) => {
@@ -50,5 +51,7 @@ watch(
        app, incl. pre-auth pages). env() insets are 0 on desktop, so it's inert. -->
   <div class="app-safe h-full">
     <RouterView />
+    <!-- First-open notification opt-in (asks once per device; signed-in only). -->
+    <NotificationOptIn v-if="session.loggedIn" />
   </div>
 </template>

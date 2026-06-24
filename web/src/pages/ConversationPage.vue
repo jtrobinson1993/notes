@@ -49,6 +49,19 @@ const openNote = computed(() => (openNoteId.value ? (notes.notes.get(openNoteId.
 
 const convId = computed(() => String(route.params.id));
 
+// Deep-link params from a push notification (see lib/pushTarget.ts): `?m=<seq>`
+// scrolls to a message; `?thread=<parentSeq>` opens that thread's panel.
+const focusSeq = computed(() => {
+  const m = route.query?.m;
+  const n = typeof m === 'string' ? Number(m) : NaN;
+  return Number.isFinite(n) ? n : null;
+});
+const threadSeq = computed(() => {
+  const t = route.query?.thread;
+  const n = typeof t === 'string' ? Number(t) : NaN;
+  return Number.isFinite(n) ? n : null;
+});
+
 // The channel currently being viewed comes from the route, so a refresh keeps
 // you in the channel. The general channel is the bare `/chat/:id` (no segment);
 // an extra channel is `/chat/:id/:channelId`.
@@ -173,6 +186,19 @@ async function onOpenThread(seq: number) {
 watch(convId, () => {
   activeThread.value = null;
 });
+
+// A push-notification deep link lands on the exact message: show the messages
+// pane (not the channel list) on mobile, and open the thread panel when the
+// message lived in a thread. Runs after the `convId` watchers above (which reset
+// the pane/thread), so this re-asserts the deep-linked target.
+watch(
+  [convId, focusSeq, threadSeq, conversation],
+  ([, seq, tseq, conv]) => {
+    if (seq != null) showMessages();
+    if (conv && tseq != null && activeThread.value == null) void onOpenThread(tseq);
+  },
+  { immediate: true },
+);
 
 // --- Responsive split (measured on the chat region, not the viewport, so the
 // sidebar state is accounted for) + a draggable thread width. ---
@@ -330,7 +356,13 @@ onBeforeUnmount(stopDrag);
 
       <div ref="region" class="relative flex min-h-0 flex-1">
         <div class="min-w-0 flex-1">
-          <ConversationView :conv-id="convId" :channel-id="activeChannelId" hide-header @open-thread="onOpenThread" />
+          <ConversationView
+            :conv-id="convId"
+            :channel-id="activeChannelId"
+            :focus-seq="threadSeq == null ? focusSeq : null"
+            hide-header
+            @open-thread="onOpenThread"
+          />
         </div>
 
       <!-- A pinned note opened over the chat window (rules, character sheets,
@@ -362,6 +394,7 @@ onBeforeUnmount(stopDrag);
         >
           <ConversationView
             :conv-id="activeThread"
+            :focus-seq="threadSeq != null ? focusSeq : null"
             is-thread-panel
             @open-thread="onOpenThread"
             @close="activeThread = null"

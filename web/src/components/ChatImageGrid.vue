@@ -2,18 +2,19 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { AttachmentRef } from '@notes/shared';
 import { decryptAttachment } from '../lib/attachments';
-import { galleryLayout, stepIndex } from '../lib/imageGallery';
+import { galleryLayout, stepIndex, tileMetrics, TILE_HEIGHT, TILE_MIN_WIDTH } from '../lib/imageGallery';
 import { withViewTransition } from '../lib/viewTransition';
 import ImageLightbox from './ImageLightbox.vue';
 import IconDanger from '~icons/mynaui/danger-triangle';
 
 /**
- * The image attachments of a single chat message, laid out as a grid (one large
- * image when alone) with a shared lightbox you can page through with the on-image
- * arrows or ←/→. Past `MAX_GALLERY_TILES` images, the last visible tile collapses
- * the remainder behind a `+N` badge; clicking it drops you into the lightbox at
- * that image so the arrows reveal the rest. Layout/index math lives in the pure,
- * unit-tested `lib/imageGallery.ts`.
+ * The image attachments of a single chat message, laid out as a wrapping strip
+ * of equal-height, uncropped thumbnails (so each shows whole, letterboxed against
+ * the tile background, and the open/close morph into the lightbox stays true).
+ * Up to `MAX_GALLERY_TILES` show inline; the last visible tile collapses the
+ * remainder behind a `+N` badge that drops you into the lightbox at that image so
+ * the arrows reveal the rest. Sizing math lives in the pure, unit-tested
+ * `lib/imageGallery.ts`.
  */
 const props = defineProps<{ images: AttachmentRef[] }>();
 
@@ -22,10 +23,12 @@ const props = defineProps<{ images: AttachmentRef[] }>();
 // no remote fetch and no IP leak (see spec/security.md).
 const urls = ref<(string | null)[]>(props.images.map(() => null));
 const failed = ref<boolean[]>(props.images.map(() => false));
+// Natural pixel dimensions per image, filled on <img> load; drives each tile's
+// width so the strip is equal-height with true aspect ratios.
+const dims = ref<({ w: number; h: number } | null)[]>(props.images.map(() => null));
 const objectUrls: string[] = [];
 
 const layout = computed(() => galleryLayout(props.images.length));
-const single = computed(() => layout.value.cols === 1);
 
 const lightboxOpen = ref(false);
 const index = ref(0);
@@ -33,6 +36,18 @@ const current = computed(() => props.images[index.value]);
 const currentUrl = computed(() => urls.value[index.value]);
 const hasPrev = computed(() => index.value > 0);
 const hasNext = computed(() => index.value < props.images.length - 1);
+
+/** Per-tile width + crop mode from the loaded natural size (min-width fallback
+ *  until the image reports its dimensions). */
+function metrics(i: number) {
+  const d = dims.value[i];
+  return d ? tileMetrics(d.w, d.h) : { width: TILE_MIN_WIDTH, fit: 'contain' as const };
+}
+
+function onImgLoad(i: number, e: Event) {
+  const el = e.target as HTMLImageElement;
+  dims.value[i] = { w: el.naturalWidth, h: el.naturalHeight };
+}
 
 onMounted(() => {
   props.images.forEach(async (att, i) => {
@@ -89,18 +104,16 @@ function step(delta: number) {
 </script>
 
 <template>
-  <div
-    class="mt-1 grid w-fit max-w-[340px] gap-1"
-    :style="{ gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))` }"
-  >
+  <div class="mt-1 flex max-w-full flex-wrap gap-1">
     <template v-for="(att, i) in images" :key="att.id">
       <!-- Only the first `visibleCount` tiles render; the rest hide behind the
-           `+N` badge on the last visible one. -->
+           `+N` badge on the last visible one. Equal height, width from the
+           image's aspect ratio, off-colored background = the letterbox/fallback. -->
       <button
         v-if="i < layout.visibleCount"
         type="button"
-        class="relative block cursor-zoom-in overflow-hidden rounded-lg bg-zinc-100 dark:bg-zinc-800"
-        :class="single ? '' : 'aspect-square'"
+        class="relative block shrink-0 cursor-zoom-in overflow-hidden rounded-lg bg-zinc-200/70 dark:bg-zinc-700/50"
+        :style="{ height: `${TILE_HEIGHT}px`, width: `${metrics(i).width}px` }"
         :title="`View ${att.name}`"
         @click="openAt(i)"
       >
@@ -109,16 +122,18 @@ function step(delta: number) {
           :src="urls[i]!"
           :alt="att.name"
           loading="lazy"
-          :class="single ? 'max-h-80 max-w-full rounded-lg' : 'h-full w-full object-cover'"
+          class="h-full w-full"
+          :class="metrics(i).fit === 'cover' ? 'object-cover' : 'object-contain'"
           :style="{
             viewTransitionName:
               morphing && !lightboxOpen && i === index ? vtName : undefined,
           }"
+          @load="onImgLoad(i, $event)"
         />
-        <!-- Decrypt failed: muted placeholder so the grid still tiles cleanly. -->
+        <!-- Decrypt failed: muted placeholder so the strip still tiles cleanly. -->
         <span
           v-else-if="failed[i]"
-          class="flex aspect-square items-center justify-center text-amber-500"
+          class="flex h-full w-full items-center justify-center text-amber-500"
         >
           <IconDanger class="h-6 w-6" />
         </span>

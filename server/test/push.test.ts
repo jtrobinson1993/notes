@@ -81,28 +81,28 @@ describe('notifyNewMessage', () => {
 
   it('pushes to an offline recipient, skipping the sender', () => {
     const { sender, recipient, push } = seedWithSub(new Set());
-    push.notifyNewMessage('conv1', sender, [sender, recipient]);
+    push.notifyNewMessage({ conversationId: 'conv1', channelId: 'conv1', seq: 1 }, sender, [sender, recipient]);
     expect(mock.sendNotification).toHaveBeenCalledTimes(1);
     const [sub, body] = mock.sendNotification.mock.calls[0]!;
     expect(sub.endpoint).toBe('https://push.example/abc');
-    expect(JSON.parse(body)).toEqual({ type: 'message', conversationId: 'conv1' });
+    expect(JSON.parse(body)).toEqual({ type: 'message', conversationId: 'conv1', channelId: 'conv1', seq: 1 });
   });
 
   it('does NOT push to a recipient with a live socket', () => {
     const { sender, recipient, push } = seedWithSub(new Set([/* recipient online */]));
-    push.notifyNewMessage('conv1', sender, [sender, recipient]);
+    push.notifyNewMessage({ conversationId: 'conv1', channelId: 'conv1', seq: 1 }, sender, [sender, recipient]);
     // recipient offline above -> 1 send; now make them online:
     mock.sendNotification.mockClear();
     const online = new Set([recipient]);
     const push2 = createPush(t.db, makeConfig(t.dir), fakeRealtime(online));
-    push2.notifyNewMessage('conv1', sender, [sender, recipient]);
+    push2.notifyNewMessage({ conversationId: 'conv1', channelId: 'conv1', seq: 1 }, sender, [sender, recipient]);
     expect(mock.sendNotification).not.toHaveBeenCalled();
   });
 
   it('prunes a subscription the push service reports as gone (410)', async () => {
     const { sender, recipient, push } = seedWithSub(new Set());
     mock.sendNotification.mockReturnValueOnce(Promise.reject({ statusCode: 410 }));
-    push.notifyNewMessage('conv1', sender, [sender, recipient]);
+    push.notifyNewMessage({ conversationId: 'conv1', channelId: 'conv1', seq: 1 }, sender, [sender, recipient]);
     await flush();
     expect(t.db.listPushSubscriptions(recipient)).toHaveLength(0);
   });
@@ -110,7 +110,7 @@ describe('notifyNewMessage', () => {
   it('keeps the subscription on a transient (500) error', async () => {
     const { sender, recipient, push } = seedWithSub(new Set());
     mock.sendNotification.mockReturnValueOnce(Promise.reject({ statusCode: 500 }));
-    push.notifyNewMessage('conv1', sender, [sender, recipient]);
+    push.notifyNewMessage({ conversationId: 'conv1', channelId: 'conv1', seq: 1 }, sender, [sender, recipient]);
     await flush();
     expect(t.db.listPushSubscriptions(recipient)).toHaveLength(1);
   });

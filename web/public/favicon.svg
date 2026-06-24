@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Accord logo: a bold "A" on a transparent background. Drawn as strokes (not
+       <text>) so it renders identically without depending on any installed font. -->
+  <g fill="none" stroke="#1a5fff" stroke-width="58" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M256 92 132 420" />
+    <path d="M256 92 380 420" />
+    <path d="M186 300 326 300" />
+  </g>
+</svg>

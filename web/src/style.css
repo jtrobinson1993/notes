@@ -24,6 +24,14 @@
   --z-index-tooltip: 60;
 }
 
+/* Soft floating-surface shadow (`shadow-pop`). The default Tailwind shadows use a
+   large vertical offset with negative spread, so the top edge sits flush with no
+   visible shadow — bad for a small card floating in open space. This keeps just a
+   slight bottom-right offset with enough blur to read on every edge. */
+@theme {
+  --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.10), 1px 3px 12px rgb(0 0 0 / 0.16);
+}
+
 /* light-dark() resolves against color-scheme, which follows the app theme
    (the .dark class), not the OS, so manual theme choice wins. */
 :root {
@@ -119,8 +127,11 @@ body {
 /* The app shell tracks the *visual* viewport height (set by trackViewportHeight
    in JS) so it shrinks to the space above the on-screen keyboard instead of
    being covered by it — keeping the chat header and the message composer in
-   view on mobile. Falls back to 100% before the var is set and on browsers
-   without visualViewport (where it equals the layout viewport anyway). */
+   view on mobile (the iOS path). On Android the layout viewport itself shrinks
+   for the keyboard via `interactive-widget=resizes-content` (index.html), so the
+   var simply equals the full height there and `body`/`#app` stay in sync.
+   Falls back to 100% before the var is set and on browsers without
+   visualViewport (where it equals the layout viewport anyway). */
 #app {
   height: var(--app-height, 100%);
 }
