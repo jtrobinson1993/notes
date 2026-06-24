@@ -671,7 +671,24 @@ export interface PushSubscriptionInput {
 }
 
 /** The content-free payload the server pushes; the client opens and decrypts.
- *  A `call` ping notifies a callee whose devices have no live socket. */
+ *  A `call` ping notifies a callee whose devices have no live socket.
+ *
+ *  A `message` ping carries only routing metadata (no plaintext): which
+ *  conversation/channel and the new message's `seq`, so the client can open the
+ *  exact channel and scroll to the message. For a reply-thread message,
+ *  `conversationId` is the *parent* and `threadParentSeq` is the parent message
+ *  whose thread panel should open (the seq then scrolls within that thread). */
 export type PushPayload =
-  | { type: 'message'; conversationId: string }
+  | {
+      type: 'message';
+      conversationId: string;
+      /** Channel within the conversation (equals `conversationId` for the
+       *  general channel, in which case no extra path segment is added). */
+      channelId: string;
+      /** The new message's sequence number — used to scroll to/highlight it. */
+      seq: number;
+      /** Present only for a reply-thread message: the parent message seq whose
+       *  thread panel should open (`conversationId` is then the parent). */
+      threadParentSeq?: number;
+    }
   | { type: 'call'; conversationId: string };

@@ -11,15 +11,26 @@ message. So a push **never carries plaintext**. The payload is only a routing
 hint:
 
 ```json
-{ "type": "message", "conversationId": "<id>" }
+{ "type": "message", "conversationId": "<id>", "channelId": "<id>", "seq": 42 }
 ```
 
 The service worker shows a generic **"New message"** (never the text or the
-sender's name), and on click focuses an open tab / opens the app at
-`/chat/:conversationId`, where the client connects and decrypts as usual. This is
-the same posture as E2EE messengers like Signal — the notification is a doorbell,
-not the message. `conversationId` is metadata the server already routes on (it
-maps messages to members), so the push leaks nothing new.
+sender's name). On click it builds the in-app path with the pure `pushTargetUrl`
+(`lib/pushTarget.ts`) and **deep-links to the exact message**: the conversation,
+the **channel** segment when it isn't the general channel, and `?m=<seq>` so the
+client scrolls to and flashes that message. A **reply-thread** message routes to
+the *parent* conversation with `threadParentSeq` → `?thread=<parentSeq>`, which
+opens that thread's panel (the seq scrolls within it). The client connects and
+decrypts as usual. This is the same posture as E2EE messengers like Signal — the
+notification is a doorbell, not the message. All these fields are metadata the
+server already routes on (it maps messages to members/channels), so the push
+leaks nothing new.
+
+The click prefers a **soft navigation**: an open tab is focused and the worker
+`postMessage`s the path, which the app routes in-app (so it opens the channel,
+the thread panel, and scrolls without a reload — and, on mobile, lands on the
+**messages** pane rather than the channel list). With no open tab it cold-starts
+at the deep link via `openWindow`.
 
 ## Service worker
 

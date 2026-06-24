@@ -12,13 +12,23 @@ import type { Realtime } from './realtime.js';
 // which then connects and decrypts normally. This mirrors how E2EE messengers
 // (e.g. Signal) keep notifications content-free. See spec/notifications.md.
 
+/** Where a `message` push should deep-link. Content-free routing metadata only
+ *  (no plaintext): the channel and the new message's seq, plus — for a
+ *  reply-thread message — the parent message whose thread panel should open. */
+export interface MessagePushTarget {
+  conversationId: string;
+  channelId: string;
+  seq: number;
+  threadParentSeq?: number;
+}
+
 export interface Push {
   /** True when VAPID keys are configured/derived and pushes can be sent. */
   readonly enabled: boolean;
   /** The VAPID public key the browser needs to create a subscription, or null. */
   readonly publicKey: string | null;
   /** Push a content-free ping to every member without a live socket. */
-  notifyNewMessage(conversationId: string, senderId: string, memberIds: string[]): void;
+  notifyNewMessage(target: MessagePushTarget, senderId: string, memberIds: string[]): void;
   /** Push a content-free incoming-call ping to callees without a live socket
    *  (online devices are rung over the WebSocket). */
   notifyCall(conversationId: string, callerId: string, calleeIds: string[]): void;
@@ -56,8 +66,14 @@ export function createPush(db: DB, config: Config, realtime: Realtime): Push {
   const subject = process.env.VAPID_SUBJECT?.trim() || `mailto:admin@${config.rpId}`;
   webpush.setVapidDetails(subject, keys.publicKey, keys.privateKey);
 
-  function notifyNewMessage(conversationId: string, senderId: string, memberIds: string[]): void {
-    const payload: PushPayload = { type: 'message', conversationId };
+  function notifyNewMessage(target: MessagePushTarget, senderId: string, memberIds: string[]): void {
+    const payload: PushPayload = {
+      type: 'message',
+      conversationId: target.conversationId,
+      channelId: target.channelId,
+      seq: target.seq,
+      ...(target.threadParentSeq != null ? { threadParentSeq: target.threadParentSeq } : {}),
+    };
     const body = JSON.stringify(payload);
     for (const uid of memberIds) {
       if (uid === senderId) continue;

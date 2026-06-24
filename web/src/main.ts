@@ -15,3 +15,15 @@ app.use(createPinia());
 app.use(PiniaColada, {});
 app.use(router);
 app.mount('#app');
+
+// Soft-navigate when a push notification is clicked while the app is open: the
+// service worker posts the deep-link path (built by pushTarget) and we route to
+// it in-app, so the exact channel/thread + message open without a full reload.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e: MessageEvent) => {
+    const d = e.data as { type?: string; url?: string } | null;
+    if (d?.type === 'notification-navigate' && typeof d.url === 'string') {
+      void router.push(d.url);
+    }
+  });
+}

@@ -5,6 +5,7 @@ import { CacheFirst } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
 import { clientsClaim } from 'workbox-core';
 import type { PushPayload } from '@notes/shared';
+import { pushTargetUrl } from './lib/pushTarget';
 
 // Custom service worker (vite-plugin-pwa `injectManifest` strategy). It keeps the
 // previous precaching/emoji behavior AND adds Web Push handlers — which the
@@ -57,36 +58,35 @@ sw.addEventListener('push', (event) => {
   }
   const conversationId = data.type === 'message' ? data.conversationId : undefined;
   event.waitUntil(
-    sw.registration.showNotification('Notes', {
+    sw.registration.showNotification('Accord', {
       body: 'New message',
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
       // Collapse repeated pings for the same conversation into one notification.
-      tag: conversationId ? `conv:${conversationId}` : 'notes',
-      data: { conversationId },
+      tag: conversationId ? `conv:${conversationId}` : 'accord',
+      // Keep the whole routing payload so the click can open the exact channel /
+      // thread message (built into a path by the shared `pushTargetUrl`).
+      data,
     }),
   );
 });
 
 sw.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const convId = (event.notification.data as { conversationId?: string } | null)?.conversationId;
-  const target = convId ? `/chat/${convId}` : '/';
+  const payload = event.notification.data as Partial<PushPayload> | null;
+  const target = pushTargetUrl(payload);
   event.waitUntil(
     (async () => {
       const clients = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const client of clients) {
-        // Focus an existing tab; steer it to the conversation if we can.
+        // Focus an existing tab and ask the app to soft-navigate (so it can open
+        // the channel, the thread panel, and scroll to the message without a full
+        // reload). The app listens for this in main.ts.
         await client.focus();
-        if (convId) {
-          try {
-            await client.navigate(target);
-          } catch {
-            /* cross-origin or detached — ignore */
-          }
-        }
+        client.postMessage({ type: 'notification-navigate', url: target });
         return;
       }
+      // No open tab: cold-start at the deep link (the app reads it on load).
       await sw.clients.openWindow(target);
     })(),
   );

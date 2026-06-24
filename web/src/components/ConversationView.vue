@@ -30,7 +30,15 @@ import { conversationTitle } from '../lib/convName';
 
 // Renders one conversation (DM, group, or a thread). The parent owns routing and
 // the thread panel, so opening a thread just emits the parent message's seq.
-const props = defineProps<{ convId: string; channelId?: string; isThreadPanel?: boolean; hideHeader?: boolean }>();
+const props = defineProps<{
+  convId: string;
+  channelId?: string;
+  isThreadPanel?: boolean;
+  hideHeader?: boolean;
+  /** Deep-link target (e.g. from a push notification): scroll to + flash this
+   *  message's seq once it's rendered. */
+  focusSeq?: number | null;
+}>();
 const emit = defineEmits<{ openThread: [seq: number]; close: [] }>();
 const session = useSessionStore();
 const chat = useChatStore();
@@ -254,6 +262,24 @@ function previewOf(m: ChatMessageView): string {
 function startReply(m: ChatMessageView) {
   replyingTo.value = { seq: m.seq, senderId: m.senderId, preview: previewOf(m) };
 }
+
+// A deep link (push notification) hands us a message seq to land on. Scroll to
+// it once it's actually rendered — the message may arrive a tick later (still
+// decrypting) or after a history page loads — and only auto-jump once per target
+// so we don't keep yanking the user back.
+let lastFocused: number | null = null;
+watch(
+  [() => props.focusSeq, () => msgs.value.length],
+  async () => {
+    const seq = props.focusSeq;
+    if (seq == null || seq === lastFocused) return;
+    await nextTick();
+    if (!scroller.value?.querySelector(`[data-seq="${seq}"]`)) return; // not rendered yet
+    lastFocused = seq;
+    scrollToSeq(seq);
+  },
+  { immediate: true },
+);
 
 function scrollToSeq(seq: number) {
   const el = scroller.value?.querySelector<HTMLElement>(`[data-seq="${seq}"]`);

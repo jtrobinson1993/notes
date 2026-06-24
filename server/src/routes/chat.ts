@@ -1004,7 +1004,18 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     const memberIds = channelAudience(id, channelId);
     hub.sendToUsers(memberIds, { type: 'message', message });
     // Background push to recipients with no live socket (content-free; see push.ts).
-    push.notifyNewMessage(id, me, memberIds);
+    // Route it to the exact channel + message; for a thread message, route to the
+    // parent conversation and open the thread panel at its parent seq.
+    const target =
+      conv.kind === 'thread' && conv.parent_id != null
+        ? {
+            conversationId: conv.parent_id,
+            channelId: conv.parent_id,
+            seq: message.seq,
+            ...(conv.parent_seq != null ? { threadParentSeq: conv.parent_seq } : {}),
+          }
+        : { conversationId: id, channelId, seq: message.seq };
+    push.notifyNewMessage(target, me, memberIds);
     return message;
   });
 
