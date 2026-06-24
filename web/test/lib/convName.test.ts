@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Conversation, ConversationMember } from '@notes/shared';
-import { conversationInitial, conversationTitle } from '../../src/lib/convName';
+import { conversationInitial, conversationTitle, dmPeerId } from '../../src/lib/convName';
 
 function member(userId: string, displayName: string): ConversationMember {
   return { userId, displayName, publicKey: null, nameColor: null };
@@ -47,5 +47,17 @@ describe('conversationTitle', () => {
   it('derives an uppercase initial from the title', () => {
     const c = conv('dm', [member(ME, 'Me'), member('u2', 'alice')]);
     expect(conversationInitial(c, ME)).toBe('A');
+  });
+});
+
+describe('dmPeerId', () => {
+  it('returns the other member for a DM (for their avatar)', () => {
+    const c = conv('dm', [member(ME, 'Me'), member('u2', 'Alice')]);
+    expect(dmPeerId(c, ME)).toBe('u2');
+  });
+
+  it('returns undefined for groups and threads', () => {
+    expect(dmPeerId(conv('group', [member(ME, 'Me'), member('u2', 'Alice')]), ME)).toBeUndefined();
+    expect(dmPeerId(conv('thread', [member(ME, 'Me'), member('u2', 'Alice')]), ME)).toBeUndefined();
   });
 });
