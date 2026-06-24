@@ -174,6 +174,17 @@ select:not(:disabled) {
 html.vt-exclude-root {
   view-transition-name: none;
 }
+/* Chat image morph (ChatImageGrid/ImageLightbox): make the snapshots cover the
+   morphing box so the open/close transition reads as the image growing in width
+   AND height and revealing, rather than the default stretch between the square
+   thumbnail and the full image. Only `chat-img-*` names participate (the root is
+   excluded during the morph), so the wildcard is safe. */
+::view-transition-old(*),
+::view-transition-new(*) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 @keyframes lb-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }

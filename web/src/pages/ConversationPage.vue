@@ -8,12 +8,13 @@ import NoteEditor from '../components/NoteEditor.vue';
 import EmojiText from '../components/EmojiText.vue';
 import ManageMembersDrawer from '../components/ManageMembersDrawer.vue';
 import AvatarCropper from '../components/AvatarCropper.vue';
-import { conversationTitle } from '../lib/convName';
+import { conversationTitle, dmPeerId } from '../lib/convName';
 import { MAX_AVATAR_INPUT_BYTES } from '../lib/avatar';
 import { useChatStore } from '../stores/chat';
 import { useNotesStore } from '../stores/notes';
 import { useOrgStore } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
+import { useProfileStore } from '../stores/profile';
 import { useVoiceStore } from '../stores/voice';
 import IconUsers from '~icons/mynaui/users';
 import IconHash from '~icons/mynaui/hash';
@@ -27,6 +28,7 @@ const chat = useChatStore();
 const notes = useNotesStore();
 const org = useOrgStore();
 const session = useSessionStore();
+const profile = useProfileStore();
 
 // Load personal organization + notes so the sidebar's Pinned section and the
 // note overlay work even when landing directly in a chat (idempotent).
@@ -82,6 +84,14 @@ const isGroup = computed(() => conversation.value?.kind === 'group');
 const voice = useVoiceStore();
 const canEditGroup = computed(() => isGroup.value && (conversation.value?.myRole === 'owner' || conversation.value?.myRole === 'admin'));
 const groupIcon = computed(() => chat.groupIconUrl(convId.value));
+// Header avatar: a group's icon, or the DM peer's decrypted avatar (null → initial).
+const headerIcon = computed(() => {
+  const c = conversation.value;
+  if (!c) return null;
+  if (c.kind === 'group') return groupIcon.value;
+  const peer = dmPeerId(c, session.user?.id);
+  return peer ? profile.avatarFor(peer) ?? null : null;
+});
 
 const editingName = ref(false);
 const nameDraft = ref('');
@@ -255,7 +265,7 @@ onBeforeUnmount(stopDrag);
           :title="canEditGroup ? 'Change group icon' : parentTitle"
           @click="iconInput?.click()"
         >
-          <img v-if="groupIcon" :src="groupIcon" alt="" class="h-full w-full object-cover" />
+          <img v-if="headerIcon" :src="headerIcon" alt="" class="h-full w-full object-cover" />
           <template v-else>{{ (parentTitle.trim()[0] ?? '?').toUpperCase() }}</template>
         </button>
         <input v-if="canEditGroup" ref="iconInput" type="file" accept="image/*" class="hidden" @change="pickIcon" />

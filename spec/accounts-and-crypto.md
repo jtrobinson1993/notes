@@ -22,15 +22,18 @@ Priorities: modern, boring, widely supported (Chrome, Firefox-based Zen, Safari)
   - *Recovery code:* random 160-bit (base32 in groups of 4) → HKDF → a second
     wrapped copy of MK, plus a separately-derived auth key whose hash the server
     stores for recovery login. High entropy, so no slow KDF needed.
-  - *Password (optional fallback):* for users whose passkey can't produce PRF
-    output (e.g. Firefox on Linux). A user-chosen password (**16-char minimum,
+  - *Password (optional fallback / passkey-less path):* for users whose passkey
+    can't produce PRF output (e.g. Firefox on Linux) **and for users who can't
+    register a passkey at all**. A user-chosen password (**16-char minimum,
     enforced client-side only** — the server never sees it) + a random salt →
     **Argon2id** (`hash-wasm`, m≈19 MiB, t=2, p=1; memory-hard because the input
     is low-entropy, unlike the recovery code) → a third wrapped copy of MK, plus a
-    separately-derived auth key whose hash the server stores. Set up under
-    Settings → Security (requires an unlocked session); passkey stays the default
-    and the password is offered as an "alternative method" on the login screen.
-    `password.ts` holds the derivation; `INFO_PASSWORD_WRAP` namespaces the wrap.
+    separately-derived auth key whose hash the server stores. Can be added later
+    under Settings → Security (requires an unlocked session) **or chosen at signup**
+    via the passkey-less path (below); passkey stays the default and the password is
+    offered behind "Other options" at signup and as an "alternative method" on the
+    login screen. `password.ts` holds the derivation; `INFO_PASSWORD_WRAP`
+    namespaces the wrap.
 - **Per-note key:** random AES-256-GCM key per note, wrapped by MK. Titles and
   bodies both encrypted.
 - **Per-user X25519 keypair (sharing / chat):** created at signup via
@@ -60,7 +63,12 @@ per-recipient. v3 chat reuses this verbatim for conversation keys.
 - **Install:** Docker; all data in a single mounted volume (SQLite + config).
 - **Admin bootstrap** on first run; the admin creates/revokes invite links and
   removes users.
-- **Signup via invite:** passkey registration + a one-time recovery code. An
+- **Signup via invite:** passkey registration + a one-time recovery code, **or**
+  the passkey-less password path (`POST /api/register/password`) for users who
+  can't make a passkey — same first-run-or-invite gate, the client generates MK
+  and uploads only wrapped blobs (MK wrapped under the Argon2id password key and
+  the recovery secret), so a password account still gets a recovery code. Both
+  paths live behind "Other options" in the same signup flow (setup + invite). On the password path the handle is chosen on the password step — it is the login username (`handle` + password), so a password manager captures it — and the display name is set after the account is created. An
   invite is **one-time** — `markInviteUsed` records `used_by` on registration, and
   both `register/options` and `register/verify` reject a used/expired token. The
   invite page first calls the **non-consuming** `GET /api/invite/:token` (returns
