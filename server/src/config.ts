@@ -45,7 +45,7 @@ export function loadConfig(): Config {
     dataDir: process.env.DATA_DIR ?? './data',
     appOrigin,
     rpId,
-    appName: process.env.APP_NAME ?? 'Notes',
+    appName: process.env.APP_NAME ?? 'Accord',
     webDist: process.env.WEB_DIST === 'off' ? null : (process.env.WEB_DIST ?? null),
     klipyApiKey: process.env.KLIPY_API_KEY?.trim() || null,
     rateLimitMax: Number(process.env.RATE_LIMIT_MAX ?? 600),

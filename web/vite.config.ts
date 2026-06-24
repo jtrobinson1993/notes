@@ -24,9 +24,9 @@ export default defineConfig({
         globIgnores: ['**/emoji/**'],
       },
       manifest: {
-        name: 'Notes',
-        short_name: 'Notes',
-        description: 'Self-hosted end-to-end encrypted notes',
+        name: 'Accord',
+        short_name: 'Accord',
+        description: 'Self-hosted, end-to-end encrypted notes & chat',
         theme_color: '#18181b',
         background_color: '#18181b',
         display: 'standalone',

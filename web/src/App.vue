@@ -13,7 +13,7 @@ const chat = useChatStore();
 
 // Surface total unread in the browser tab title and (when installed) the PWA
 // app-icon badge, so new messages are visible without the tab focused.
-const baseTitle = document.title || 'notes';
+const baseTitle = document.title || 'Accord';
 watch(
   () => chat.totalUnread,
   (n) => {
