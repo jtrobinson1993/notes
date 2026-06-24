@@ -13,6 +13,7 @@ import type { Config } from './../config.js';
 import { toCredentialInfo, toUserInfo, type DB, type CredentialRow } from '../db.js';
 import { endSession, requireAuth, startSession } from '../session.js';
 import { newId, now, sha256b64, validWrappedKey } from '../util.js';
+import { isValidHandle } from '../handles.js';
 
 interface RegChallenge {
   challenge: string;
@@ -150,6 +151,73 @@ export function authRoutes(app: FastifyInstance, db: DB, config: Config): void {
     startSession(db, config, reply, userId);
     const user = db.getUser(userId)!;
     return { user: toUserInfo(user), credentialId: credential.id };
+  });
+
+  // Passkey-less signup: create the account and bootstrap encryption with a
+  // password instead of a passkey, for users who can't register a passkey at
+  // all. The client generates the master key (MK) and sends only wrapped blobs —
+  // MK wrapped under the Argon2id password key and under the recovery secret, the
+  // X25519 private key wrapped under MK — plus the auth-key hashes. The server
+  // never sees MK, the password, or the password key. Same first-run-or-invite
+  // gate as /api/register/verify; validation mirrors /api/me/keys + /api/me/password.
+  app.post('/api/register/password', authLimit, async (request, reply) => {
+    const b = request.body as Record<string, unknown>;
+    if (
+      !isValidHandle(b.handle) ||
+      typeof b.publicKey !== 'string' || b.publicKey.length > 256 ||
+      !validWrappedKey(b.wrappedPrivateKey) ||
+      !validWrappedKey(b.recoveryWrappedMk) ||
+      typeof b.recoveryAuthHash !== 'string' || b.recoveryAuthHash.length > 64 ||
+      typeof b.passwordSalt !== 'string' || b.passwordSalt.length < 1 || b.passwordSalt.length > 64 ||
+      !validWrappedKey(b.passwordWrappedMk) ||
+      typeof b.passwordAuthHash !== 'string' || b.passwordAuthHash.length > 64
+    ) {
+      return reply.code(400).send({ error: 'invalid signup payload' });
+    }
+
+    const firstUser = db.userCount() === 0;
+    let inviteId: string | null = null;
+    if (!firstUser) {
+      const invite = typeof b.inviteToken === 'string' ? db.getInviteByToken(b.inviteToken) : undefined;
+      if (!invite || invite.used_by || invite.expires_at < now()) {
+        return reply.code(403).send({ error: 'invalid or expired invite' });
+      }
+      inviteId = invite.id;
+    }
+
+    // The handle is the user's login username here, picked client-side and shown
+    // on the password form so a password manager captures it. Use exactly that
+    // handle (reject if taken) so the saved username matches the account.
+    if (db.handleTaken(b.handle)) {
+      return reply.code(409).send({ error: 'that handle is taken' });
+    }
+
+    const userId = newId();
+    db.createUser({ id: userId, role: firstUser ? 'admin' : 'member', handle: b.handle });
+    db.setUserKeys(userId, {
+      publicKey: b.publicKey,
+      wrappedPrivateKey: b.wrappedPrivateKey as WrappedKey,
+      recoveryWrappedMk: b.recoveryWrappedMk as WrappedKey,
+      recoveryAuthHash: b.recoveryAuthHash,
+    });
+    db.setUserPassword(userId, {
+      salt: b.passwordSalt,
+      wrappedMk: b.passwordWrappedMk as WrappedKey,
+      authHash: b.passwordAuthHash,
+    });
+    if (inviteId) db.markInviteUsed(inviteId, userId);
+
+    startSession(db, config, reply, userId);
+    return { user: toUserInfo(db.getUser(userId)!) };
+  });
+
+  // Candidate handles for the passkey-less signup form. The chosen handle is the
+  // login username, so it must be on the password form for password managers to
+  // capture it — and the form needs real candidates before any account/session
+  // exists. Returns only random public strings (no reservation/side effects),
+  // rate-limited like the rest of the unauthenticated ceremony.
+  app.get('/api/register/handle-options', authLimit, async () => {
+    return { options: db.generateHandleOptions(3) };
   });
 
   // ---- Login (usernameless / discoverable) ----

@@ -87,6 +87,23 @@ export const api = {
     req<{ regId: string; options: Record<string, unknown> }>('POST', '/api/register/options', { inviteToken }),
   registerVerify: (regId: string, response: unknown, credentialName?: string) =>
     req<{ user: UserInfo; credentialId: string }>('POST', '/api/register/verify', { regId, response, credentialName }),
+  // Passkey-less signup: bootstrap the account with a password instead of a
+  // passkey. All key material is wrapped client-side; the server stores only
+  // wrapped blobs + auth-key hashes (never MK, the password, or the password key).
+  // Candidate handles for the passkey-less signup form (the handle is the login
+  // username, picked before the account exists).
+  registerHandleOptions: () => req<{ options: string[] }>('GET', '/api/register/handle-options'),
+  registerPassword: (body: {
+    inviteToken?: string;
+    handle: string;
+    publicKey: string;
+    wrappedPrivateKey: WrappedKey;
+    recoveryWrappedMk: WrappedKey;
+    recoveryAuthHash: string;
+    passwordSalt: string;
+    passwordWrappedMk: WrappedKey;
+    passwordAuthHash: string;
+  }) => req<{ user: UserInfo }>('POST', '/api/register/password', body),
 
   loginOptions: () => req<{ authId: string; options: Record<string, unknown> }>('POST', '/api/login/options', {}),
   loginVerify: (authId: string, response: unknown) =>

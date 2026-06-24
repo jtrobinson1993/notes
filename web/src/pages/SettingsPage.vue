@@ -975,9 +975,12 @@ async function importFiles(event: Event) {
           a password saved in a password manager <em>plus</em> a passkey.
         </p>
         <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200">
-          <strong>There is no password reset.</strong> Your notes are end-to-end encrypted, so the
-          server can't recover them. If you lose your password, passkey, <em>and</em> recovery code,
-          your account is gone for good.
+          <strong>There is no account recovery.</strong> You can change your password here anytime,
+          but for your privacy we never ask for or store your email — so if you forget your password
+          we have no way to reset it for you, and we can't restore a lost passkey or recovery code.
+          Everything is end-to-end encrypted, so no one (including us) can read or recover your
+          notes and messages. If you lose your password, every passkey, <em>and</em> your recovery
+          code, you are locked out permanently and your messages are gone for good.
         </div>
         <p v-if="session.hasPassword" class="text-sm text-green-700 dark:text-green-400">A password is set.</p>
         <div class="space-y-2" :class="{ 'opacity-50': !session.unlocked }">
