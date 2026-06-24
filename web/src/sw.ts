@@ -28,15 +28,24 @@ const sw = self as unknown as ServiceWorkerGlobalScope;
 void sw.skipWaiting();
 clientsClaim();
 
-cleanupOutdatedCaches();
-precacheAndRoute(self.__WB_MANIFEST);
+// Precaching + the app-shell navigation fallback need a real build manifest. In
+// dev there is none (`__WB_MANIFEST` is injected as `[]`), and
+// createHandlerBoundToURL('index.html') throws on an empty precache — which
+// aborts the whole worker. Gate on the manifest having entries (true only in a
+// production build); the Web Push handlers below still run in dev, so
+// notifications are testable locally while Vite serves the app shell directly.
+const precacheManifest = self.__WB_MANIFEST;
+if (precacheManifest.length > 0) {
+  cleanupOutdatedCaches();
+  precacheAndRoute(precacheManifest);
 
-// SPA navigations fall back to the precached app shell, except API/emoji paths.
-registerRoute(
-  new NavigationRoute(createHandlerBoundToURL('index.html'), {
-    denylist: [/^\/api\//, /^\/emoji\//],
-  }),
-);
+  // SPA navigations fall back to the precached app shell, except API/emoji paths.
+  registerRoute(
+    new NavigationRoute(createHandlerBoundToURL('index.html'), {
+      denylist: [/^\/api\//, /^\/emoji\//],
+    }),
+  );
+}
 
 // Default 7TV emoji set: hundreds of tiny immutable files, cached on demand
 // rather than precached (mirrors the prior workbox runtimeCaching config).
