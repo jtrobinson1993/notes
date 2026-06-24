@@ -1,31 +1,49 @@
 import { describe, expect, it } from 'vitest';
-import { galleryLayout, MAX_GALLERY_TILES, stepIndex } from '../../src/lib/imageGallery';
+import {
+  galleryLayout,
+  MAX_GALLERY_TILES,
+  stepIndex,
+  tileMetrics,
+  TILE_HEIGHT,
+  TILE_MAX_WIDTH,
+  TILE_MIN_WIDTH,
+} from '../../src/lib/imageGallery';
 
 describe('galleryLayout', () => {
-  it('renders a lone image on its own with no overflow', () => {
-    expect(galleryLayout(1)).toEqual({ visibleCount: 1, overflow: 0, cols: 1 });
-  });
-
-  it('tiles 2 and 4 images in two columns', () => {
-    expect(galleryLayout(2)).toMatchObject({ cols: 2, visibleCount: 2, overflow: 0 });
-    expect(galleryLayout(4)).toMatchObject({ cols: 2, visibleCount: 4, overflow: 0 });
-  });
-
-  it('tiles 3, 5, and 6 images in three columns', () => {
-    expect(galleryLayout(3)).toMatchObject({ cols: 3, visibleCount: 3 });
-    expect(galleryLayout(5)).toMatchObject({ cols: 3, visibleCount: 5, overflow: 0 });
-    // Six fills two even rows of three with no overflow badge.
-    expect(galleryLayout(6)).toMatchObject({ cols: 3, visibleCount: 6, overflow: 0 });
+  it('shows every image inline when at or under the cap', () => {
+    expect(galleryLayout(1)).toEqual({ visibleCount: 1, overflow: 0 });
+    expect(galleryLayout(4)).toEqual({ visibleCount: MAX_GALLERY_TILES, overflow: 0 });
   });
 
   it('caps visible tiles and reports the remainder as overflow past the cap', () => {
-    // 8 images → show 6, the 6th carries a "+2" badge.
-    expect(galleryLayout(8)).toMatchObject({ visibleCount: MAX_GALLERY_TILES, overflow: 2 });
-    expect(galleryLayout(7).overflow).toBe(1);
+    // 6 images → show 4, the 4th carries a "+2" badge.
+    expect(galleryLayout(6)).toEqual({ visibleCount: MAX_GALLERY_TILES, overflow: 2 });
+    expect(galleryLayout(5).overflow).toBe(1);
   });
 
-  it('never shows negative overflow', () => {
-    expect(galleryLayout(0).overflow).toBe(0);
+  it('never shows negative counts or overflow', () => {
+    expect(galleryLayout(0)).toEqual({ visibleCount: 0, overflow: 0 });
+  });
+});
+
+describe('tileMetrics', () => {
+  it('sizes width from the aspect ratio at the shared height, shown whole', () => {
+    const m = tileMetrics(800, 600); // 4:3 → 160 * 4/3 ≈ 213, within [min,max]
+    expect(m).toEqual({ width: Math.round(TILE_HEIGHT * (800 / 600)), fit: 'contain' });
+  });
+
+  it('letterboxes very tall/narrow images to the minimum width', () => {
+    const m = tileMetrics(200, 1000); // ideal 32px → floored to min, kept whole
+    expect(m).toEqual({ width: TILE_MIN_WIDTH, fit: 'contain' });
+  });
+
+  it('center-crops only images too wide to show whole at the cap', () => {
+    const m = tileMetrics(4000, 500); // ideal 1280px → capped + cropped
+    expect(m).toEqual({ width: TILE_MAX_WIDTH, fit: 'cover' });
+  });
+
+  it('falls back to a min-width contain tile for unknown dimensions', () => {
+    expect(tileMetrics(0, 0)).toEqual({ width: TILE_MIN_WIDTH, fit: 'contain' });
   });
 });
 

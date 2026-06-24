@@ -435,15 +435,22 @@ decrypted locally (`decryptAttachment` → `lib/attachments.ts`) to an object UR
 so (like note attachments) there's **no remote fetch and no IP leak**. The
 per-file size cap mirrors the server's 32 MiB.
 
-A message's images render as a **grid** (`ChatImageGrid.vue`): one image shows at
-its natural aspect; two or four tile in two columns, everything else in three
-(square, cover-cropped thumbnails). Past **6** images the first six tiles show
-(two even rows of three) and the remainder collapse behind a **`+N`** badge on
-the last visible tile — clicking it opens the lightbox at that image so the
-arrows reveal the rest. The
-visible-count / overflow / column math is the pure, unit-tested
-`lib/imageGallery.ts` (`galleryLayout`); `stepIndex` clamps lightbox paging to
-the batch (no wrap).
+A message's images render as a wrapping, **equal-height strip**
+(`ChatImageGrid.vue`): every thumbnail shares a fixed height (`TILE_HEIGHT`) and
+takes its **width from the image's aspect ratio**, so each shows **whole**
+(`object-contain`), letterboxed against the tile's slightly off-colored
+background. Widths are clamped to `[TILE_MIN_WIDTH, TILE_MAX_WIDTH]`: very
+tall/narrow images sit at the min width (letterboxed), and only images **too wide
+to show whole at the cap** are center-cropped (`object-cover`). Tiles **wrap** to
+the next line when they overflow the message width. Up to **4**
+(`MAX_GALLERY_TILES`) show inline; past that, the remainder collapse behind a
+**`+N`** badge on the last visible tile — clicking it opens the lightbox at that
+image so the arrows reveal the rest. Because thumbnails are uncropped, they match
+what the lightbox shows, so the open/close **morph stays true** (the deliberately
+cropped over-wide case aside). The visible-count / overflow math and the
+per-tile width/crop math are the pure, unit-tested `lib/imageGallery.ts`
+(`galleryLayout`, `tileMetrics`); `stepIndex` clamps lightbox paging to the batch
+(no wrap).
 
 Clicking a tile opens `ImageLightbox.vue`, a full-bleed viewer (reka-ui Dialog;
 Escape / overlay-click / close-button dismiss) shared across the batch:
