@@ -24,6 +24,14 @@
   --z-index-tooltip: 60;
 }
 
+/* Soft floating-surface shadow (`shadow-pop`). The default Tailwind shadows use a
+   large vertical offset with negative spread, so the top edge sits flush with no
+   visible shadow — bad for a small card floating in open space. This keeps just a
+   slight bottom-right offset with enough blur to read on every edge. */
+@theme {
+  --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.10), 1px 3px 12px rgb(0 0 0 / 0.16);
+}
+
 /* light-dark() resolves against color-scheme, which follows the app theme
    (the .dark class), not the OS, so manual theme choice wins. */
 :root {

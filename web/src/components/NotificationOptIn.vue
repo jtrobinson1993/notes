@@ -63,19 +63,19 @@ function enable() {
        (the back-ease cubic-bezier overshoots past its resting point); slides
        back down on dismiss. -->
   <Transition
-    enter-active-class="transition-transform duration-500 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+    enter-active-class="transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
     enter-from-class="translate-y-full"
-    leave-active-class="transition-transform duration-200 ease-in"
+    leave-active-class="transition-transform duration-150 ease-in"
     leave-to-class="translate-y-full"
   >
     <div
       v-if="show"
-      class="app-safe fixed inset-x-0 bottom-0 z-tooltip flex justify-center px-3 pb-3"
+      class="app-safe fixed inset-x-0 bottom-0 z-tooltip flex justify-center px-3"
       role="dialog"
       aria-label="Enable notifications"
     >
       <div
-        class="flex w-full max-w-md items-start gap-3 rounded-xl border border-zinc-200 bg-white p-3 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+        class="mb-4 flex w-full max-w-md items-start gap-3 rounded-xl border border-zinc-200 bg-white p-3 shadow-pop dark:border-zinc-700 dark:bg-zinc-800"
       >
         <span class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-600/10 text-blue-600 dark:text-blue-400">
           <IconBell class="h-5 w-5" />
