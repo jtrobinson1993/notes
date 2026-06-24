@@ -155,6 +155,46 @@ export const useSessionStore = defineStore('session', () => {
     return { credentialId: result.credentialId, prf };
   }
 
+  /** Passkey-less signup, for users who can't register a passkey at all. Create
+   *  the account and generate the master key, X25519 keypair and recovery code
+   *  entirely client-side, wrapping MK under both the Argon2id password key and
+   *  the recovery secret. Only wrapped blobs + auth-key hashes are uploaded — the
+   *  server never sees MK, the password, or the password key. Mirrors setupKeys()
+   *  + setPassword() with the password key standing in for the passkey PRF.
+   *  Returns the recovery code for display. */
+  async function registerWithPassword(handle: string, password: string, inviteToken?: string): Promise<string> {
+    const masterKey = generateMasterKey();
+    const recovery = generateRecoveryCode();
+    const pair = generateKeyPair();
+    const salt = generatePasswordSalt();
+    const passwordKey = await derivePasswordKey(password, salt);
+    const [wrappedPrivateKey, recoveryWrappedMk, recoveryAuthKey, passwordWrappedMk, passwordAuthKey] =
+      await Promise.all([
+        wrapKey(masterKey, pair.privateKey, INFO_PRIVATE_KEY),
+        wrapKey(recovery.secret, masterKey, INFO_RECOVERY_WRAP),
+        deriveRecoveryAuthKey(recovery.secret),
+        wrapKey(passwordKey, masterKey, INFO_PASSWORD_WRAP),
+        derivePasswordAuthKey(passwordKey),
+      ]);
+    const result = await api.registerPassword({
+      inviteToken,
+      handle,
+      publicKey: b64(pair.publicKey),
+      wrappedPrivateKey,
+      recoveryWrappedMk,
+      recoveryAuthHash: await sha256b64(recoveryAuthKey),
+      passwordSalt: b64(salt),
+      passwordWrappedMk,
+      passwordAuthHash: await sha256b64(passwordAuthKey),
+    });
+    user.value = result.user;
+    needsSetup.value = false;
+    hasKeys.value = true;
+    hasPassword.value = true;
+    setMk(masterKey);
+    return recovery.code;
+  }
+
   /** Some authenticators only produce PRF output during assertions, not
    * registration. Fall back to one extra passkey prompt. */
   async function obtainPrf(existing: Uint8Array | null): Promise<Uint8Array> {
@@ -261,7 +301,7 @@ export const useSessionStore = defineStore('session', () => {
     ready, needsSetup, appName, user, hasKeys, hasPassword, mk,
     loggedIn, unlocked,
     init, lock, setMk, getKeyPair,
-    loginWithPasskey, loginWithPassword, register, setupKeys, recover, rotateRecoveryCode,
+    loginWithPasskey, loginWithPassword, register, registerWithPassword, setupKeys, recover, rotateRecoveryCode,
     addPasskey, setPassword, removePassword, unwrapWithPrf, logout,
   };
 });

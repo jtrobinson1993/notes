@@ -5,11 +5,12 @@ import { TooltipProvider } from 'reka-ui';
 import type { Conversation } from '@notes/shared';
 import { useChatStore } from '../stores/chat';
 import { useSessionStore } from '../stores/session';
+import { useProfileStore } from '../stores/profile';
 import { useNotesStore } from '../stores/notes';
 import NewChatModal from './NewChatModal.vue';
 import SidebarTooltip from './SidebarTooltip.vue';
 import ActiveBar from './ActiveBar.vue';
-import { conversationInitial, conversationTitle } from '../lib/convName';
+import { conversationInitial, conversationTitle, dmPeerId } from '../lib/convName';
 import { chatPane, closeNote, isMobile, noteOpen, showChannels } from '../lib/mobileNav';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
 import IconPanelLeftClose from '~icons/mynaui/panel-left-close';
@@ -21,6 +22,7 @@ import IconUsers from '~icons/mynaui/users';
 import IconLogout from '~icons/mynaui/logout';
 
 const session = useSessionStore();
+const profile = useProfileStore();
 const chat = useChatStore();
 const notes = useNotesStore();
 const router = useRouter();
@@ -51,11 +53,14 @@ function convInitial(conv: Conversation): string {
   return conversationInitial(conv, session.user?.id);
 }
 
-// Decrypted group-icon data URL for a conversation (groups only; null otherwise).
-// Reactive via the chat store's groupIcons map, so renaming/changing the icon
-// reflects here without a reload.
+// Avatar/icon shown for a conversation in the rail: a group's decrypted icon, or
+// the other person's decrypted avatar for a DM (null → fall back to the initial).
+// Reactive via the chat store's groupIcons map and the profile cache, so changes
+// reflect here without a reload.
 function convIcon(conv: Conversation): string | null {
-  return conv.kind === 'group' ? chat.groupIconUrl(conv.id) : null;
+  if (conv.kind === 'group') return chat.groupIconUrl(conv.id);
+  const peer = dmPeerId(conv, session.user?.id);
+  return peer ? profile.avatarFor(peer) ?? null : null;
 }
 
 const sortedConversations = computed(() =>
