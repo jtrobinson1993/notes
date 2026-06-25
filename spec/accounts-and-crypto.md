@@ -79,6 +79,11 @@ per-recipient. v3 chat reuses this verbatim for conversation keys.
   handle + recovery code (which re-registers a passkey). An optional **password**
   fallback (handle + password, set up in Settings) is offered behind an
   "alternative methods" link, rate-limited per handle like recovery.
+- **Changing the handle** (Settings → Security) also changes the **password
+  sign-in username**, since the handle *is* that username. The Settings panel
+  carries a standing amber note to that effect, and picking a new handle requires
+  confirming a warning that password logins must use the new handle from then on
+  (passkey sign-in is unaffected).
 - **No password reset.** Because everything is end-to-end encrypted, there is no
   way to recover an account once the password, all passkeys, *and* the recovery
   code are lost — the user is warned of this at password setup and in Settings →

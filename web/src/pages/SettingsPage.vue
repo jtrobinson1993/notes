@@ -30,6 +30,7 @@ import {
   voiceActivation,
 } from '../lib/voicePrefs';
 import IconX from '~icons/mynaui/x';
+import IconDanger from '~icons/mynaui/danger-triangle';
 
 const session = useSessionStore();
 const notes = useNotesStore();
@@ -172,6 +173,19 @@ async function loadHandleOptions() {
 }
 
 async function chooseHandle(h: string) {
+  // The handle doubles as the username for password sign-in (see LoginPage), so
+  // changing it changes how a password account logs in. Warn prominently before
+  // committing — passkey sign-in is unaffected.
+  if (
+    !confirm(
+      `Change your handle to ${h}?\n\n` +
+        `Your handle is also your username for password sign-in. If you log in with a ` +
+        `password, you'll need to use ${h} as your username from now on. ` +
+        `(Passkey sign-in is unaffected.)`,
+    )
+  ) {
+    return;
+  }
   handleBusy.value = true;
   handleMsg.value = '';
   try {
@@ -550,6 +564,12 @@ async function importFiles(event: Event) {
             </div>
             <span class="shrink-0 rounded-lg bg-zinc-100 px-2.5 py-1 font-mono text-sm dark:bg-zinc-800">{{ handle }}</span>
           </div>
+          <!-- The handle is also the username for password sign-in, so changing it
+               changes how a password account logs in. -->
+          <p class="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+            <IconDanger class="mt-px h-3.5 w-3.5 shrink-0" />
+            <span>This is also your <strong>username for password sign-in</strong>. If you change it, log in with the new handle from now on (passkey sign-in is unaffected).</span>
+          </p>
           <div class="mt-3 flex flex-wrap items-center gap-2">
             <button
               type="button"
