@@ -4,10 +4,11 @@ import type { Config } from './config.js';
 
 // Content-Security-Policy + companion hardening headers, set on every response
 // as defense-in-depth (see spec/security.md). The policy is strict: no inline
-// or eval'd script. index.html ships exactly one (or a few) inline <script>
+// or eval'd JS. index.html ships exactly one (or a few) inline <script>
 // blocks — the pre-paint theme applier, and the PWA service-worker registration
 // injected by vite-plugin-pwa — which we allow by their SHA-256 hashes rather
-// than 'unsafe-inline', so an injected <script> still can't run.
+// than 'unsafe-inline', so an injected <script> still can't run. WebAssembly is
+// allowed via 'wasm-unsafe-eval' (Argon2id + RNNoise); JS eval stays blocked.
 
 /** SHA-256-base64 CSP source tokens for every inline (no `src`) <script> in the
  * served index.html. Computed once at boot from the exact bytes on disk, so it
@@ -37,7 +38,11 @@ export function buildCsp(config: Config, scriptHashes: string[]): string {
   // The chat WebSocket connects to our own origin; CSP's connect-src 'self' is
   // inconsistent about ws(s): across browsers, so name the origin explicitly.
   const wsOrigin = `${isHttps ? 'wss' : 'ws'}://${url.host}`;
-  const scriptSrc = ["'self'", ...scriptHashes].join(' ');
+  // 'wasm-unsafe-eval' lets the app compile/instantiate WebAssembly — required by
+  // hash-wasm's Argon2id (password-based accounts) and the RNNoise voice denoiser.
+  // It is far narrower than 'unsafe-eval': it permits ONLY WebAssembly, never JS
+  // eval()/new Function(), so an injected <script> still can't run arbitrary code.
+  const scriptSrc = ["'self'", "'wasm-unsafe-eval'", ...scriptHashes].join(' ');
 
   const directives = [
     `default-src 'self'`,

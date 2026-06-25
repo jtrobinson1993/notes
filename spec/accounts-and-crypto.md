@@ -79,6 +79,15 @@ per-recipient. v3 chat reuses this verbatim for conversation keys.
   handle + recovery code (which re-registers a passkey). An optional **password**
   fallback (handle + password, set up in Settings) is offered behind an
   "alternative methods" link, rate-limited per handle like recovery.
+- **Changing the handle** (Settings → Security) also changes the **password
+  sign-in username**, since the handle *is* that username. A standing amber note
+  says so, and the change is **step-up-authenticated for password accounts**:
+  `PUT /api/handle` requires the same password auth key as login when
+  `password_auth_hash` is set, so someone with an unlocked session can't silently
+  change the handle and lock the owner out of password login. The re-auth form
+  carries the new handle as the username + the current password, so the browser
+  can offer to update the saved login. Passkey-only accounts have no password
+  (and their passkey login is handle-agnostic), so they just confirm a warning.
 - **No password reset.** Because everything is end-to-end encrypted, there is no
   way to recover an account once the password, all passkeys, *and* the recovery
   code are lost — the user is warned of this at password setup and in Settings →

@@ -208,7 +208,10 @@ export const api = {
 
   // ---- Public "Word#1234" handle ----
   handleOptions: () => req<{ options: string[] }>('GET', '/api/handle/options'),
-  handleSet: (handle: string) => req<ProfileInfo>('PUT', '/api/handle', { handle }),
+  // `authKey` is the password-login auth proof; required by the server for
+  // accounts that have a password (step-up auth — see SettingsPage handle flow).
+  handleSet: (handle: string, authKey?: string) =>
+    req<ProfileInfo>('PUT', '/api/handle', { handle, authKey }),
 
   // ---- v3.2: E2EE profiles (bio + avatar) ----
   profileDataGet: () =>

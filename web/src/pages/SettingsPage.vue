@@ -3,7 +3,9 @@ import { computed, onMounted, ref } from 'vue';
 import { useMutation, useQuery, useQueryCache } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
-import { MIN_PASSWORD_LENGTH } from '../lib/password';
+import AppModal from '../components/AppModal.vue';
+import { MIN_PASSWORD_LENGTH, derivePasswordKey, derivePasswordAuthKey } from '../lib/password';
+import { b64, ub64 } from '../lib/b64';
 import { api } from '../lib/api';
 import { disablePush, enablePush, pushState, type PushState } from '../lib/push';
 import { clickToLoadEmbeds, clickToLoadImages, optimizeImages, setClickToLoadEmbeds, setClickToLoadImages, setOptimizeImages } from '../lib/privacy';
@@ -30,6 +32,7 @@ import {
   voiceActivation,
 } from '../lib/voicePrefs';
 import IconX from '~icons/mynaui/x';
+import IconDanger from '~icons/mynaui/danger-triangle';
 
 const session = useSessionStore();
 const notes = useNotesStore();
@@ -171,19 +174,74 @@ async function loadHandleOptions() {
   }
 }
 
-async function chooseHandle(h: string) {
-  handleBusy.value = true;
+// Password re-auth (step-up) before changing the handle, shown only to accounts
+// that have a password — see chooseHandle.
+const reauthOpen = ref(false);
+const reauthHandle = ref('');
+const reauthPassword = ref('');
+const reauthError = ref('');
+const reauthBusy = ref(false);
+
+/** Commit the handle change (optionally with the password auth proof the server
+ *  requires for password accounts). Throws on failure so callers can surface it. */
+async function applyHandle(h: string, authKey?: string): Promise<void> {
+  const p = await api.handleSet(h, authKey);
+  handle.value = p.handle;
+  profile.myHandle = p.handle;
+  handleOptions.value = [];
+  handleMsg.value = 'Handle updated.';
+}
+
+function chooseHandle(h: string) {
   handleMsg.value = '';
+  // The handle is also the username for password sign-in. A password account must
+  // re-enter its password (step-up auth) — both so someone with the unlocked
+  // session can't silently change the handle and lock the owner out, and so the
+  // re-auth form nudges the password manager to save the new handle. Passkey-only
+  // accounts have no password and their passkey login is handle-agnostic, so they
+  // just confirm a warning.
+  if (session.hasPassword) {
+    reauthHandle.value = h;
+    reauthPassword.value = '';
+    reauthError.value = '';
+    reauthOpen.value = true;
+    return;
+  }
+  if (
+    confirm(
+      `Change your handle to ${h}?\n\n` +
+        `Your handle is also your username for password sign-in. If you ever add a ` +
+        `password, you'll sign in with ${h}. (Passkey sign-in is unaffected.)`,
+    )
+  ) {
+    handleBusy.value = true;
+    applyHandle(h)
+      .catch((e) => {
+        handleMsg.value = e instanceof Error ? e.message : 'could not set handle';
+      })
+      .finally(() => {
+        handleBusy.value = false;
+      });
+  }
+}
+
+/** Verify the password and change the handle (password accounts). The form (new
+ *  handle as username + current password) lets the browser offer to update the
+ *  saved login on success. */
+async function submitReauth(): Promise<void> {
+  if (reauthBusy.value) return;
+  reauthBusy.value = true;
+  reauthError.value = '';
   try {
-    const p = await api.handleSet(h);
-    handle.value = p.handle;
-    profile.myHandle = p.handle;
-    handleOptions.value = [];
-    handleMsg.value = 'Handle updated.';
+    const { salt } = await api.passwordOptions(handle.value);
+    const passwordKey = await derivePasswordKey(reauthPassword.value, ub64(salt));
+    const authKey = await derivePasswordAuthKey(passwordKey);
+    await applyHandle(reauthHandle.value, b64(authKey));
+    reauthOpen.value = false;
   } catch (e) {
-    handleMsg.value = e instanceof Error ? e.message : 'could not set handle';
+    reauthError.value = e instanceof Error ? e.message : 'Could not change handle.';
   } finally {
-    handleBusy.value = false;
+    reauthBusy.value = false;
   }
 }
 
@@ -550,6 +608,12 @@ async function importFiles(event: Event) {
             </div>
             <span class="shrink-0 rounded-lg bg-zinc-100 px-2.5 py-1 font-mono text-sm dark:bg-zinc-800">{{ handle }}</span>
           </div>
+          <!-- The handle is also the username for password sign-in, so changing it
+               changes how a password account logs in. -->
+          <p class="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+            <IconDanger class="mt-px h-3.5 w-3.5 shrink-0" />
+            <span>This is also your <strong>username for password sign-in</strong>. If you change it, log in with the new handle from now on (passkey sign-in is unaffected).</span>
+          </p>
           <div class="mt-3 flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -581,6 +645,60 @@ async function importFiles(event: Event) {
           </div>
           <p v-if="handleMsg" class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ handleMsg }}</p>
         </div>
+
+        <!-- Step-up auth before changing the handle (password accounts). The form
+             carries the new handle as the username + the current password, so on
+             success the browser/password-manager can offer to save the new login. -->
+        <AppModal
+          v-model:open="reauthOpen"
+          title="Confirm it's you"
+          description="Your handle is your username for password sign-in. Enter your password to change it."
+          max-width="sm:max-w-sm"
+        >
+          <form id="reauth-handle-form" class="space-y-3 pb-1" @submit.prevent="submitReauth">
+            <div>
+              <label class="mb-1 block text-sm font-medium" for="reauth-username">New handle (your new username)</label>
+              <input
+                id="reauth-username"
+                :value="reauthHandle"
+                type="text"
+                readonly
+                autocomplete="username"
+                class="w-full rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-2 font-mono text-sm text-zinc-600 outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+              />
+            </div>
+            <div>
+              <label class="mb-1 block text-sm font-medium" for="reauth-password">Current password</label>
+              <input
+                id="reauth-password"
+                v-model="reauthPassword"
+                type="password"
+                autocomplete="current-password"
+                :minlength="MIN_PASSWORD_LENGTH"
+                required
+                class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
+              />
+            </div>
+            <p v-if="reauthError" class="text-sm text-red-600 dark:text-red-400">{{ reauthError }}</p>
+          </form>
+          <template #footer>
+            <button
+              type="button"
+              class="rounded-lg px-3 py-1.5 text-sm font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              @click="reauthOpen = false"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="reauth-handle-form"
+              :disabled="reauthBusy || !reauthPassword"
+              class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {{ reauthBusy ? '…' : 'Change handle' }}
+            </button>
+          </template>
+        </AppModal>
 
         <div>
           <p class="mb-1.5 text-sm text-zinc-500 dark:text-zinc-400">Name color (shown to others in chat)</p>

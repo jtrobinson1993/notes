@@ -46,8 +46,17 @@ describe('inlineScriptHashes', () => {
 describe('buildCsp', () => {
   it('folds script hashes into script-src and never allows unsafe-inline for scripts', () => {
     const csp = buildCsp(cfg(), [`'sha256-abc'`]);
-    expect(csp).toContain(`script-src 'self' 'sha256-abc'`);
+    expect(csp).toContain(`script-src 'self' 'wasm-unsafe-eval' 'sha256-abc'`);
     expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/);
+  });
+
+  it('allows WebAssembly via wasm-unsafe-eval but not full JS eval', () => {
+    const csp = buildCsp(cfg(), []);
+    expect(csp).toContain(`'wasm-unsafe-eval'`); // Argon2id (hash-wasm) + RNNoise denoiser
+    // The broad 'unsafe-eval' (which would permit eval()/new Function()) must NOT
+    // be granted — only the WASM-scoped variant. ('wasm-unsafe-eval' does not
+    // contain the quoted token 'unsafe-eval'.)
+    expect(csp).not.toContain(`'unsafe-eval'`);
   });
 
   it('names the wss origin in connect-src and upgrades on https', () => {
