@@ -74,7 +74,14 @@ natural fit for a static file; a per-response nonce suits server-rendered pages.
 The directives:
 
 - `default-src 'self'`, `base-uri 'self'`, `form-action 'self'`, `object-src 'none'`
-- `script-src 'self' 'sha256-<theme>'`
+- `script-src 'self' 'wasm-unsafe-eval' 'sha256-<theme>'` — `'wasm-unsafe-eval'`
+  permits compiling/instantiating **WebAssembly**, which the app needs for
+  hash-wasm's **Argon2id** (password-based accounts) and the **RNNoise** voice
+  denoiser. It is deliberately the WASM-scoped token, **not** `'unsafe-eval'`: JS
+  `eval()`/`new Function()` stay blocked, so an injected `<script>` still can't
+  run arbitrary code. Without it, browsers reject `WebAssembly.compile()`
+  ("Missing 'wasm-unsafe-eval' or 'unsafe-eval'") and password signup/voice
+  denoise break.
 - `style-src 'self' 'unsafe-inline'` — Vue/reka-ui apply runtime styles via
   injected `<style>`/style attributes; far lower-risk than inline *script*.
 - `img-src 'self' blob: data: https:` — `'self'` for the emoji proxy, `blob:`/
