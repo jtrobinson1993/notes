@@ -29,7 +29,7 @@ import type { Realtime } from '../realtime.js';
 import type { Push } from '../push.js';
 import { requireAuth } from '../session.js';
 import { isValidHandle } from '../handles.js';
-import { newId, newToken, now } from '../util.js';
+import { newId, newToken, now, sha256b64 } from '../util.js';
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const INVITE_TTL = 24 * 60 * 60 * 1000; // 24h
@@ -417,12 +417,30 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
   });
 
   app.put('/api/handle', { preHandler: requireAuth }, async (request, reply) => {
-    const { handle } = (request.body ?? {}) as { handle?: unknown };
+    const { handle, authKey } = (request.body ?? {}) as { handle?: unknown; authKey?: unknown };
     if (!isValidHandle(handle)) return reply.code(400).send({ error: 'invalid handle' });
-    if (!db.setUserHandle(request.user!.id, handle)) {
+    const user = request.user!;
+    // Step-up auth: the handle is also the username for password sign-in, so a
+    // password account must re-enter its password to change it. This stops someone
+    // with the unlocked session from changing the handle and locking the owner out
+    // of password login. Passkey-only accounts have no password (and their passkey
+    // login is handle-agnostic), so they skip this. The same auth-key proof as
+    // password login is reused; the global rate limit bounds online guessing, and
+    // the 16+ char password makes it infeasible regardless.
+    if (user.password_auth_hash !== null) {
+      if (
+        typeof authKey !== 'string' ||
+        authKey.length < 1 ||
+        authKey.length > 256 ||
+        user.password_auth_hash !== sha256b64(Buffer.from(authKey, 'base64'))
+      ) {
+        return reply.code(401).send({ error: 'password is incorrect' });
+      }
+    }
+    if (!db.setUserHandle(user.id, handle)) {
       return reply.code(409).send({ error: 'that handle is taken' });
     }
-    return profileInfo({ ...request.user!, handle });
+    return profileInfo({ ...user, handle });
   });
 
   app.put('/api/profile', { preHandler: requireAuth }, async (request, reply) => {
