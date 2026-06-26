@@ -4,6 +4,51 @@ The app is an installable PWA (offline app shell via a service worker). Phase 3
 adds **background Web Push** so a closed/backgrounded install still surfaces new
 messages — without weakening the E2EE model.
 
+Notifications span three surfaces: the **foreground chime** (app open, sound),
+the **tab title + app-icon badge** (unread count, app open), and **background
+Web Push** (app closed/backgrounded). The chime and badge run entirely client-
+side off the live WebSocket; push is the fallback when no socket is connected.
+
+## In-app chime (foreground)
+
+When the app is open and a chat message arrives over the WebSocket that the user
+**isn't actively looking at**, a short sound plays (`web/src/assets/message-
+chime.mp3`, bundled by Vite and served same-origin — covered by the existing CSP
+`media-src 'self'`). The decision is the pure `shouldChime` (`web/src/lib/
+chime.ts`), called from the chat store's `message` frame handler: it chimes when
+the message is **not from us** *and* either
+
+- the app **isn't focused** — `isAppFocused()` is false (`document` hidden, or
+  another window/tab/app has focus, via `visibilityState` + `document.hasFocus()`),
+  **or**
+- the message landed in a channel that **isn't the one currently open**
+  (`activeChannelId` ≠ the message's channel).
+
+So a message in the open, focused channel stays silent; anything else rings.
+
+**Per-conversation cooldown.** A conversation chimes **at most once per alert
+window**: after it chimes, that conversation is muted until the user **reads** it
+**or** `CONV_MUTE_MS` (**10s**) passes — whichever comes first. The pure
+`gateChime` (`chime.ts`) layers this over `shouldChime`, keying a `mutedUntil`
+map by conversation and recording a fresh mute each time it rings; the chat store
+calls `noteConversationRead` (→ `clearChimeMute`) whenever the current user's read
+cursor advances (via `markRead` or an own `read` frame), so catching up re-arms
+the chime immediately, and `reset` (logout) drops all mutes. This is a
+per-conversation rule, not a global timer: a busy or ignored room can't
+machine-gun the speaker, yet the **first** message in a *different* conversation
+still rings right away.
+
+**Global floor.** On top of the per-conversation rule, `gateChime` enforces a
+`GLOBAL_FLOOR_MS` (**1s**) minimum between *any* two chimes across all
+conversations, so a clutch of rooms lighting up at once yields one alert rather
+than an overlapping pile. The floor is checked **before** the per-conversation
+mute, so a message suppressed purely by the floor is *not* recorded as alerted —
+that conversation still rings on its next message once the floor clears.
+
+`playChime` itself is best-effort — a silent no-op if the browser blocks playback
+before a user gesture (the title/badge still update); a single shared `<audio>`
+element means several chimes fired in the same tick collapse into one sound.
+
 ## Content-free by design
 
 The server is crypto-oblivious: it stores only ciphertext and cannot read a
