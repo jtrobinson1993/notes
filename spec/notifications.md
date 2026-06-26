@@ -36,10 +36,18 @@ cursor advances (via `markRead` or an own `read` frame), so catching up re-arms
 the chime immediately, and `reset` (logout) drops all mutes. This is a
 per-conversation rule, not a global timer: a busy or ignored room can't
 machine-gun the speaker, yet the **first** message in a *different* conversation
-still rings right away. `playChime` itself is best-effort — a silent no-op if the
-browser blocks playback before a user gesture (the title/badge still update); a
-single shared `<audio>` element means several chimes fired in the same tick
-collapse into one sound.
+still rings right away.
+
+**Global floor.** On top of the per-conversation rule, `gateChime` enforces a
+`GLOBAL_FLOOR_MS` (**1s**) minimum between *any* two chimes across all
+conversations, so a clutch of rooms lighting up at once yields one alert rather
+than an overlapping pile. The floor is checked **before** the per-conversation
+mute, so a message suppressed purely by the floor is *not* recorded as alerted —
+that conversation still rings on its next message once the floor clears.
+
+`playChime` itself is best-effort — a silent no-op if the browser blocks playback
+before a user gesture (the title/badge still update); a single shared `<audio>`
+element means several chimes fired in the same tick collapse into one sound.
 
 ## Content-free by design
 

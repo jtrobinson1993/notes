@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { CONV_MUTE_MS, clearChimeMute, gateChime, shouldChime, type ChimeGate } from '../../src/lib/chime';
+import {
+  CONV_MUTE_MS,
+  GLOBAL_FLOOR_MS,
+  clearChimeMute,
+  gateChime,
+  shouldChime,
+  type ChimeGate,
+} from '../../src/lib/chime';
 
 describe('shouldChime', () => {
   it('never chimes for our own message', () => {
@@ -26,7 +33,7 @@ describe('gateChime (per-conversation cooldown)', () => {
   const base = { conversationId: 'c1', fromMe: false, channelOpen: false, focused: false };
 
   beforeEach(() => {
-    gate = { mutedUntil: new Map() };
+    gate = { mutedUntil: new Map(), lastChimeAt: null };
   });
 
   it('chimes the first time a conversation needs attention', () => {
@@ -53,10 +60,19 @@ describe('gateChime (per-conversation cooldown)', () => {
     expect(gateChime(gate, { ...base, now: 1_001 })).toBe(true);
   });
 
-  it('tracks conversations independently', () => {
+  it('tracks conversations independently (once past the global floor)', () => {
     expect(gateChime(gate, { ...base, conversationId: 'a', now: 0 })).toBe(true);
-    expect(gateChime(gate, { ...base, conversationId: 'b', now: 0 })).toBe(true);
-    expect(gateChime(gate, { ...base, conversationId: 'a', now: 1 })).toBe(false); // a still muted
+    expect(gateChime(gate, { ...base, conversationId: 'b', now: 5_000 })).toBe(true); // other room, floor clear
+    expect(gateChime(gate, { ...base, conversationId: 'a', now: 6_000 })).toBe(false); // a still muted (10s)
+  });
+
+  it('enforces a global floor across conversations', () => {
+    expect(gateChime(gate, { ...base, conversationId: 'a', now: 0 })).toBe(true);
+    // A different room within the floor is suppressed — and NOT marked alerted...
+    expect(gateChime(gate, { ...base, conversationId: 'b', now: GLOBAL_FLOOR_MS - 1 })).toBe(false);
+    expect(gate.mutedUntil.has('b')).toBe(false);
+    // ...so once the floor clears, b's next message still rings.
+    expect(gateChime(gate, { ...base, conversationId: 'b', now: GLOBAL_FLOOR_MS })).toBe(true);
   });
 
   it('never chimes nor records a mute for our own message', () => {

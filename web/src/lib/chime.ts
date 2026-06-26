@@ -9,15 +9,21 @@ import chimeUrl from '../assets/message-chime.mp3';
 // speaker, while still re-alerting once you've caught up or after a quiet gap.
 export const CONV_MUTE_MS = 10_000;
 
+// A floor between *any* two chimes, across all conversations, so a clutch of
+// rooms lighting up at once produces one alert rather than an overlapping pile.
+export const GLOBAL_FLOOR_MS = 1_000;
+
 let el: HTMLAudioElement | null = null;
 
-/** Per-conversation chime suppression: conversationId → epoch-ms the mute lifts. */
+/** Chime suppression state: a per-conversation mute (`conversationId` → epoch-ms
+ *  the mute lifts) plus the time of the last chime for the global floor. */
 export interface ChimeGate {
   mutedUntil: Map<string, number>;
+  lastChimeAt: number | null;
 }
 
 // Module-level gate for the live app; tests drive the pure functions directly.
-const gate: ChimeGate = { mutedUntil: new Map() };
+const gate: ChimeGate = { mutedUntil: new Map(), lastChimeAt: null };
 
 /** Is the app the user's current focus? False when the tab is backgrounded or
  *  another window/tab/app has focus — i.e. when a chime is warranted. */
@@ -34,17 +40,21 @@ export function shouldChime(opts: { fromMe: boolean; channelOpen: boolean; focus
   return !opts.focused || !opts.channelOpen;
 }
 
-/** Pure cooldown gate (mutates `g`): chime when the message deserves attention
- *  AND the conversation isn't in its post-chime mute window. Records a fresh
- *  mute when it returns true. */
+/** Pure cooldown gate (mutates `g`): chime when the message deserves attention,
+ *  we're past the global floor, AND the conversation isn't in its post-chime
+ *  mute window. Records a fresh mute + global timestamp when it returns true.
+ *  The global floor is checked before the per-conversation mute so a
+ *  floor-suppressed message in another room isn't wrongly marked "alerted". */
 export function gateChime(
   g: ChimeGate,
   opts: { conversationId: string; fromMe: boolean; channelOpen: boolean; focused: boolean; now: number },
 ): boolean {
   if (!shouldChime(opts)) return false;
+  if (g.lastChimeAt != null && opts.now - g.lastChimeAt < GLOBAL_FLOOR_MS) return false; // global floor
   const until = g.mutedUntil.get(opts.conversationId);
-  if (until != null && opts.now < until) return false; // still muted
+  if (until != null && opts.now < until) return false; // conversation still muted
   g.mutedUntil.set(opts.conversationId, opts.now + CONV_MUTE_MS);
+  g.lastChimeAt = opts.now;
   return true;
 }
 
@@ -83,7 +93,9 @@ export function noteConversationRead(conversationId: string): void {
   clearChimeMute(gate, conversationId);
 }
 
-/** Drop all per-conversation mutes (e.g. on logout / store reset). */
+/** Drop all chime state — per-conversation mutes and the global floor (e.g. on
+ *  logout / store reset). */
 export function resetChimeMutes(): void {
   gate.mutedUntil.clear();
+  gate.lastChimeAt = null;
 }
