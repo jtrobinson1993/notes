@@ -13,7 +13,7 @@ This spec is split by app area so you can load just the part you're working on:
 | [chat.md](chat.md) | v3 E2EE chat — friends, DMs, groups, conversation keys/epochs, the WebSocket transport, **the phase-1 implementation as built**, and **v4 channels** |
 | [voice.md](voice.md) | **v6** E2EE voice — embedded mediasoup SFU, end-to-end frame encryption, voice channels + 1:1 calls, key reuse from chat/v5 (implemented on `v6-voice`) |
 | [profiles.md](profiles.md) | v3.2 E2EE editable profiles — bio + avatar, the per-user profile key, visibility, distribution + rotation |
-| [notifications.md](notifications.md) | v3 phase 3 — PWA install + content-free background Web Push (service worker, VAPID, subscriptions) |
+| [notifications.md](notifications.md) | Foreground new-message chime + tab/badge unread + v3 phase 3 — PWA install + content-free background Web Push (service worker, VAPID, subscriptions) |
 | [security.md](security.md) | Cross-cutting security — rendering/XSS safety, CSP, metadata exposure, threat model |
 | [roadmap.md](roadmap.md) | Phasing and future versions (v3.1 – v8) |
 | [testing.md](testing.md) | The unit + e2e test plan (Vitest + Playwright) |

@@ -4,6 +4,31 @@ The app is an installable PWA (offline app shell via a service worker). Phase 3
 adds **background Web Push** so a closed/backgrounded install still surfaces new
 messages — without weakening the E2EE model.
 
+Notifications span three surfaces: the **foreground chime** (app open, sound),
+the **tab title + app-icon badge** (unread count, app open), and **background
+Web Push** (app closed/backgrounded). The chime and badge run entirely client-
+side off the live WebSocket; push is the fallback when no socket is connected.
+
+## In-app chime (foreground)
+
+When the app is open and a chat message arrives over the WebSocket that the user
+**isn't actively looking at**, a short sound plays (`web/src/assets/message-
+chime.mp3`, bundled by Vite and served same-origin — covered by the existing CSP
+`media-src 'self'`). The decision is the pure `shouldChime` (`web/src/lib/
+chime.ts`), called from the chat store's `message` frame handler: it chimes when
+the message is **not from us** *and* either
+
+- the app **isn't focused** — `isAppFocused()` is false (`document` hidden, or
+  another window/tab/app has focus, via `visibilityState` + `document.hasFocus()`),
+  **or**
+- the message landed in a channel that **isn't the one currently open**
+  (`activeChannelId` ≠ the message's channel).
+
+So a message in the open, focused channel stays silent; anything else rings.
+`playChime` is best-effort and **throttled** (one chime per 1.5s) so a burst or
+backfill can't machine-gun the speaker; it's a silent no-op if the browser blocks
+playback before a user gesture (the title/badge still update).
+
 ## Content-free by design
 
 The server is crypto-oblivious: it stores only ciphertext and cannot read a

@@ -33,6 +33,7 @@ import {
   unsealConversationKey,
 } from '../lib/chatCrypto';
 import { connectChatSocket, disconnectChatSocket, onConnect } from '../lib/chatSocket';
+import { isAppFocused, playChime, shouldChime } from '../lib/chime';
 import { randomJoinPhrase } from '../lib/systemMessages';
 import { customEmojiForText, loadCustomEmoji, registerEmbeddedEmoji, resetCustomEmoji } from '../lib/emoji/custom';
 import { loadEmojiUsage, resetEmojiUsage } from '../lib/emoji/usage';
@@ -688,6 +689,17 @@ export const useChatStore = defineStore('chat', () => {
         const view = await decryptOne(m.conversationId, m);
         mergeMessages(m.channelId, [view]);
         bumpLastSeq(m.conversationId, m.channelId, m.seq);
+        // Chime for a message the user isn't looking at (another channel open,
+        // or the tab/window unfocused) — never for our own echoed-back message.
+        if (
+          shouldChime({
+            fromMe: m.senderId === session.user?.id,
+            channelOpen: activeChannelId.value === m.channelId,
+            focused: isAppFocused(),
+          })
+        ) {
+          playChime();
+        }
         break;
       }
       case 'message-edited': {
