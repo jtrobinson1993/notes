@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "npm run build -w shared && npm run build -w server && npm run build -w web",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "typecheck": "npm run build -w shared && npm run typecheck -w server && npm run typecheck -w web",
     "dev:server": "npm run dev -w server",
     "dev:web": "npm run dev -w web",
     "start": "node server/dist/index.js",
