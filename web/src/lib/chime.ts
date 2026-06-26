@@ -3,12 +3,21 @@
 // same-origin, so CSP `media-src 'self'` covers it.
 import chimeUrl from '../assets/message-chime.mp3';
 
-// Bursts of messages (e.g. a backfill or a fast sender) shouldn't machine-gun
-// the speaker — collapse anything within this window into a single chime.
-const MIN_GAP_MS = 1500;
+// After a conversation chimes it goes quiet until the user reads it OR this long
+// passes — whichever comes first. A per-conversation cooldown (rather than a
+// global timer) keeps a busy or ignored conversation from machine-gunning the
+// speaker, while still re-alerting once you've caught up or after a quiet gap.
+export const CONV_MUTE_MS = 10_000;
 
 let el: HTMLAudioElement | null = null;
-let lastPlayed = 0;
+
+/** Per-conversation chime suppression: conversationId → epoch-ms the mute lifts. */
+export interface ChimeGate {
+  mutedUntil: Map<string, number>;
+}
+
+// Module-level gate for the live app; tests drive the pure functions directly.
+const gate: ChimeGate = { mutedUntil: new Map() };
 
 /** Is the app the user's current focus? False when the tab is backgrounded or
  *  another window/tab/app has focus — i.e. when a chime is warranted. */
@@ -17,21 +26,38 @@ export function isAppFocused(): boolean {
   return document.visibilityState === 'visible' && document.hasFocus();
 }
 
-/** Decide whether an incoming message should ring the chime. Chime when the
- *  message is from someone else AND the user isn't looking at it — either the
- *  app isn't focused, or the message landed in a channel that isn't the one
- *  currently open. */
+/** Pure "does this message deserve attention" check, ignoring the cooldown:
+ *  true when it isn't our own message AND we aren't already looking at it (the
+ *  app is unfocused, or a different channel is open). */
 export function shouldChime(opts: { fromMe: boolean; channelOpen: boolean; focused: boolean }): boolean {
   if (opts.fromMe) return false;
   return !opts.focused || !opts.channelOpen;
 }
 
-/** Play the chime, best-effort. Throttled, and silently a no-op if the browser
- *  blocks playback before a user gesture (the unread badge/title still update). */
+/** Pure cooldown gate (mutates `g`): chime when the message deserves attention
+ *  AND the conversation isn't in its post-chime mute window. Records a fresh
+ *  mute when it returns true. */
+export function gateChime(
+  g: ChimeGate,
+  opts: { conversationId: string; fromMe: boolean; channelOpen: boolean; focused: boolean; now: number },
+): boolean {
+  if (!shouldChime(opts)) return false;
+  const until = g.mutedUntil.get(opts.conversationId);
+  if (until != null && opts.now < until) return false; // still muted
+  g.mutedUntil.set(opts.conversationId, opts.now + CONV_MUTE_MS);
+  return true;
+}
+
+/** Lift a conversation's mute (the user read/caught up on it) so its next new
+ *  message alerts again. */
+export function clearChimeMute(g: ChimeGate, conversationId: string): void {
+  g.mutedUntil.delete(conversationId);
+}
+
+/** Play the chime, best-effort. A no-op if the browser blocks playback before a
+ *  user gesture (the unread badge/title still update). Simultaneous chimes share
+ *  one element, so a multi-conversation burst collapses to a single sound. */
 export function playChime(): void {
-  const now = Date.now();
-  if (now - lastPlayed < MIN_GAP_MS) return;
-  lastPlayed = now;
   try {
     if (!el) {
       el = new Audio(chimeUrl);
@@ -44,4 +70,20 @@ export function playChime(): void {
   } catch {
     /* Audio unsupported in this environment */
   }
+}
+
+/** Live-app entry point: ring for an incoming message unless it's our own,
+ *  already on-screen, or within the conversation's post-chime mute window. */
+export function maybeChime(opts: { conversationId: string; fromMe: boolean; channelOpen: boolean }): void {
+  if (gateChime(gate, { ...opts, focused: isAppFocused(), now: Date.now() })) playChime();
+}
+
+/** The conversation was read — lift its mute so the next message alerts. */
+export function noteConversationRead(conversationId: string): void {
+  clearChimeMute(gate, conversationId);
+}
+
+/** Drop all per-conversation mutes (e.g. on logout / store reset). */
+export function resetChimeMutes(): void {
+  gate.mutedUntil.clear();
 }

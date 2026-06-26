@@ -33,7 +33,7 @@ import {
   unsealConversationKey,
 } from '../lib/chatCrypto';
 import { connectChatSocket, disconnectChatSocket, onConnect } from '../lib/chatSocket';
-import { isAppFocused, playChime, shouldChime } from '../lib/chime';
+import { maybeChime, noteConversationRead, resetChimeMutes } from '../lib/chime';
 import { randomJoinPhrase } from '../lib/systemMessages';
 import { customEmojiForText, loadCustomEmoji, registerEmbeddedEmoji, resetCustomEmoji } from '../lib/emoji/custom';
 import { loadEmojiUsage, resetEmojiUsage } from '../lib/emoji/usage';
@@ -673,6 +673,7 @@ export const useChatStore = defineStore('chat', () => {
   async function markRead(convId: string, channelId: string, seq: number): Promise<void> {
     await api.conversationRead(convId, seq, channelId);
     patchChannelSeq(convId, channelId, 'lastReadSeq', seq);
+    noteConversationRead(convId); // caught up — let its next message chime again
   }
 
   function bumpLastSeq(convId: string, channelId: string, seq: number): void {
@@ -691,15 +692,12 @@ export const useChatStore = defineStore('chat', () => {
         bumpLastSeq(m.conversationId, m.channelId, m.seq);
         // Chime for a message the user isn't looking at (another channel open,
         // or the tab/window unfocused) — never for our own echoed-back message.
-        if (
-          shouldChime({
-            fromMe: m.senderId === session.user?.id,
-            channelOpen: activeChannelId.value === m.channelId,
-            focused: isAppFocused(),
-          })
-        ) {
-          playChime();
-        }
+        // Per-conversation cooldown lives in `chime.ts`; reads lift it below.
+        maybeChime({
+          conversationId: m.conversationId,
+          fromMe: m.senderId === session.user?.id,
+          channelOpen: activeChannelId.value === m.channelId,
+        });
         break;
       }
       case 'message-edited': {
@@ -740,6 +738,7 @@ export const useChatStore = defineStore('chat', () => {
         // Only my own read receipts advance my unread baseline (per channel).
         if (frame.userId === session.user?.id) {
           patchChannelSeq(frame.conversationId, frame.channelId, 'lastReadSeq', frame.seq);
+          noteConversationRead(frame.conversationId); // caught up elsewhere — re-arm the chime
         }
         break;
       }
@@ -772,6 +771,7 @@ export const useChatStore = defineStore('chat', () => {
     activeChannelId.value = null;
     convKeys.clear();
     channelKeys.clear();
+    resetChimeMutes();
   }
 
   return {

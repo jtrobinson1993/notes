@@ -25,9 +25,21 @@ the message is **not from us** *and* either
   (`activeChannelId` ≠ the message's channel).
 
 So a message in the open, focused channel stays silent; anything else rings.
-`playChime` is best-effort and **throttled** (one chime per 1.5s) so a burst or
-backfill can't machine-gun the speaker; it's a silent no-op if the browser blocks
-playback before a user gesture (the title/badge still update).
+
+**Per-conversation cooldown.** A conversation chimes **at most once per alert
+window**: after it chimes, that conversation is muted until the user **reads** it
+**or** `CONV_MUTE_MS` (**10s**) passes — whichever comes first. The pure
+`gateChime` (`chime.ts`) layers this over `shouldChime`, keying a `mutedUntil`
+map by conversation and recording a fresh mute each time it rings; the chat store
+calls `noteConversationRead` (→ `clearChimeMute`) whenever the current user's read
+cursor advances (via `markRead` or an own `read` frame), so catching up re-arms
+the chime immediately, and `reset` (logout) drops all mutes. This is a
+per-conversation rule, not a global timer: a busy or ignored room can't
+machine-gun the speaker, yet the **first** message in a *different* conversation
+still rings right away. `playChime` itself is best-effort — a silent no-op if the
+browser blocks playback before a user gesture (the title/badge still update); a
+single shared `<audio>` element means several chimes fired in the same tick
+collapse into one sound.
 
 ## Content-free by design
 
