@@ -53,6 +53,9 @@ const emit = defineEmits<{
   editLast: [];
   /** composer-only: Esc pressed (e.g. cancel an in-progress edit) */
   escape: [];
+  /** Files pasted (any mode) or dropped (note mode — caret is moved to the drop
+   *  point first). The parent uploads + attaches them. */
+  files: [files: File[]];
 }>();
 
 const host = ref<HTMLDivElement>();
@@ -337,6 +340,38 @@ onMounted(() => {
         ...(props.submitOnEnter ? [submitKeymap] : []),
         keymap.of([...formattingKeymap, ...defaultKeymap, ...historyKeymap]),
         modeCompartment.of(modeExtensions(props.mode ?? 'live')),
+        // Paste files anywhere; drop files in note mode (positions the caret at
+        // the drop point first). In chat mode, drop bubbles up to the
+        // conversation's own drop zone (which stages the attachment), so the
+        // editor only claims paste there.
+        EditorView.domEventHandlers({
+          paste: (event) => {
+            const list = event.clipboardData?.files;
+            if (!list || !list.length) return false;
+            event.preventDefault();
+            emit('files', Array.from(list));
+            return true;
+          },
+          dragover: (event) => {
+            if (props.submitOnEnter) return false;
+            if (event.dataTransfer?.types.includes('Files')) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'copy';
+              return true;
+            }
+            return false;
+          },
+          drop: (event, view) => {
+            if (props.submitOnEnter) return false;
+            const list = event.dataTransfer?.files;
+            if (!list || !list.length) return false;
+            event.preventDefault();
+            const at = view.posAtCoords({ x: event.clientX, y: event.clientY });
+            if (at != null) view.dispatch({ selection: { anchor: at } });
+            emit('files', Array.from(list));
+            return true;
+          },
+        }),
         editorTheme,
         // Chat composer gets native browser spell-check (CodeMirror defaults the
         // content element to spellcheck="false"); the note editor stays off.

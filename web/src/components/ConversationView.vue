@@ -542,18 +542,17 @@ async function send() {
 
 // Each file uploads independently (encrypted client-side) and is staged as a
 // chip; Send then embeds the refs in the message. A single failure doesn't
-// abort the batch.
-async function onPickFiles(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const files = input.files;
-  if (!files?.length) return;
+// abort the batch. Shared by the attach button, paste, and drag-and-drop.
+async function stageFiles(files: FileList | File[]) {
+  const list = Array.from(files);
+  if (!list.length) return;
   // Hand focus to the composer so Enter sends the message rather than
   // re-triggering the (now-focused) attach button.
   composer.value?.focus();
   attaching.value = true;
   attachError.value = '';
   const failed: string[] = [];
-  for (const file of files) {
+  for (const file of list) {
     try {
       const ref = await encryptAndUploadFile(file);
       // Thumbnail from the original picked bytes — no round-trip decrypt.
@@ -563,9 +562,36 @@ async function onPickFiles(e: Event) {
       failed.push(`${file.name} — ${err instanceof Error ? err.message : 'upload failed'}`);
     }
   }
-  input.value = '';
   attaching.value = false;
   attachError.value = failed.length ? `Couldn't attach: ${failed.join('; ')}` : '';
+}
+
+async function onPickFiles(e: Event) {
+  const input = e.target as HTMLInputElement;
+  if (input.files?.length) await stageFiles(input.files);
+  input.value = '';
+}
+
+// Drag-and-drop from the OS file manager: dropping anywhere over the
+// conversation attaches the file(s) to the message being composed.
+const dragActive = ref(false);
+function onDragOver(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes('Files')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  dragActive.value = true;
+}
+function onDragLeave(e: DragEvent) {
+  // Only clear when the cursor actually leaves the conversation (not when
+  // crossing between child elements).
+  if (!e.relatedTarget || !(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) {
+    dragActive.value = false;
+  }
+}
+function onDrop(e: DragEvent) {
+  dragActive.value = false;
+  const files = e.dataTransfer?.files;
+  if (files?.length) void stageFiles(files);
 }
 
 function removeStaged(id: string) {
@@ -619,7 +645,14 @@ async function sendGif(gif: GifRef) {
 </script>
 
 <template>
-    <div class="flex h-full flex-col">
+    <div class="relative flex h-full flex-col" @dragover="onDragOver" @dragleave="onDragLeave" @drop.prevent="onDrop">
+      <!-- Drag-and-drop overlay: dropping a file anywhere here attaches it. -->
+      <div
+        v-if="dragActive"
+        class="pointer-events-none absolute inset-2 z-nav flex items-center justify-center rounded-xl border-2 border-dashed border-blue-400 bg-blue-50/80 text-sm font-medium text-blue-600 dark:bg-blue-950/70 dark:text-blue-300"
+      >
+        Drop to attach
+      </div>
       <!-- Header is only rendered for the thread panel (the main view passes
            hide-header; group name/icon + calls live in ConversationPage). -->
       <div v-if="!hideHeader" class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
@@ -923,6 +956,7 @@ async function sendGif(gif: GifRef) {
               @submit="send"
               @edit-last="editLast"
               @escape="cancelEdit"
+              @files="stageFiles"
             />
           </div>
           <EmojiPicker gifs @pick="insertEmoji" @gif="sendGif" />

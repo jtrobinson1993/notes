@@ -50,6 +50,7 @@ const folderName = computed(() => {
 });
 const title = ref(props.note.payload.title);
 const body = ref(props.note.payload.body);
+const editor = ref<{ insertText: (s: string) => void } | null>(null);
 const tags = ref<string[]>([...props.note.payload.tags]);
 const tagInput = ref('');
 const colorTagOpen = ref<string | null>(null);
@@ -159,15 +160,17 @@ async function save() {
 // 16-byte GCM tag, so we check against the limit minus that.
 const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 
-async function attach(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const files = input.files;
-  if (!files) return;
-  // Each file is independent: one failure (oversize, network, server reject)
-  // must not abort the batch or orphan files already uploaded this round.
+// Upload + attach a batch of files. Each file is independent: one failure
+// (oversize, network, server reject) must not abort the batch or orphan files
+// already uploaded this round. Image markdown is inserted at the caret when
+// `atCursor` (paste / drop), else appended to the end (the attach button).
+// Shared by the attach button, paste, and drag-and-drop.
+async function attachFiles(files: FileList | File[], atCursor = false) {
+  const list = Array.from(files);
+  if (!list.length) return;
   const failed: string[] = [];
   let added = 0;
-  for (const file of files) {
+  for (const file of list) {
     try {
       let data: Uint8Array = new Uint8Array(await file.arrayBuffer());
       let type = file.type || 'application/octet-stream';
@@ -184,16 +187,29 @@ async function attach(event: Event) {
       const { id } = await api.attachmentUpload(ciphertext);
       attachments.value.push({ id, name: file.name, type, size: data.length, key, iv });
       if (type.startsWith('image/')) {
-        body.value += `${body.value.endsWith('\n') || !body.value ? '' : '\n\n'}![${file.name}](attachment:${id})\n`;
+        const markup = `![${file.name}](attachment:${id})`;
+        if (atCursor && editor.value) editor.value.insertText(`${markup}\n`);
+        else body.value += `${body.value.endsWith('\n') || !body.value ? '' : '\n\n'}${markup}\n`;
       }
       added++;
     } catch (e) {
       failed.push(`${file.name} — ${e instanceof Error ? e.message : 'upload failed'}`);
     }
   }
-  input.value = '';
   attachError.value = failed.length ? `Couldn't attach: ${failed.join('; ')}` : '';
   if (added) await save();
+}
+
+async function attach(event: Event) {
+  const input = event.target as HTMLInputElement;
+  if (input.files?.length) await attachFiles(input.files, false);
+  input.value = '';
+}
+
+// Paste / drop from the editor: insert images at the caret (the editor already
+// moved the caret to the drop point for drops).
+function onEditorFiles(files: File[]) {
+  void attachFiles(files, true);
 }
 
 async function download(ref: AttachmentRef) {
@@ -418,10 +434,12 @@ function fmtSize(bytes: number): string {
     </div>
     <div v-else class="min-h-0 grow">
       <MarkdownEditor
+        ref="editor"
         v-model="body"
         :readonly="readonly"
         :mode="mode"
         :resolve-attachment="resolveAttachment"
+        @files="onEditorFiles"
       />
     </div>
   </div>

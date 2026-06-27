@@ -430,7 +430,10 @@ a removable chip — image chips show a **thumbnail preview** (an object URL fro
 the original picked bytes, revoked on remove/send/unmount), others an icon and
 name. Picking files also **moves focus to the composer** so Enter sends rather
 than re-triggering the attach button. **Send** embeds the staged refs with the
-(optional) text.
+(optional) text. The same staging path is reached by **pasting** a file/image
+into the composer and by **dragging a file from the OS file manager** onto the
+conversation (a "Drop to attach" overlay covers the whole pane while dragging) —
+both call `stageFiles`.
 Rendering splits a message's refs (`ChatAttachments.vue`): images collapse into a
 single **image grid**, **audio/video** play inline (`ChatMedia.vue` — audio loads
 eagerly with native controls; video is **click-to-load**, since the whole blob

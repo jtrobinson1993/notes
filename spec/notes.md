@@ -23,7 +23,10 @@ See [accounts-and-crypto.md](accounts-and-crypto.md) for the key model,
   note payload (so sharing a note shares its attachments); all files embed via
   `![name](attachment:id)`. Images render inline; **audio/video** (detected by
   `mediaKind` from the name/type) render as inline `<audio>`/`<video>` players;
-  other files fall back to a missing-attachment label. 32 MiB cap.
+  other files fall back to a missing-attachment label. 32 MiB cap. Files can be
+  added via the attach button (appended to the end), or by **pasting** / **drag-
+  and-dropping** from the OS file manager — the latter two insert the image
+  markup **at the caret** (the editor moves the caret to the drop point first).
 - **Version history** — the server snapshots ciphertext on update, coalesced to
   one per 10 min, max 50; restore from the History dialog.
 - **Offline editing** — an IndexedDB outbox flushed before sync; server-side
