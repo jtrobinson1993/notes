@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatMime, nameForType } from '../../src/lib/fileMeta';
+import { formatBytes, formatMime, mediaKind, nameForType } from '../../src/lib/fileMeta';
 
 describe('formatBytes', () => {
   it('uses B / KB / MB by magnitude', () => {
@@ -39,5 +39,28 @@ describe('nameForType', () => {
 
   it('appends an extension when the name had none', () => {
     expect(nameForType('screenshot', 'image/webp')).toBe('screenshot.webp');
+  });
+});
+
+describe('mediaKind', () => {
+  it('classifies from a MIME type', () => {
+    expect(mediaKind('audio/mpeg')).toBe('audio');
+    expect(mediaKind('video/mp4')).toBe('video');
+    expect(mediaKind('image/png')).toBeNull();
+    expect(mediaKind('application/pdf')).toBeNull();
+  });
+
+  it('classifies from a filename extension (case-insensitive)', () => {
+    expect(mediaKind('song.mp3')).toBe('audio');
+    expect(mediaKind('voice.m4a')).toBe('audio');
+    expect(mediaKind('clip.MP4')).toBe('video');
+    expect(mediaKind('movie.webm')).toBe('video');
+    expect(mediaKind('notes.txt')).toBeNull();
+    expect(mediaKind('photo.png')).toBeNull();
+  });
+
+  it('treats .ogg as audio and .ogv as video', () => {
+    expect(mediaKind('a.ogg')).toBe('audio');
+    expect(mediaKind('a.ogv')).toBe('video');
   });
 });

@@ -403,6 +403,12 @@ html.vt-exclude-root {
 }
 .spoiler-image-revealed img { cursor: default; }
 
+/* Inline audio/video players for note media attachments (reading view + live
+   editor). Chat media has its own component (ChatMedia.vue). */
+.md-media { @apply my-1 block max-w-full; }
+video.md-media { @apply max-h-96 rounded-lg bg-black; }
+audio.md-media { @apply w-full max-w-[360px]; }
+
 .embed-placeholder {
   @apply my-2 max-w-xl;
 }
