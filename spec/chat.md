@@ -436,8 +436,11 @@ conversation (a "Drop to attach" overlay covers the whole pane while dragging) �
 both call `stageFiles`.
 Rendering splits a message's refs (`ChatAttachments.vue`): images collapse into a
 single **image grid**, **audio/video** play inline (`ChatMedia.vue` — audio loads
-eagerly with native controls; video is **click-to-load**, since the whole blob
-must be decrypted before it can play), and other files follow as download chips.
+eagerly into a **custom themed player** (`AudioPlayer.vue`: hidden `<audio>` driven
+by JS, with the app's own play/pause + seek-bar styling, filename, and time, so it
+matches the theme instead of the browser's native chrome); video is
+**click-to-load**, since the whole blob must be decrypted before it can play), and
+other files follow as download chips.
 Each blob is decrypted locally (`decryptAttachment` → `lib/attachments.ts`) to an
 object URL, so (like note attachments) there's **no remote fetch and no IP leak**.
 The per-file size cap mirrors the server's 32 MiB.

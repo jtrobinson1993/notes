@@ -3,6 +3,7 @@ import { onBeforeUnmount, ref } from 'vue';
 import type { AttachmentRef } from '@notes/shared';
 import { decryptAttachment } from '../lib/attachments';
 import { formatBytes } from '../lib/fileMeta';
+import AudioPlayer from './AudioPlayer.vue';
 import IconPlay from '~icons/mynaui/play';
 import IconMusic from '~icons/mynaui/music';
 import IconDanger from '~icons/mynaui/danger-triangle';
@@ -54,23 +55,21 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
-    <!-- Audio: filename + native controls. -->
+    <!-- Audio: custom themed player (filename + scrubber). -->
+    <AudioPlayer
+      v-else-if="kind === 'audio' && url"
+      :src="url"
+      :name="attachment.name"
+      :size="attachment.size"
+    />
+    <!-- Audio still decrypting. -->
     <div
       v-else-if="kind === 'audio'"
-      class="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700"
+      class="flex items-center gap-1.5 rounded-lg border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-700"
     >
-      <div class="mb-1.5 flex items-center gap-1.5 text-xs">
-        <IconMusic class="h-3.5 w-3.5 shrink-0 text-zinc-500" />
-        <span class="min-w-0 truncate font-medium">{{ attachment.name }}</span>
-        <span class="shrink-0 text-zinc-500">{{ formatBytes(attachment.size) }}</span>
-      </div>
-      <audio
-        :src="url ?? undefined"
-        controls
-        preload="metadata"
-        class="w-full"
-        :aria-label="attachment.name"
-      />
+      <IconMusic class="h-3.5 w-3.5 shrink-0 text-zinc-500" />
+      <span class="min-w-0 truncate font-medium">{{ attachment.name }}</span>
+      <span class="ml-auto shrink-0 text-zinc-500">Loading…</span>
     </div>
 
     <!-- Video, loaded: native controls. -->
