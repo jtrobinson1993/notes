@@ -457,6 +457,12 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         if (name === 'ListMark') {
           const text = state.doc.sliceString(node.from, node.to);
           if (!/^[-*+]$/.test(text)) return;
+          // Only style a bullet once the marker is a real "- " — a space/tab
+          // must follow. A bare "-" (an empty item the user is mid-typing, which
+          // CommonMark still parses as a list at the doc/section start) stays
+          // literal text, so list styling appears only on hyphen + space.
+          const after = state.doc.sliceString(node.to, node.to + 1);
+          if (after !== ' ' && after !== '\t') return;
           // task items render a checkbox instead of a bullet dot: hide the
           // marker (and the following space) outright so we don't get both
           const item = node.node.parent;

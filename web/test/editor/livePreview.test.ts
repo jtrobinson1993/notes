@@ -81,6 +81,25 @@ describe('editable table', () => {
   });
 });
 
+describe('bullet styling waits for hyphen + space', () => {
+  const bullets = (v: EditorView) => v.dom.querySelectorAll('.cm-live-bullet').length;
+
+  it('does not render a bullet for a bare "-" (empty item being typed)', () => {
+    expect(bullets(makeEditor('-'))).toBe(0);
+    expect(bullets(makeEditor('-x'))).toBe(0);
+  });
+
+  it('renders a bullet once a space follows the marker', () => {
+    expect(bullets(makeEditor('- '))).toBe(1);
+    expect(bullets(makeEditor('- item'))).toBe(1);
+  });
+
+  it('applies the same rule to a marker on a later line', () => {
+    expect(bullets(makeEditor('a\n-'))).toBe(0);
+    expect(bullets(makeEditor('a\n- '))).toBe(1);
+  });
+});
+
 describe('concealedMotion', () => {
   it('an ArrowRight from the start lands on the first visible char, skipping the concealed "**"', () => {
     const view = makeEditor('**bold**');
