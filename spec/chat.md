@@ -379,7 +379,9 @@ On **desktop** there is **no visible Send button** — Enter sends, and an
 a **visible Send button** (paper-plane icon, disabled until there's text or a
 staged attachment) sits at the end of the composer row, since Enter inserts a
 newline there. The composer's other visible controls are attach (📎) and the
-emoji/GIF picker.
+emoji/GIF picker. The composer has browser **spell-check** enabled (via
+CodeMirror's `contentAttributes`, gated on `submit-on-enter`); the note editor
+stays spell-check-off.
 
 Messages already render through the same token renderer (`MarkdownView`), so a
 sent message renders with identical formatting to the live preview — no
@@ -430,10 +432,12 @@ name. Picking files also **moves focus to the composer** so Enter sends rather
 than re-triggering the attach button. **Send** embeds the staged refs with the
 (optional) text.
 Rendering splits a message's refs (`ChatAttachments.vue`): images collapse into a
-single **image grid**, other files follow as download chips. Each blob is
-decrypted locally (`decryptAttachment` → `lib/attachments.ts`) to an object URL,
-so (like note attachments) there's **no remote fetch and no IP leak**. The
-per-file size cap mirrors the server's 32 MiB.
+single **image grid**, **audio/video** play inline (`ChatMedia.vue` — audio loads
+eagerly with native controls; video is **click-to-load**, since the whole blob
+must be decrypted before it can play), and other files follow as download chips.
+Each blob is decrypted locally (`decryptAttachment` → `lib/attachments.ts`) to an
+object URL, so (like note attachments) there's **no remote fetch and no IP leak**.
+The per-file size cap mirrors the server's 32 MiB.
 
 A message's images render as a wrapping, **equal-height strip**
 (`ChatImageGrid.vue`): every thumbnail shares a fixed height (`TILE_HEIGHT`) and
@@ -562,7 +566,12 @@ Messages use Discord-style **`:shortcode:`** syntax. The token renderer
 (`MdTokens.emojiText`) replaces a `:name:` run with an inline `<img.chat-emoji>`
 when `resolveEmoji(name)` matches; unknown shortcodes stay literal, and code
 spans/blocks are never substituted (so `` `:KEKW:` `` stays text). The set is
-global UI chrome, so notes render them too. `EmojiPicker.vue` is a searchable
+global UI chrome, so notes render them too. Hovering any emote **scales it ~2x
+in place** (a 0.1s ease-in-out transform). A message that is **nothing but
+emote(s)/emoji** — no other text, GIF, or attachment — renders **enlarged**
+(Discord-style jumbo); `isEmoteOnly` (in `lib/emoji`) detects it across
+resolvable shortcodes and unicode emoji (including ZWJ/skin-tone sequences).
+`EmojiPicker.vue` is a searchable
 two-tab popover; picking inserts at the composer caret via the editor's exposed
 `insertText`. Picking from any tab **records a use** (see Most-used ranking
 below), and a **Frequently used** row sits at the top of the picker while not

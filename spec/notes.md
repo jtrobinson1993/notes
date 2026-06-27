@@ -20,8 +20,10 @@ See [accounts-and-crypto.md](accounts-and-crypto.md) for the key model,
   show the **display name / public handle, never any login identifier** (matching
   the chat rule).
 - **Encrypted attachments** — a per-attachment key stored *inside* the encrypted
-  note payload (so sharing a note shares its attachments); images embed via
-  `attachment:` URLs. 32 MiB cap.
+  note payload (so sharing a note shares its attachments); all files embed via
+  `![name](attachment:id)`. Images render inline; **audio/video** (detected by
+  `mediaKind` from the name/type) render as inline `<audio>`/`<video>` players;
+  other files fall back to a missing-attachment label. 32 MiB cap.
 - **Version history** — the server snapshots ciphertext on update, coalesced to
   one per 10 min, max 50; restore from the History dialog.
 - **Offline editing** — an IndexedDB outbox flushed before sync; server-side
@@ -72,8 +74,9 @@ and export are unchanged.
   light mode, light grey in dark) in live + reading modes; click-to-reveal,
   Cmd/Ctrl+click to re-conceal. Spoilered images show the overlay with a
   centered "SPOILER" label.
-- **Images & embeds:** image attachments render inline (live + reading; raw
-  syntax in source). YouTube/Vimeo URLs render as **click-to-load** embeds (a
+- **Images, media & embeds:** image attachments render inline, and audio/video
+  attachments render as native inline players (live + reading; raw syntax in
+  source). YouTube/Vimeo URLs render as **click-to-load** embeds (a
   logo placeholder; no request leaves the client until clicked) — see
   [security.md](security.md) for the remote-media privacy model.
 - **Code blocks:** ` ``` ` fences become real embedded code editors — syntax
