@@ -247,6 +247,263 @@ security-critical piece of v8.
 Out of scope: groups spanning two servers (would require real federation —
 cross-server identity, key distribution, message relay).
 
-## Open questions
+## v11 — Local-first: your data lives on your devices, the server is a minimal relay
 
-- (none currently)
+**Status: long-term goal, large rework, exploration phase. Direction is chosen
+(below); the individual decisions are open. Nothing here is built. This section
+captures the digging we need to do *before* committing engineering.**
+
+### Decision & why
+
+Two earlier shapes were considered and dropped. **Centralized "host everything"
+(Discord-style)** dies not on infra cost (cents/user/month) but on the personnel
+and legal load it forces on the operator — mandatory abuse/CSAM reporting,
+law-enforcement + data-subject requests, DMCA, 24/7 on-call, and custody of
+*everyone's* metadata. A small team / non-profit can't carry that. **Splitting an
+official web frontend from self-hosted backends (Matrix/Element shape)** is better
+but still leaves each backend holding durable ciphertext (a honeypot at rest) and
+keeps the web served-code trust problem.
+
+**Chosen direction: local-first + a minimal relay.** Durable data lives
+**encrypted on the user's own devices** (old-Skype-style local history, but
+E2EE). The server stores **nothing at rest** — it is a transient, encrypted
+**store-and-forward relay** plus a key directory and connectivity (STUN/TURN) for
+voice. This is the strongest data-at-rest posture: **no honeypot to subpoena,
+breach, or seize.** It also flips the served-code problem in our favour — a
+**signed, store-distributed native app** is the *strongest* answer to "is the
+client trustworthy," far better than web delivery.
+
+The two costs we accept up front:
+
+- **It needs native apps on every platform — desktop *and* mobile.** Browser
+  storage (IndexedDB) is quota-limited and *evictable* (Safari/iOS evict
+  non-installed web-app data after ~7 days; all engines can evict under storage
+  pressure). A full local history + media needs the real filesystem, so we need
+  real apps on **Windows, macOS, Linux, iOS, and Android** — a mobile PWA won't
+  do, since mobile browsers evict just as aggressively.
+- **No durable server backup ⇒ data lives or dies with your devices.** Onboarding
+  a new device and surviving device loss become *our* problem to solve
+  device-to-device, not the server's (see **D8**). This is a deliberate trade for
+  zero server-side data.
+
+We are **not** going pure peer-to-peer (no server at all): reliable asynchronous
+delivery, groups, and NAT traversal all require *someone* to hold an encrypted
+message while a recipient is offline, so a thin relay stays. (Pure P2P / DHT is a
+non-goal — see below.)
+
+### Architecture
+
+- **Client = native app.** Holds all durable data in a local encrypted store,
+  does all crypto, and works **fully offline**. Talks to a relay only to reach
+  other people or other devices.
+- **Relay = minimal, stores nothing at rest.** Encrypted store-and-forward
+  mailbox (hold ciphertext until each recipient device acks, then delete —
+  Signal-style), the `handle → public-key` directory, content-free push,
+  STUN/TURN + voice SFU signaling. Self-hostable; this is a *lean retention
+  profile* of today's server, not a new codebase.
+- **Sync model = local-first.** Append-only chat messages replicate by sequence;
+  **mutable shared state (notes, edits, reactions, read state) uses CRDTs** so
+  offline edits merge conflict-free. All updates are encrypted and relayed as
+  **opaque blobs** — the relay never sees plaintext or CRDT structure.
+
+This inverts today's design (server holds all ciphertext; thin web client; auth
+*and* data need the server). After v11, the **device** is the source of truth and
+the server is optional plumbing.
+
+### Decisions to make
+
+#### Client platform
+
+**D1 — App framework (desktop + mobile, all five platforms).** Hard requirement:
+**Windows, macOS, Linux, iOS, and Android**, reusing the existing Vue + CodeMirror
+app from **one web codebase** (a UI rewrite, and per-OS native apps, are non-goals
+— too much duplicated work). Electron alone is **desktop-only**, so mobile forces
+the choice. Candidates:
+  - **Capacitor (iOS/Android) + Electron (desktop)** — two native shells wrapping
+    the *same* web app. *Pros:* both are **mature**; Electron gives pixel-identical
+    desktop rendering + Node/SQLite with **no browser quota/eviction** (storage
+    goes through Node, not the sandboxed web APIs — this is what kills the storage
+    worry); Capacitor is the standard web→mobile bridge with first-class native
+    plugins for SQLite, biometrics, secure storage, and push. *Cons:* two shells to
+    maintain; Electron is heavy (~120–150 MB / 200–400 MB RAM).
+  - **Tauri v2 (all five from one project)** — Rust core + system webviews,
+    desktop *and* iOS/Android. *Pros:* one shell stack, tiny binaries (~5 MB),
+    official SQLite plugin. *Cons:* per-OS webview differences (Linux WebKitGTK
+    lags); **WebAuthn/passkey support is worst-in-class** (esp. Linux); mobile
+    targets are younger/less proven than Capacitor + Electron.
+  - **Flutter / React Native / .NET MAUI** — true single cross-platform stack but
+    a **UI rewrite** off web tech (lose Vue + CodeMirror + the whole editor).
+    Rejected on cost.
+  - **Note on passkeys:** native shells generally **don't expose WebAuthn PRF**
+    cleanly (Electron needs a per-OS native module — only macOS has one today,
+    Jan 2026; Tauri's Linux webview is effectively broken), which is why local
+    unlock shifts to OS keychains/biometrics in **D3**. Mobile is actually the
+    *strongest* case there (hardware secure enclaves).
+  - **Recommendation: Capacitor + Electron** for maturity and maximal reuse of the
+    current app, with **Tauri v2** as the single-stack alternative to re-evaluate
+    as its mobile + passkey stories harden. Either way it's **one web codebase**
+    behind native shells. *Status: open — Capacitor+Electron (two mature shells) vs
+    Tauri v2 (one younger stack).*
+
+**D2 — Local storage engine.** Move durable data to **SQLite** (e.g.
+better-sqlite3 in Electron's main process) + the filesystem for encrypted
+attachment blobs; today's IndexedDB (`idb.ts`) is renderer-sandboxed and
+eviction-prone. Encrypt at rest: either per-field/blob under MK (as today) or
+whole-DB (SQLCipher). Storage is now bounded by the user's disk, not a quota.
+*Status: open — SQLite-in-main vs keep IndexedDB; SQLCipher vs field-level.*
+
+**D3 — Local unlock primitive (the passkey problem).** Because passkey **PRF** is
+unreliable in desktop shells (D1), the *local vault* unlock should lean on
+**native** primitives rather than WebAuthn: protect MK at rest with the **OS
+keychain / secure store** — macOS Keychain, Windows DPAPI / Credential Manager,
+Linux Secret Service, and on mobile the **iOS Keychain / Secure Enclave** and
+**Android Keystore (StrongBox)** — gated by **OS biometrics**, with the existing
+**password (Argon2id)** path as the portable fallback and the **recovery code**
+retained. Mobile is the *strongest* case here (hardware-backed enclaves + Face/
+Touch ID). WebAuthn PRF becomes optional (or via per-OS native modules later).
+Crucially this makes unlock **fully local/offline**. *Status: open — OS-keychain
++ biometric vs invest in per-OS passkey/PRF native modules.*
+
+#### Identity, auth & connectivity
+
+**D4 — Offline auth & use (big shift).** Unlock decrypts the local MK **with no
+network**, so notes and local chat history are fully usable **offline**. The relay
+is contacted only to send/receive *new* traffic, sync devices, or reach contacts.
+This **decouples "unlock local vault" (offline) from "authenticate to relay"
+(online bearer token)** — today login is server-verified, so this is a real
+redesign of the auth flow. *Status: open — confirm offline-first unlock; relay
+token lifetime/refresh.*
+
+**D5 — Key directory & MITM (unchanged necessity).** The relay still serves the
+`handle → X25519 public key` directory, so a malicious/compromised relay can
+**substitute a contact's key and man-in-the-middle key exchange** even though it
+stores no content. Required regardless of the storage model: **fingerprint /
+safety-number verification** (out-of-band human compare, reusing the device-link
+SAS pattern from [accounts-and-crypto.md](accounts-and-crypto.md#device-linking-proposed--not-yet-built)),
+with **key transparency** (append-only auditable log — CONIKS / Apple Contact Key
+Verification / WhatsApp-style) as the scalable follow-up. *Status: open —
+fingerprints are non-negotiable; pick the transparency design + when.*
+
+**D6 — Relay retention & transport.** Define the mailbox precisely: ciphertext
+held only until every recipient device acks, then deleted; a TTL for devices that
+never come back; group fan-out; and exactly what routing metadata the relay can
+see (sender/recipient/timing — candidates for sealed-sender later). Confirm
+transport is **via the relay, not P2P** (reliability + NAT). *Status: open —
+TTLs, ack protocol, metadata-minimization scope.*
+
+**D7 — Connectivity, voice & push.** The relay keeps **STUN/TURN** + the mediasoup
+SFU for voice (already required; voice has no at-rest data). **Push changes for
+mobile:** web-push/VAPID is desktop/web-only — native apps need **APNs (iOS)** and
+**FCM (Android)**, so the content-free push path must fan out across web-push +
+APNs + FCM behind one abstraction. iOS also restricts background execution, so
+background **sync largely happens on push-wake or foreground**, not continuously —
+which shapes the relay's delivery/queue behaviour (D6). *Status: open — push
+provider abstraction; mobile background-sync strategy.*
+
+#### Multi-device & data transfer (no server backup)
+
+**D8 — New-device onboarding + history transfer (the hard one).** No durable
+server backup (by choice). Instead, use the relay as a **transient conduit**
+between *your own* devices:
+  1. **Pair via QR.** The new device generates an ephemeral X25519 keypair and
+     shows its *public* key as a QR; the primary scans it, both show a **SAS** to
+     confirm no MITM, and the primary `sealKey`s MK to the new device (reuses the
+     existing device-link design — MK only ever crosses sealed).
+  2. **Bulk history transfer.** While both are online during pairing, the primary
+     **streams its encrypted local store** (or a CRDT state snapshot) to the new
+     device through the relay as opaque blobs — *"scan the QR on your primary
+     device to sync."* Nothing durable lands on the server.
+  3. **Ongoing sync.** Every device is a **full replica**; the relay queues
+     encrypted updates for offline devices; CRDTs merge on reconnect.
+  - **Tradeoffs to document and decide:** (a) onboarding **requires an existing
+    device online**; (b) if **all** devices are lost at once, **data is gone** —
+    the recovery code restores *identity*, not *history*. Mitigations to weigh: a
+    soft requirement of ≥2 devices, and/or an **optional, user-initiated, local
+    encrypted export file** the user stores wherever they like (explicitly **not**
+    server-side). *Status: open — accept "need 2 devices," and/or offer a
+    user-controlled offline backup export?*
+
+**D9 — Conflict model (CRDTs).** Adopt **Yjs** for mutable synced state. It has an
+official **CodeMirror 6 binding (`y-codemirror.next`)** — the app already uses
+CodeMirror 6 — and Yjs is transport-agnostic, so we encrypt its **binary update
+blobs** under the relevant key and relay them opaquely (proven pattern; Matrix
+relays E2EE Yjs this way). Local persistence via `y-indexeddb` or a SQLite
+adapter. Concurrent offline edits **merge deterministically, conflict-free**.
+Caveat to document: CRDT convergence is *conflict-free*, not *semantically
+perfect* — two people editing the same sentence offline merge into a deterministic
+but possibly awkward result; acceptable for notes. *Status: open — Yjs vs
+Automerge (Yjs favoured: CodeMirror binding, text performance, ecosystem); which
+state is CRDT vs simple last-writer-wins.*
+
+#### Feature implications
+
+**D10 — Notes (answers the specific questions).**
+  - **Where shared notes live:** on **each participant's device**, encrypted under
+    the per-note key shared via the sealed-box mechanism from
+    [v5](#v5--note--folder-sharing). The relay only forwards encrypted Yjs updates
+    and queues them for offline members — it stores **no note**.
+  - **Reconciling offline edits on two devices:** the Yjs CRDT **auto-merges**
+    divergent edits on reconnect — this is the entire reason to adopt a CRDT, and
+    it covers both "my two devices" and "two different users editing a shared
+    note."
+  - **Version history:** maps onto Yjs's update/snapshot history; decide retention
+    (the current version-history feature must be re-expressed over CRDT state).
+  - **Offline + auth:** **yes — notes work fully offline.** Unlock is local (D3/D4)
+    and the store is local; the network is only needed to *share* changes with
+    others or sync a new device.
+  - **Migration:** existing server-stored notes must be pulled down and imported
+    into the local store on first run of the native app.
+  *Status: open — version-history-over-CRDT, migration tooling.*
+
+**D11 — Chat implications.** Append-only **messages are immutable + ordered by
+`seq`** → simple device replication (no CRDT needed); **edits/reactions/read
+state are mutable** → CRDT or last-writer-wins. History becomes a **local log**
+(Skype-style). Groups still need the relay for fan-out + offline queueing.
+*Status: open — which mutable chat state is CRDT.*
+
+**D12 — Trust / distribution (improved by going native).** A **signed,
+store-distributed native app** plus **reproducible builds** is the strongest
+answer to the served-code problem — strictly better than the web delivery the
+previous v11 draft worried about. The web app, if kept at all, becomes a
+**reduced-capability "online-only" client** (it can't hold full local history),
+or is dropped. *Status: open — keep a thin web client or go native-only;
+code-signing + reproducible-build pipeline.*
+
+### Non-goals
+
+- **Pure peer-to-peer / DHT.** Availability (offline delivery), groups, and NAT
+  traversal all need a relay; a thin relay is kept deliberately.
+- **Any durable server-side content store or server-side backup** — the whole
+  point. (An *optional, user-controlled, offline* export is the only backup form
+  on the table; see D8.)
+- **Federation** across relays (groups spanning two relays). Same exclusion as v8.
+
+### Suggested phasing (large rework)
+
+1. **Native shells** (desktop + mobile) wrapping the existing app; move durable
+   storage to local SQLite (D1, D2); import existing server data on first run.
+2. **Local offline unlock** — OS keychain / biometric / password, decoupled from
+   server auth (D3, D4).
+3. **Minimal relay** — strip durable storage down to the encrypted mailbox +
+   directory + push + STUN/TURN (D6, D7).
+4. **CRDT sync** — Yjs for notes + mutable state, encrypted-blob relay, offline
+   merge (D9, D10, D11).
+5. **Multi-device** — QR pairing + device-to-device history transfer, no server
+   backup (D8).
+6. **Key verification** (D5) — fingerprints as the safety gate; key transparency
+   later.
+
+### Open questions
+
+- **Framework:** Capacitor + Electron (two mature shells) vs Tauri v2 (one younger
+  stack) to cover all five platforms — Win/macOS/Linux/iOS/Android? (D1)
+- **Mobile push:** unify content-free push across web-push, APNs, and FCM behind
+  one relay abstraction; settle the iOS background-sync strategy (D7).
+- **Single-device data-loss:** accept "you need ≥2 devices," and/or ship an
+  optional user-controlled **offline** encrypted backup export? (No server-side
+  backup either way — D8.)
+- **Web client:** keep a reduced-capability online-only web client, or go
+  native-only? (D12)
+- **Desktop passkeys:** invest in per-OS native passkey/PRF modules, or settle on
+  OS-keychain + biometric + password for local unlock? (D3)
+- **Key transparency** design + whether it's v11-scope or a follow-up (D5).
