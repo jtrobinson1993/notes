@@ -28,6 +28,7 @@ import {
   toggleStrike,
   toggleUnderline,
   inListItem,
+  hopPastTrailingCloseTags,
 } from '../lib/editor/commands';
 import { getLastColor } from '../lib/editor/palette';
 import { detectEmojiTrigger } from '../lib/editor/emojiTrigger';
@@ -129,6 +130,12 @@ const submitKeymap = keymap.of([
   // Esc bubbles up (e.g. to cancel an edit); doesn't block other Esc handling.
   { key: 'Escape', run: () => (emit('escape'), false) },
 ]);
+
+// Before any Enter inserts a newline (list-continue, submit, or plain), hop the
+// caret past trailing inline close-tags so they stay on the current line instead
+// of being split onto the next one (which breaks a color/underline span). Higher
+// precedence than the newline keymaps, but returns false so they still run.
+const hopCloseTagsKeymap = keymap.of([{ key: 'Enter', run: (v) => (hopPastTrailingCloseTags(v), false) }]);
 
 const md = () =>
   markdown({ base: markdownLanguage, codeLanguages: languages, extensions: extendedSyntax });
@@ -327,6 +334,7 @@ onMounted(() => {
       extensions: [
         history(),
         autocompleteKeymap,
+        hopCloseTagsKeymap,
         ...(props.submitOnEnter ? [submitKeymap] : []),
         keymap.of([...formattingKeymap, ...defaultKeymap, ...historyKeymap]),
         modeCompartment.of(modeExtensions(props.mode ?? 'live')),

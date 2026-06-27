@@ -27,12 +27,51 @@ function wrapOpenPos(state: EditorState, from: number, to: number): number {
   return Math.min(Math.max(from, lineContentStart(state, from)), to);
 }
 
+/** Where an inline wrap's closing marker should go: `to`, but pulled back so it
+ *  never lands within (or before) a *later* line's leading list/quote markup —
+ *  which would shove the close marker ahead of that line's "- "/"> " and strip
+ *  its styling (the common "selected the whole line incl. its newline" case).
+ *  Stays within `[from, to]`. */
+function wrapClosePos(state: EditorState, from: number, to: number): number {
+  let pos = to;
+  while (pos > from) {
+    const line = state.doc.lineAt(pos);
+    // Real content precedes `pos` on its line → a fine place to close.
+    if (pos > lineContentStart(state, pos)) break;
+    // `pos` sits in (or before) this line's leading markup; drop back to the end
+    // of the previous line's content (past the newline + that markup).
+    if (line.number === 1) return from;
+    pos = Math.max(from, state.doc.line(line.number - 1).to);
+  }
+  return pos;
+}
+
 function findEnclosing(state: EditorState, name: string, from: number, to: number): SyntaxNode | null {
   let node: SyntaxNode | null = syntaxTree(state).resolveInner(from, 1);
   for (let p: SyntaxNode | null = node; p; p = p.parent) {
     if (p.name === name && p.from <= from && p.to >= to) return p;
   }
   return null;
+}
+
+// Trailing inline close-tags (one or more `</span>` / `</u>`) that our editor
+// writes; matched against the text from the caret to end of line.
+const TRAILING_CLOSE_TAGS = /^(?:<\/span>|<\/u>)+$/;
+
+/** If the empty caret sits immediately before a run of inline close-tags that
+ *  ends its line, move it past them (to the line end). Returns whether it moved.
+ *  Called before a newline-inserting Enter so the close-tags stay on the current
+ *  line instead of being split onto the new one — which would break the
+ *  color/underline (e.g. a stray `</span>` starting the next list item). Always
+ *  a no-op when the caret isn't right before such a trailing run. */
+export function hopPastTrailingCloseTags(view: EditorView): boolean {
+  const r = view.state.selection.main;
+  if (!r.empty) return false;
+  const line = view.state.doc.lineAt(r.head);
+  const rest = view.state.doc.sliceString(r.head, line.to);
+  if (!rest || !TRAILING_CLOSE_TAGS.test(rest)) return false;
+  view.dispatch({ selection: { anchor: line.to } });
+  return true;
 }
 
 /** True when the caret sits inside a markdown list item (bullet or ordered).
@@ -68,12 +107,13 @@ function toggleInline(name: string, open: string, close = open): Command {
       unwrap(view, node);
     } else {
       const openPos = wrapOpenPos(view.state, range.from, range.to);
+      const closePos = wrapClosePos(view.state, openPos, range.to);
       view.dispatch({
         changes: [
           { from: openPos, insert: open },
-          { from: range.to, insert: close },
+          { from: closePos, insert: close },
         ],
-        selection: { anchor: openPos + open.length, head: range.to + open.length },
+        selection: { anchor: openPos + open.length, head: closePos + open.length },
         userEvent: 'input.format',
       });
     }
@@ -97,10 +137,11 @@ export const insertLink: Command = (view) => {
   const url = prompt('Link URL:');
   if (!url) return true;
   const from = wrapOpenPos(view.state, range.from, range.to);
-  const text = view.state.sliceDoc(from, range.to);
+  const to = wrapClosePos(view.state, from, range.to);
+  const text = view.state.sliceDoc(from, to);
   const insert = `[${text}](${url})`;
   view.dispatch({
-    changes: { from, to: range.to, insert },
+    changes: { from, to, insert },
     selection: { anchor: from + 1, head: from + 1 + text.length },
     userEvent: 'input.format',
   });
@@ -149,14 +190,15 @@ export function applyColor(view: EditorView, css: string): boolean {
       },
     });
     const openPos = wrapOpenPos(view.state, range.from, range.to);
+    const closePos = wrapClosePos(view.state, openPos, range.to);
     const changes = view.state.changes([
       ...stripped,
       { from: openPos, insert: open },
-      { from: range.to, insert: '</span>' },
+      { from: closePos, insert: '</span>' },
     ]);
     view.dispatch({
       changes,
-      selection: { anchor: changes.mapPos(openPos, 1), head: changes.mapPos(range.to, -1) },
+      selection: { anchor: changes.mapPos(openPos, 1), head: changes.mapPos(closePos, -1) },
       userEvent: 'input.format',
     });
   }
