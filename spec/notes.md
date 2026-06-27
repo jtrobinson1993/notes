@@ -55,7 +55,10 @@ and export are unchanged.
   (intra-word `_` never italicizes; `\_` renders bare) — except that a `- ` at
   the start of a line freshly broken off a paragraph (Shift+Enter then `- `)
   shows its bullet **immediately**, even though CommonMark won't let the still-
-  empty item interrupt the paragraph until a character follows.
+  empty item interrupt the paragraph until a character follows. Bullet styling
+  requires the **hyphen *and* a space**: a bare `-` (which CommonMark parses as
+  an empty list at the document/section start) stays literal text until you type
+  the space, so the bullet never flashes in mid-type.
 - **Keyboard shortcuts** (Cmd / Ctrl), toggling on selection or at the caret:
   Bold `B`, Italic `I`, Underline `U`, Inline code `E`, Highlight `Shift+H`,
   Strikethrough `Shift+X`, Link `K` (prompt for URL), Heading `Shift+1..6` (same
