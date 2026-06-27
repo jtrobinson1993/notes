@@ -100,8 +100,8 @@ onBeforeUnmount(() => audio.value?.pause());
       class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-500"
       @click="toggle"
     >
-      <IconPause v-if="playing" class="h-4 w-4" />
-      <IconPlay v-else class="h-4 w-4 translate-x-px" />
+      <IconPause v-if="playing" class="h-5 w-5" />
+      <IconPlay v-else class="h-5 w-5 translate-x-px" />
     </button>
 
     <div class="min-w-0 grow">
