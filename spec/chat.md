@@ -632,12 +632,25 @@ returned `LinkPreview {url,title,description,image,siteName}` inside the
 **encrypted** message payload (Signal-style) — so recipients render it from the
 decrypted payload and the server only ever saw the URL at proxy time. The
 preview image is a remote URL rendered with the usual **click-to-load**
-(`LinkPreviewCard.vue`).
+(`LinkPreviewCard.vue`). **This every-member gate exists because the og proxy is
+the one path that reveals a URL to the (self-hosted) server/admin** — not for
+recipient IP protection, which click-to-load already covers per viewer.
+
+**YouTube/Vimeo URLs are excluded from this proxy path entirely.** They render
+as **client-side embeds** (`MdTokens`/`EmbedFrame` via `parseVideoUrl`, building
+the `youtube-nocookie`/`player.vimeo` iframe from the client-parsed id), so they
+need no server fetch and leak nothing to the admin. They're gated solely on the
+separate, **personal** `clickToLoadEmbeds` setting (Settings → Privacy: "Video
+embeds") — independent of the every-member link-preview gate — so a video embed
+shows even when not everyone has opted into link previews. `send()` therefore
+skips `api.og()` for any URL `parseVideoUrl` recognizes.
 
 When previews are **not** allowed (not every member has them on) and a message
-contains a URL, the message renders a small grey **hint** where the preview would
-have been ("every member needs link previews enabled"), so it's clear why no card
-appears — distinct from a message that simply yielded no OG data.
+contains a **non-video** URL, the message renders a small grey **hint** where the
+preview would have been, with an inline **"Enable link previews"** button that
+flips the viewer's own setting (or, when they already have it on and it's other
+members blocking, a short note) — distinct from a message that simply yielded no
+OG data. Video URLs show their embed, so they get no hint.
 
 The proxy (`server/routes/og.ts`) is an **SSRF surface** and is guarded: http(s)
 only; the host must resolve to a **public** IP (loopback/private/link-local/

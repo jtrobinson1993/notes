@@ -9,6 +9,7 @@ import ChatAttachments from './ChatAttachments.vue';
 import LinkPreviewCard from './LinkPreviewCard.vue';
 import MessageActionsSheet from './MessageActionsSheet.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
+import { parseVideoUrl } from '../lib/editor/media';
 import { resolveEmoji, isEmoteOnly } from '../lib/emoji';
 import { api } from '../lib/api';
 import IconReply from '~icons/mynaui/message-reply';
@@ -459,8 +460,12 @@ function firstUrl(text: string): string | null {
 // A message has a link but no preview *because* not everyone has previews on —
 // show a hint where the preview would have rendered. (When previews are allowed
 // but a message still has none, it's a no-OG-data case, not an opt-in gap.)
+// Video URLs are excluded: they render as a client-side embed regardless of the
+// opt-in gate, so there's nothing missing to hint about.
 function showLinkPreviewHint(m: ChatMessageView): boolean {
-  return !previewsAllowed.value && !m.linkPreview && !!m.text && !!firstUrl(m.text);
+  if (previewsAllowed.value || m.linkPreview || !m.text) return false;
+  const url = firstUrl(m.text);
+  return !!url && !parseVideoUrl(url);
 }
 
 // Turn on my own link previews straight from the hint, instead of pointing at
@@ -514,7 +519,10 @@ async function send() {
     if (replyingTo.value) opts.replyTo = replyingTo.value;
     if (body && linkPreviewsAllowed()) {
       const url = firstUrl(body);
-      if (url) {
+      // YouTube/Vimeo render as client-side embeds (no server proxy, gated on the
+      // local click-to-load setting), so they never go through the og proxy —
+      // that would needlessly reveal the URL to the server/admin.
+      if (url && !parseVideoUrl(url)) {
         try {
           opts.linkPreview = await api.og(url);
         } catch {
