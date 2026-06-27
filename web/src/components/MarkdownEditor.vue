@@ -331,6 +331,9 @@ onMounted(() => {
         keymap.of([...formattingKeymap, ...defaultKeymap, ...historyKeymap]),
         modeCompartment.of(modeExtensions(props.mode ?? 'live')),
         editorTheme,
+        // Chat composer gets native browser spell-check (CodeMirror defaults the
+        // content element to spellcheck="false"); the note editor stays off.
+        ...(props.submitOnEnter ? [EditorView.contentAttributes.of({ spellcheck: 'true' })] : []),
         EditorView.lineWrapping,
         placeholder(props.placeholder ?? 'Write in Markdown…'),
         attachmentResolver.of(props.resolveAttachment ?? (() => Promise.resolve(null))),
