@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   clearCustomEmoji,
   defaultEmoji,
+  isEmoteOnly,
   registerCustomEmoji,
   resolveEmoji,
   searchDefaultEmoji,
@@ -32,6 +33,38 @@ describe('emoji resolver', () => {
     expect(resolveEmoji(name)).toBe('blob:custom');
     clearCustomEmoji();
     expect(resolveEmoji(name)).toBe(`/emoji/7tv/${defaultEmoji[0]!.file}`);
+  });
+});
+
+describe('isEmoteOnly', () => {
+  const known = `:${defaultEmoji[0]!.name}:`;
+  // 👨‍👩‍👧 (ZWJ-joined family) and 👍🏽 (skin-tone modifier), built by code point
+  // to keep the invisible joiners out of the source.
+  const family = String.fromCodePoint(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467);
+  const thumbTone = String.fromCodePoint(0x1f44d, 0x1f3fd);
+
+  it('is true for emote-only messages', () => {
+    expect(isEmoteOnly(known)).toBe(true);
+    expect(isEmoteOnly(`  ${known}  ${known} `)).toBe(true);
+    expect(isEmoteOnly('😀')).toBe(true);
+    expect(isEmoteOnly('😀😀😀')).toBe(true);
+    expect(isEmoteOnly(family)).toBe(true);
+    expect(isEmoteOnly(thumbTone)).toBe(true);
+    expect(isEmoteOnly(`${known}😀`)).toBe(true);
+  });
+
+  it('is false when any non-emote text is present', () => {
+    expect(isEmoteOnly(`${known} hi`)).toBe(false);
+    expect(isEmoteOnly('😀 text')).toBe(false);
+    expect(isEmoteOnly('hello')).toBe(false);
+    expect(isEmoteOnly(':definitely_not_an_emote_xyz:')).toBe(false);
+  });
+
+  it('is false for empty / whitespace / null', () => {
+    expect(isEmoteOnly('')).toBe(false);
+    expect(isEmoteOnly('   ')).toBe(false);
+    expect(isEmoteOnly(null)).toBe(false);
+    expect(isEmoteOnly(undefined)).toBe(false);
   });
 });
 

@@ -275,6 +275,21 @@ html.vt-exclude-root {
   width: auto;
   vertical-align: -0.3em;
   margin: 0 1px;
+  /* Hovering an emote scales it up ~2x in place (transform leaves layout
+     untouched), with a quick ease-in-out. */
+  transform-origin: center;
+  transition: transform 0.1s ease-in-out;
+}
+.chat-emoji:hover {
+  transform: scale(2);
+}
+
+/* A chat message that is nothing but emote(s) renders them enlarged. Bumping the
+   font-size scales both the em-sized custom emote images and any native unicode
+   emoji glyphs together. */
+.md-preview.emote-only {
+  font-size: 1.6em;
+  line-height: 1.3;
 }
 
 /* Theme the editor placeholder (composer "Message…", notes "Write in Markdown…")

@@ -9,7 +9,7 @@ import ChatAttachments from './ChatAttachments.vue';
 import LinkPreviewCard from './LinkPreviewCard.vue';
 import MessageActionsSheet from './MessageActionsSheet.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
-import { resolveEmoji } from '../lib/emoji';
+import { resolveEmoji, isEmoteOnly } from '../lib/emoji';
 import { api } from '../lib/api';
 import IconReply from '~icons/mynaui/message-reply';
 import IconPencil from '~icons/mynaui/pencil';
@@ -463,6 +463,12 @@ function showLinkPreviewHint(m: ChatMessageView): boolean {
   return !previewsAllowed.value && !m.linkPreview && !!m.text && !!firstUrl(m.text);
 }
 
+// A message that is nothing but emote(s) — no GIF, no attachments — renders its
+// emotes/emoji enlarged (Discord-style jumbo).
+function emoteOnly(m: ChatMessageView): boolean {
+  return !m.gif && !m.attachments?.length && isEmoteOnly(m.text);
+}
+
 async function send() {
   if (sending.value) return;
   const body = text.value.trim();
@@ -737,7 +743,12 @@ async function sendGif(gif: GifRef) {
                 class="italic opacity-70"
               >message could not be decrypted</span>
               <template v-else>
-                <MarkdownView v-if="row.msg.text" :source="row.msg.text" breaks />
+                <MarkdownView
+                  v-if="row.msg.text"
+                  :source="row.msg.text"
+                  breaks
+                  :class="{ 'emote-only': emoteOnly(row.msg) }"
+                />
                 <img
                   v-if="row.msg.gif"
                   :src="row.msg.gif.url"
