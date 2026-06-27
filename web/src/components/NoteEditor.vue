@@ -16,6 +16,7 @@ import type { AttachmentRef } from '@notes/shared';
 import { api } from '../lib/api';
 import { decryptBlob, encryptBlob } from '../lib/crypto';
 import { optimizeImage } from '../lib/imageOptimize';
+import { attachmentCap } from '../lib/attachments';
 import { optimizeImages } from '../lib/privacy';
 import { clearTagColor, setTagColor, tagColor, tagTextColor } from '../lib/tagColors';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
@@ -156,10 +157,6 @@ async function save() {
   }
 }
 
-// Mirrors the server's MAX_ATTACHMENT_BYTES; the uploaded ciphertext adds a
-// 16-byte GCM tag, so we check against the limit minus that.
-const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
-
 // Upload + attach a batch of files. Each file is independent: one failure
 // (oversize, network, server reject) must not abort the batch or orphan files
 // already uploaded this round. Image markdown is inserted at the caret when
@@ -179,8 +176,9 @@ async function attachFiles(files: FileList | File[], atCursor = false) {
         data = optimized.data;
         type = optimized.type;
       }
-      if (data.length + 16 > MAX_ATTACHMENT_BYTES) {
-        failed.push(`${file.name} — too large (${fmtSize(data.length)}, max ${fmtSize(MAX_ATTACHMENT_BYTES)})`);
+      const cap = attachmentCap(type);
+      if (data.length + 16 > cap) {
+        failed.push(`${file.name} — too large (${fmtSize(data.length)}, max ${fmtSize(cap)})`);
         continue;
       }
       const { ciphertext, key, iv } = await encryptBlob(data);

@@ -10,7 +10,7 @@ const optimize = vi.hoisted(() => ({
 }));
 vi.mock('../../src/lib/imageOptimize', () => optimize);
 
-import { encryptAndUploadFile, MAX_ATTACHMENT_BYTES } from '../../src/lib/attachments';
+import { attachmentCap, encryptAndUploadFile, MAX_ATTACHMENT_BYTES, MAX_MEDIA_BYTES } from '../../src/lib/attachments';
 import { decryptBlob } from '../../src/lib/crypto';
 
 function file(name: string, type: string, bytes: Uint8Array): File {
@@ -50,5 +50,28 @@ describe('encryptAndUploadFile', () => {
     const big = new Uint8Array(MAX_ATTACHMENT_BYTES + 1);
     await expect(encryptAndUploadFile(file('big.bin', 'application/octet-stream', big))).rejects.toThrow(/too large/);
     expect(api.attachmentUpload).not.toHaveBeenCalled();
+  });
+
+  it('rejects an image still over the 20MB media cap after optimization', async () => {
+    optimize.optimizeImage.mockResolvedValueOnce({ data: new Uint8Array(MAX_MEDIA_BYTES + 1), type: 'image/webp' });
+    await expect(encryptAndUploadFile(file('huge.png', 'image/png', new Uint8Array(4)))).rejects.toThrow(/too large/);
+    expect(api.attachmentUpload).not.toHaveBeenCalled();
+  });
+
+  it('rejects a video over the 20MB media cap (videos are not optimized)', async () => {
+    const big = new Uint8Array(MAX_MEDIA_BYTES + 1);
+    await expect(encryptAndUploadFile(file('clip.mp4', 'video/mp4', big))).rejects.toThrow(/too large/);
+    expect(api.attachmentUpload).not.toHaveBeenCalled();
+  });
+});
+
+describe('attachmentCap', () => {
+  it('caps images and videos at the media limit, others at the server ceiling', () => {
+    expect(attachmentCap('image/png')).toBe(MAX_MEDIA_BYTES);
+    expect(attachmentCap('video/mp4')).toBe(MAX_MEDIA_BYTES);
+    expect(attachmentCap('application/pdf')).toBe(MAX_ATTACHMENT_BYTES);
+    expect(attachmentCap('audio/mpeg')).toBe(MAX_ATTACHMENT_BYTES);
+    expect(MAX_MEDIA_BYTES).toBe(20 * 1024 * 1024);
+    expect(MAX_MEDIA_BYTES).toBeLessThan(MAX_ATTACHMENT_BYTES);
   });
 });

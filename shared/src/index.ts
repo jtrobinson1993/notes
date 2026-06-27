@@ -85,6 +85,14 @@ export interface AttachmentRef {
   key: string;
   /** base64 12-byte IV used for the blob */
   iv: string;
+  /** Intrinsic pixel dimensions, when known (currently videos, for a correctly
+   *  sized poster before the clip is loaded). */
+  width?: number;
+  height?: number;
+  /** For videos: a small, separately-encrypted poster image (a captured frame)
+   *  shown before the full clip is decrypted. Same key model as any attachment —
+   *  the key/iv live inside the (encrypted) message payload. */
+  poster?: { id: string; key: string; iv: string; type: string };
 }
 
 /** What the client encrypts into a note blob. Never sent in plaintext. */

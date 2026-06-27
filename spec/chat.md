@@ -439,11 +439,24 @@ single **image grid**, **audio/video** play inline (`ChatMedia.vue` — audio lo
 eagerly into a **custom themed player** (`AudioPlayer.vue`: hidden `<audio>` driven
 by JS, with the app's own play/pause + seek-bar styling, filename, and time, so it
 matches the theme instead of the browser's native chrome); video is
-**click-to-load**, since the whole blob must be decrypted before it can play), and
-other files follow as download chips.
+**click-to-load**, since the whole blob must be decrypted before it can play. The
+clip shows a **correctly-sized poster** beforehand — a frame captured at upload
+(`videoPoster` in `lib/attachments.ts`), downscaled, encrypted as a **separate
+attachment** (`AttachmentRef.poster`, plus intrinsic `width`/`height` for the
+aspect ratio), and decrypted eagerly while the full clip waits for a click; once
+loaded it plays in a **custom themed `VideoPlayer.vue`** (no native chrome: a
+centered play button while paused so it doesn't read as a static image, plus a
+hover/paused bottom bar with play/pause, seek, time, and fullscreen). Legacy
+clips with no poster fall back to a chip), and other files follow as download
+chips.
 Each blob is decrypted locally (`decryptAttachment` → `lib/attachments.ts`) to an
 object URL, so (like note attachments) there's **no remote fetch and no IP leak**.
-The per-file size cap mirrors the server's 32 MiB.
+Other files keep the server's **32 MiB** ceiling, but **images (measured after
+optimization) and videos are capped client-side at `MAX_MEDIA_BYTES` (20 MiB)**
+via `attachmentCap(type)` — so a huge source image isn't still a big file once
+re-encoded. (Videos aren't transcoded — in-browser transcoding is too heavy — so
+the cap is the only guard on their size; the server can't tell media from any
+other ciphertext blob, so this limit is necessarily client-side.)
 
 A message's images render as a wrapping, **equal-height strip**
 (`ChatImageGrid.vue`): every thumbnail shares a fixed height (`TILE_HEIGHT`) and
