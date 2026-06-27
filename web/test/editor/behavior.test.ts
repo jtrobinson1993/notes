@@ -49,6 +49,31 @@ describe('newline breakout', () => {
     v.dispatch({ changes: { from: 6, insert: '\n' }, userEvent: 'input' });
     expect(v.state.doc.toString()).toBe('**bold**\n');
   });
+
+  // Regression: a caret *past* the close marker (after the colored text) is
+  // outside the span — Enter there must be a plain newline, not a split that
+  // strands a duplicate "</span>" and reopens an empty span on the next line.
+  const span = '<span style="color:var(--brand-purple)">text</span>';
+  it('inserts a plain newline after a color span (caret past </span>)', () => {
+    const v = makeEditor(span);
+    v.dispatch({ changes: { from: span.length, insert: '\n' }, userEvent: 'input' });
+    expect(v.state.doc.toString()).toBe(`${span}\n`);
+  });
+
+  it('relocates a newline from just before </span> to after it', () => {
+    const v = makeEditor(span);
+    v.dispatch({ changes: { from: span.length - '</span>'.length, insert: '\n' }, userEvent: 'input' });
+    expect(v.state.doc.toString()).toBe(`${span}\n`);
+  });
+
+  it('still splits the span when the newline lands mid-content', () => {
+    const v = makeEditor(span);
+    const mid = '<span style="color:var(--brand-purple)">te'.length;
+    v.dispatch({ changes: { from: mid, insert: '\n' }, userEvent: 'input' });
+    expect(v.state.doc.toString()).toBe(
+      '<span style="color:var(--brand-purple)">te</span>\n<span style="color:var(--brand-purple)">xt</span>',
+    );
+  });
 });
 
 describe('inListItem (chat composer Enter = continue list)', () => {

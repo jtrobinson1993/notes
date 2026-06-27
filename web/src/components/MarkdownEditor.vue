@@ -109,7 +109,13 @@ const submitKeymap = keymap.of([
   {
     key: 'Enter',
     run: (v) => {
-      if (inListItem(v.state)) return insertNewlineContinueMarkup(v);
+      if (inListItem(v.state)) {
+        // Continue-markup inserts "\n- ", which newlineBreakout ignores — so hop
+        // past any trailing close-tags here, keeping them on the current item
+        // instead of stranding e.g. a "</span>" at the start of the new one.
+        hopPastTrailingCloseTags(v);
+        return insertNewlineContinueMarkup(v);
+      }
       if (isMobile.value) return insertNewlineAndIndent(v);
       emit('submit');
       return true;
@@ -130,12 +136,6 @@ const submitKeymap = keymap.of([
   // Esc bubbles up (e.g. to cancel an edit); doesn't block other Esc handling.
   { key: 'Escape', run: () => (emit('escape'), false) },
 ]);
-
-// Before any Enter inserts a newline (list-continue, submit, or plain), hop the
-// caret past trailing inline close-tags so they stay on the current line instead
-// of being split onto the next one (which breaks a color/underline span). Higher
-// precedence than the newline keymaps, but returns false so they still run.
-const hopCloseTagsKeymap = keymap.of([{ key: 'Enter', run: (v) => (hopPastTrailingCloseTags(v), false) }]);
 
 const md = () =>
   markdown({ base: markdownLanguage, codeLanguages: languages, extensions: extendedSyntax });
@@ -334,7 +334,6 @@ onMounted(() => {
       extensions: [
         history(),
         autocompleteKeymap,
-        hopCloseTagsKeymap,
         ...(props.submitOnEnter ? [submitKeymap] : []),
         keymap.of([...formattingKeymap, ...defaultKeymap, ...historyKeymap]),
         modeCompartment.of(modeExtensions(props.mode ?? 'live')),

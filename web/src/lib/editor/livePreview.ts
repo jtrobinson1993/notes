@@ -827,7 +827,14 @@ const newlineBreakout = EditorState.transactionFilter.of((tr) => {
         close = ch;
       }
     }
-    if (open && close && open !== close) containers.push({ open, close });
+    // Only break out of a span the caret is actually *within* — between its
+    // markers (`open.to … close.from`, inclusive of those inner edges). At an
+    // outer edge (right after the close marker, or right before the open) the
+    // caret has already left the span, so a plain newline is correct; splitting
+    // there strands a duplicate "</span>" and reopens an empty span.
+    if (open && close && open !== close && pos >= open.to && pos <= close.from) {
+      containers.push({ open, close });
+    }
   }
   if (!containers.length) return tr;
 
