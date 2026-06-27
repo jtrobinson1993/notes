@@ -463,6 +463,20 @@ function showLinkPreviewHint(m: ChatMessageView): boolean {
   return !previewsAllowed.value && !m.linkPreview && !!m.text && !!firstUrl(m.text);
 }
 
+// Turn on my own link previews straight from the hint, instead of pointing at
+// Settings. (Previews still only generate once every member has them on, but
+// this is the one knob I control.)
+const enablingPreviews = ref(false);
+async function enableLinkPreviews() {
+  if (enablingPreviews.value) return;
+  enablingPreviews.value = true;
+  try {
+    await profile.setLinkPreviews(true);
+  } finally {
+    enablingPreviews.value = false;
+  }
+}
+
 // A message that is nothing but emote(s) — no GIF, no attachments — renders its
 // emotes/emoji enlarged (Discord-style jumbo).
 function emoteOnly(m: ChatMessageView): boolean {
@@ -762,12 +776,22 @@ async function sendGif(gif: GifRef) {
                   :attachments="row.msg.attachments"
                 />
                 <LinkPreviewCard v-if="row.msg.linkPreview" :preview="row.msg.linkPreview" />
-                <p
+                <div
                   v-else-if="showLinkPreviewHint(row.msg)"
-                  class="mt-1 text-xs text-zinc-400 dark:text-zinc-500"
+                  class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-400 dark:text-zinc-500"
                 >
-                  No link preview — every member needs link previews enabled (Settings → Privacy).
-                </p>
+                  <span>No link preview —</span>
+                  <button
+                    v-if="!profile.linkPreviews"
+                    type="button"
+                    :disabled="enablingPreviews"
+                    class="rounded-md border border-zinc-300 px-1.5 py-0.5 font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    @click="enableLinkPreviews"
+                  >
+                    {{ enablingPreviews ? 'Enabling…' : 'Enable link previews' }}
+                  </button>
+                  <span v-else>every member needs link previews enabled.</span>
+                </div>
               </template>
             </div>
             <!-- Reaction pills: grouped by emoji; click toggles mine. A new pill
