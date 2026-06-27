@@ -10,6 +10,23 @@ import { setLastColor } from './palette';
 // an existing node of the given type, the markers are removed (toggle off);
 // otherwise the selection (or caret) is wrapped.
 
+// Leading block markup on a line: indentation, then any stack of list markers
+// ("- ", "* ", "1. ") and blockquote markers ("> "). Inline wrapping must begin
+// after this, never inside it — wrapping the "- " into a <span>…</span> / **…**
+// turns the line into plain text and strips its list (or quote) styling.
+const LEADING_BLOCK_MARKUP = /^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+|>[ \t]?)*/;
+function lineContentStart(state: EditorState, pos: number): number {
+  const line = state.doc.lineAt(pos);
+  return line.from + LEADING_BLOCK_MARKUP.exec(line.text)![0].length;
+}
+
+/** Where an inline wrap's opening marker should go: `from`, but clamped forward
+ *  past the start line's leading list/quote markup so the wrap can't swallow it
+ *  (which would drop the line's list/quote styling), and never past `to`. */
+function wrapOpenPos(state: EditorState, from: number, to: number): number {
+  return Math.min(Math.max(from, lineContentStart(state, from)), to);
+}
+
 function findEnclosing(state: EditorState, name: string, from: number, to: number): SyntaxNode | null {
   let node: SyntaxNode | null = syntaxTree(state).resolveInner(from, 1);
   for (let p: SyntaxNode | null = node; p; p = p.parent) {
@@ -50,12 +67,13 @@ function toggleInline(name: string, open: string, close = open): Command {
     if (node) {
       unwrap(view, node);
     } else {
+      const openPos = wrapOpenPos(view.state, range.from, range.to);
       view.dispatch({
         changes: [
-          { from: range.from, insert: open },
+          { from: openPos, insert: open },
           { from: range.to, insert: close },
         ],
-        selection: { anchor: range.from + open.length, head: range.to + open.length },
+        selection: { anchor: openPos + open.length, head: range.to + open.length },
         userEvent: 'input.format',
       });
     }
@@ -78,11 +96,12 @@ export const insertLink: Command = (view) => {
   if (existing) return true; // already a link; let the user edit it in place
   const url = prompt('Link URL:');
   if (!url) return true;
-  const text = view.state.sliceDoc(range.from, range.to);
+  const from = wrapOpenPos(view.state, range.from, range.to);
+  const text = view.state.sliceDoc(from, range.to);
   const insert = `[${text}](${url})`;
   view.dispatch({
-    changes: { from: range.from, to: range.to, insert },
-    selection: { anchor: range.from + 1, head: range.from + 1 + text.length },
+    changes: { from, to: range.to, insert },
+    selection: { anchor: from + 1, head: from + 1 + text.length },
     userEvent: 'input.format',
   });
   view.focus();
@@ -129,14 +148,15 @@ export function applyColor(view: EditorView, css: string): boolean {
         }
       },
     });
+    const openPos = wrapOpenPos(view.state, range.from, range.to);
     const changes = view.state.changes([
       ...stripped,
-      { from: range.from, insert: open },
+      { from: openPos, insert: open },
       { from: range.to, insert: '</span>' },
     ]);
     view.dispatch({
       changes,
-      selection: { anchor: changes.mapPos(range.from, 1), head: changes.mapPos(range.to, -1) },
+      selection: { anchor: changes.mapPos(openPos, 1), head: changes.mapPos(range.to, -1) },
       userEvent: 'input.format',
     });
   }
