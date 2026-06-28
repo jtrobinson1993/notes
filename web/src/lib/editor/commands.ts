@@ -246,6 +246,46 @@ const FORMAT_NODES = new Set([
   'Link',
 ]);
 
+// Paired inline-wrap spans whose markers must be removed along with their
+// content (Link excluded — its markers aren't a simple symmetric pair).
+const WRAP_SPAN_NODES = new Set([
+  'StrongEmphasis',
+  'Emphasis',
+  'InlineCode',
+  'Strikethrough',
+  'Highlight',
+  'Spoiler',
+  'Underline',
+  'ColorSpan',
+]);
+
+/** Grow `[from, to]` to also cover the **markers** of any inline-wrap span whose
+ *  *content* the range already fully covers. Used before replacing a selection
+ *  (e.g. with a newline on Enter): deleting just the content would strand empty
+ *  `<span></span>` / `**` markers, so we delete the whole construct instead. */
+export function expandOverCoveredSpans(state: EditorState, from: number, to: number): { from: number; to: number } {
+  let lo = from;
+  let hi = to;
+  syntaxTree(state).iterate({
+    from,
+    to,
+    enter: (n) => {
+      if (!WRAP_SPAN_NODES.has(n.name)) return;
+      const marks = markerChildren(n.node);
+      if (marks.length < 2) return;
+      const open = marks[0]!;
+      const close = marks[marks.length - 1]!;
+      // The span's content sits between its markers; if the selection already
+      // covers all of it, swallow the markers too.
+      if (from <= open.to && to >= close.from) {
+        lo = Math.min(lo, n.from);
+        hi = Math.max(hi, n.to);
+      }
+    },
+  });
+  return { from: lo, to: hi };
+}
+
 export function cursorInFormat(state: EditorState): boolean {
   const head = state.selection.main.head;
   for (

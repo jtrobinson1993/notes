@@ -29,6 +29,7 @@ import {
   toggleUnderline,
   inListItem,
   hopPastTrailingCloseTags,
+  expandOverCoveredSpans,
 } from '../lib/editor/commands';
 import { getLastColor } from '../lib/editor/palette';
 import { detectEmojiTrigger } from '../lib/editor/emojiTrigger';
@@ -137,20 +138,26 @@ const submitKeymap = keymap.of([
   { key: 'Escape', run: () => (emit('escape'), false) },
 ]);
 
-// Markdown ships a **Prec.high** Enter keymap that continues a list
-// (`insertNewlineContinueMarkup`), and it runs in both the composer and the note
-// editor. When the caret sits just before trailing inline close-tags, that
-// continuation strands them on the new item (e.g. a bare "</span>" starting the
-// next bullet). This **Prec.highest** keymap runs first, hops the caret past
-// those close-tags, then returns false so the normal continuation proceeds from
-// the new position — keeping the tags on the current item. Only acts inside a
-// list (a plain newline's close-tags are handled by newlineBreakout instead).
+// Highest-precedence Enter fix-ups, applied before markdown's own Prec.high
+// list-continue / the default newline. Both reposition/grow the selection and
+// then return false so the normal newline runs from the corrected range:
+//   • Selection: if it fully covers a colored/bold/… span's content, grow it to
+//     swallow the markers too, so the newline doesn't strand empty `<span></span>`.
+//   • Caret in a list: hop past trailing inline close-tags so continuing the list
+//     doesn't split a "</span>" onto the new bullet. (A plain newline's
+//     close-tags are handled by newlineBreakout instead.)
 const closeTagHopKeymap = Prec.highest(
   keymap.of([
     {
       key: 'Enter',
       run: (v) => {
-        if (inListItem(v.state)) hopPastTrailingCloseTags(v);
+        const r = v.state.selection.main;
+        if (!r.empty) {
+          const ex = expandOverCoveredSpans(v.state, r.from, r.to);
+          if (ex.from !== r.from || ex.to !== r.to) v.dispatch({ selection: { anchor: ex.from, head: ex.to } });
+        } else if (inListItem(v.state)) {
+          hopPastTrailingCloseTags(v);
+        }
         return false;
       },
     },
