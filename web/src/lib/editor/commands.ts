@@ -177,10 +177,14 @@ export function applyColor(view: EditorView, css: string): boolean {
       userEvent: 'input.format',
     });
   } else {
-    // strip any color spans inside the selection, then wrap it once; keep
-    // the text selected so picking another color replaces instead of stacking
+    // Strip any color spans inside the selection, then wrap the selected content
+    // of EACH line separately. An inline span can't cross a list/quote item (or
+    // any block) boundary, so one span per line keeps every selected item colored
+    // and valid — instead of a single span that strands raw <span>/</span> tags
+    // across the items. Per line the wrap also skips leading list/quote markup.
+    const state = view.state;
     const stripped: { from: number; to: number; insert: string }[] = [];
-    syntaxTree(view.state).iterate({
+    syntaxTree(state).iterate({
       from: range.from,
       to: range.to,
       enter: (n) => {
@@ -189,18 +193,32 @@ export function applyColor(view: EditorView, css: string): boolean {
         }
       },
     });
-    const openPos = wrapOpenPos(view.state, range.from, range.to);
-    const closePos = wrapClosePos(view.state, openPos, range.to);
-    const changes = view.state.changes([
-      ...stripped,
-      { from: openPos, insert: open },
-      { from: closePos, insert: '</span>' },
-    ]);
-    view.dispatch({
-      changes,
-      selection: { anchor: changes.mapPos(openPos, 1), head: changes.mapPos(closePos, -1) },
-      userEvent: 'input.format',
-    });
+    const wraps: { from: number; to: number }[] = [];
+    const firstLine = state.doc.lineAt(range.from).number;
+    const lastLine = state.doc.lineAt(range.to).number;
+    for (let ln = firstLine; ln <= lastLine; ln++) {
+      const line = state.doc.line(ln);
+      const from = Math.max(range.from, lineContentStart(state, line.from));
+      const to = Math.min(range.to, line.to);
+      if (to > from) wraps.push({ from, to });
+    }
+    if (wraps.length) {
+      const changes = state.changes([
+        ...stripped,
+        ...wraps.flatMap((w) => [
+          { from: w.from, insert: open },
+          { from: w.to, insert: '</span>' },
+        ]),
+      ]);
+      view.dispatch({
+        changes,
+        selection: {
+          anchor: changes.mapPos(wraps[0]!.from, 1),
+          head: changes.mapPos(wraps[wraps.length - 1]!.to, -1),
+        },
+        userEvent: 'input.format',
+      });
+    }
   }
   view.focus();
   return true;

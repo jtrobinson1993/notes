@@ -110,12 +110,14 @@ describe('inline wrap never pushes its close into the next list item', () => {
     expect(bullets(v)).toBe(2);
   });
 
-  it('a selection that genuinely ends mid-next-line still wraps across', () => {
+  it('a selection ending mid-next-line wraps each item separately', () => {
     const v = makeEditor('- one\n- two', 0, 9); // through "- t" on line 2
     applyColor(v, 'var(--brand-red)');
-    // both lines keep their "- " marker, so styling survives even though the
-    // span crosses the newline
-    expect(v.state.doc.toString()).toBe('- <span style="color:var(--brand-red)">one\n- t</span>wo');
+    // One span per line — never a single span crossing the list-item boundary
+    // (which would un-render and strand raw tags).
+    expect(v.state.doc.toString()).toBe(
+      '- <span style="color:var(--brand-red)">one</span>\n- <span style="color:var(--brand-red)">t</span>wo',
+    );
     expect(bullets(v)).toBe(2);
   });
 });

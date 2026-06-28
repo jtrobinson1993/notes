@@ -112,13 +112,10 @@ const submitKeymap = keymap.of([
   {
     key: 'Enter',
     run: (v) => {
-      if (inListItem(v.state)) {
-        // Continue-markup inserts "\n- ", which newlineBreakout ignores — so hop
-        // past any trailing close-tags here, keeping them on the current item
-        // instead of stranding e.g. a "</span>" at the start of the new one.
-        hopPastTrailingCloseTags(v);
-        return insertNewlineContinueMarkup(v);
-      }
+      // (Inside a list, markdown's own Prec.high keymap continues it before this
+      // runs; the close-tag hop is handled by closeTagHopKeymap above. This
+      // branch is the fallback if that keymap is ever absent.)
+      if (inListItem(v.state)) return insertNewlineContinueMarkup(v);
       if (isMobile.value) return insertNewlineAndIndent(v);
       emit('submit');
       return true;
@@ -139,6 +136,26 @@ const submitKeymap = keymap.of([
   // Esc bubbles up (e.g. to cancel an edit); doesn't block other Esc handling.
   { key: 'Escape', run: () => (emit('escape'), false) },
 ]);
+
+// Markdown ships a **Prec.high** Enter keymap that continues a list
+// (`insertNewlineContinueMarkup`), and it runs in both the composer and the note
+// editor. When the caret sits just before trailing inline close-tags, that
+// continuation strands them on the new item (e.g. a bare "</span>" starting the
+// next bullet). This **Prec.highest** keymap runs first, hops the caret past
+// those close-tags, then returns false so the normal continuation proceeds from
+// the new position — keeping the tags on the current item. Only acts inside a
+// list (a plain newline's close-tags are handled by newlineBreakout instead).
+const closeTagHopKeymap = Prec.highest(
+  keymap.of([
+    {
+      key: 'Enter',
+      run: (v) => {
+        if (inListItem(v.state)) hopPastTrailingCloseTags(v);
+        return false;
+      },
+    },
+  ]),
+);
 
 const md = () =>
   markdown({ base: markdownLanguage, codeLanguages: languages, extensions: extendedSyntax });
@@ -337,6 +354,7 @@ onMounted(() => {
       extensions: [
         history(),
         autocompleteKeymap,
+        closeTagHopKeymap,
         ...(props.submitOnEnter ? [submitKeymap] : []),
         keymap.of([...formattingKeymap, ...defaultKeymap, ...historyKeymap]),
         modeCompartment.of(modeExtensions(props.mode ?? 'live')),
