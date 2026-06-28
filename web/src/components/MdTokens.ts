@@ -4,6 +4,7 @@ import { embedSrc, parseVideoUrl, VIMEO_LOGO, YT_LOGO, type VideoEmbed } from '.
 import { COLOR_VALUE_RE } from '../lib/editor/syntax';
 import { clickToLoadEmbeds, clickToLoadImages } from '../lib/privacy';
 import { resolveEmoji, SHORTCODE_RE } from '../lib/emoji';
+import { mediaKind } from '../lib/fileMeta';
 
 // Markdown rendering from marked's token stream straight to VNodes: no HTML
 // string is ever parsed, so there is nothing for a sanitizer to miss. Raw
@@ -90,6 +91,36 @@ const AttachmentImage = defineComponent({
       src.value
         ? h('img', { src: src.value, alt: props.alt })
         : h('span', { class: 'text-sm text-zinc-400' }, missing.value ? `[missing attachment ${props.alt}]` : props.alt);
+  },
+});
+
+// Inline audio/video for an `![name](attachment:id)` whose name looks like
+// media. Resolves to a locally-decrypted object URL (same resolver as images),
+// so there's no remote fetch.
+const AttachmentMedia = defineComponent({
+  props: {
+    id: { type: String, required: true },
+    name: { type: String, default: '' },
+    kind: { type: String as PropType<'audio' | 'video'>, required: true },
+    resolve: { type: Function as PropType<AttachmentResolver>, required: true },
+  },
+  setup(props) {
+    const src = ref<string | null>(null);
+    const missing = ref(false);
+    void props.resolve(props.id).then((url) => {
+      if (url) src.value = url;
+      else missing.value = true;
+    });
+    return () =>
+      src.value
+        ? h(props.kind, {
+            src: src.value,
+            controls: true,
+            preload: 'metadata',
+            'aria-label': props.name,
+            class: 'md-media',
+          })
+        : h('span', { class: 'text-sm text-zinc-400' }, missing.value ? `[missing attachment ${props.name}]` : props.name);
   },
 });
 
@@ -254,7 +285,10 @@ function renderToken(t: Token, ctx: RenderCtx): VNodeChild {
     case 'image': {
       const im = t as Tokens.Image;
       if (im.href.startsWith('attachment:')) {
-        return h(AttachmentImage, { id: im.href.slice('attachment:'.length), alt: im.text, resolve: ctx.resolve });
+        const id = im.href.slice('attachment:'.length);
+        const kind = mediaKind(im.text);
+        if (kind) return h(AttachmentMedia, { id, name: im.text, kind, resolve: ctx.resolve });
+        return h(AttachmentImage, { id, alt: im.text, resolve: ctx.resolve });
       }
       if (/^https?:/i.test(im.href)) return h(RemoteImage, { src: im.href, alt: im.text });
       return im.text;

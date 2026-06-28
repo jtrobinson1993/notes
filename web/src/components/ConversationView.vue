@@ -9,7 +9,8 @@ import ChatAttachments from './ChatAttachments.vue';
 import LinkPreviewCard from './LinkPreviewCard.vue';
 import MessageActionsSheet from './MessageActionsSheet.vue';
 import { encryptAndUploadFile } from '../lib/attachments';
-import { resolveEmoji } from '../lib/emoji';
+import { parseVideoUrl } from '../lib/editor/media';
+import { resolveEmoji, isEmoteOnly } from '../lib/emoji';
 import { api } from '../lib/api';
 import IconReply from '~icons/mynaui/message-reply';
 import IconPencil from '~icons/mynaui/pencil';
@@ -459,8 +460,32 @@ function firstUrl(text: string): string | null {
 // A message has a link but no preview *because* not everyone has previews on —
 // show a hint where the preview would have rendered. (When previews are allowed
 // but a message still has none, it's a no-OG-data case, not an opt-in gap.)
+// Video URLs are excluded: they render as a client-side embed regardless of the
+// opt-in gate, so there's nothing missing to hint about.
 function showLinkPreviewHint(m: ChatMessageView): boolean {
-  return !previewsAllowed.value && !m.linkPreview && !!m.text && !!firstUrl(m.text);
+  if (previewsAllowed.value || m.linkPreview || !m.text) return false;
+  const url = firstUrl(m.text);
+  return !!url && !parseVideoUrl(url);
+}
+
+// Turn on my own link previews straight from the hint, instead of pointing at
+// Settings. (Previews still only generate once every member has them on, but
+// this is the one knob I control.)
+const enablingPreviews = ref(false);
+async function enableLinkPreviews() {
+  if (enablingPreviews.value) return;
+  enablingPreviews.value = true;
+  try {
+    await profile.setLinkPreviews(true);
+  } finally {
+    enablingPreviews.value = false;
+  }
+}
+
+// A message that is nothing but emote(s) — no GIF, no attachments — renders its
+// emotes/emoji enlarged (Discord-style jumbo).
+function emoteOnly(m: ChatMessageView): boolean {
+  return !m.gif && !m.attachments?.length && isEmoteOnly(m.text);
 }
 
 async function send() {
@@ -494,7 +519,10 @@ async function send() {
     if (replyingTo.value) opts.replyTo = replyingTo.value;
     if (body && linkPreviewsAllowed()) {
       const url = firstUrl(body);
-      if (url) {
+      // YouTube/Vimeo render as client-side embeds (no server proxy, gated on the
+      // local click-to-load setting), so they never go through the og proxy —
+      // that would needlessly reveal the URL to the server/admin.
+      if (url && !parseVideoUrl(url)) {
         try {
           opts.linkPreview = await api.og(url);
         } catch {
@@ -514,18 +542,17 @@ async function send() {
 
 // Each file uploads independently (encrypted client-side) and is staged as a
 // chip; Send then embeds the refs in the message. A single failure doesn't
-// abort the batch.
-async function onPickFiles(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const files = input.files;
-  if (!files?.length) return;
+// abort the batch. Shared by the attach button, paste, and drag-and-drop.
+async function stageFiles(files: FileList | File[]) {
+  const list = Array.from(files);
+  if (!list.length) return;
   // Hand focus to the composer so Enter sends the message rather than
   // re-triggering the (now-focused) attach button.
   composer.value?.focus();
   attaching.value = true;
   attachError.value = '';
   const failed: string[] = [];
-  for (const file of files) {
+  for (const file of list) {
     try {
       const ref = await encryptAndUploadFile(file);
       // Thumbnail from the original picked bytes — no round-trip decrypt.
@@ -535,9 +562,36 @@ async function onPickFiles(e: Event) {
       failed.push(`${file.name} — ${err instanceof Error ? err.message : 'upload failed'}`);
     }
   }
-  input.value = '';
   attaching.value = false;
   attachError.value = failed.length ? `Couldn't attach: ${failed.join('; ')}` : '';
+}
+
+async function onPickFiles(e: Event) {
+  const input = e.target as HTMLInputElement;
+  if (input.files?.length) await stageFiles(input.files);
+  input.value = '';
+}
+
+// Drag-and-drop from the OS file manager: dropping anywhere over the
+// conversation attaches the file(s) to the message being composed.
+const dragActive = ref(false);
+function onDragOver(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes('Files')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  dragActive.value = true;
+}
+function onDragLeave(e: DragEvent) {
+  // Only clear when the cursor actually leaves the conversation (not when
+  // crossing between child elements).
+  if (!e.relatedTarget || !(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) {
+    dragActive.value = false;
+  }
+}
+function onDrop(e: DragEvent) {
+  dragActive.value = false;
+  const files = e.dataTransfer?.files;
+  if (files?.length) void stageFiles(files);
 }
 
 function removeStaged(id: string) {
@@ -591,7 +645,14 @@ async function sendGif(gif: GifRef) {
 </script>
 
 <template>
-    <div class="flex h-full flex-col">
+    <div class="relative flex h-full flex-col" @dragover="onDragOver" @dragleave="onDragLeave" @drop.prevent="onDrop">
+      <!-- Drag-and-drop overlay: dropping a file anywhere here attaches it. -->
+      <div
+        v-if="dragActive"
+        class="pointer-events-none absolute inset-2 z-nav flex items-center justify-center rounded-xl border-2 border-dashed border-blue-400 bg-blue-50/80 text-sm font-medium text-blue-600 dark:bg-blue-950/70 dark:text-blue-300"
+      >
+        Drop to attach
+      </div>
       <!-- Header is only rendered for the thread panel (the main view passes
            hide-header; group name/icon + calls live in ConversationPage). -->
       <div v-if="!hideHeader" class="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
@@ -737,7 +798,12 @@ async function sendGif(gif: GifRef) {
                 class="italic opacity-70"
               >message could not be decrypted</span>
               <template v-else>
-                <MarkdownView v-if="row.msg.text" :source="row.msg.text" breaks />
+                <MarkdownView
+                  v-if="row.msg.text"
+                  :source="row.msg.text"
+                  breaks
+                  :class="{ 'emote-only': emoteOnly(row.msg) }"
+                />
                 <img
                   v-if="row.msg.gif"
                   :src="row.msg.gif.url"
@@ -751,12 +817,22 @@ async function sendGif(gif: GifRef) {
                   :attachments="row.msg.attachments"
                 />
                 <LinkPreviewCard v-if="row.msg.linkPreview" :preview="row.msg.linkPreview" />
-                <p
+                <div
                   v-else-if="showLinkPreviewHint(row.msg)"
-                  class="mt-1 text-xs text-zinc-400 dark:text-zinc-500"
+                  class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-400 dark:text-zinc-500"
                 >
-                  No link preview — every member needs link previews enabled (Settings → Privacy).
-                </p>
+                  <span>No link preview —</span>
+                  <button
+                    v-if="!profile.linkPreviews"
+                    type="button"
+                    :disabled="enablingPreviews"
+                    class="rounded-md border border-zinc-300 px-1.5 py-0.5 font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    @click="enableLinkPreviews"
+                  >
+                    {{ enablingPreviews ? 'Enabling…' : 'Enable link previews' }}
+                  </button>
+                  <span v-else>every member needs link previews enabled.</span>
+                </div>
               </template>
             </div>
             <!-- Reaction pills: grouped by emoji; click toggles mine. A new pill
@@ -880,6 +956,7 @@ async function sendGif(gif: GifRef) {
               @submit="send"
               @edit-last="editLast"
               @escape="cancelEdit"
+              @files="stageFiles"
             />
           </div>
           <EmojiPicker gifs @pick="insertEmoji" @gif="sendGif" />

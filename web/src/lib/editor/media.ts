@@ -1,6 +1,7 @@
 import { Facet } from '@codemirror/state';
 import { WidgetType } from '@codemirror/view';
 import { clickToLoadEmbeds, clickToLoadImages } from '../privacy';
+import { mediaKind } from '../fileMeta';
 
 // Resolves an attachment id to a decrypted object URL (null = not found).
 export type AttachmentResolver = (id: string) => Promise<string | null>;
@@ -145,6 +146,18 @@ export class ImageWidget extends WidgetType {
     };
     if (this.src.startsWith('attachment:')) {
       const id = this.src.slice('attachment:'.length);
+      const kind = mediaKind(this.alt);
+      if (kind) {
+        // Audio/video attachment: a native inline player instead of an <img>.
+        const media = document.createElement(kind);
+        media.controls = true;
+        media.preload = 'metadata';
+        media.className = 'md-media';
+        media.setAttribute('aria-label', this.alt);
+        if (this.resolver) void this.resolver(id).then((url) => { if (url) media.src = url; });
+        wrap.append(media);
+        return wrap;
+      }
       if (this.resolver) {
         void this.resolver(id).then((url) => {
           if (url) img.src = url;

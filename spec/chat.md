@@ -379,7 +379,9 @@ On **desktop** there is **no visible Send button** — Enter sends, and an
 a **visible Send button** (paper-plane icon, disabled until there's text or a
 staged attachment) sits at the end of the composer row, since Enter inserts a
 newline there. The composer's other visible controls are attach (📎) and the
-emoji/GIF picker.
+emoji/GIF picker. The composer has browser **spell-check** enabled (via
+CodeMirror's `contentAttributes`, gated on `submit-on-enter`); the note editor
+stays spell-check-off.
 
 Messages already render through the same token renderer (`MarkdownView`), so a
 sent message renders with identical formatting to the live preview — no
@@ -428,12 +430,33 @@ a removable chip — image chips show a **thumbnail preview** (an object URL fro
 the original picked bytes, revoked on remove/send/unmount), others an icon and
 name. Picking files also **moves focus to the composer** so Enter sends rather
 than re-triggering the attach button. **Send** embeds the staged refs with the
-(optional) text.
+(optional) text. The same staging path is reached by **pasting** a file/image
+into the composer and by **dragging a file from the OS file manager** onto the
+conversation (a "Drop to attach" overlay covers the whole pane while dragging) —
+both call `stageFiles`.
 Rendering splits a message's refs (`ChatAttachments.vue`): images collapse into a
-single **image grid**, other files follow as download chips. Each blob is
-decrypted locally (`decryptAttachment` → `lib/attachments.ts`) to an object URL,
-so (like note attachments) there's **no remote fetch and no IP leak**. The
-per-file size cap mirrors the server's 32 MiB.
+single **image grid**, **audio/video** play inline (`ChatMedia.vue` — audio loads
+eagerly into a **custom themed player** (`AudioPlayer.vue`: hidden `<audio>` driven
+by JS, with the app's own play/pause + seek-bar styling, filename, and time, so it
+matches the theme instead of the browser's native chrome); video is
+**click-to-load**, since the whole blob must be decrypted before it can play. The
+clip shows a **correctly-sized poster** beforehand — a frame captured at upload
+(`videoPoster` in `lib/attachments.ts`), downscaled, encrypted as a **separate
+attachment** (`AttachmentRef.poster`, plus intrinsic `width`/`height` for the
+aspect ratio), and decrypted eagerly while the full clip waits for a click; once
+loaded it plays in a **custom themed `VideoPlayer.vue`** (no native chrome: a
+centered play button while paused so it doesn't read as a static image, plus a
+hover/paused bottom bar with play/pause, seek, time, and fullscreen). Legacy
+clips with no poster fall back to a chip), and other files follow as download
+chips.
+Each blob is decrypted locally (`decryptAttachment` → `lib/attachments.ts`) to an
+object URL, so (like note attachments) there's **no remote fetch and no IP leak**.
+Other files keep the server's **32 MiB** ceiling, but **images (measured after
+optimization) and videos are capped client-side at `MAX_MEDIA_BYTES` (20 MiB)**
+via `attachmentCap(type)` — so a huge source image isn't still a big file once
+re-encoded. (Videos aren't transcoded — in-browser transcoding is too heavy — so
+the cap is the only guard on their size; the server can't tell media from any
+other ciphertext blob, so this limit is necessarily client-side.)
 
 A message's images render as a wrapping, **equal-height strip**
 (`ChatImageGrid.vue`): every thumbnail shares a fixed height (`TILE_HEIGHT`) and
@@ -562,7 +585,12 @@ Messages use Discord-style **`:shortcode:`** syntax. The token renderer
 (`MdTokens.emojiText`) replaces a `:name:` run with an inline `<img.chat-emoji>`
 when `resolveEmoji(name)` matches; unknown shortcodes stay literal, and code
 spans/blocks are never substituted (so `` `:KEKW:` `` stays text). The set is
-global UI chrome, so notes render them too. `EmojiPicker.vue` is a searchable
+global UI chrome, so notes render them too. Hovering any emote **scales it ~2x
+in place** (a 0.1s ease-in-out transform). A message that is **nothing but
+emote(s)/emoji** — no other text, GIF, or attachment — renders **enlarged**
+(Discord-style jumbo); `isEmoteOnly` (in `lib/emoji`) detects it across
+resolvable shortcodes and unicode emoji (including ZWJ/skin-tone sequences).
+`EmojiPicker.vue` is a searchable
 two-tab popover; picking inserts at the composer caret via the editor's exposed
 `insertText`. Picking from any tab **records a use** (see Most-used ranking
 below), and a **Frequently used** row sits at the top of the picker while not
@@ -623,12 +651,25 @@ returned `LinkPreview {url,title,description,image,siteName}` inside the
 **encrypted** message payload (Signal-style) — so recipients render it from the
 decrypted payload and the server only ever saw the URL at proxy time. The
 preview image is a remote URL rendered with the usual **click-to-load**
-(`LinkPreviewCard.vue`).
+(`LinkPreviewCard.vue`). **This every-member gate exists because the og proxy is
+the one path that reveals a URL to the (self-hosted) server/admin** — not for
+recipient IP protection, which click-to-load already covers per viewer.
+
+**YouTube/Vimeo URLs are excluded from this proxy path entirely.** They render
+as **client-side embeds** (`MdTokens`/`EmbedFrame` via `parseVideoUrl`, building
+the `youtube-nocookie`/`player.vimeo` iframe from the client-parsed id), so they
+need no server fetch and leak nothing to the admin. They're gated solely on the
+separate, **personal** `clickToLoadEmbeds` setting (Settings → Privacy: "Video
+embeds") — independent of the every-member link-preview gate — so a video embed
+shows even when not everyone has opted into link previews. `send()` therefore
+skips `api.og()` for any URL `parseVideoUrl` recognizes.
 
 When previews are **not** allowed (not every member has them on) and a message
-contains a URL, the message renders a small grey **hint** where the preview would
-have been ("every member needs link previews enabled"), so it's clear why no card
-appears — distinct from a message that simply yielded no OG data.
+contains a **non-video** URL, the message renders a small grey **hint** where the
+preview would have been, with an inline **"Enable link previews"** button that
+flips the viewer's own setting (or, when they already have it on and it's other
+members blocking, a short note) — distinct from a message that simply yielded no
+OG data. Video URLs show their embed, so they get no hint.
 
 The proxy (`server/routes/og.ts`) is an **SSRF surface** and is guarded: http(s)
 only; the host must resolve to a **public** IP (loopback/private/link-local/

@@ -49,6 +49,31 @@ describe('newline breakout', () => {
     v.dispatch({ changes: { from: 6, insert: '\n' }, userEvent: 'input' });
     expect(v.state.doc.toString()).toBe('**bold**\n');
   });
+
+  // Regression: a caret *past* the close marker (after the colored text) is
+  // outside the span — Enter there must be a plain newline, not a split that
+  // strands a duplicate "</span>" and reopens an empty span on the next line.
+  const span = '<span style="color:var(--brand-purple)">text</span>';
+  it('inserts a plain newline after a color span (caret past </span>)', () => {
+    const v = makeEditor(span);
+    v.dispatch({ changes: { from: span.length, insert: '\n' }, userEvent: 'input' });
+    expect(v.state.doc.toString()).toBe(`${span}\n`);
+  });
+
+  it('relocates a newline from just before </span> to after it', () => {
+    const v = makeEditor(span);
+    v.dispatch({ changes: { from: span.length - '</span>'.length, insert: '\n' }, userEvent: 'input' });
+    expect(v.state.doc.toString()).toBe(`${span}\n`);
+  });
+
+  it('still splits the span when the newline lands mid-content', () => {
+    const v = makeEditor(span);
+    const mid = '<span style="color:var(--brand-purple)">te'.length;
+    v.dispatch({ changes: { from: mid, insert: '\n' }, userEvent: 'input' });
+    expect(v.state.doc.toString()).toBe(
+      '<span style="color:var(--brand-purple)">te</span>\n<span style="color:var(--brand-purple)">xt</span>',
+    );
+  });
 });
 
 describe('inListItem (chat composer Enter = continue list)', () => {
@@ -98,6 +123,23 @@ describe('backspace at the end of formatted text deletes a letter, not the marku
     const v = makeEditor('plain', 5);
     backspace(v); // smartBackspace returns false → default handles it (real editor)
     expect(v.state.doc.toString()).toBe('plain'); // unchanged here: no defaultKeymap in this test editor
+  });
+
+  // Leading edge: caret at the start of the colored text. A default backspace
+  // would delete the whole concealed open marker and orphan the </span>.
+  it('deletes the char before the span (not the open marker) at the start of colored text', () => {
+    const open = '<span style="color:var(--brand-purple)">';
+    const v = makeEditor(`abc${open}def</span>`, 3 + open.length); // caret at start of "def"
+    backspace(v);
+    expect(v.state.doc.toString()).toBe(`ab${open}def</span>`);
+  });
+
+  it('is a no-op (keeps the span intact) at the very start of the document', () => {
+    const open = '<span style="color:var(--brand-purple)">';
+    const doc = `${open}abc</span>`;
+    const v = makeEditor(doc, open.length); // caret at start of "abc", nothing before
+    backspace(v);
+    expect(v.state.doc.toString()).toBe(doc);
   });
 });
 

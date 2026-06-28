@@ -20,8 +20,15 @@ See [accounts-and-crypto.md](accounts-and-crypto.md) for the key model,
   show the **display name / public handle, never any login identifier** (matching
   the chat rule).
 - **Encrypted attachments** — a per-attachment key stored *inside* the encrypted
-  note payload (so sharing a note shares its attachments); images embed via
-  `attachment:` URLs. 32 MiB cap.
+  note payload (so sharing a note shares its attachments); all files embed via
+  `![name](attachment:id)`. Images render inline; **audio/video** (detected by
+  `mediaKind` from the name/type) render as inline `<audio>`/`<video>` players;
+  other files fall back to a missing-attachment label. Size cap is `attachmentCap`
+  (`lib/attachments.ts`): **20 MiB** for images (after optimization) and videos,
+  32 MiB for everything else. Files can be
+  added via the attach button (appended to the end), or by **pasting** / **drag-
+  and-dropping** from the OS file manager — the latter two insert the image
+  markup **at the caret** (the editor moves the caret to the drop point first).
 - **Version history** — the server snapshots ciphertext on update, coalesced to
   one per 10 min, max 50; restore from the History dialog.
 - **Offline editing** — an IndexedDB outbox flushed before sync; server-side
@@ -53,7 +60,10 @@ and export are unchanged.
   (intra-word `_` never italicizes; `\_` renders bare) — except that a `- ` at
   the start of a line freshly broken off a paragraph (Shift+Enter then `- `)
   shows its bullet **immediately**, even though CommonMark won't let the still-
-  empty item interrupt the paragraph until a character follows.
+  empty item interrupt the paragraph until a character follows. Bullet styling
+  requires the **hyphen *and* a space**: a bare `-` (which CommonMark parses as
+  an empty list at the document/section start) stays literal text until you type
+  the space, so the bullet never flashes in mid-type.
 - **Keyboard shortcuts** (Cmd / Ctrl), toggling on selection or at the caret:
   Bold `B`, Italic `I`, Underline `U`, Inline code `E`, Highlight `Shift+H`,
   Strikethrough `Shift+X`, Link `K` (prompt for URL), Heading `Shift+1..6` (same
@@ -62,7 +72,10 @@ and export are unchanged.
   Markdown escape hatch), **reading** (rendered, non-editable). The mode toggle
   sits top-right; Share / History / Attach / Delete live in a kebab (⋮) menu;
   the save indicator stays outside it. The selection/formatting toolbar (desktop
-  popover + mobile bar) shows in live-preview mode only.
+  popover + mobile bar) shows in live-preview mode only. **Reading mode renders
+  with `breaks`** (a single newline is a hard line break, like chat), so it keeps
+  the line breaks you typed instead of soft-wrapping them away. History previews
+  render the same way.
 - **Color formatting:** palette popover with 8 presets + a custom picker; every
   color stores a light- and dark-theme value (see [ui.md](ui.md) for the token
   mechanism). Highlight (background) colors use the same palette. Applying a
@@ -72,8 +85,9 @@ and export are unchanged.
   light mode, light grey in dark) in live + reading modes; click-to-reveal,
   Cmd/Ctrl+click to re-conceal. Spoilered images show the overlay with a
   centered "SPOILER" label.
-- **Images & embeds:** image attachments render inline (live + reading; raw
-  syntax in source). YouTube/Vimeo URLs render as **click-to-load** embeds (a
+- **Images, media & embeds:** image attachments render inline, and audio/video
+  attachments render as native inline players (live + reading; raw syntax in
+  source). YouTube/Vimeo URLs render as **click-to-load** embeds (a
   logo placeholder; no request leaves the client until clicked) — see
   [security.md](security.md) for the remote-media privacy model.
 - **Code blocks:** ` ``` ` fences become real embedded code editors — syntax
@@ -153,9 +167,9 @@ Settings toggle (`notes:optimize-images`, device-local). The stored
 `AttachmentRef` type/size reflect the optimized bytes, and when the format
 changes the **name extension is rewritten** to match (`photo.jpeg` → `photo.webp`
 via `nameForType`) so it never contradicts the actual bytes. The multi-file `attach()`
-loop is resilient: a client-side 32 MiB pre-check and per-file try/catch mean one
-bad file can't abort the batch or orphan earlier uploads; failures surface in a
-banner.
+loop is resilient: a client-side `attachmentCap` pre-check (20 MiB media / 32 MiB
+other) and per-file try/catch mean one bad file can't abort the batch or orphan
+earlier uploads; failures surface in a banner.
 
 No video uploads, no per-user storage quotas (deferred indefinitely).
 

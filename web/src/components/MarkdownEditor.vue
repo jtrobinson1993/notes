@@ -28,6 +28,8 @@ import {
   toggleStrike,
   toggleUnderline,
   inListItem,
+  hopPastTrailingCloseTags,
+  expandOverCoveredSpans,
 } from '../lib/editor/commands';
 import { getLastColor } from '../lib/editor/palette';
 import { detectEmojiTrigger } from '../lib/editor/emojiTrigger';
@@ -52,6 +54,9 @@ const emit = defineEmits<{
   editLast: [];
   /** composer-only: Esc pressed (e.g. cancel an in-progress edit) */
   escape: [];
+  /** Files pasted (any mode) or dropped (note mode — caret is moved to the drop
+   *  point first). The parent uploads + attaches them. */
+  files: [files: File[]];
 }>();
 
 const host = ref<HTMLDivElement>();
@@ -108,6 +113,9 @@ const submitKeymap = keymap.of([
   {
     key: 'Enter',
     run: (v) => {
+      // (Inside a list, markdown's own Prec.high keymap continues it before this
+      // runs; the close-tag hop is handled by closeTagHopKeymap above. This
+      // branch is the fallback if that keymap is ever absent.)
       if (inListItem(v.state)) return insertNewlineContinueMarkup(v);
       if (isMobile.value) return insertNewlineAndIndent(v);
       emit('submit');
@@ -129,6 +137,32 @@ const submitKeymap = keymap.of([
   // Esc bubbles up (e.g. to cancel an edit); doesn't block other Esc handling.
   { key: 'Escape', run: () => (emit('escape'), false) },
 ]);
+
+// Highest-precedence Enter fix-ups, applied before markdown's own Prec.high
+// list-continue / the default newline. Both reposition/grow the selection and
+// then return false so the normal newline runs from the corrected range:
+//   • Selection: if it fully covers a colored/bold/… span's content, grow it to
+//     swallow the markers too, so the newline doesn't strand empty `<span></span>`.
+//   • Caret in a list: hop past trailing inline close-tags so continuing the list
+//     doesn't split a "</span>" onto the new bullet. (A plain newline's
+//     close-tags are handled by newlineBreakout instead.)
+const closeTagHopKeymap = Prec.highest(
+  keymap.of([
+    {
+      key: 'Enter',
+      run: (v) => {
+        const r = v.state.selection.main;
+        if (!r.empty) {
+          const ex = expandOverCoveredSpans(v.state, r.from, r.to);
+          if (ex.from !== r.from || ex.to !== r.to) v.dispatch({ selection: { anchor: ex.from, head: ex.to } });
+        } else if (inListItem(v.state)) {
+          hopPastTrailingCloseTags(v);
+        }
+        return false;
+      },
+    },
+  ]),
+);
 
 const md = () =>
   markdown({ base: markdownLanguage, codeLanguages: languages, extensions: extendedSyntax });
@@ -327,10 +361,46 @@ onMounted(() => {
       extensions: [
         history(),
         autocompleteKeymap,
+        closeTagHopKeymap,
         ...(props.submitOnEnter ? [submitKeymap] : []),
         keymap.of([...formattingKeymap, ...defaultKeymap, ...historyKeymap]),
         modeCompartment.of(modeExtensions(props.mode ?? 'live')),
+        // Paste files anywhere; drop files in note mode (positions the caret at
+        // the drop point first). In chat mode, drop bubbles up to the
+        // conversation's own drop zone (which stages the attachment), so the
+        // editor only claims paste there.
+        EditorView.domEventHandlers({
+          paste: (event) => {
+            const list = event.clipboardData?.files;
+            if (!list || !list.length) return false;
+            event.preventDefault();
+            emit('files', Array.from(list));
+            return true;
+          },
+          dragover: (event) => {
+            if (props.submitOnEnter) return false;
+            if (event.dataTransfer?.types.includes('Files')) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'copy';
+              return true;
+            }
+            return false;
+          },
+          drop: (event, view) => {
+            if (props.submitOnEnter) return false;
+            const list = event.dataTransfer?.files;
+            if (!list || !list.length) return false;
+            event.preventDefault();
+            const at = view.posAtCoords({ x: event.clientX, y: event.clientY });
+            if (at != null) view.dispatch({ selection: { anchor: at } });
+            emit('files', Array.from(list));
+            return true;
+          },
+        }),
         editorTheme,
+        // Chat composer gets native browser spell-check (CodeMirror defaults the
+        // content element to spellcheck="false"); the note editor stays off.
+        ...(props.submitOnEnter ? [EditorView.contentAttributes.of({ spellcheck: 'true' })] : []),
         EditorView.lineWrapping,
         placeholder(props.placeholder ?? 'Write in Markdown…'),
         attachmentResolver.of(props.resolveAttachment ?? (() => Promise.resolve(null))),
