@@ -137,6 +137,10 @@ const EmbedFrame = defineComponent({
               class: 'embed-iframe',
               allow: 'accelerometer; encrypted-media; fullscreen; picture-in-picture',
               allowfullscreen: true,
+              // Send the origin (not full URL) despite the global
+              // Referrer-Policy: no-referrer, else YouTube/Vimeo reject the
+              // embed (YT "Error 153"). See media.ts buildEmbedPlaceholder.
+              referrerpolicy: 'strict-origin-when-cross-origin',
             })
           : h('button', {
               type: 'button',
