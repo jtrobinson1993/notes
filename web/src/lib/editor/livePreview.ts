@@ -697,12 +697,13 @@ const BREAKOUT_CONTAINERS = new Set([
   'Underline',
 ]);
 
-// Backspacing at the trailing edge of a formatted span (e.g. `<span…>…</span>`)
-// must not chew the concealed, atomic markers — which CodeMirror's default
-// backspace deletes whole, stripping the formatting and dumping raw markup. When
-// there's >1 content char, delete the last *letter* (keep the formatting); when
-// the last char would empty the span, delete the **whole construct** (both
-// markers go with it, so nothing is left orphaned).
+// Backspacing at the edge of a formatted span (e.g. `<span…>…</span>`) must not
+// chew the concealed, atomic markers — which CodeMirror's default backspace
+// deletes whole, stripping the formatting and dumping raw markup. At the
+// trailing edge: >1 content char → delete the last *letter* (keep formatting);
+// the last char would empty the span → delete the **whole construct**. At the
+// leading edge (caret at the start of the content): delete the character just
+// *before* the span instead of its open marker, keeping the span intact.
 const smartBackspace: Command = (view) => {
   const sel = view.state.selection.main;
   if (!sel.empty) return false;
@@ -719,6 +720,20 @@ const smartBackspace: Command = (view) => {
     }
     if (!open || !close || open === close) continue;
     const contentLen = close.from - open.to;
+    // Leading edge: caret right after the (concealed, atomic) open marker. Delete
+    // the character *before* the span, keeping the span — or no-op at the very
+    // start (nothing before), so the default can't delete the marker.
+    if (contentLen >= 1 && pos === open.to) {
+      if (open.from === 0) return true;
+      if (coveredByConcealed(view, open.from - 1, open.from)) return false; // nested marker — leave it
+      view.dispatch({
+        changes: { from: open.from - 1, to: open.from },
+        selection: EditorSelection.cursor(open.from - 1),
+        userEvent: 'delete.backward',
+        scrollIntoView: true,
+      });
+      return true;
+    }
     // Only act at the span's trailing edge: after the close marker, just before
     // it (visual end of content), or — when empty — the slot between the markers.
     const trailing = pos === c.to || pos === close.from || (contentLen === 0 && pos === open.to);

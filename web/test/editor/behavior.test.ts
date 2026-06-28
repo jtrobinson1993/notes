@@ -124,6 +124,23 @@ describe('backspace at the end of formatted text deletes a letter, not the marku
     backspace(v); // smartBackspace returns false → default handles it (real editor)
     expect(v.state.doc.toString()).toBe('plain'); // unchanged here: no defaultKeymap in this test editor
   });
+
+  // Leading edge: caret at the start of the colored text. A default backspace
+  // would delete the whole concealed open marker and orphan the </span>.
+  it('deletes the char before the span (not the open marker) at the start of colored text', () => {
+    const open = '<span style="color:var(--brand-purple)">';
+    const v = makeEditor(`abc${open}def</span>`, 3 + open.length); // caret at start of "def"
+    backspace(v);
+    expect(v.state.doc.toString()).toBe(`ab${open}def</span>`);
+  });
+
+  it('is a no-op (keeps the span intact) at the very start of the document', () => {
+    const open = '<span style="color:var(--brand-purple)">';
+    const doc = `${open}abc</span>`;
+    const v = makeEditor(doc, open.length); // caret at start of "abc", nothing before
+    backspace(v);
+    expect(v.state.doc.toString()).toBe(doc);
+  });
 });
 
 describe('spoiler reveal while the cursor is inside', () => {
