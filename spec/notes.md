@@ -72,7 +72,10 @@ and export are unchanged.
   Markdown escape hatch), **reading** (rendered, non-editable). The mode toggle
   sits top-right; Share / History / Attach / Delete live in a kebab (⋮) menu;
   the save indicator stays outside it. The selection/formatting toolbar (desktop
-  popover + mobile bar) shows in live-preview mode only.
+  popover + mobile bar) shows in live-preview mode only. **Reading mode renders
+  with `breaks`** (a single newline is a hard line break, like chat), so it keeps
+  the line breaks you typed instead of soft-wrapping them away. History previews
+  render the same way.
 - **Color formatting:** palette popover with 8 presets + a custom picker; every
   color stores a light- and dark-theme value (see [ui.md](ui.md) for the token
   mechanism). Highlight (background) colors use the same palette. Applying a

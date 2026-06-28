@@ -39,9 +39,9 @@ marked.use({
 });
 
 // Token stream rendered straight to VNodes (MdTokens) — no HTML string, no
-// v-html, no sanitizer to bypass. In `breaks` mode (chat messages) a single
-// newline becomes a hard break so multi-line messages keep their line breaks;
-// notes leave it off (standard markdown soft-wrap). The merge with
+// v-html, no sanitizer to bypass. In `breaks` mode (chat messages and note
+// reading view) a single newline becomes a hard break, so the rendered text
+// keeps the line breaks you typed instead of soft-wrapping. The merge with
 // `marked.defaults` preserves the registered highlight/spoiler extensions.
 const tokens = computed(() =>
   props.breaks

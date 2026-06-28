@@ -76,7 +76,7 @@ async function restore() {
               Restore
             </button>
           </div>
-          <MarkdownView :source="preview.payload.body" />
+          <MarkdownView :source="preview.payload.body" breaks />
           <p v-if="error" class="mt-2 text-sm text-red-600 dark:text-red-400">{{ error }}</p>
         </template>
         <p v-else class="text-sm text-zinc-400">Select a version to preview</p>

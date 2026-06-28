@@ -428,7 +428,9 @@ function fmtSize(bytes: number): string {
     </p>
 
     <div v-if="mode === 'reading'" class="min-h-0 grow overflow-y-auto">
-      <MarkdownView :source="body" :attachments="attachments" />
+      <!-- breaks: a single newline is a hard line break, so reading mode keeps
+           the line breaks you typed in the editor instead of soft-wrapping. -->
+      <MarkdownView :source="body" :attachments="attachments" breaks />
     </div>
     <div v-else class="min-h-0 grow">
       <MarkdownEditor
