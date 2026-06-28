@@ -233,15 +233,32 @@ html.vt-exclude-root {
 
 /* Minimal typography for rendered Markdown */
 .md-preview {
-  @apply text-[15px] leading-relaxed;
+  /* line-height matches the live editor's .cm-content (1.65) so switching
+     Live ↔ Reading doesn't shift the text. */
+  @apply text-[15px] leading-[1.65];
 }
 .md-preview h1 { @apply mt-6 mb-3 text-2xl font-bold; }
 .md-preview h2 { @apply mt-5 mb-2 text-xl font-semibold; }
 .md-preview h3 { @apply mt-4 mb-2 text-lg font-semibold; }
 .md-preview p { @apply my-2; }
-.md-preview ul { @apply my-2 list-disc pl-6; }
+.md-preview ul { @apply my-2 list-none pl-6; }
 .md-preview ol { @apply my-2 list-decimal pl-6; }
-.md-preview li { @apply my-0.5; }
+.md-preview li { @apply my-0; }
+/* Reading-mode bullet: match the live editor's dot (.cm-live-bullet) — a 0.5em
+   zinc-400 circle — instead of the smaller, text-colored native disc. */
+.md-preview ul > li { position: relative; }
+.md-preview ul > li::before {
+  content: '';
+  position: absolute;
+  left: -1em;
+  top: calc((1lh - 0.5em) / 2);
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 9999px;
+  background: var(--color-zinc-400);
+}
+/* task items show a checkbox, not a bullet */
+.md-preview ul > li:has(> input[type='checkbox'])::before { content: none; }
 .md-preview a { @apply text-blue-600 underline dark:text-blue-400; }
 .md-preview blockquote { @apply my-2 border-l-4 border-zinc-300 pl-3 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400; }
 .md-preview code { @apply rounded bg-zinc-200 px-1 py-0.5 font-mono text-[13px] dark:bg-zinc-800; }
