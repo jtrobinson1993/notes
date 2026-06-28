@@ -60,7 +60,9 @@ export function buildCsp(config: Config, scriptHashes: string[]): string {
     `media-src 'self' blob:`,
     `worker-src 'self'`,
     `manifest-src 'self'`,
-    `frame-src 'none'`,
+    // Video embeds: the click-to-load player iframes the privacy-friendly
+    // YouTube and Vimeo origins (see web/src/lib/editor/media.ts embedSrc).
+    `frame-src https://www.youtube-nocookie.com https://player.vimeo.com`,
     `object-src 'none'`,
     `form-action 'self'`,
     `frame-ancestors 'none'`,
