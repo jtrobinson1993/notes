@@ -70,7 +70,10 @@ export async function encryptAndUploadFile(file: File): Promise<AttachmentRef> {
 async function videoPoster(
   file: File,
 ): Promise<{ width: number; height: number; bytes: Uint8Array } | null> {
-  const url = URL.createObjectURL(file);
+  // Re-wrap the bytes in a Blob (not the raw File) so the object URL never
+  // inherits an attacker-controlled MIME type from the upload — same pattern as
+  // every other attachment object URL, and it loads only into a <video>.
+  const url = URL.createObjectURL(new Blob([await file.arrayBuffer()], { type: file.type }));
   const video = document.createElement('video');
   video.muted = true;
   video.preload = 'auto';
