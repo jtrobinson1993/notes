@@ -46,6 +46,30 @@ function wrapClosePos(state: EditorState, from: number, to: number): number {
   return pos;
 }
 
+/** Keep a wrap range from snapping *into* an adjacent existing `ColorSpan`. The
+ *  concealed open/close markers are zero-width, so a visual selection next to a
+ *  colored run can land on the run's marker (its content edge); wrapping that
+ *  would swallow the marker and recolor the neighbour. Pull each endpoint back
+ *  outside any span it only partially covers from the outside. */
+function clampOutOfAdjacentSpans(state: EditorState, from: number, to: number): { from: number; to: number } {
+  const tree = syntaxTree(state);
+  // `to` landed inside a span that starts at/after `from` → end before it.
+  for (let n: SyntaxNode | null = tree.resolveInner(to, -1); n; n = n.parent) {
+    if (n.name === 'ColorSpan' && from <= n.from && n.from < to && to < n.to) {
+      to = n.from;
+      break;
+    }
+  }
+  // `from` landed inside a span that ends at/before `to` → start after it.
+  for (let n: SyntaxNode | null = tree.resolveInner(from, 1); n; n = n.parent) {
+    if (n.name === 'ColorSpan' && n.to <= to && from < n.to && n.from < from) {
+      from = n.to;
+      break;
+    }
+  }
+  return { from, to };
+}
+
 function findEnclosing(state: EditorState, name: string, from: number, to: number): SyntaxNode | null {
   let node: SyntaxNode | null = syntaxTree(state).resolveInner(from, 1);
   for (let p: SyntaxNode | null = node; p; p = p.parent) {
@@ -183,23 +207,26 @@ export function applyColor(view: EditorView, css: string): boolean {
     // and valid — instead of a single span that strands raw <span>/</span> tags
     // across the items. Per line the wrap also skips leading list/quote markup.
     const state = view.state;
+    // Keep the selection from snapping onto a neighbouring colored run's
+    // concealed (zero-width) marker, which would swallow it and recolor it.
+    const span = clampOutOfAdjacentSpans(state, range.from, range.to);
     const stripped: { from: number; to: number; insert: string }[] = [];
     syntaxTree(state).iterate({
-      from: range.from,
-      to: range.to,
+      from: span.from,
+      to: span.to,
       enter: (n) => {
-        if (n.name === 'ColorSpan' && n.from >= range.from && n.to <= range.to) {
+        if (n.name === 'ColorSpan' && n.from >= span.from && n.to <= span.to) {
           for (const m of markerChildren(n.node)) stripped.push({ from: m.from, to: m.to, insert: '' });
         }
       },
     });
     const wraps: { from: number; to: number }[] = [];
-    const firstLine = state.doc.lineAt(range.from).number;
-    const lastLine = state.doc.lineAt(range.to).number;
+    const firstLine = state.doc.lineAt(span.from).number;
+    const lastLine = state.doc.lineAt(span.to).number;
     for (let ln = firstLine; ln <= lastLine; ln++) {
       const line = state.doc.line(ln);
-      const from = Math.max(range.from, lineContentStart(state, line.from));
-      const to = Math.min(range.to, line.to);
+      const from = Math.max(span.from, lineContentStart(state, line.from));
+      const to = Math.min(span.to, line.to);
       if (to > from) wraps.push({ from, to });
     }
     if (wraps.length) {
