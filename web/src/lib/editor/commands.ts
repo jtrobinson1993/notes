@@ -78,22 +78,31 @@ function findEnclosing(state: EditorState, name: string, from: number, to: numbe
   return null;
 }
 
-// Trailing inline close-tags (one or more `</span>` / `</u>`) that our editor
-// writes; matched against the text from the caret to end of line.
-const TRAILING_CLOSE_TAGS = /^(?:<\/span>|<\/u>)+$/;
-
-/** If the empty caret sits immediately before a run of inline close-tags that
- *  ends its line, move it past them (to the line end). Returns whether it moved.
- *  Called before a newline-inserting Enter so the close-tags stay on the current
- *  line instead of being split onto the new one — which would break the
- *  color/underline (e.g. a stray `</span>` starting the next list item). Always
- *  a no-op when the caret isn't right before such a trailing run. */
+/** If everything from the caret to the end of its line is concealed inline
+ *  markup — a span/underline/emphasis `*Tag`/`*Mark`, with the caret possibly
+ *  part-way through one (a click can land the caret inside a concealed, atomic
+ *  close tag) — move the caret to the line end. Returns whether it moved.
+ *  Called before a list-continuing Enter so the newline can't split a marker or
+ *  strand the close tags on the new item (which orphans the color/underline).
+ *  A no-op when real content sits between the caret and the line end. */
 export function hopPastTrailingCloseTags(view: EditorView): boolean {
   const r = view.state.selection.main;
   if (!r.empty) return false;
   const line = view.state.doc.lineAt(r.head);
-  const rest = view.state.doc.sliceString(r.head, line.to);
-  if (!rest || !TRAILING_CLOSE_TAGS.test(rest)) return false;
+  if (r.head >= line.to) return false;
+  const tree = syntaxTree(view.state);
+  let pos = r.head;
+  while (pos < line.to) {
+    let marker: SyntaxNode | null = null;
+    for (let n: SyntaxNode | null = tree.resolveInner(pos, 1); n; n = n.parent) {
+      if (/(Mark|Tag)$/.test(n.name) && n.from <= pos && n.to > pos) {
+        marker = n;
+        break;
+      }
+    }
+    if (!marker) return false; // real content before the line end → don't hop
+    pos = marker.to;
+  }
   view.dispatch({ selection: { anchor: line.to } });
   return true;
 }

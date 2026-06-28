@@ -113,11 +113,31 @@ describe('Enter over selected colored text removes the span markers', () => {
 });
 
 describe('Enter in a colored list item keeps the close tag on the item', () => {
-  it('continues the list without splitting </span> onto the new bullet', () => {
-    const doc = '- <span style="color:var(--brand-green)">two</span>';
-    const v = mk(doc, doc.length - '</span>'.length, doc.length - '</span>'.length);
+  const doc = '- <span style="color:var(--brand-green)">two</span>';
+  const press = (v: ReturnType<typeof mk>) => {
     v.focus();
     v.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  };
+
+  it('continues the list without splitting </span> onto the new bullet', () => {
+    const at = doc.length - '</span>'.length; // caret before </span>
+    const v = mk(doc, at, at);
+    press(v);
+    expect(v.state.doc.toString()).toBe('- <span style="color:var(--brand-green)">two</span>\n- ');
+    expect(literalSpanTags(v)).toBe(0);
+  });
+
+  it('also works when the caret lands inside the concealed close tag', () => {
+    const at = doc.length - '</span>'.length + 1; // caret one char into </span>
+    const v = mk(doc, at, at);
+    press(v);
+    expect(v.state.doc.toString()).toBe('- <span style="color:var(--brand-green)">two</span>\n- ');
+    expect(literalSpanTags(v)).toBe(0);
+  });
+
+  it('also works at the true line end (after the close tag)', () => {
+    const v = mk(doc, doc.length, doc.length);
+    press(v);
     expect(v.state.doc.toString()).toBe('- <span style="color:var(--brand-green)">two</span>\n- ');
     expect(literalSpanTags(v)).toBe(0);
   });
