@@ -182,13 +182,39 @@ export function applyColor(view: EditorView, css: string): boolean {
   const open = `<span style="color:${css}">`;
   const enclosing = findEnclosing(view.state, 'ColorSpan', range.from, range.to);
   if (enclosing) {
-    // recolor in place: swap the open tag's style (selection maps through)
-    const openTag = markerChildren(enclosing)[0];
-    if (openTag) {
-      view.dispatch({
-        changes: { from: openTag.from, to: openTag.to, insert: open },
-        userEvent: 'input.format',
-      });
+    const marks = markerChildren(enclosing);
+    const openMark = marks[0];
+    const closeMark = marks[marks.length - 1];
+    if (openMark && closeMark && openMark !== closeMark) {
+      if (range.empty || (range.from <= openMark.to && range.to >= closeMark.from)) {
+        // A caret inside the run, or a selection covering all of it → recolor the
+        // whole run by swapping its open tag's color (selection maps through).
+        view.dispatch({
+          changes: { from: openMark.from, to: openMark.to, insert: open },
+          userEvent: 'input.format',
+        });
+      } else {
+        // A partial selection inside the run → split it, so only the selected
+        // letters take the new color and the rest keep the original.
+        const doc = view.state.doc;
+        const origOpen = doc.sliceString(openMark.from, openMark.to);
+        const selFrom = Math.max(openMark.to, range.from);
+        const selTo = Math.min(closeMark.from, range.to);
+        const before = doc.sliceString(openMark.to, selFrom);
+        const middle = doc.sliceString(selFrom, selTo);
+        const after = doc.sliceString(selTo, closeMark.from);
+        const rebuilt =
+          (before ? `${origOpen}${before}</span>` : '') +
+          `${open}${middle}</span>` +
+          (after ? `${origOpen}${after}</span>` : '');
+        const midStart =
+          enclosing.from + (before ? origOpen.length + before.length + '</span>'.length : 0) + open.length;
+        view.dispatch({
+          changes: { from: enclosing.from, to: enclosing.to, insert: rebuilt },
+          selection: { anchor: midStart, head: midStart + middle.length },
+          userEvent: 'input.format',
+        });
+      }
     }
   } else if (range.empty) {
     // cursor lands inside the empty span so typed text is colored

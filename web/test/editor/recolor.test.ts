@@ -38,6 +38,43 @@ describe('coloring next to an existing colored run keeps them separate', () => {
     expect(v.state.doc.toString()).toBe(`ab${C(gv, 'c')}${C(rv, 'def')}`);
   });
 
+  it('selecting middle letters of a colored word recolors only those (splits the run)', () => {
+    const v = mk(C(rv, 'abcdef'));
+    const cs = tag(rv).length; // content start
+    sel(v, cs + 2, cs + 4); // "cd"
+    applyColor(v, gv);
+    expect(v.state.doc.toString()).toBe(`${C(rv, 'ab')}${C(gv, 'cd')}${C(rv, 'ef')}`);
+  });
+
+  it('selecting the leading letters splits without an empty span', () => {
+    const v = mk(C(rv, 'abcdef'));
+    const cs = tag(rv).length;
+    sel(v, cs, cs + 2); // "ab"
+    applyColor(v, gv);
+    expect(v.state.doc.toString()).toBe(`${C(gv, 'ab')}${C(rv, 'cdef')}`);
+  });
+
+  it('selecting the trailing letters splits without an empty span', () => {
+    const v = mk(C(rv, 'abcdef'));
+    const cs = tag(rv).length;
+    sel(v, cs + 4, cs + 6); // "ef"
+    applyColor(v, gv);
+    expect(v.state.doc.toString()).toBe(`${C(rv, 'abcd')}${C(gv, 'ef')}`);
+  });
+
+  it('selecting the whole run (or a caret inside) recolors all of it', () => {
+    const cs = tag(rv).length;
+    const whole = mk(C(rv, 'abcdef'));
+    sel(whole, cs, cs + 6);
+    applyColor(whole, gv);
+    expect(whole.state.doc.toString()).toBe(C(gv, 'abcdef'));
+
+    const caret = mk(C(rv, 'abcdef'));
+    sel(caret, cs + 3, cs + 3);
+    applyColor(caret, gv);
+    expect(caret.state.doc.toString()).toBe(C(gv, 'abcdef'));
+  });
+
   it('every letter of a word can be a different color', () => {
     // Use X/Y/Z (absent from the lowercase markup) so indexOf finds the content.
     const v = mk('XYZ');
