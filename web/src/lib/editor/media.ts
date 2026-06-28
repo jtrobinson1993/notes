@@ -63,6 +63,10 @@ export function buildEmbedPlaceholder(embed: VideoEmbed): HTMLElement {
     iframe.className = 'embed-iframe';
     iframe.allow = 'accelerometer; encrypted-media; fullscreen; picture-in-picture';
     iframe.allowFullscreen = true;
+    // The app sends Referrer-Policy: no-referrer globally, but YouTube/Vimeo
+    // reject the embed (YT "Error 153") unless they can see the embedding
+    // origin. Override per-iframe to send the origin only (not the full URL).
+    iframe.referrerPolicy = 'strict-origin-when-cross-origin';
     wrap.replaceChildren(iframe);
     wrap.classList.add('embed-loaded');
   };
