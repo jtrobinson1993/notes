@@ -414,7 +414,113 @@ const deleteToLineEnd: Command = (view) => {
   return true;
 };
 
+// ---- list indent / outdent (Tab / Shift-Tab) ------------------------------
+// Tab in a list item nests it one level deeper (a sublist); Shift-Tab lifts it
+// back out. Outside a list both fall through (Tab keeps its normal focus-move
+// behaviour). Indentation is plain spaces; the offset of a nested item matches
+// its parent's content column so CommonMark actually parses it as a sublist.
+
+const LIST_MARKER_RE = /^([ \t]*)((?:[-*+]|\d{1,9}[.)]))([ \t]+)/;
+interface ListInfo {
+  indent: number;
+  markerWidth: number;
+}
+function listInfo(text: string): ListInfo | null {
+  const m = LIST_MARKER_RE.exec(text);
+  return m ? { indent: m[1]!.length, markerWidth: m[2]!.length + m[3]!.length } : null;
+}
+function leadingWs(text: string): number {
+  return /^[ \t]*/.exec(text)![0].length;
+}
+
+/** Shift the caret/selected list item(s) — and any deeper-indented descendant
+ *  lines that hang off them — left or right by `delta` columns of space. A
+ *  uniform shift preserves every parent↔child indent difference, so a whole
+ *  subtree moves as one. Always consumes the key (returns true) once we've
+ *  decided this is a list edit, even when the clamp makes it a no-op. */
+function reindentListLines(view: EditorView, delta: number): boolean {
+  if (delta === 0) return true;
+  const { state } = view;
+  const range = state.selection.main;
+  const firstLineNo = state.doc.lineAt(range.from).number;
+  const lastSel = state.doc.lineAt(range.to);
+  // Extend past the selection over contiguous deeper-indented lines (the last
+  // item's subtree) so children move with their parent. Stops at a blank line.
+  const tailIndent = listInfo(lastSel.text)?.indent ?? leadingWs(lastSel.text);
+  let lastLineNo = lastSel.number;
+  for (let n = lastSel.number + 1; n <= state.doc.lines; n++) {
+    const text = state.doc.line(n).text;
+    if (text.trim() === '' || leadingWs(text) <= tailIndent) break;
+    lastLineNo = n;
+  }
+  const changes: { from: number; to?: number; insert?: string }[] = [];
+  for (let n = firstLineNo; n <= lastLineNo; n++) {
+    const line = state.doc.line(n);
+    if (line.text.trim() === '') continue; // never strand trailing space on blanks
+    if (delta > 0) {
+      changes.push({ from: line.from, insert: ' '.repeat(delta) });
+    } else {
+      const remove = Math.min(-delta, leadingWs(line.text));
+      if (remove > 0) changes.push({ from: line.from, to: line.from + remove });
+    }
+  }
+  if (!changes.length) return true;
+  view.dispatch(state.update({ changes, userEvent: delta > 0 ? 'input.indent' : 'delete.dedent' }));
+  return true;
+}
+
+/** Tab: nest the current list item under the preceding item (its sibling), so
+ *  its marker lands at that item's content column. A no-op at the first item of
+ *  a list (nothing to nest under) or when already maximally nested. */
+export const indentListItem: Command = (view) => {
+  const { state } = view;
+  const firstLine = state.doc.lineAt(state.selection.main.from);
+  const info = listInfo(firstLine.text);
+  if (!info) return false; // not a list line → leave Tab to its normal behaviour
+  // The would-be parent: nearest preceding list line at the same-or-shallower
+  // indent. Skip blanks; a non-list paragraph ends the list context.
+  let parent: ListInfo | null = null;
+  for (let n = firstLine.number - 1; n >= 1; n--) {
+    const text = state.doc.line(n).text;
+    if (text.trim() === '') continue;
+    const li = listInfo(text);
+    if (!li) break;
+    if (li.indent <= info.indent) {
+      parent = li;
+      break;
+    }
+  }
+  if (!parent) return true; // first item of its list → consume, nothing to do
+  const delta = parent.indent + parent.markerWidth - info.indent;
+  if (delta <= 0) return true; // already nested as deep as this parent allows
+  return reindentListLines(view, delta);
+};
+
+/** Shift-Tab: lift the current list item out to the nearest shallower ancestor's
+ *  indent (or to the left margin). A no-op when already at the top level. */
+export const outdentListItem: Command = (view) => {
+  const { state } = view;
+  const firstLine = state.doc.lineAt(state.selection.main.from);
+  const info = listInfo(firstLine.text);
+  if (!info) return false;
+  if (info.indent === 0) return true; // top level → consume, nothing to do
+  let target = 0;
+  for (let n = firstLine.number - 1; n >= 1; n--) {
+    const text = state.doc.line(n).text;
+    if (text.trim() === '') continue;
+    const li = listInfo(text);
+    if (!li) break;
+    if (li.indent < info.indent) {
+      target = li.indent;
+      break;
+    }
+  }
+  return reindentListLines(view, target - info.indent);
+};
+
 export const formattingKeymap: KeyBinding[] = [
+  { key: 'Tab', run: indentListItem },
+  { key: 'Shift-Tab', run: outdentListItem },
   { key: 'Mod-b', run: toggleBold, preventDefault: true },
   { key: 'Mod-i', run: toggleItalic, preventDefault: true },
   { key: 'Mod-u', run: toggleUnderline, preventDefault: true },
