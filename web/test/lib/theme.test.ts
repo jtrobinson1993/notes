@@ -5,6 +5,8 @@ beforeEach(() => {
   localStorage.clear();
   document.documentElement.className = '';
   delete document.documentElement.dataset.theme;
+  document.head.querySelector('meta[name="theme-color"]')?.remove();
+  document.body.removeAttribute('style');
 });
 
 describe('theme mode', () => {
@@ -41,5 +43,31 @@ describe('palette', () => {
   it('rejects an unknown palette value', () => {
     localStorage.setItem('notes:palette', 'neon');
     expect(getPalette()).toBe('brand');
+  });
+});
+
+describe('theme-color meta (status-bar / notch chrome)', () => {
+  it('syncs the meta to the resolved page background on a theme change', () => {
+    const meta = document.createElement('meta');
+    meta.setAttribute('name', 'theme-color');
+    meta.setAttribute('content', '#fafafa');
+    document.head.appendChild(meta);
+    // jsdom's getComputedStyle reflects inline styles, standing in for the
+    // theme's body background.
+    document.body.style.backgroundColor = 'rgb(9, 9, 11)';
+
+    setTheme('dark');
+    expect(meta.getAttribute('content')).toBe('rgb(9, 9, 11)');
+  });
+
+  it('leaves the pre-paint value untouched when the background is transparent', () => {
+    const meta = document.createElement('meta');
+    meta.setAttribute('name', 'theme-color');
+    meta.setAttribute('content', '#fafafa');
+    document.head.appendChild(meta);
+    // No background applied yet (stylesheet not loaded) → transparent.
+
+    setPalette('pastel');
+    expect(meta.getAttribute('content')).toBe('#fafafa');
   });
 });

@@ -157,7 +157,15 @@ body {
    bar / home indicator). `viewport-fit=cover` + the translucent iOS status bar
    make the webview full-bleed, so the chrome pads itself; the body background
    (theme-aware) shows through the insets. Zero on devices without safe areas
-   (desktop), so it's inert there. */
+   (desktop), so it's inert there.
+
+   CAUTION: this is *unlayered* CSS, so it overrides Tailwind padding utilities
+   (which live in the `utilities` cascade layer) regardless of source order. Put
+   it on an element WITHOUT a `p-*`/`px-*` class, or that class's padding is
+   silently dropped to the bare (≈0 on the sides) insets. Where an element needs
+   both a base padding AND the insets, use `p-… pt-[max(…,env(safe-area-inset-
+   top))] …` longhands instead of this class (see SettingsPage's mobile
+   section). */
 .app-safe {
   padding-top: env(safe-area-inset-top);
   padding-right: env(safe-area-inset-right);

@@ -13,10 +13,14 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
-    <!-- Theme-color tracks the app's light/dark themes so the mobile browser /
-         status-bar chrome matches (light: zinc-50, dark: zinc-950). -->
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b" />
+    <!-- Theme-color paints the mobile browser / status-bar chrome (and the area
+         behind the notch in the installed PWA) to match the app background. A
+         single tag whose content the app drives from the *resolved* theme (mode
+         × palette), set pre-paint below and kept in sync by lib/theme.ts — a
+         media-query pair can't express it, since the chosen mode (light/dark)
+         can differ from the OS preference and each palette has its own page
+         colour. Initial value is the brand-light page colour. -->
+    <meta name="theme-color" content="#fafafa" />
     <!-- Installable PWA: launch chrome-less on Android (mobile-web-app-capable)
          and iOS (apple-*), with an edge-to-edge translucent iOS status bar that
          pairs with viewport-fit=cover + the safe-area insets in style.css. -->
@@ -42,7 +46,14 @@
           var dark = m === 'dark' || (m !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
           d.classList.toggle('dark', dark);
           var p = localStorage.getItem('notes:palette');
-          d.dataset.theme = p === 'pastel' || p === 'high-contrast' ? p : 'brand';
+          var pal = p === 'pastel' || p === 'high-contrast' ? p : 'brand';
+          d.dataset.theme = pal;
+          // Match the status-bar / notch chrome to the page colour before paint
+          // (each palette's zinc-50 light / zinc-950 dark page background); the
+          // running app re-reads the computed colour in lib/theme.ts.
+          var bg = { brand: ['#fafafa', '#09090b'], pastel: ['#eff1f5', '#181926'], 'high-contrast': ['#ffffff', '#000000'] };
+          var tc = document.querySelector('meta[name="theme-color"]');
+          if (tc) tc.setAttribute('content', bg[pal][dark ? 1 : 0]);
         } catch (e) {}
       })();
     </script>

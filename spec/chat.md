@@ -321,9 +321,17 @@ protocol ping/pong).
 - **Stick-to-bottom:** opening a chat (and any new message while already at the
   bottom) scrolls to the latest message. Because images and avatars **decrypt
   asynchronously** and only mount — growing the scroll height — *after* that first
-  scroll, a `ResizeObserver` on the message-list content re-pins to the bottom as
-  the height settles. It's gated on a `pinned` flag (set from the scroll position),
-  so a user who has scrolled up is never yanked back down.
+  scroll, a `ResizeObserver` re-pins to the bottom as the height settles. It
+  observes **both** the message-list content (late async growth) **and the
+  scroller itself** (so the bottom stays in view when the viewport shrinks — e.g.
+  the on-screen keyboard opening on mobile). It's gated on a `pinned` flag (set
+  from the scroll position), so a user who has scrolled up is never yanked back
+  down (and on a keyboard-open they're left where they were reading). The
+  scroller sets **`overflow-anchor: none`** so the app owns scroll position
+  outright: the browser's scroll anchoring otherwise adjusts `scrollTop`
+  mid-image-load and fires spurious scroll events that flip `pinned` off, which
+  used to leave a chat settled just above the latest message after images
+  decoded.
 
 ### Security decisions from review
 
@@ -378,7 +386,10 @@ On **desktop** there is **no visible Send button** — Enter sends, and an
 `sr-only` submit button remains for screen-reader/keyboard users. On **mobile**
 a **visible Send button** (paper-plane icon, disabled until there's text or a
 staged attachment) sits at the end of the composer row, since Enter inserts a
-newline there. The composer's other visible controls are attach (📎) and the
+newline there. It uses **`@mousedown.prevent`** so tapping it never blurs the
+editor, and `send` re-asserts `composer.focus()` after clearing the text — so the
+**on-screen keyboard stays open** for a follow-up message instead of dismissing
+after every send. The composer's other visible controls are attach (📎) and the
 emoji/GIF picker. The composer has browser **spell-check** enabled (via
 CodeMirror's `contentAttributes`, gated on `submit-on-enter`); the note editor
 stays spell-check-off.

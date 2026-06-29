@@ -85,14 +85,18 @@ function clearStaged() {
 // the robust counterpart to scrollToBottom's one-shot image-wait, since chat
 // images and avatars decrypt asynchronously and only mount (growing the height)
 // after the initial scroll. Gated on `pinned` so a user who scrolled up is never
-// yanked down.
+// yanked down. We also observe the *scroller* itself, not just its content, so
+// the bottom stays in view when the viewport shrinks — e.g. the on-screen
+// keyboard opening on mobile (a user reading older history is left where they
+// were, since they're not pinned).
 let contentObserver: ResizeObserver | null = null;
 onMounted(() => {
-  if (!content.value || typeof ResizeObserver === 'undefined') return;
+  if (typeof ResizeObserver === 'undefined') return;
   contentObserver = new ResizeObserver(() => {
     if (pinned.value && scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight;
   });
-  contentObserver.observe(content.value);
+  if (content.value) contentObserver.observe(content.value);
+  if (scroller.value) contentObserver.observe(scroller.value);
 });
 
 onBeforeUnmount(() => {
@@ -534,6 +538,11 @@ async function send() {
     text.value = '';
     clearStaged();
     replyingTo.value = null;
+    // Keep the composer focused so the mobile keyboard stays up for a follow-up
+    // message instead of dismissing after every send. The Send button itself
+    // uses `@mousedown.prevent` so tapping it never blurs the editor to begin
+    // with; this re-asserts focus in case clearing the text dropped it.
+    composer.value?.focus();
     await scrollToBottom();
   } finally {
     sending.value = false;
@@ -672,7 +681,17 @@ async function sendGif(gif: GifRef) {
         </button>
       </div>
 
-      <div ref="scroller" class="min-h-0 grow overflow-y-auto" :class="isMobile ? 'pt-2' : 'py-2'" @scroll="onScroll">
+      <!-- overflow-anchor:none: we own scroll position explicitly (stick-to-bottom
+           re-pin, infinite-scroll prepend adjust). The browser's scroll anchoring
+           otherwise fights those — adjusting scrollTop mid-image-load and firing
+           spurious scroll events that flip `pinned` off, so a chat would sometimes
+           settle just above the latest message after images decoded. -->
+      <div
+        ref="scroller"
+        class="min-h-0 grow overflow-y-auto [overflow-anchor:none]"
+        :class="isMobile ? 'pt-2' : 'py-2'"
+        @scroll="onScroll"
+      >
         <!-- Content wrapper (min-h-full so the empty/loading states still center)
              whose height a ResizeObserver watches — re-pinning to the bottom as
              late async content (decrypted images, avatars, link previews) grows
@@ -970,6 +989,7 @@ async function sendGif(gif: GifRef) {
             title="Send message"
             aria-label="Send message"
             class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-blue-600 hover:bg-zinc-200/70 disabled:opacity-40 dark:text-blue-400 dark:hover:bg-zinc-700/70"
+            @mousedown.prevent
             @click="send"
           >
             <IconSend class="h-5 w-5" />

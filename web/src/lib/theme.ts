@@ -38,6 +38,23 @@ function apply(): void {
   const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.classList.toggle('dark', dark);
   document.documentElement.dataset.theme = getPalette();
+  syncThemeColor();
+}
+
+// Paint the mobile status-bar / notch chrome (the `theme-color` meta) to match
+// the page background of the *resolved* theme (mode × palette). The pre-paint
+// script in index.html sets an initial value; here we read the actual computed
+// background so it stays correct for every palette without duplicating the
+// hexes. Runs after the class/attribute swap above so the computed value
+// reflects the new theme.
+function syncThemeColor(): void {
+  if (typeof document === 'undefined') return;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (!meta || typeof getComputedStyle === 'undefined') return;
+  const bg = getComputedStyle(document.body).backgroundColor;
+  // Skip transparent/empty (stylesheet not applied yet on first paint) so we
+  // never clobber the pre-paint value in index.html with see-through chrome.
+  if (bg && bg !== 'transparent' && !bg.startsWith('rgba(0, 0, 0, 0')) meta.setAttribute('content', bg);
 }
 
 export function initTheme(): void {
