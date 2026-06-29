@@ -27,6 +27,14 @@ export function trackViewportHeight(): void {
   const update = (): void => {
     const h = vv?.height ?? window.innerHeight;
     root.style.setProperty('--app-height', `${Math.round(h)}px`);
+    // iOS Safari scrolls the *document* to lift a focused input above the
+    // keyboard. Because the shell is already sized to the visual viewport
+    // (height above), the input is on-screen anyway, so that scroll only shoves
+    // the whole app up by ~the keyboard height — stranding the user away from
+    // where they were reading in the chat. The app shell never legitimately
+    // scrolls the document (every pane scrolls its own overflow container), so
+    // pin it back to the top; each pane then keeps its own scroll position.
+    if (window.scrollY !== 0) window.scrollTo(0, 0);
   };
 
   update();

@@ -13,6 +13,17 @@ Both are **device-local** (localStorage `notes:theme`, `notes:palette`), not
 synced, and applied **pre-paint** by a small inline `<head>` script so dark /
 high-contrast never flash white on load.
 
+The same axes also drive the **`theme-color` meta**, so the mobile browser
+status bar (and the area **behind the notch** in the installed PWA) is painted
+the app's page background rather than a fixed pair of light/dark values. It's a
+single tag — a `media`-query pair can't express it, since the chosen mode can
+differ from the OS preference and each palette has its own page colour. The
+pre-paint script seeds it from a small mode×palette hex map; once running,
+`lib/theme.ts` (`apply` → `syncThemeColor`) re-reads the **computed** body
+background after each theme change so it stays correct for every palette without
+duplicating the hexes (transparent values — before the stylesheet applies — are
+skipped so the pre-paint value isn't clobbered).
+
 ### Palettes swap the token layer, not components
 
 Each `data-theme` block redefines the `--brand-*` note colors **and the
@@ -187,6 +198,15 @@ The rail (`AppSidebar`) is a fixed `w-14` icon strip on mobile (never the deskto
   transform on the root, which would break `position: fixed` modals/lightbox. On
   Android the visual viewport equals the (already shrunk) layout viewport, so
   this tracking is a harmless no-op.
+- **No keyboard scroll-jump on iOS.** iOS Safari also scrolls the *document* to
+  lift a focused input above the keyboard. Since the shell is already sized to
+  the visual viewport (the input is on-screen anyway), that scroll just shoves
+  the whole app up by ~the keyboard height — leaving the chat parked away from
+  where the user was reading. `trackViewportHeight` pins the document back to the
+  top (`window.scrollTo(0, 0)` whenever `scrollY` drifts), so focusing the
+  composer leaves the message list where it was; each pane keeps its own scroll
+  position. The app shell never legitimately scrolls the document (every pane has
+  its own overflow container), so this is safe on desktop too.
 - **No focus zoom on iOS.** A `@media (pointer: coarse)` rule bumps editable
   controls (`input`, `textarea`, `select`, `.cm-content`) to `text-base` (1rem),
   at/above the 16px threshold below which iOS Safari auto-zooms on focus.

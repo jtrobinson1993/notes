@@ -558,9 +558,19 @@ async function importFiles(event: Event) {
 
         <!-- Section content. Mobile: full-screen over everything (incl. the app
              sidebar) when a section is open, else hidden; desktop: inline. -->
+        <!-- The mobile-open variant insets for the notch/safe areas via `max(…,
+             env())` longhands rather than the `.app-safe` class: app-safe is
+             unlayered CSS, so it would override the `p-6` padding utility and
+             leave the section flush against the screen edges (no padding on
+             mobile). max() keeps the base 1.5rem and only grows it where a safe
+             area is larger (e.g. behind the notch). -->
         <div
           class="min-w-0 grow overflow-y-auto p-6"
-          :class="isMobile ? (mobileSectionOpen ? 'app-safe fixed inset-0 z-nav bg-zinc-50 dark:bg-zinc-950' : 'hidden') : ''"
+          :class="isMobile
+            ? (mobileSectionOpen
+                ? 'fixed inset-0 z-nav bg-zinc-50 dark:bg-zinc-950 pt-[max(1.5rem,env(safe-area-inset-top))] pr-[max(1.5rem,env(safe-area-inset-right))] pb-[max(1.5rem,env(safe-area-inset-bottom))] pl-[max(1.5rem,env(safe-area-inset-left))]'
+                : 'hidden')
+            : ''"
         >
           <button
             v-if="isMobile && mobileSectionOpen"
