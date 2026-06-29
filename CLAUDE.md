@@ -35,6 +35,11 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
   `spec/<area>.md` for a new app surface — and update the `SPEC.md` table and
   `spec/README.md` index accordingly.
 
+- **Keep the README current.** When a change adds, removes, or meaningfully
+  reshapes a user-facing feature, update the root `README.md` in the same change
+  so its feature summary and setup/usage instructions still match reality —
+  don't let it drift behind the spec.
+
 - **Icons: use the Myna set** via `unplugin-icons` (`import Icon from
   '~icons/mynaui/<name>'`), never emoji glyphs or another icon pack.
 
