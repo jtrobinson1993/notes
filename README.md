@@ -91,8 +91,13 @@ the standard `RTCRtpScriptTransform`). See [spec/voice.md](spec/voice.md).
   leaves the browser unwrapped.
 - Each passkey wraps the MK via the WebAuthn **PRF extension** →
   HKDF-SHA-256 → AES-256-GCM. Unlocking = one passkey tap.
+- An **optional password** (Argon2id, set in Settings → Security or chosen at
+  signup) independently wraps the MK for users whose passkey can't produce PRF
+  output or who can't register a passkey at all. It can sign in *and* unlock the
+  lock screen ("Unlock with password").
 - A **recovery code** (160-bit, shown once) independently wraps the MK and is
-  the only fallback if all passkeys are lost. It can be rotated in Settings.
+  the only fallback if all passkeys and passwords are lost. It can be rotated in
+  Settings.
 - Each note is encrypted with its own AES-256-GCM key, which is wrapped by the
   MK. Titles, bodies and tags are all inside the ciphertext.
 - Notes are cached client-side in IndexedDB **as ciphertext** for instant load
