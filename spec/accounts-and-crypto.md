@@ -31,9 +31,11 @@ Priorities: modern, boring, widely supported (Chrome, Firefox-based Zen, Safari)
     separately-derived auth key whose hash the server stores. Can be added later
     under Settings → Security (requires an unlocked session) **or chosen at signup**
     via the passkey-less path (below); passkey stays the default and the password is
-    offered behind "Other options" at signup and as an "alternative method" on the
-    login screen. `password.ts` holds the derivation; `INFO_PASSWORD_WRAP`
-    namespaces the wrap.
+    offered behind "Other options" at signup, as an "alternative method" on the
+    login screen, and as "Unlock with password" on the lock screen (an already
+    logged-in but locked session, where the handle is taken from the session so
+    only the password is asked). `password.ts` holds the derivation;
+    `INFO_PASSWORD_WRAP` namespaces the wrap.
 - **Per-note key:** random AES-256-GCM key per note, wrapped by MK. Titles and
   bodies both encrypted.
 - **Per-user X25519 keypair (sharing / chat):** created at signup via
