@@ -68,6 +68,15 @@ and export are unchanged.
   Bold `B`, Italic `I`, Underline `U`, Inline code `E`, Highlight `Shift+H`,
   Strikethrough `Shift+X`, Link `K` (prompt for URL), Heading `Shift+1..6` (same
   level toggles off), Clear heading `Shift+0`.
+- **List indent/outdent:** with the caret in a list item (bullet, ordered, or
+  task), **Tab** nests it one level deeper — a sublist — and **Shift+Tab** lifts
+  it back out. The nested marker aligns to its parent's content column (so a
+  child under `1. ` indents 3, under `- ` indents 2) and the whole item subtree
+  (its own deeper-indented children) moves with it, keeping the source valid
+  CommonMark. Tab is a no-op on the first item of a list (nothing to nest under)
+  and Shift+Tab a no-op at the top level; both fall through to normal Tab
+  behaviour when the caret isn't in a list. Works in the note editor and the
+  chat composer alike.
 - **Editor modes** (per note): **live preview** (default), **source** (raw
   Markdown escape hatch), **reading** (rendered, non-editable). The mode toggle
   sits top-right; Share / History / Attach / Delete live in a kebab (⋮) menu;
