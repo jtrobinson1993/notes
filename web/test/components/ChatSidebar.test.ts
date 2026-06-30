@@ -83,6 +83,13 @@ describe('ChatSidebar (unified tree)', () => {
     expect(sel).not.toContainEqual(['c-voice']);
   });
 
+  it('shows the Hide-sidebar toggle on desktop but not on mobile (no collapse there)', () => {
+    const desktop = mount(ChatSidebar, { props: { conversation: group('owner'), activeChannelId: 'g1' }, global: { stubs } });
+    expect(desktop.find('[aria-label="Hide channels"]').exists()).toBe(true);
+    const mobile = mount(ChatSidebar, { props: { conversation: group('owner'), activeChannelId: 'g1', mobile: true }, global: { stubs } });
+    expect(mobile.find('[aria-label="Hide channels"]').exists()).toBe(false);
+  });
+
   it('hides New channel from a plain member but shows folder/pin to everyone', () => {
     const member = mount(ChatSidebar, { props: { conversation: group('member'), activeChannelId: 'g1' }, global: { stubs } });
     expect(member.find('[aria-label="New channel"]').exists()).toBe(false);

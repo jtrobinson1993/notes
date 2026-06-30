@@ -66,6 +66,14 @@ describe('task checkbox toggle', () => {
     box.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
     expect(view.state.doc.toString()).toBe('- [ ] milk');
   });
+
+  it('indents the checkbox like a bullet (ml-4) so a checklist aligns with a list', () => {
+    // The bullet dot gets its left indent from .cm-live-bullet (ml-4); the
+    // checkbox must carry the same so a top-level checklist isn't flush-left.
+    const view = makeEditor('- [ ] milk');
+    const box = view.dom.querySelector<HTMLInputElement>('.cm-task-checkbox')!;
+    expect(box.classList.contains('ml-4')).toBe(true);
+  });
 });
 
 describe('editable table', () => {

@@ -144,6 +144,9 @@ Markdown* (HTML stripped keeping inner text, `==`/`||` unwrapped), *Plain text*
 - `concealedMotion` (arrow-key keymap) steps the caret a visible char per press
   across atomic concealed markers; `newlineBreakout` / `whitespaceBreakout`
   transaction filters relocate typed whitespace/newlines out of formatted runs.
+  Note: the caret **cannot rest before a concealed list-marker widget** at the
+  line start in Firefox/Gecko — contentEditable snaps it past the widget — so
+  "place the caret in front of the bullet" isn't a portable affordance.
 
 ## v2.2 — block-level live rendering & media optimization (shipped)
 
@@ -151,7 +154,9 @@ Markdown* (HTML stripped keeping inner text, `==`/`||` unwrapped), *Plain text*
 
 - **Task checkboxes:** in live preview the `[ ]`/`[x]` marker is a concealed,
   atomic checkbox widget; clicking flips the single state char via a doc change,
-  and the redundant list bullet on task lines is suppressed. Reading mode renders
+  and the redundant list bullet on task lines is suppressed. The checkbox carries
+  the same left indent as the bullet (`ml-4`) so a checklist lines up with a
+  normal list instead of sitting flush at the margin. Reading mode renders
   checkboxes with their state but **disabled** (conventional rendered-markdown
   behavior). (A source-rewriting reading-mode toggle was prototyped and dropped —
   its line-scan ordinal couldn't reliably match the renderer's task order across
