@@ -363,7 +363,11 @@ function onDropOnRoot() {
         <IconPlus class="h-4 w-4" />
       </button>
       <span class="grow" />
+      <!-- Collapsing the sidebar only exists on desktop; on mobile it's a
+           full-screen pane reached via the chat list, so there's nothing to
+           collapse it to. -->
       <button
+        v-if="!mobile"
         class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-200/70 dark:text-zinc-400 dark:hover:bg-zinc-800"
         aria-label="Hide channels"
         title="Hide sidebar"

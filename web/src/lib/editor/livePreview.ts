@@ -86,7 +86,9 @@ class TaskCheckboxWidget extends WidgetType {
     const box = document.createElement('input');
     box.type = 'checkbox';
     box.checked = this.checked;
-    box.className = 'cm-task-checkbox mr-1 cursor-pointer align-middle accent-blue-600';
+    // ml-4 matches the bullet's left indent (.cm-live-bullet) so a checklist
+    // lines up with a normal list instead of sitting flush at the margin.
+    box.className = 'cm-task-checkbox ml-4 mr-1 cursor-pointer align-middle accent-blue-600';
     box.addEventListener('mousedown', (e) => {
       // let the checkbox own the click; CM must not move the caret into the
       // concealed marker (the range is atomic anyway)

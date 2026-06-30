@@ -40,6 +40,15 @@ describe('convertBody formats', () => {
     expect(out).toContain('bold');
     expect(out).toContain('link');
   });
+
+  it('plain strips task-list checkboxes and bullet markers', () => {
+    const out = toPlainText('- [ ] todo\n- [x] done\n- item\n* star\n+ plus');
+    expect(out).not.toMatch(/\[[ xX]\]/);
+    expect(out).not.toMatch(/^\s*[-*+]\s/m);
+    for (const word of ['todo', 'done', 'item', 'star', 'plus']) {
+      expect(out).toContain(word);
+    }
+  });
 });
 
 describe('export → import round-trip', () => {

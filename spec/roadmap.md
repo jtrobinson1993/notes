@@ -226,12 +226,6 @@ No plans for video (see v7).
   (home **upload** bandwidth is the ceiling, not CPU). Without DTX these figures
   are the sustained rate, not a peak.
 
-## v7 — Video streaming in voice channels?
-
-Far future — not intended for a long time.
-
-- What strain would this put on server-host hardware?
-
 ## v8 + v11 — Local-first across minimal relays: your data lives on your devices
 
 **Status: long-term goal, large rework, exploration phase. Direction is chosen
@@ -527,3 +521,9 @@ code-signing + reproducible-build pipeline.*
 - **Multi-relay auth:** device-key challenge/token protocol details, and whether
   an opt-in global directory should later enable same-handle-across-servers UX
   without re-linking per-relay identities (D4b).
+
+## v12 — Video streaming in voice channels?
+
+Far future — not intended for a long time.
+
+- What strain would this put on server-host hardware?

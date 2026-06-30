@@ -51,6 +51,8 @@ export function toPlainText(body: string): string {
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/^>\s?/gm, '')
+    .replace(/^(\s*)[-*+]\s+\[[ xX]\]\s+/gm, '$1')
+    .replace(/^(\s*)[-*+]\s+/gm, '$1')
     .replace(/(\*\*|__)(.+?)\1/g, '$2')
     .replace(/(\*|_)(.+?)\1/g, '$2')
     .replace(/~~(.+?)~~/g, '$1')

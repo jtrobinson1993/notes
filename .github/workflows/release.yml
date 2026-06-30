@@ -17,6 +17,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Version tags are tied to package.json: the tag must be exactly
+      # `v<root package.json version>`. Guards against tagging a commit whose
+      # version wasn't bumped (or a typo'd tag), which would ship a mislabelled
+      # image. See the `release` skill for the flow that keeps them in lockstep.
+      - name: Verify tag matches package.json version
+        run: |
+          PKG="v$(node -p "require('./package.json').version")"
+          if [ "$PKG" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME != package.json $PKG — bump package.json or fix the tag"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches package.json $PKG"
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 

@@ -32,15 +32,22 @@ router.beforeEach(async (to) => {
   // An already-signed-in user following an invite link (e.g. an autofilled
   // original invite) belongs in the app, not the invited-user signup flow.
   if (to.path.startsWith('/invite/') && session.loggedIn) return '/';
-  // Cold start lands on '/'; redirect once to the last open view if there is one.
+  // First navigation of this app load: a PWA cold start lands on '/' and we
+  // redirect to the last open view; a direct load or reload lands on the URL
+  // itself. Either way, opening a chat means its messages (a full-screen leaf
+  // on mobile), not the channel list — otherwise reloading a chat would drop
+  // you on the sidebar.
   if (!restoredInitial) {
     restoredInitial = true;
-    if (to.path === '/' && session.loggedIn) {
-      const last = localStorage.getItem(LAST_ROUTE_KEY);
-      if (last && last !== to.fullPath) {
-        // Restoring an open chat returns to its messages (a full-screen leaf).
-        if (last.startsWith('/chat/')) chatPane.value = 'messages';
-        return last;
+    if (session.loggedIn) {
+      if (to.path === '/') {
+        const last = localStorage.getItem(LAST_ROUTE_KEY);
+        if (last && last !== to.fullPath) {
+          if (last.startsWith('/chat/')) chatPane.value = 'messages';
+          return last;
+        }
+      } else if (to.path.startsWith('/chat/')) {
+        chatPane.value = 'messages';
       }
     }
   }
