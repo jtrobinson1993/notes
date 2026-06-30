@@ -65,6 +65,16 @@ describe('profile store', () => {
     expect(body.ownerWrappedKey).toMatchObject({ salt: expect.any(String) });
   });
 
+  it('load() exposes my own handle + name color (for my own profile card)', async () => {
+    api.profileGet.mockResolvedValueOnce({ displayName: 'Wolf#0001', handle: 'Wolf#0001', nameColor: 'blue', friendsOnly: true, linkPreviews: false });
+    const store = useProfileStore();
+    await store.load();
+    expect(store.myHandle).toBe('Wolf#0001');
+    expect(store.myNameColor).toBe('blue');
+    store.reset();
+    expect(store.myNameColor).toBeNull();
+  });
+
   it('round-trips my own profile: save then reload decrypts via the MK-wrapped key', async () => {
     const store = useProfileStore();
     await store.load();

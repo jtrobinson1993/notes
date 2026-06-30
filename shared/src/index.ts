@@ -699,4 +699,15 @@ export type PushPayload =
        *  thread panel should open (`conversationId` is then the parent). */
       threadParentSeq?: number;
     }
+  | {
+      // A reaction on one of my messages. Routes exactly like `message` (deep-
+      // links to the reacted message); still content-free — never the emoji or
+      // who reacted.
+      type: 'reaction';
+      conversationId: string;
+      channelId: string;
+      /** The reacted message's sequence number — used to scroll to/highlight it. */
+      seq: number;
+      threadParentSeq?: number;
+    }
   | { type: 'call'; conversationId: string };

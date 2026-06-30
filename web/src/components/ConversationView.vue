@@ -244,11 +244,11 @@ function loadMemberProfiles() {
   }
 }
 
-// Profile dialog (opened by clicking a sender's avatar or name).
+// Profile dialog (opened by clicking a sender's avatar or name — including my
+// own, so I can see the card exactly as a contact does).
 const profileUserId = ref<string | null>(null);
 const profileOpen = ref(false);
 function openProfile(userId: string) {
-  if (userId === session.user?.id) return; // own profile lives in Settings
   profileUserId.value = userId;
   profileOpen.value = true;
 }
@@ -617,15 +617,19 @@ interface ReactionGroup {
   emoji: string;
   count: number;
   mine: boolean;
+  // Who reacted, in reaction order: the contact's real name when I can see it,
+  // otherwise their handle (via `memberName`); my own reaction reads as "You".
+  names: string[];
 }
 function reactionGroups(seq: number): ReactionGroup[] {
   const meId = session.user?.id;
   const map = new Map<string, ReactionGroup>();
   for (const r of chat.reactions[chanId.value] ?? []) {
     if (r.seq !== seq || !r.emoji) continue;
-    const g = map.get(r.emoji) ?? { emoji: r.emoji, count: 0, mine: false };
+    const g = map.get(r.emoji) ?? { emoji: r.emoji, count: 0, mine: false, names: [] };
     g.count++;
     if (r.userId === meId) g.mine = true;
+    g.names.push(r.userId === meId ? 'You' : memberName(r.userId));
     map.set(r.emoji, g);
   }
   return [...map.values()];
@@ -866,7 +870,7 @@ async function sendGif(gif: GifRef) {
               <button
                 v-for="g in reactionGroups(row.msg.seq)"
                 :key="g.emoji"
-                class="flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs leading-none"
+                class="group/pill relative flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs leading-none"
                 :class="g.mine ? 'border-blue-400 bg-blue-50 dark:border-blue-500 dark:bg-blue-950' : 'border-zinc-200 dark:border-zinc-700'"
                 @click="react(row.msg.seq, g.emoji)"
               >
@@ -875,6 +879,13 @@ async function sendGif(gif: GifRef) {
                 <Transition name="count" mode="out-in">
                   <span :key="g.count" class="tabular-nums text-zinc-500">{{ g.count }}</span>
                 </Transition>
+                <!-- Hover tooltip: who reacted with this emoji (real name for
+                     contacts, handle otherwise). -->
+                <span
+                  class="pointer-events-none absolute bottom-full left-1/2 z-tooltip mb-1 hidden -translate-x-1/2 rounded-md bg-zinc-900 px-2 py-1 text-center text-[11px] font-medium leading-tight text-white shadow-lg group-hover/pill:block dark:bg-zinc-700"
+                >
+                  <span v-for="(n, i) in g.names" :key="i" class="block whitespace-nowrap">{{ n }}</span>
+                </span>
               </button>
             </TransitionGroup>
             <!-- Thread indicator + "edited" note, on one line. -->

@@ -65,14 +65,20 @@ sw.addEventListener('push', (event) => {
   } catch {
     /* a contentless push — still show a generic notification */
   }
-  const conversationId = data.type === 'message' ? data.conversationId : undefined;
+  const conversationId =
+    data.type === 'message' || data.type === 'reaction' ? data.conversationId : undefined;
+  // Content-free bodies: never the text, emoji, or who acted (see push.ts).
+  const body = data.type === 'reaction' ? 'New reaction' : 'New message';
+  // Keep reaction pings on their own tag so they don't replace (or get replaced
+  // by) a new-message notification for the same conversation.
+  const tagPrefix = data.type === 'reaction' ? 'react' : 'conv';
   event.waitUntil(
     sw.registration.showNotification('Accord', {
-      body: 'New message',
+      body,
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
       // Collapse repeated pings for the same conversation into one notification.
-      tag: conversationId ? `conv:${conversationId}` : 'accord',
+      tag: conversationId ? `${tagPrefix}:${conversationId}` : 'accord',
       // Keep the whole routing payload so the click can open the exact channel /
       // thread message (built into a path by the shared `pushTargetUrl`).
       data,

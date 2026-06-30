@@ -533,7 +533,8 @@ stores opaque blobs and can't read which emoji was used; clients decrypt and
 aggregate. Server (`message_reactions` table + routes, all membership-gated):
 
 - `POST /api/conversations/:id/messages/:seq/reactions {ciphertext, iv}` — add;
-  fans out a `reaction` frame.
+  fans out a `reaction` frame **and** sends the reacted message's author a
+  content-free `reaction` push when they're offline (see `spec/notifications.md`).
 - `DELETE /api/conversations/:id/reactions/:rid` — remove; **owner-only** (IDOR
   guard) and scoped to the conversation; fans out `reaction-removed`.
 - `GET /api/conversations/:id/reactions` — list (clients decrypt + group).
@@ -542,7 +543,9 @@ The emoji string (a unicode char, `:emote:`, or `:customName:`) is sealed via
 `encryptReaction` (same AES-GCM as messages). The store groups by emoji per
 message; `toggleReaction` removes my existing reaction with that emoji or adds
 one. UI: a hover **react** action (the emoji picker) and reaction pills under
-each message (count + highlighted when mine) that toggle on click.
+each message (count + highlighted when mine) that toggle on click. **Hovering a
+pill** shows the list of who used that emoji — a contact's real name when I can
+see it (`memberName`), otherwise their handle, and my own reaction as "You".
 
 ### Threads
 

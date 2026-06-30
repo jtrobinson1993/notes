@@ -71,6 +71,13 @@ notification is a doorbell, not the message. All these fields are metadata the
 server already routes on (it maps messages to members/channels), so the push
 leaks nothing new.
 
+**Reactions** push the same way. A `{ "type": "reaction", … }` payload carries
+the identical routing fields and the SW shows a generic **"New reaction"** (never
+the emoji or who reacted); `pushTargetUrl` routes it exactly like a `message`
+(deep-links to the reacted message, threads included). It uses its own
+notification `tag` (`react:<conv>` vs `conv:<conv>`) so a reaction ping and a
+new-message ping for the same conversation don't overwrite each other.
+
 The click prefers a **soft navigation**: an open tab is focused and the worker
 `postMessage`s the path, which the app routes in-app (so it opens the channel,
 the thread panel, and scrolls without a reload — and, on mobile, lands on the
@@ -101,7 +108,10 @@ clientsClaim) so a new worker takes over immediately.
   pushes to every member **without a live socket** (`realtime.isOnline` false) —
   a connected client already received it over the WebSocket. The sender is
   skipped. A subscription the push service reports as gone (`404`/`410`) is
-  pruned.
+  pruned. A **reaction** triggers the same fallback push, but targeted at just
+  the reacted message's **author** (skipped when they reacted to themselves or
+  are online). All three notify helpers (`notifyNewMessage`, `notifyReaction`,
+  `notifyCall`) share one `deliver` fan-out (skip-actor + skip-online + prune).
 
 ## Client
 

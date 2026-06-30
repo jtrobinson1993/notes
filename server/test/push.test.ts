@@ -115,3 +115,39 @@ describe('notifyNewMessage', () => {
     expect(t.db.listPushSubscriptions(recipient)).toHaveLength(1);
   });
 });
+
+describe('notifyReaction', () => {
+  function seedWithSub(online: Set<string>) {
+    const reactor = seedUser(t.db, {});
+    const author = seedUser(t.db, {});
+    t.db.addPushSubscription({ userId: author, endpoint: 'https://push.example/abc', p256dh: 'p', auth: 'a' });
+    const push = createPush(t.db, makeConfig(t.dir), fakeRealtime(online));
+    return { reactor, author, push };
+  }
+
+  it("pings the offline message author with a content-free 'reaction' payload", () => {
+    const { reactor, author, push } = seedWithSub(new Set());
+    push.notifyReaction({ conversationId: 'conv1', channelId: 'ch1', seq: 5 }, reactor, [author]);
+    expect(mock.sendNotification).toHaveBeenCalledTimes(1);
+    const [sub, body] = mock.sendNotification.mock.calls[0]!;
+    expect(sub.endpoint).toBe('https://push.example/abc');
+    // Routing metadata only — never the emoji or who reacted.
+    expect(JSON.parse(body)).toEqual({ type: 'reaction', conversationId: 'conv1', channelId: 'ch1', seq: 5 });
+  });
+
+  it('does NOT ping the author when they reacted to their own message', () => {
+    const { author, push } = seedWithSub(new Set());
+    // Author is the reactor here → skipped as the actor.
+    push.notifyReaction({ conversationId: 'conv1', channelId: 'ch1', seq: 5 }, author, [author]);
+    expect(mock.sendNotification).not.toHaveBeenCalled();
+  });
+
+  it('does NOT ping an author with a live socket', () => {
+    const reactor = seedUser(t.db, {});
+    const author = seedUser(t.db, {});
+    t.db.addPushSubscription({ userId: author, endpoint: 'https://push.example/abc', p256dh: 'p', auth: 'a' });
+    const push = createPush(t.db, makeConfig(t.dir), fakeRealtime(new Set([author])));
+    push.notifyReaction({ conversationId: 'conv1', channelId: 'ch1', seq: 5 }, reactor, [author]);
+    expect(mock.sendNotification).not.toHaveBeenCalled();
+  });
+});

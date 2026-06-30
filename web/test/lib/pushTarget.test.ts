@@ -21,6 +21,18 @@ describe('pushTargetUrl', () => {
     ).toBe('/chat/p1?thread=4&m=12');
   });
 
+  it('routes a reaction ping to the reacted message, like a message ping', () => {
+    expect(pushTargetUrl({ type: 'reaction', conversationId: 'c1', channelId: 'c1', seq: 9 })).toBe(
+      '/chat/c1?m=9',
+    );
+    expect(pushTargetUrl({ type: 'reaction', conversationId: 'c1', channelId: 'ch9', seq: 3 })).toBe(
+      '/chat/c1/ch9?m=3',
+    );
+    expect(
+      pushTargetUrl({ type: 'reaction', conversationId: 'p1', channelId: 'p1', seq: 12, threadParentSeq: 4 }),
+    ).toBe('/chat/p1?thread=4&m=12');
+  });
+
   it('opens the conversation for a call ping', () => {
     expect(pushTargetUrl({ type: 'call', conversationId: 'c1' })).toBe('/chat/c1');
   });
