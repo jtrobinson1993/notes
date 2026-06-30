@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import { useProfileStore, type ProfileEntry } from '../stores/profile';
+import { useSessionStore } from '../stores/session';
 import AppModal from './AppModal.vue';
 import ChatAvatar from './ChatAvatar.vue';
 
@@ -8,14 +9,32 @@ const open = defineModel<boolean>('open', { default: false });
 const props = defineProps<{ userId: string | null }>();
 
 const profile = useProfileStore();
+const session = useSessionStore();
 const entry = ref<ProfileEntry | null>(null);
 const loading = ref(false);
+
+// My own card is built straight from my profile store — the server never sends
+// me a profile key sealed to myself, so `fetch(me)` would come back without the
+// decrypted blob. Rendering from the store shows the card exactly as a contact
+// sees it (real display name, avatar, bio).
+function selfEntry(): ProfileEntry {
+  return {
+    displayName: profile.myDisplayName,
+    handle: profile.myHandle,
+    nameColor: profile.myNameColor,
+    data: profile.myData,
+  };
+}
 
 watch(
   [open, () => props.userId],
   async ([o, id]) => {
     if (!o || !id) {
       entry.value = null;
+      return;
+    }
+    if (id === session.user?.id) {
+      entry.value = selfEntry();
       return;
     }
     loading.value = true;

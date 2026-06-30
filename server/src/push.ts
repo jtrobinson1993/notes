@@ -29,12 +29,22 @@ export interface Push {
   readonly publicKey: string | null;
   /** Push a content-free ping to every member without a live socket. */
   notifyNewMessage(target: MessagePushTarget, senderId: string, memberIds: string[]): void;
+  /** Push a content-free "someone reacted to your message" ping to the message's
+   *  author when they have no live socket (online devices get the reaction over
+   *  the WebSocket). Routes to the reacted message, like a `message` push. */
+  notifyReaction(target: MessagePushTarget, reactorId: string, authorIds: string[]): void;
   /** Push a content-free incoming-call ping to callees without a live socket
    *  (online devices are rung over the WebSocket). */
   notifyCall(conversationId: string, callerId: string, calleeIds: string[]): void;
 }
 
-const NOOP: Push = { enabled: false, publicKey: null, notifyNewMessage() {}, notifyCall() {} };
+const NOOP: Push = {
+  enabled: false,
+  publicKey: null,
+  notifyNewMessage() {},
+  notifyReaction() {},
+  notifyCall() {},
+};
 
 /** Resolve VAPID keys: explicit env vars win; otherwise generate once and
  * persist to the data dir so the keypair (and clients' existing subscriptions)
@@ -66,23 +76,18 @@ export function createPush(db: DB, config: Config, realtime: Realtime): Push {
   const subject = process.env.VAPID_SUBJECT?.trim() || `mailto:admin@${config.rpId}`;
   webpush.setVapidDetails(subject, keys.publicKey, keys.privateKey);
 
-  function notifyNewMessage(target: MessagePushTarget, senderId: string, memberIds: string[]): void {
-    const payload: PushPayload = {
-      type: 'message',
-      conversationId: target.conversationId,
-      channelId: target.channelId,
-      seq: target.seq,
-      ...(target.threadParentSeq != null ? { threadParentSeq: target.threadParentSeq } : {}),
-    };
+  // Fan a content-free payload out to each recipient that isn't the actor and
+  // has no live socket (the socket already delivered it). Dropped subscriptions
+  // (404/410) are pruned.
+  function deliver(recipientIds: string[], actorId: string, payload: PushPayload): void {
     const body = JSON.stringify(payload);
-    for (const uid of memberIds) {
-      if (uid === senderId) continue;
-      if (realtime.isOnline(uid)) continue; // a live socket already delivered it
+    for (const uid of recipientIds) {
+      if (uid === actorId) continue;
+      if (realtime.isOnline(uid)) continue;
       for (const sub of db.listPushSubscriptions(uid)) {
         webpush
           .sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, body)
           .catch((err: { statusCode?: number }) => {
-            // 404/410 => the browser dropped this subscription; prune it.
             if (err?.statusCode === 404 || err?.statusCode === 410) {
               db.deletePushSubscription(uid, sub.endpoint);
             }
@@ -91,20 +96,27 @@ export function createPush(db: DB, config: Config, realtime: Realtime): Push {
     }
   }
 
-  function notifyCall(conversationId: string, callerId: string, calleeIds: string[]): void {
-    const body = JSON.stringify({ type: 'call', conversationId } satisfies PushPayload);
-    for (const uid of calleeIds) {
-      if (uid === callerId) continue;
-      if (realtime.isOnline(uid)) continue; // a live socket rings them over WS
-      for (const sub of db.listPushSubscriptions(uid)) {
-        webpush
-          .sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, body)
-          .catch((err: { statusCode?: number }) => {
-            if (err?.statusCode === 404 || err?.statusCode === 410) db.deletePushSubscription(uid, sub.endpoint);
-          });
-      }
-    }
+  function targetPayload(type: 'message' | 'reaction', target: MessagePushTarget): PushPayload {
+    return {
+      type,
+      conversationId: target.conversationId,
+      channelId: target.channelId,
+      seq: target.seq,
+      ...(target.threadParentSeq != null ? { threadParentSeq: target.threadParentSeq } : {}),
+    };
   }
 
-  return { enabled: true, publicKey: keys.publicKey, notifyNewMessage, notifyCall };
+  function notifyNewMessage(target: MessagePushTarget, senderId: string, memberIds: string[]): void {
+    deliver(memberIds, senderId, targetPayload('message', target));
+  }
+
+  function notifyReaction(target: MessagePushTarget, reactorId: string, authorIds: string[]): void {
+    deliver(authorIds, reactorId, targetPayload('reaction', target));
+  }
+
+  function notifyCall(conversationId: string, callerId: string, calleeIds: string[]): void {
+    deliver(calleeIds, callerId, { type: 'call', conversationId });
+  }
+
+  return { enabled: true, publicKey: keys.publicKey, notifyNewMessage, notifyReaction, notifyCall };
 }

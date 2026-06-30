@@ -110,6 +110,10 @@ current blob at once; the next save re-seals to friends only.
 - **View:** `ProfileDialog` (on the reusable `AppModal`) shows a contact's
   avatar + name + bio, opened by clicking a sender's avatar or name in chat.
   `ChatAvatar` renders the decrypted avatar when present, else the initial.
+  Clicking **my own** avatar/name opens the same card so I can see how it appears
+  to a contact; since the server never seals me a profile key to myself, the
+  dialog builds my card straight from the profile store (`myDisplayName`,
+  `myHandle`, `myNameColor`, `myData`) rather than re-fetching it.
 
 ## Deferred
 

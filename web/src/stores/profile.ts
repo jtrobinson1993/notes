@@ -35,6 +35,7 @@ export const useProfileStore = defineStore('profile', () => {
   let profileKey: Uint8Array | null = null;
   const myData = ref<ProfileData>({});
   const myHandle = ref('');
+  const myNameColor = ref<string | null>(null);
   const friendsOnly = ref(true);
   const linkPreviews = ref(false);
   const epoch = ref(0);
@@ -50,6 +51,7 @@ export const useProfileStore = defineStore('profile', () => {
   async function load(): Promise<void> {
     const info = await api.profileGet();
     myHandle.value = info.handle;
+    myNameColor.value = info.nameColor;
     friendsOnly.value = info.friendsOnly;
     linkPreviews.value = info.linkPreviews;
     const { profile } = await api.profileDataGet();
@@ -204,6 +206,7 @@ export const useProfileStore = defineStore('profile', () => {
     profileKey = null;
     myData.value = {};
     myHandle.value = '';
+    myNameColor.value = null;
     friendsOnly.value = true;
     linkPreviews.value = false;
     epoch.value = 0;
@@ -214,6 +217,7 @@ export const useProfileStore = defineStore('profile', () => {
   return {
     myData,
     myHandle,
+    myNameColor,
     myDisplayName,
     friendsOnly,
     linkPreviews,

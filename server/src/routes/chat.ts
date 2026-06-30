@@ -1100,7 +1100,8 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
   app.post('/api/conversations/:id/messages/:seq/reactions', { preHandler: requireAuth }, async (request, reply) => {
     const { id, seq } = request.params as { id: string; seq: string };
     const me = request.user!.id;
-    if (!db.getConversation(id)) return reply.code(404).send({ error: 'not found' });
+    const conv = db.getConversation(id);
+    if (!conv) return reply.code(404).send({ error: 'not found' });
     if (!canAccess(id, me)) return reply.code(403).send({ error: 'not a member' });
     const seqNum = Number(seq);
     if (!Number.isInteger(seqNum) || seqNum < 1) return reply.code(400).send({ error: 'invalid seq' });
@@ -1130,6 +1131,19 @@ export function chatRoutes(app: FastifyInstance, db: DB, hub: Realtime, push: Pu
     });
     const reaction = toReaction(row);
     hub.sendToUsers(channelAudience(id, target.channel_id), { type: 'reaction', reaction });
+    // Background push to the reacted message's author when they're offline
+    // (content-free; deep-links to their message). A thread reaction routes to
+    // the parent conversation + thread panel, mirroring the new-message push.
+    const pushTarget =
+      conv.kind === 'thread' && conv.parent_id != null
+        ? {
+            conversationId: conv.parent_id,
+            channelId: conv.parent_id,
+            seq: seqNum,
+            ...(conv.parent_seq != null ? { threadParentSeq: conv.parent_seq } : {}),
+          }
+        : { conversationId: id, channelId: target.channel_id, seq: seqNum };
+    push.notifyReaction(pushTarget, me, [target.sender_id]);
     return reaction;
   });
 
