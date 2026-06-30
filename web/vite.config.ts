@@ -23,12 +23,14 @@ export default defineConfig({
         // precache with them — cache on demand the first time one is rendered.
         globIgnores: ['**/emoji/**'],
       },
-      // Register the service worker in dev too, so Web Push / notifications can be
-      // exercised locally. Without this the SW never registers on the dev server,
-      // `navigator.serviceWorker.ready` never resolves, and Settings is stuck on
-      // "Not supported here". (Prod always registers it.)
+      // Don't register the service worker in dev: its precache serves stale JS
+      // across reloads, which silently masks code changes (a recurring "why
+      // isn't my change showing up" trap). Prod always registers it. The cost is
+      // that Web Push / notifications can't be exercised against the dev server
+      // (`navigator.serviceWorker.ready` never resolves, so Settings shows "Not
+      // supported here") — flip `enabled` back to true temporarily to test those.
       devOptions: {
-        enabled: true,
+        enabled: false,
         type: 'module',
       },
       manifest: {

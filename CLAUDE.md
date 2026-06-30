@@ -29,6 +29,16 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
   tests; bug fix → add a regression test. Never mark work done with failing or
   missing tests for changed logic.
 
+- **Editor caret/keymap behaviour needs a real browser.** The Markdown editor
+  conceals markers as **atomic** ranges, so visual caret motion (arrow keys,
+  clicks) across them depends on layout geometry that **jsdom doesn't model** —
+  a Vitest case can pass while the real browser misbehaves. Verify such changes
+  with the standalone editor harness in **`web/dev/`** (mounts the real
+  `<MarkdownEditor>`, no auth/stores): open `/dev/editor-harness.html` under
+  `npm run dev:web`, or drive it headless with `node web/dev/editor-probe.mjs`.
+  See `web/dev/README.md`. (HMR doesn't rebuild the mounted editor's keymap —
+  full-reload after editor changes.)
+
 - **Keep specs current.** When business logic or technical behavior changes,
   update the matching file under `spec/` in the same change: edit it to match
   reality, **delete** a removed feature's section/file, or **add** a new
