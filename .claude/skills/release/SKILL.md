@@ -74,6 +74,23 @@ Assumes the change is on a feature branch (never commit to protected `main`).
    Confirm with `gh release`/the GHCR package list, then report the published
    tag back to the maintainer.
 
+8. **Sync `main` and clean up.** Pull the latest into local `main` once more (it
+   may have moved since step 5), then tear down the worktree/branch the release
+   was cut from so nothing stale lingers:
+
+   ```sh
+   git checkout main && git fetch origin && git merge --ff-only origin/main
+
+   # if the release was cut from a git worktree, remove it (run from main repo,
+   # not from inside the worktree dir), then delete the merged feature branch:
+   git worktree remove <worktree-path>   # skip if not a worktree
+   git branch -d <feature-branch>        # -d only deletes if fully merged
+   git worktree prune                    # drop any stale worktree metadata
+   ```
+
+   `git branch -d` (not `-D`) is deliberate: it refuses to delete a branch that
+   isn't fully merged, so it doubles as a guard that the release really landed.
+
 ## Notes
 
 - **Protected `main`:** the version bump can't be a direct commit — it rides in
