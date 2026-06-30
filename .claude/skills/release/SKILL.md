@@ -50,18 +50,28 @@ Assumes the change is on a feature branch (never commit to protected `main`).
    gh pr merge --merge --delete-branch   # only after all checks pass
    ```
 
-5. **Update local `main`:**
+5. **Update local `main`.** Do this **from the checkout where `main` lives** —
+   switch to the main worktree/branch first. If you cut the release from a
+   feature **worktree**, you can't fast-forward `main` from there: `main` is
+   already checked out in the primary worktree, so `git checkout main` fails, and
+   you can't self-remove the worktree you're standing in. Switch to (`cd`) the
+   primary checkout — or target it with `git -C <main-checkout>` — and only then:
 
    ```sh
-   git fetch origin && git checkout main && git merge --ff-only origin/main
+   git -C <main-checkout> fetch origin
+   git -C <main-checkout> merge --ff-only origin/main
    ```
 
-6. **Tag and push** (tag value comes straight from `package.json`, so it can't
-   drift from the guard):
+   (When the release branch *is* the main checkout — no worktree — `<main-checkout>`
+   is just `.`.)
+
+6. **Tag and push.** Tag **`origin/main`** directly so you never need `main`
+   checked out locally (handy from a worktree). The tag value comes straight from
+   the merge commit's `package.json`, so it can't drift from the guard:
 
    ```sh
-   TAG="v$(node -p "require('./package.json').version")"
-   git tag "$TAG" && git push origin "$TAG"
+   TAG="v$(git show origin/main:package.json | node -p "JSON.parse(require('fs').readFileSync(0)).version")"
+   git tag "$TAG" origin/main && git push origin "$TAG"
    ```
 
 7. **Watch the image publish.** The tag push starts the `Release` workflow:
@@ -74,15 +84,21 @@ Assumes the change is on a feature branch (never commit to protected `main`).
    Confirm with `gh release`/the GHCR package list, then report the published
    tag back to the maintainer.
 
-8. **Sync `main` and clean up.** Pull the latest into local `main` once more (it
-   may have moved since step 5), then tear down the worktree/branch the release
-   was cut from so nothing stale lingers:
+8. **Sync `main` and clean up — from the main checkout.** All of this runs
+   **in the primary checkout where `main` lives**, never from the feature
+   worktree (you can't ff a `main` that's checked out elsewhere, and you can't
+   self-remove the worktree you're standing in). Switch to it first (`cd` the
+   main checkout, or use `git -C <main-checkout>`). Pull the latest into `main`
+   once more (it may have moved since step 5), then tear down the release's
+   worktree/branch so nothing stale lingers:
 
    ```sh
-   git checkout main && git fetch origin && git merge --ff-only origin/main
+   # in / targeting the main checkout:
+   git fetch origin && git merge --ff-only origin/main   # main is checked out here
 
-   # if the release was cut from a git worktree, remove it (run from main repo,
-   # not from inside the worktree dir), then delete the merged feature branch:
+   # if the release was cut from a git worktree, remove it, then delete the
+   # now-merged feature branch (the worktree must go first — its branch can't be
+   # deleted while a worktree has it checked out):
    git worktree remove <worktree-path>   # skip if not a worktree
    git branch -d <feature-branch>        # -d only deletes if fully merged
    git worktree prune                    # drop any stale worktree metadata
