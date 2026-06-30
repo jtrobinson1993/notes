@@ -232,26 +232,18 @@ Far future — not intended for a long time.
 
 - What strain would this put on server-host hardware?
 
-## v8 — Multiple servers (Discord-style)
-
-Multi-server **client**, not federation: each server stays an independent
-instance; the app connects to several and aggregates them in one UI. Add a server
-by its HTTPS URL and join via that server's invite. Per server: separate account,
-passkeys, master key, friends, groups.
-
-Because passkeys are origin-bound, auth against a remote server happens in a
-popup/redirect on that server's origin (passkey ceremony + PRF unwrap there),
-handing a session token and unwrapped MK back via `postMessage` — the
-security-critical piece of v8.
-
-Out of scope: groups spanning two servers (would require real federation —
-cross-server identity, key distribution, message relay).
-
-## v11 — Local-first: your data lives on your devices, the server is a minimal relay
+## v8 + v11 — Local-first across minimal relays: your data lives on your devices
 
 **Status: long-term goal, large rework, exploration phase. Direction is chosen
 (below); the individual decisions are open. Nothing here is built. This section
 captures the digging we need to do *before* committing engineering.**
+
+This milestone **absorbs the former v8 "multiple servers (Discord-style)"
+plan**: multi-server survives as a **multi-relay client** (connect to several
+relays, aggregate them in one UI), but v11's local-first decisions **supersede**
+v8's per-server-passkey approach — there is one local master seed and per-relay
+*derived* identities authenticated by the **device key**, not a separate passkey
+and master key per server (see [D4b](#decisions-to-make)).
 
 ### Decision & why
 
@@ -305,6 +297,12 @@ non-goal — see below.)
   **mutable shared state (notes, edits, reactions, read state) uses CRDTs** so
   offline edits merge conflict-free. All updates are encrypted and relayed as
   **opaque blobs** — the relay never sees plaintext or CRDT structure.
+- **Multiple relays (absorbs v8).** The client can connect to **several relays at
+  once** and aggregate them in one UI; each relay is an independent instance you
+  add by its **HTTPS URL + invite**. Friends and groups stay **per relay**;
+  groups spanning two relays would need federation (a non-goal). Cross-relay
+  identity/auth is **device-key based with per-relay derived identities** (D4b),
+  not a per-server passkey.
 
 This inverts today's design (server holds all ciphertext; thin web client; auth
 *and* data need the server). After v11, the **device** is the source of truth and
@@ -373,6 +371,23 @@ This **decouples "unlock local vault" (offline) from "authenticate to relay"
 (online bearer token)** — today login is server-verified, so this is a real
 redesign of the auth flow. *Status: open — confirm offline-first unlock; relay
 token lifetime/refresh.*
+
+**D4b — Multi-relay auth & identity (the absorbed v8).** With multiple relays
+(Architecture, above), the cross-relay primitive is the **device identity keypair**
+(the Ed25519/X25519 device key from
+[device-linking](accounts-and-crypto.md#device-linking-proposed--not-yet-built)),
+**not a passkey**: to authenticate, the device **signs the relay's challenge** and
+the relay returns a bearer token (D4). Adding a relay is "enter its HTTPS URL,
+accept its invite, prove your device key, claim a handle," all behind the *same*
+local biometric unlock — no per-server passkey ceremony, no per-server master key. **Decided:** derive a **distinct per-relay
+identity key from the one local master seed**, so independent relays **cannot
+collude to correlate** the same user across servers — chosen over presenting one
+shared key everywhere. A "same handle on every server" identity is a non-goal
+regardless: each relay mints handles independently, so cross-server handle
+availability was never guaranteed. This **supersedes v8's** "separate account,
+passkeys, master key per server" line. *Status: per-relay-derived identity
+decided; open — challenge/token protocol details, and whether a future opt-in
+global directory could offer a same-handle UX without re-linking identities.*
 
 **D5 — Key directory & MITM (unchanged necessity).** The relay still serves the
 `handle → X25519 public key` directory, so a malicious/compromised relay can
@@ -476,7 +491,9 @@ code-signing + reproducible-build pipeline.*
 - **Any durable server-side content store or server-side backup** — the whole
   point. (An *optional, user-controlled, offline* export is the only backup form
   on the table; see D8.)
-- **Federation** across relays (groups spanning two relays). Same exclusion as v8.
+- **Federation** across relays (groups spanning two relays) — cross-relay
+  identity, key distribution, and message relay are out of scope (this was the v8
+  exclusion, carried forward).
 
 ### Suggested phasing (large rework)
 
@@ -507,3 +524,6 @@ code-signing + reproducible-build pipeline.*
 - **Desktop passkeys:** invest in per-OS native passkey/PRF modules, or settle on
   OS-keychain + biometric + password for local unlock? (D3)
 - **Key transparency** design + whether it's v11-scope or a follow-up (D5).
+- **Multi-relay auth:** device-key challenge/token protocol details, and whether
+  an opt-in global directory should later enable same-handle-across-servers UX
+  without re-linking per-relay identities (D4b).
