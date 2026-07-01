@@ -1,12 +1,18 @@
 import { syntaxTree } from '@codemirror/language';
-import { RangeSet, type Extension, type Range } from '@codemirror/state';
-import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
+import { type EditorState, RangeSet, StateField, type Extension, type Range } from '@codemirror/state';
+import { Decoration, type DecorationSet, EditorView, WidgetType } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 
 // Chrome for ``` fenced code blocks: a header bar with a language picker and
 // copy button, code-block line styling, and fence-marker concealment when the
 // cursor is outside the block. Per-language syntax highlighting itself comes
 // from markdown({ codeLanguages: languages }).
+//
+// These decorations include a block widget (the chrome bar) and line
+// decorations, which CM refuses to accept from a ViewPlugin ("Block decorations
+// may not be specified via plugins" — it only throws once a fenced block is
+// actually present). So, like the editable-table decorations in livePreview.ts,
+// they are provided from a StateField, rebuilt when the syntax tree changes.
 
 const PICKER_LANGS = [
   '',
@@ -101,77 +107,64 @@ interface BuiltDecorations {
   atomics: RangeSet<Decoration>;
 }
 
-function buildDecorations(view: EditorView): BuiltDecorations {
+function buildDecorations(state: EditorState): BuiltDecorations {
   const ranges: Range<Decoration>[] = [];
   const hidden: Range<Decoration>[] = [];
-  const state = view.state;
 
-  for (const { from, to } of view.visibleRanges) {
-    syntaxTree(state).iterate({
-      from,
-      to,
-      enter(node) {
-        if (node.name !== 'FencedCode') return;
-        const block = node.node;
-        const firstLine = state.doc.lineAt(block.from);
-        const lastLine = state.doc.lineAt(block.to);
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (node.name !== 'FencedCode') return undefined;
+      const block = node.node;
+      const firstLine = state.doc.lineAt(block.from);
+      const lastLine = state.doc.lineAt(block.to);
 
-        const info = block.getChild('CodeInfo');
-        const lang = info ? state.sliceDoc(info.from, info.to) : '';
-        ranges.push(
-          Decoration.widget({ widget: new CodeChromeWidget(lang), block: true, side: -10 }).range(firstLine.from),
-        );
+      const info = block.getChild('CodeInfo');
+      const lang = info ? state.sliceDoc(info.from, info.to) : '';
+      ranges.push(
+        Decoration.widget({ widget: new CodeChromeWidget(lang), block: true, side: -10 }).range(firstLine.from),
+      );
 
-        for (let l = firstLine.number; l <= lastLine.number; l++) {
-          const line = state.doc.line(l);
-          const deco = l === firstLine.number ? codeLineFirst : l === lastLine.number ? codeLineLast : codeLine;
-          ranges.push(deco.range(line.from));
-        }
+      for (let l = firstLine.number; l <= lastLine.number; l++) {
+        const line = state.doc.line(l);
+        const deco = l === firstLine.number ? codeLineFirst : l === lastLine.number ? codeLineLast : codeLine;
+        ranges.push(deco.range(line.from));
+      }
 
-        // conceal ```lang and the closing ``` (language changes go through
-        // the picker; raw fences are edited in source mode)
-        const openEnd = info ? info.to : (block.getChild('CodeMark')?.to ?? firstLine.to);
-        const openTo = Math.min(openEnd, firstLine.to);
-        if (openTo > firstLine.from) {
-          ranges.push(hide.range(firstLine.from, openTo));
-          hidden.push(hide.range(firstLine.from, openTo));
-        }
-        const closeMarks = block.getChildren('CodeMark');
-        const closing = closeMarks[closeMarks.length - 1];
-        if (closeMarks.length > 1 && closing) {
-          ranges.push(hide.range(closing.from, closing.to));
-          hidden.push(hide.range(closing.from, closing.to));
-        }
-        return false;
-      },
-    });
-  }
+      // conceal ```lang and the closing ``` (language changes go through
+      // the picker; raw fences are edited in source mode)
+      const openEnd = info ? info.to : (block.getChild('CodeMark')?.to ?? firstLine.to);
+      const openTo = Math.min(openEnd, firstLine.to);
+      if (openTo > firstLine.from) {
+        ranges.push(hide.range(firstLine.from, openTo));
+        hidden.push(hide.range(firstLine.from, openTo));
+      }
+      const closeMarks = block.getChildren('CodeMark');
+      const closing = closeMarks[closeMarks.length - 1];
+      if (closeMarks.length > 1 && closing) {
+        ranges.push(hide.range(closing.from, closing.to));
+        hidden.push(hide.range(closing.from, closing.to));
+      }
+      return false;
+    },
+  });
 
   const sort = (rs: Range<Decoration>[]) => rs.sort((a, b) => a.from - b.from || a.to - b.to);
   return { decorations: RangeSet.of(sort(ranges), false), atomics: RangeSet.of(sort(hidden), false) };
 }
 
-const codeBlocksPlugin = ViewPlugin.fromClass(
-  class {
-    decorations: DecorationSet;
-    atomics: RangeSet<Decoration>;
-
-    constructor(view: EditorView) {
-      ({ decorations: this.decorations, atomics: this.atomics } = buildDecorations(view));
-    }
-
-    update(update: ViewUpdate) {
-      if (update.docChanged || update.selectionSet || update.viewportChanged)
-        ({ decorations: this.decorations, atomics: this.atomics } = buildDecorations(update.view));
-    }
+const codeBlocksField = StateField.define<BuiltDecorations>({
+  create: (state) => buildDecorations(state),
+  update(value, tr) {
+    if (syntaxTree(tr.startState) !== syntaxTree(tr.state) || tr.docChanged)
+      return buildDecorations(tr.state);
+    return value;
   },
-  {
-    decorations: (v) => v.decorations,
-    provide: (plugin) =>
-      EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomics ?? RangeSet.empty),
-  },
-);
+  provide: (field) => [
+    EditorView.decorations.from(field, (v) => v.decorations),
+    EditorView.atomicRanges.of((view) => view.state.field(field).atomics),
+  ],
+});
 
 export function codeBlocks(): Extension {
-  return [codeBlocksPlugin];
+  return [codeBlocksField];
 }
