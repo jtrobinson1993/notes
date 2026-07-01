@@ -76,7 +76,7 @@ const sourceHighlight = HighlightStyle.define([
   { tag: tags.strikethrough, textDecoration: 'line-through' },
   { tag: tags.link, color: '#2563eb', textDecoration: 'underline' },
   { tag: tags.url, color: '#2563eb' },
-  { tag: tags.monospace, fontFamily: 'ui-monospace, monospace', fontSize: '0.9em', color: '#d97706' },
+  { tag: tags.monospace, fontFamily: 'var(--font-mono)', fontSize: '0.9em', color: '#d97706' },
   { tag: tags.quote, color: '#71717a', fontStyle: 'italic' },
   { tag: tags.processingInstruction, color: '#a1a1aa' },
 ]);
