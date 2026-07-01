@@ -5,6 +5,10 @@ import App from './App.vue';
 import { router } from './router';
 import { initTheme } from './lib/theme';
 import { trackViewportHeight } from './lib/viewport';
+// Self-hosted fonts (bundled, no CDN call — same privacy posture as the icons):
+// Geist Sans for UI/prose, Geist Mono for code. Both variable (all weights).
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
 import './style.css';
 
 initTheme();
