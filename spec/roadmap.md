@@ -226,18 +226,20 @@ No plans for video (see v7).
   (home **upload** bandwidth is the ceiling, not CPU). Without DTX these figures
   are the sustained rate, not a peak.
 
-## v8 + v11 — Local-first across minimal relays: your data lives on your devices
+## v8 — Local-first across minimal relays: your data lives on your devices
 
-**Status: long-term goal, large rework, exploration phase. Direction is chosen
-(below); the individual decisions are open. Nothing here is built. This section
-captures the digging we need to do *before* committing engineering.**
+**Status: long-term goal, large rework. Direction is chosen and **all design
+decisions D1–D12 are now resolved** (each marked *decided* below; see also
+"Open questions", all closed). **Nothing here is built yet** — the next step is
+implementation per "Suggested phasing." This section captures the design digging
+done *before* committing engineering.**
 
-This milestone **absorbs the former v8 "multiple servers (Discord-style)"
+This milestone **folds in the earlier "multiple servers (Discord-style)"
 plan**: multi-server survives as a **multi-relay client** (connect to several
-relays, aggregate them in one UI), but v11's local-first decisions **supersede**
-v8's per-server-passkey approach — there is one local master seed and per-relay
-*derived* identities authenticated by the **device key**, not a separate passkey
-and master key per server (see [D4b](#decisions-to-make)).
+relays, aggregate them in one UI), but the local-first decisions here
+**supersede** that plan's per-server-passkey approach — there is one local master
+seed and per-relay *derived* identities authenticated by the **device key**, not a
+separate passkey and master key per server (see [D4b](#decisions-to-make)).
 
 ### Decision & why
 
@@ -291,7 +293,7 @@ non-goal — see below.)
   **mutable shared state (notes, edits, reactions, read state) uses CRDTs** so
   offline edits merge conflict-free. All updates are encrypted and relayed as
   **opaque blobs** — the relay never sees plaintext or CRDT structure.
-- **Multiple relays (absorbs v8).** The client can connect to **several relays at
+- **Multiple relays (the folded-in multi-server plan).** The client can connect to **several relays at
   once** and aggregate them in one UI; each relay is an independent instance you
   add by its **HTTPS URL + invite**. Friends and groups stay **per relay**;
   groups spanning two relays would need federation (a non-goal). Cross-relay
@@ -299,7 +301,7 @@ non-goal — see below.)
   not a per-server passkey.
 
 This inverts today's design (server holds all ciphertext; thin web client; auth
-*and* data need the server). After v11, the **device** is the source of truth and
+*and* data need the server). After v8, the **device** is the source of truth and
 the server is optional plumbing.
 
 ### Decisions to make
@@ -331,18 +333,43 @@ the choice. Candidates:
     Jan 2026; Tauri's Linux webview is effectively broken), which is why local
     unlock shifts to OS keychains/biometrics in **D3**. Mobile is actually the
     *strongest* case there (hardware secure enclaves).
-  - **Recommendation: Capacitor + Electron** for maturity and maximal reuse of the
-    current app, with **Tauri v2** as the single-stack alternative to re-evaluate
-    as its mobile + passkey stories harden. Either way it's **one web codebase**
-    behind native shells. *Status: open — Capacitor+Electron (two mature shells) vs
-    Tauri v2 (one younger stack).*
+  - **Decided: Tauri v2** — one shell stack across all five platforms with tiny,
+    performant binaries; **Electron's ~150 MB / 200–400 MB weight was the deciding
+    con** against the two-shell route, and D3 (below) moving primary local unlock
+    to OS keychain + biometric largely defuses Tauri's weak passkey/PRF story.
+    **Fallback: Capacitor + Electron** if Tauri hits a blocker — primarily if the
+    **Linux WebKitGTK webview can't render the CodeMirror editor acceptably**
+    (being verified now via a containerized WebKitGTK screenshot harness), and
+    secondarily if Tauri's younger mobile targets prove disqualifying. Either way
+    it's **one web codebase** behind native shells. *Status: decided — Tauri v2.
+    The Linux WebKit editor-render gate **passed**: driving the real editor in
+    Linux WebKit vs Linux Chromium (Playwright container, `web/dev/webkit-render-check.mjs`)
+    gave **identical caret-offset motion across concealed markers** (the
+    layout-geometry-dependent behaviour) and correct WebKit live-preview
+    rendering of concealed markup. (A font-weight discrepancy in the Chromium
+    *reference* screenshot traced to the headless container's minimal font set /
+    faux-bold synthesis — a container artifact, not an engine difference.)
+    Capacitor + Electron remains the documented fallback if a later blocker
+    appears.*
 
-**D2 — Local storage engine.** Move durable data to **SQLite** (e.g.
-better-sqlite3 in Electron's main process) + the filesystem for encrypted
-attachment blobs; today's IndexedDB (`idb.ts`) is renderer-sandboxed and
-eviction-prone. Encrypt at rest: either per-field/blob under MK (as today) or
-whole-DB (SQLCipher). Storage is now bounded by the user's disk, not a quota.
-*Status: open — SQLite-in-main vs keep IndexedDB; SQLCipher vs field-level.*
+**D2 — Local storage engine. Decided: SQLite in the Tauri Rust core + SQLCipher
+whole-DB at rest.** Durable data moves to **SQLite**, accessed from the webview
+through the **Tauri Rust core** (async IPC commands / the Tauri SQL plugin), with
+the **filesystem for encrypted attachment blobs**. This escapes browser
+**quota/eviction** — the whole point of going native (D1); today's IndexedDB
+(`idb.ts`) is renderer-sandboxed and evictable, so it's dropped for the native
+durable store (a reduced/online-only web client — D12 — could still use IndexedDB,
+but it wouldn't hold full local history). Cost: a real refactor of `idb.ts` data
+access into IPC calls.
+  - **At-rest model — SQLCipher (whole-DB), *composed with* the unchanged E2E
+    content encryption.** The local store holds **usable (decrypted) data** so
+    local **search/queries** work, and the whole DB — rows, indexes, **metadata** —
+    is encrypted at rest via **SQLCipher**, its key held in the **OS keychain**
+    and biometric-gated (**D3**). Chosen over field-level ciphertext, which would
+    keep DB metadata in cleartext and **kill local search** over content. E2E
+    content keys / MK-sealing are **separate and mandatory** regardless — they
+    protect data in the relay mailbox + transit; SQLCipher only adds
+    device-at-rest protection of the local file. *Status: decided.*
 
 **D3 — Local unlock primitive (the passkey problem).** Because passkey **PRF** is
 unreliable in desktop shells (D1), the *local vault* unlock should lean on
@@ -353,8 +380,26 @@ Linux Secret Service, and on mobile the **iOS Keychain / Secure Enclave** and
 **password (Argon2id)** path as the portable fallback and the **recovery code**
 retained. Mobile is the *strongest* case here (hardware-backed enclaves + Face/
 Touch ID). WebAuthn PRF becomes optional (or via per-OS native modules later).
-Crucially this makes unlock **fully local/offline**. *Status: open — OS-keychain
-+ biometric vs invest in per-OS passkey/PRF native modules.*
+Crucially this makes unlock **fully local/offline**. **Decided: OS keychain +
+biometric is the primary local unlock; PRF stays optional per-platform (never
+load-bearing); password (Argon2id) is the portable cold-start path; recovery
+code retained.** Chosen over investing in per-OS passkey/PRF native modules —
+D3a (below) removes the only requirement that would have forced robust
+cross-platform PRF, so the weak Linux-desktop PRF story is a non-issue.
+*Status: decided.*
+
+**D3a — Passwordless cold-start on a fresh, unpaired device: not required.** A
+brand-new device with no other device present to pair with unlocks via the
+**password (Argon2id)** path, not passwordless. Rationale: such a device holds
+**no local history anyway** (history lives on devices — D8; a lone new device
+has none until it pairs), so "cold-start" here only re-establishes
+identity/relay access, not data recovery — a natural fit for the password path.
+Rejecting the "must be passwordless" alternative avoids needing robust
+cross-platform PRF (broken on Linux desktop — D1) or a server-held wrapped key
+(which would dent the zero-at-rest posture). The model is therefore: biometric/
+keychain day-to-day on provisioned devices, **QR device-linking (D8)** to
+onboard a new device from an existing one, and **password as insurance** for the
+no-other-device case. *Status: decided.*
 
 #### Identity, auth & connectivity
 
@@ -363,10 +408,27 @@ network**, so notes and local chat history are fully usable **offline**. The rel
 is contacted only to send/receive *new* traffic, sync devices, or reach contacts.
 This **decouples "unlock local vault" (offline) from "authenticate to relay"
 (online bearer token)** — today login is server-verified, so this is a real
-redesign of the auth flow. *Status: open — confirm offline-first unlock; relay
-token lifetime/refresh.*
+redesign of the auth flow. **Decided — two independent layers:**
+  - **(A) Vault unlock (local, user-facing).** A **per-device re-lock setting**:
+    *"Stay unlocked"* vs *"Require unlock when the device locks / after N minutes
+    idle."* This is the only knob the user sees; it gates *reading* local data,
+    nothing else.
+  - **(B) Relay token (network, under the hood).** **Short-lived access token**
+    that the device **silently re-signs** using its **device key** (D4b) — no
+    biometric prompt, since the device key sits in the OS keychain and gates the
+    *relay handshake*, not the vault. Chosen over a long-lived token because it
+    makes **revocation actually work with minimal relay state** (to kill a lost
+    device, stop honoring its refresh → its live token expires within the window)
+    and a **leaked token self-heals** (worthless after the window); a long token
+    would need a server-side blocklist (at-rest state, against the zero-at-rest
+    goal) and stays valid until explicitly revoked.
+  - **Payoff of keeping A and B independent:** because the relay token refreshes
+    on the *device key*, not the MK, the **relay connection stays alive to receive
+    pushes/queued sync while the vault is locked** — notifications still arrive;
+    you re-unlock only to *read*.
+  *Status: decided.*
 
-**D4b — Multi-relay auth & identity (the absorbed v8).** With multiple relays
+**D4b — Multi-relay auth & identity (the folded-in multi-server plan).** With multiple relays
 (Architecture, above), the cross-relay primitive is the **device identity keypair**
 (the Ed25519/X25519 device key from
 [device-linking](accounts-and-crypto.md#device-linking-proposed--not-yet-built)),
@@ -378,10 +440,52 @@ identity key from the one local master seed**, so independent relays **cannot
 collude to correlate** the same user across servers — chosen over presenting one
 shared key everywhere. A "same handle on every server" identity is a non-goal
 regardless: each relay mints handles independently, so cross-server handle
-availability was never guaranteed. This **supersedes v8's** "separate account,
-passkeys, master key per server" line. *Status: per-relay-derived identity
-decided; open — challenge/token protocol details, and whether a future opt-in
-global directory could offer a same-handle UX without re-linking identities.*
+availability was never guaranteed. This **supersedes the old multi-server** "separate account,
+passkeys, master key per server" line. **Challenge/token protocol decided:** the
+relay issues a **random nonce**; the device signs a payload that includes both
+the nonce **and the relay's own identity** (so a malicious relay can't replay
+your signature to authenticate as you to a *different* relay); the relay returns
+the **short-lived token** (D4).
+
+**Friend-invite codes (self-describing, redeemed in-app).** An invite encodes
+{relay routing hint + relay key fingerprint + one-time invite token} so the
+recipient never manually picks a server. **Two carriers for the same token:**
+(1) **in-app** — shared through an existing Accord chat/flow, the client
+recognizes a **known prefix** and renders it as a tappable "add friend" button
+(fully reliable, no OS deep-linking, app-controlled); (2) **out-of-app** — a
+**universal / App Link** (`https://<app-domain>/i/…`) with the token + relay
+fingerprint in the URL **`#fragment`** (never sent to any server) that the
+installed app **intercepts**, falling back to a **static, inert "open in Accord"
+page** when the app isn't installed. **Redemption always runs through the app
+client, never a browser session** — so no Referer / User-Agent / cookie /
+fingerprint leak, and the fragment keeps the token + relay-fp off the wire.
+Cross-relay *identity* is not exposed (per-relay identities, above); residual
+**IP-based correlation** between colluding relays is a general metadata property
+handled in **D6**, not invite-specific (mitigated by Tor/VPN, not link format).
+*Status: per-relay-derived identity + challenge protocol + invite format decided;
+open — whether a future opt-in global directory could offer a same-handle UX
+without re-linking identities (see also D4c).*
+
+**D4c — Cross-relay contact continuity (persistent multipath redundancy).**
+**Adopted.** A user may **permanently link** their identities on two or more
+relays for a given contact via an **E2E, relay-invisible "same-me" attestation** —
+signed by an **already-verified** relay identity, so the friend's client
+**auto-trusts** the added relay key (**D5 verify-once** — no fresh out-of-band
+SAS). The link is **additive, not a migration**: a contact becomes reachable via
+{relay A, relay B, …}; if A is offline (outage, update, or shutdown), new
+messages **route via B**, appended to the **single local conversation thread**.
+History is local (D8/D11), so a relay dying never loses history — this only
+restores the *live channel*. **Preserves D4b unlinkability:** the attestation is
+exchanged **friend-to-friend, never posted to a relay**, so relays still cannot
+correlate you across servers — only your friend's client knows. **Requires a
+relay-independent message id** (sender-assigned logical id/clock, not per-relay
+`seq`) for cross-path send/dedup — folded into **D11**. The same signed-pointer
+principle also covers a relay **changing its URL** (relay signs a "moved to
+<newURL>" record against its **pinned key**; clients verify and update the hint).
+**Federation stays out** (no relay-to-relay; cross-relay groups remain a
+non-goal) — this is **1:1 (and all-members-migrate groups) only**. *Status:
+decided — **full v8 scope** (failover routing + cross-path dedup + contact-link
+UI ship in v8, not deferred).*
 
 **D5 — Key directory & MITM (unchanged necessity).** The relay still serves the
 `handle → X25519 public key` directory, so a malicious/compromised relay can
@@ -390,24 +494,104 @@ stores no content. Required regardless of the storage model: **fingerprint /
 safety-number verification** (out-of-band human compare, reusing the device-link
 SAS pattern from [accounts-and-crypto.md](accounts-and-crypto.md#device-linking-proposed--not-yet-built)),
 with **key transparency** (append-only auditable log — CONIKS / Apple Contact Key
-Verification / WhatsApp-style) as the scalable follow-up. *Status: open —
-fingerprints are non-negotiable; pick the transparency design + when.*
+Verification / WhatsApp-style) as the automatic, everyone-gets-it default.
+**Decided — both ship in v8:**
+  - **Key-transparency log (default protection).** A **per-relay**, append-only,
+    **privacy-preserving** auditable key directory (**AKD / CONIKS lineage** —
+    the engine behind WhatsApp KT & Apple CKV; lean on **Meta's open-source AKD**
+    primitives). Clients silently verify **inclusion + consistency proofs** on
+    every fetched key and **self-audit their own binding** (only you know your real
+    key, so a relay inserting a fake key for you trips *your* alarm). Per-relay
+    identities → per-relay directories → per-relay logs; no cross-relay log
+    (federation stays out). Catches relay **equivocation** automatically for the
+    ~99% who never manually verify.
+  - **SAS fingerprint verification (server-trust-free anchor).** Out-of-band human
+    compare (reuses the **device-link SAS** screen — near-free). Trusts **no
+    server at all**, so it covers the log's one early weakness: detecting a relay
+    **split view** otherwise relies on a **gossip/auditor ecosystem** that won't
+    exist yet when few relays are running. Kept in v8 precisely for that bootstrap
+    phase; also the highest-assurance manual check thereafter.
+  - Note: the log's non-equivocation guarantee ultimately depends on **auditing
+    actually happening** (root gossip / independent auditors) — a maturity concern
+    to track, and the reason SAS is not deferred.
+  *Status: decided — transparency log + SAS both in v8.*
 
-**D6 — Relay retention & transport.** Define the mailbox precisely: ciphertext
-held only until every recipient device acks, then deleted; a TTL for devices that
-never come back; group fan-out; and exactly what routing metadata the relay can
-see (sender/recipient/timing — candidates for sealed-sender later). Confirm
-transport is **via the relay, not P2P** (reliability + NAT). *Status: open —
-TTLs, ack protocol, metadata-minimization scope.*
+**D6 — Relay retention & transport. Decided.**
+  - **Mailbox mechanics.** Ciphertext held per recipient *device* only until that
+    device **acks**, then deleted; fully gone once all devices ack. **Undelivered
+    TTL ~30 days** (a device offline past TTL re-syncs from another of the user's
+    devices — D4c/D8 — so TTL expiry ≠ data loss). **Group fan-out:** sender
+    uploads once (payload under the shared group key); the relay copies into each
+    member's queue, acking/deleting per member. **Transport via the relay, not
+    P2P** (NAT/availability; P2P stays a non-goal).
+  - **Metadata — sealed-sender in v8.** The relay does **not** learn the explicit
+    **sender**; it sees only **recipient + timing + sender IP**. Reach is gated by
+    a **delivery-token capability** model: each friend holds a token you issued (on
+    friending, via the invite flow) and the relay checks the **token**, not
+    identity. Friend-requests ride the existing **invite-redemption** flow (the
+    identified / one-time channel). **Honesty on scope:** this removes the
+    *explicit, logged* sender field (strong vs casual logging, log subpoena, a
+    passive/honest-but-curious relay) but is only **partial** against an
+    *actively-correlating* relay — the sender's device uses the **same IP** for its
+    authenticated fetch session and its sealed send, so A→B can still be inferred by
+    IP. True sender-anonymity would need network-layer decoupling (Tor/mixnet) —
+    out of scope. This is the same **IP-correlation** property carried from D4b.
+  - **Anti-abuse / blocking (falls out of the friend model — no server-side block
+    list needed).**
+    - **1:1 block = unfriend → delivery-token revocation.** Unfriending revokes
+      that person's token via **profile-key rotation** (re-issue to remaining
+      friends), so the relay stops accepting their sealed DMs to you; the
+      **invite-only model prevents re-contact** — a blocked user cannot re-add
+      themselves, only a *new* invite you'd never issue could. (Deleting an invite
+      code only cancels a *pending, unredeemed* invite; it does **not** sever an
+      existing friendship.)
+    - **In-group block** (a non-friend in a friends-of-friends group) **=
+      client-side hide.** Fan-out delivers group messages to all members, so a
+      blocked member's messages are simply **not displayed** on your device — no
+      relay-side per-member group filtering (keeps the relay dumb).
+    - **Rate-limiting = IP-based DoS protection** (identity-free): caps volumetric
+      abuse (dozens/sec, hundreds/min) from a single source to protect the relay,
+      **no sender handle needed**. App-level per-sender spam isn't a server concern
+      here — a flooding *friend* is handled by block/unfriend, and there is no
+      stranger-reach surface to spam (invite-only friendship).
+  - **Crypto-spec follow-on:** the delivery-token issuance + **profile-key
+    rotation** revocation design must be written into
+    [`accounts-and-crypto.md`](accounts-and-crypto.md) when built.
+  *Status: decided — sealed-sender in v8 (delivery-token gating + profile-key
+  rotation; IP-based DoS rate-limiting).*
 
-**D7 — Connectivity, voice & push.** The relay keeps **STUN/TURN** + the mediasoup
-SFU for voice (already required; voice has no at-rest data). **Push changes for
-mobile:** web-push/VAPID is desktop/web-only — native apps need **APNs (iOS)** and
-**FCM (Android)**, so the content-free push path must fan out across web-push +
-APNs + FCM behind one abstraction. iOS also restricts background execution, so
-background **sync largely happens on push-wake or foreground**, not continuously —
-which shapes the relay's delivery/queue behaviour (D6). *Status: open — push
-provider abstraction; mobile background-sync strategy.*
+**D7 — Connectivity, voice & push. Decided.**
+  - **Voice unchanged:** the relay keeps **STUN/TURN** + the mediasoup **SFU**
+    (already required; voice has no at-rest data).
+  - **Push = content-free, one abstraction.** Because content is E2E, the push is
+    only a **wake-and-sync** signal; the relay stores per-device push tokens and
+    fans a content-free ping across **web-push/VAPID (desktop/web) + APNs (iOS) +
+    FCM (Android)** behind a single interface.
+  - **Background sync:** **push-wake + foreground** (+ limited OS background
+    refresh), **not continuous** — which is why the D6 mailbox holds until ack.
+  - **Rich notifications via a Notification Service Extension (iOS) / background
+    handler (Android).** The content-free push wakes the extension, which
+    **fetches the queued ciphertext from the relay and decrypts on-device** — so
+    the relay never sees content (works unchanged under **sealed-sender**). The
+    NSE runs with **no biometric prompt**, so decryption needs a key readable while
+    the app/vault is locked; to bound that, use a **dedicated "preview key"** (not
+    the MK or content keys): the sender additionally encrypts a **small preview
+    blob** (name + snippet) to it and the NSE decrypts **only that** — so a
+    compromised/extracted preview key exposes **future previews only**, never
+    history or full content. On failure (locked + unavailable key, timeout, or
+    fresh boot) it **falls back to a generic notification** (generic is always the
+    floor).
+  - **Notification-privacy toggle (a real security control, not cosmetic)** — the
+    setting picks the preview key's **keychain protection class**:
+    1. **Rich always** *(default)* → **AfterFirstUnlock** — lock-screen previews
+       after first boot-unlock; preview key extractable by forensic tooling while
+       locked, but scoped to previews only.
+    2. **Rich only when unlocked** → **WhenUnlocked** — generic on the lock screen,
+       rich once unlocked; preview key never available while locked.
+    3. **Generic** → no NSE decryption at all.
+    Plus a **per-conversation override** (force generic for sensitive chats). Fresh
+    boot (Before-First-Unlock) is always generic until the first unlock.
+  *Status: decided.*
 
 #### Multi-device & data transfer (no server backup)
 
@@ -426,23 +610,41 @@ between *your own* devices:
      encrypted updates for offline devices; CRDTs merge on reconnect.
   - **Tradeoffs to document and decide:** (a) onboarding **requires an existing
     device online**; (b) if **all** devices are lost at once, **data is gone** —
-    the recovery code restores *identity*, not *history*. Mitigations to weigh: a
+    the recovery code restores *identity*, not *history*. **This is a deliberate
+    regression from v2's shipped encrypted *server* backups** — v8 trades that
+    server-side safety net away for the zero-at-rest posture, so losing every
+    device now loses history in a way it doesn't today. Mitigations to weigh: a
     soft requirement of ≥2 devices, and/or an **optional, user-initiated, local
     encrypted export file** the user stores wherever they like (explicitly **not**
-    server-side). *Status: open — accept "need 2 devices," and/or offer a
-    user-controlled offline backup export?*
+    server-side).
+  - **Decided — both mitigations:**
+    - **(a) Soft ≥2-device nudge.** Onboarding **encourages** adding a second
+      device (phone + desktop) so single-device loss isn't catastrophic —
+      **not enforced**, just prompted.
+    - **(b) Optional offline encrypted export.** A **user-initiated** backup
+      *file*, encrypted under the **recovery code / a passphrase**, that the user
+      stores wherever they like (USB, their own cloud) — **never server-side**, so
+      zero-at-rest holds. Restorable on a fresh device (recovery code now restores
+      *history too*, if the user made an export). This is the genuine safety net
+      for a single-device user or a total-loss event; it's a point-in-time
+      snapshot (re-sync deltas from other devices/relays afterward if any exist).
+  *Status: decided — ≥2-device nudge + optional user-controlled offline encrypted
+  export; no server-side backup either way.*
 
 **D9 — Conflict model (CRDTs).** Adopt **Yjs** for mutable synced state. It has an
 official **CodeMirror 6 binding (`y-codemirror.next`)** — the app already uses
 CodeMirror 6 — and Yjs is transport-agnostic, so we encrypt its **binary update
 blobs** under the relevant key and relay them opaquely (proven pattern; Matrix
-relays E2EE Yjs this way). Local persistence via `y-indexeddb` or a SQLite
-adapter. Concurrent offline edits **merge deterministically, conflict-free**.
-Caveat to document: CRDT convergence is *conflict-free*, not *semantically
-perfect* — two people editing the same sentence offline merge into a deterministic
-but possibly awkward result; acceptable for notes. *Status: open — Yjs vs
-Automerge (Yjs favoured: CodeMirror binding, text performance, ecosystem); which
-state is CRDT vs simple last-writer-wins.*
+relays E2EE Yjs this way). **Decided — Yjs**, for the official `y-codemirror.next` binding (the app is CM6),
+large-text performance, ecosystem, and the Matrix-proven E2EE-over-relay pattern.
+**Local persistence via a SQLite/SQLCipher adapter** (through the Tauri Rust core —
+*not* `y-indexeddb`, since D2 dropped IndexedDB for the native store); encrypted
+binary updates relayed opaquely (per-note key for shared notes, per-conversation
+key for mutable chat state). Concurrent offline edits **merge deterministically,
+conflict-free**. Caveat to document: CRDT convergence is *conflict-free*, not
+*semantically perfect* — two people editing the same sentence offline merge into a
+deterministic but possibly awkward result; acceptable for notes. *Status: decided
+— Yjs. Which state is CRDT vs last-writer-wins is settled per-surface in D10/D11.*
 
 #### Feature implications
 
@@ -455,28 +657,71 @@ state is CRDT vs simple last-writer-wins.*
     divergent edits on reconnect — this is the entire reason to adopt a CRDT, and
     it covers both "my two devices" and "two different users editing a shared
     note."
-  - **Version history:** maps onto Yjs's update/snapshot history; decide retention
-    (the current version-history feature must be re-expressed over CRDT state).
+  - **Version history (decided):** re-expressed over Yjs as **coalesced
+    auto-snapshots (~10 min, mirroring today's cadence) + user-created named
+    versions kept indefinitely**, with a **generous retention cap** on
+    auto-snapshots (storage is disk-bounded now, not the old 50-max quota) and
+    update-log compaction beyond the window; restore via the existing History
+    dialog. **Sync scope: fully synced, including co-editors** — a shared note
+    carries a **shared revision timeline** visible to all participants (richest
+    collaborative history; note content syncs via CRDT regardless — this governs
+    past revisions). **Consent requirement:** the **share flow must inform the user
+    that sharing a note also shares its full version history** (so a private edit
+    timeline isn't disclosed unknowingly). *(Note content is never at risk either
+    way — the converged state always syncs across devices + co-editors per
+    D4c/D8; this only concerns who holds past revisions.)*
   - **Offline + auth:** **yes — notes work fully offline.** Unlock is local (D3/D4)
     and the store is local; the network is only needed to *share* changes with
     others or sync a new device.
-  - **Migration:** existing server-stored notes must be pulled down and imported
-    into the local store on first run of the native app.
-  *Status: open — version-history-over-CRDT, migration tooling.*
+  - **Migration (decided approach):** on first native-app run, authenticate →
+    download existing server-stored encrypted notes → decrypt locally → seed each
+    as a Yjs doc in the SQLCipher store; **best-effort import of the legacy server
+    snapshots as read-only "legacy versions"**; then server storage is
+    decommissioned for that user. One-time.
+  *Status: decided — synced version history (with share-time disclosure);
+  migration seeds current state + best-effort legacy-snapshot import.*
 
 **D11 — Chat implications.** Append-only **messages are immutable + ordered by
-`seq`** → simple device replication (no CRDT needed); **edits/reactions/read
-state are mutable** → CRDT or last-writer-wins. History becomes a **local log**
-(Skype-style). Groups still need the relay for fan-out + offline queueing.
-*Status: open — which mutable chat state is CRDT.*
+`seq`** → simple device replication (no CRDT needed). History becomes a **local
+log** (Skype-style). Groups still need the relay for fan-out + offline queueing.
+**Messages carry a relay-independent id** (sender-assigned logical id/clock, not
+per-relay `seq`) so the same message can be sent/deduped across multiple relays —
+required by **D4c** multipath.
 
-**D12 — Trust / distribution (improved by going native).** A **signed,
+**Mutable-state mapping (decided).** The append-only message log stays outside
+Yjs (plain SQLite by `seq`); **mutable overlays live in a per-conversation Yjs
+doc**, encrypted + relayed opaquely:
+  - **Edits → LWW register** (single-author — only the author edits their own
+    message, so last-write-by-logical-clock wins; a full text-CRDT would be
+    overkill).
+  - **Reactions → add-wins CRDT set** (the one place genuine multi-user concurrency
+    happens, so set-CRDT semantics earn their keep).
+  - **Read state → monotonic max register** ("last read `seq`" only moves forward;
+    merge = take the max; no real conflict).
+  - **Deletion → delete-for-everyone only** (there is **no "delete for me"**),
+    implemented via a **propagating tombstone** (delete-wins): the marker replicates
+    to all participants/devices, each removes the content, and the content is
+    **garbage-collected after convergence** (the tombstone is what makes the delete
+    reliably stick despite offline replicas — otherwise the message resurrects on
+    re-sync). Renders as a **"message deleted" placeholder**. (Author deletes their
+    own message; group-moderation deletion is a possible later extension.)
+  - **Typing / presence → ephemeral** — transient signaling, not persisted, not
+    CRDT.
+  *Status: decided.*
+
+**D12 — Trust / distribution (improved by going native). Decided.** A **signed,
 store-distributed native app** plus **reproducible builds** is the strongest
-answer to the served-code problem — strictly better than the web delivery the
-previous v11 draft worried about. The web app, if kept at all, becomes a
-**reduced-capability "online-only" client** (it can't hold full local history),
-or is dropped. *Status: open — keep a thin web client or go native-only;
-code-signing + reproducible-build pipeline.*
+answer to the served-code problem — strictly better than the web delivery an
+earlier web-first draft worried about; **adopted** (store signing/notarization +
+a reproducible-build pipeline so anyone can verify the shipped binary matches
+public source). **Web client: kept as an explicitly-labeled, opt-in "lower-trust
+linked client"** (WhatsApp-web-style) — reduced-capability + **online-only** (can't
+hold full local history, per D2), gated behind an **upfront trust caveat** so users
+knowingly accept that its E2E crypto runs in **server-delivered JS** (the
+served-code surface the native app escapes). Two capability tiers to maintain, in
+exchange for zero-install accessibility + an easier transition from today's
+web-first app. *Status: decided — native (full, signed, reproducible) + web
+(opt-in, flagged, reduced/online-only).*
 
 ### Non-goals
 
@@ -486,41 +731,62 @@ code-signing + reproducible-build pipeline.*
   point. (An *optional, user-controlled, offline* export is the only backup form
   on the table; see D8.)
 - **Federation** across relays (groups spanning two relays) — cross-relay
-  identity, key distribution, and message relay are out of scope (this was the v8
-  exclusion, carried forward).
+  identity, key distribution, and message relay are out of scope (this was the
+  multi-server plan's exclusion, carried forward).
 
 ### Suggested phasing (large rework)
 
 1. **Native shells** (desktop + mobile) wrapping the existing app; move durable
-   storage to local SQLite (D1, D2); import existing server data on first run.
+   storage to local SQLite (D1, D2); import existing server data on first run;
+   stand up **code-signing + reproducible builds** (D12).
 2. **Local offline unlock** — OS keychain / biometric / password, decoupled from
    server auth (D3, D4).
 3. **Minimal relay** — strip durable storage down to the encrypted mailbox +
-   directory + push + STUN/TURN (D6, D7).
+   directory + push + STUN/TURN; **sealed-sender delivery-token gating +
+   profile-key-rotation revocation + IP-based DoS rate-limiting** (D6, D7).
 4. **CRDT sync** — Yjs for notes + mutable state, encrypted-blob relay, offline
    merge (D9, D10, D11).
 5. **Multi-device** — QR pairing + device-to-device history transfer, no server
-   backup (D8).
-6. **Key verification** (D5) — fingerprints as the safety gate; key transparency
-   later.
+   backup; ≥2-device nudge + optional offline encrypted export (D8);
+   **cross-relay contact continuity** — E2E same-me attestations, multipath
+   failover routing + dedup, contact-link UI (D4c).
+6. **Key verification** (D5) — per-relay key-transparency log (AKD/CONIKS-style)
+   as the automatic default **plus** SAS fingerprint verification as the
+   server-trust-free anchor; **both in v8**.
 
 ### Open questions
 
-- **Framework:** Capacitor + Electron (two mature shells) vs Tauri v2 (one younger
-  stack) to cover all five platforms — Win/macOS/Linux/iOS/Android? (D1)
-- **Mobile push:** unify content-free push across web-push, APNs, and FCM behind
-  one relay abstraction; settle the iOS background-sync strategy (D7).
-- **Single-device data-loss:** accept "you need ≥2 devices," and/or ship an
-  optional user-controlled **offline** encrypted backup export? (No server-side
-  backup either way — D8.)
-- **Web client:** keep a reduced-capability online-only web client, or go
-  native-only? (D12)
-- **Desktop passkeys:** invest in per-OS native passkey/PRF modules, or settle on
-  OS-keychain + biometric + password for local unlock? (D3)
-- **Key transparency** design + whether it's v11-scope or a follow-up (D5).
-- **Multi-relay auth:** device-key challenge/token protocol details, and whether
-  an opt-in global directory should later enable same-handle-across-servers UX
-  without re-linking per-relay identities (D4b).
+- **Framework:** **decided — Tauri v2** (one stack, all five platforms, light
+  binaries); the Linux WebKit editor-render check **passed** (caret parity +
+  equivalent rendering vs Chromium). **Capacitor + Electron** stays the documented
+  fallback if a later blocker appears (D1).
+- **Mobile push (D7): decided** — content-free push across web-push/APNs/FCM behind
+  one abstraction; push-wake + foreground sync; rich notifications via NSE/
+  background handler decrypting a **dedicated preview key** on-device; **3-level
+  notification-privacy toggle** (Rich always [default, AFU] / Rich-when-unlocked
+  [WhenUnlocked] / Generic) + per-conversation override.
+- **Single-device data-loss (D8): decided** — **both** a soft ≥2-device onboarding
+  nudge **and** an optional user-controlled **offline** encrypted backup export
+  (under the recovery code, user-stored, never server-side).
+- **Web client (D12): decided** — kept as an **opt-in, explicitly-labeled
+  lower-trust linked client** (reduced/online-only), alongside signed +
+  reproducible-build native apps as the primary, full-capability tier.
+- **Desktop passkeys:** **decided — OS-keychain + biometric + password** for
+  local unlock; PRF optional/never load-bearing. Passwordless cold-start on a
+  fresh unpaired device is **not** a requirement (D3/D3a), so no need for robust
+  cross-platform PRF native modules.
+- **Key transparency (D5): decided** — per-relay AKD/CONIKS-style transparency
+  log **plus** SAS fingerprint verification, **both in v8**. Open sub-thread to
+  track: maturity of the **auditing/gossip ecosystem** the log's split-view
+  detection relies on.
+- **Multi-relay auth:** device-key challenge/token protocol **decided** (nonce +
+  relay-id in signed payload); invite-code format **decided** (self-describing,
+  app-only redemption, two carriers); still open whether an opt-in global
+  directory should later enable same-handle-across-servers UX without re-linking
+  per-relay identities (D4b).
+- **Cross-relay contact continuity (D4c):** persistent multipath redundancy —
+  **decided, full v8 scope** (failover routing + cross-path dedup + contact-link
+  UI all in v8).
 
 ## v12 — Video streaming in voice channels?
 
