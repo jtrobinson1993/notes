@@ -17,3 +17,6 @@ coverage/
 playwright-report/
 test-results/
 .last-run.json
+
+# Throwaway WebKit-harness render output (screenshots + parity JSON)
+web/dev/out/
