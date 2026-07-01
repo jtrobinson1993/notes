@@ -26,7 +26,7 @@ This spec is split by app area so you can load just the part you're working on:
 | Server | Node 22 LTS + Fastify, SQLite (better-sqlite3), single process |
 | Frontend | Vue 3 + Vite, Pinia (+ Pinia Colada for query/cache), Reka UI components, Tailwind v4 |
 | Realtime | `@fastify/websocket` (chat) |
-| Mobile | PWA (installable, offline shell) — no native apps |
+| Mobile | PWA (installable, offline shell) — no native apps (**v8 revisits this**: native shells on all five platforms, see roadmap D1) |
 | Auth | Passkeys only (WebAuthn, `@simplewebauthn`). No passwords, no SSO. Multiple passkeys per account encouraged |
 | Account recovery | Mandatory recovery code at signup (random ≥128-bit, shown once). No other recovery path |
 | Registration | Admin-generated invite links; the invitee creates their own account + passkey |
@@ -36,6 +36,6 @@ This spec is split by app area so you can load just the part you're working on:
 ## Status at a glance
 
 - **Shipped:** v1 (notes, passkeys, recovery, PWA), v2 (sharing, attachments, version history, offline editing, import/export, encrypted backups), v2.1 (Obsidian-style live editor), v2.2 (themes, media optimization, block-level live rendering), v3 phase 1 (friends + 1:1 DMs over WebSocket), v3.1 (chat polish — emoji, GIFs, attachments, reactions/replies/threads), v3.2 (E2EE editable profiles), v3.3 (new-chat modal + groups, reusable modal, sidebar tooltips, infinite scroll), v3 phase 2 (group membership management — add/remove/leave, epoch re-keying, per-group permissions + admin roles), v3 phase 3 (CSP + hardening headers, content-free PWA push), v3.1 – v3.5, v4 (chat sidebar + text/voice channels + note folders & pins), v5 (note & folder sharing, private channels, recursive folder grants).
-- **Planned:** v7 – v8 — see [roadmap.md](roadmap.md). **v6 voice** is implemented
+- **Planned:** v8 (plus far-future v12) — see [roadmap.md](roadmap.md). **v6 voice** is implemented
   on the `v6-voice` branch (embedded mediasoup SFU, E2EE frames, channels + 1:1
   calls) — see [voice.md](voice.md); pending a manual two-browser audio check.
