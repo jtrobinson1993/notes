@@ -514,7 +514,41 @@ Verification / WhatsApp-style) as the automatic, everyone-gets-it default.
   - Note: the log's non-equivocation guarantee ultimately depends on **auditing
     actually happening** (root gossip / independent auditors) — a maturity concern
     to track, and the reason SAS is not deferred.
-  *Status: decided — transparency log + SAS both in v8.*
+  - **v8 auditing (decided — specified, not deferred):**
+    - **Self-audit (baseline):** each client continuously verifies its *own* key
+      binding against the log.
+    - **Passive gossip via root-piggybacking:** every E2E message / CRDT update to
+      a contact on a **shared relay** piggybacks the sender's latest seen **signed
+      log-root(s)**; the recipient checks consistency (append-only ⇒ one root must
+      provably extend the other). **Inconsistent roots = split-view alarm.** Zero
+      extra infra — it rides existing traffic, and friends/groups are per-relay so
+      the people you talk to co-observe the same log.
+    - **Well-known roots endpoint:** the relay publishes its signed roots at a
+      stable URL so anyone can fetch and verify the log's history for free.
+    - **Third-party auditors = independent parties, NOT a service we run (post-v8
+      ecosystem).** An auditor's whole value is being **independent of the relay
+      operator** — an operator auditing its *own* log proves nothing (a malicious
+      operator just runs one that rubber-stamps). So v8 does **not** build or
+      operate auditors; it **enables** them: the public roots endpoint above, plus
+      publishing the **log-format spec + an open-source reference auditor** so
+      independent parties — researchers, privacy watchdogs/NGOs, power users, even
+      *other relay operators* — can run one and raise the alarm on a fork/rewrite
+      (same shape as Certificate Transparency). Crucially, v8 already gets most of
+      this from **users acting as distributed auditors via the piggyback gossip**
+      above; dedicated independent auditors add always-on, whole-log coverage +
+      public accountability — an **enhancement, not a dependency**.
+      - **README action (at build):** add a short **"Verifying this relay's key
+        transparency"** section to the root `README.md` — how to fetch the roots
+        endpoint + run the reference auditor, and our **recommendation to rely on
+        *independent* auditors** (explicitly: operator-run auditors carry no trust
+        value); include pointers/recommendations for third parties who want to run
+        one.
+    - **On detection:** raise the key-integrity alarm (see UI surface) and fall
+      back to **SAS** for affected contacts.
+  *Status: decided — transparency log + SAS both in v8; self-audit + piggyback
+  gossip + well-known roots endpoint specified. Third-party auditors are
+  independent (post-v8 ecosystem we enable, not operate); README to document the
+  auditor recommendation at build.*
 
 **D6 — Relay retention & transport. Decided.**
   - **Mailbox mechanics.** Ciphertext held per recipient *device* only until that
@@ -554,11 +588,58 @@ Verification / WhatsApp-style) as the automatic, everyone-gets-it default.
       **no sender handle needed**. App-level per-sender spam isn't a server concern
       here — a flooding *friend* is handled by block/unfriend, and there is no
       stranger-reach surface to spam (invite-only friendship).
-  - **Crypto-spec follow-on:** the delivery-token issuance + **profile-key
-    rotation** revocation design must be written into
-    [`accounts-and-crypto.md`](accounts-and-crypto.md) when built.
-  *Status: decided — sealed-sender in v8 (delivery-token gating + profile-key
-  rotation; IP-based DoS rate-limiting).*
+  - **Delivery-token mechanics (decided — write into
+    [`accounts-and-crypto.md`](accounts-and-crypto.md) at build).** The existing
+    **profile key** (protects the E2E profile/display-name) is the **access root**:
+    a **delivery token = `KDF(profile_key, "delivery")`**. The recipient registers a
+    **verifier** (hash of the token) with the relay; a sender presents the **token**
+    and the relay checks `hash(token) == verifier` → authorizes delivery **without
+    learning the sender**. The sealed envelope carries the sender's **signed
+    identity certificate inside the ciphertext** (verified against the D5
+    directory/transparency log on decrypt) — recipient learns the sender, relay
+    never does. New-friend bootstrap uses the **invite-redemption** channel (D4b),
+    not a token. Groups use an analogous **group delivery token**.
+    - **Token granularity: shared profile-key token (decided).** One verifier per
+      recipient — the relay never learns your **friend count**. Cost: **block/
+      unfriend rotates the profile key and re-issues to all remaining friends**
+      (O(friends) sealed messages; Signal's model) — accepted for the cleaner
+      metadata, since blocks are rare and friend counts modest. (Group-member
+      removal rotates the group token similarly.)
+  - **Attachment / media transfer (decided).** Each attachment gets a fresh
+    **random per-file key**; only the **ciphertext blob** leaves the device, while
+    the **per-file key + metadata** (name, size, mime, content hash) ride *inside*
+    the E2E message/note (under the conversation/note key) — never to the relay.
+    The relay has a **transient blob store** (same hold-until-ack, zero-at-rest
+    posture as the mailbox): sender uploads ciphertext → blob id; recipients fetch
+    by id with a delivery token; deleted on ack or TTL. **Chunked + resumable**
+    up/downloads; integrity via the content hash. An **inline encrypted thumbnail**
+    (few KB) gives instant image/video preview; the full blob is fetched on demand.
+    Received media persists to the **on-device encrypted store** (D2). **Tunables:
+    100 MB/file cap** (relay-configurable), **undelivered blob TTL 14 days** (then
+    dropped → "attachment expired, re-request from sender").
+  - **Compression on send (decided).** **Images: keep the existing WebP pipeline**
+    (`imageOptimize.ts` — resize to a max dimension + WebP re-encode @~0.82, on by
+    default via `privacy.ts`; also the WebP poster/first-frame capture in
+    `attachments.ts`). **New — video transcode → 720p30** (capped bitrate) *before*
+    encryption, so sender *and* recipients store the smaller version (client-side
+    via bundled ffmpeg in the native shell). Both **default-on**, with an **opt-out
+    "send at original quality"** per file.
+  - **Local retention / storage management (decided).** **Local, per-device** space
+    reclamation — **distinct from D11 delete-for-everyone** (which tombstones
+    globally); this deletes on *your device only* and affects no one else. A
+    **Storage** screen shows space used per conversation (media vs messages). An
+    **opt-in retention policy (off by default** — never silently delete user data**)**
+    offers three modes: **(a) downscale old media** (> X days → ~360p / reduced
+    image dims, still viewable); **(b) evict old media, keep messages** (drop blobs
+    > X days, text stays, media shows a re-download placeholder); **(c) evict
+    everything > X days** (messages + media). Plus manual "clear this conversation's
+    media / clear all". Because every device is a full replica, local eviction sets
+    a **per-device "evicted" watermark** so sync **won't re-download** pruned
+    content; evicted media is **re-hydratable on demand** if still available (another
+    of your devices, or the sender within TTL) — gone everywhere ⇒ shows "expired".
+    Pairs with the D8 export (back up before pruning).
+  *Status: decided — sealed-sender in v8; attachment transfer + on-send compression
+  + local retention policy all specified.*
 
 **D7 — Connectivity, voice & push. Decided.**
   - **Voice unchanged:** the relay keeps **STUN/TURN** + the mediasoup **SFU**
@@ -714,14 +795,34 @@ store-distributed native app** plus **reproducible builds** is the strongest
 answer to the served-code problem — strictly better than the web delivery an
 earlier web-first draft worried about; **adopted** (store signing/notarization +
 a reproducible-build pipeline so anyone can verify the shipped binary matches
-public source). **Web client: kept as an explicitly-labeled, opt-in "lower-trust
-linked client"** (WhatsApp-web-style) — reduced-capability + **online-only** (can't
-hold full local history, per D2), gated behind an **upfront trust caveat** so users
-knowingly accept that its E2E crypto runs in **server-delivered JS** (the
-served-code surface the native app escapes). Two capability tiers to maintain, in
-exchange for zero-install accessibility + an easier transition from today's
-web-first app. *Status: decided — native (full, signed, reproducible) + web
-(opt-in, flagged, reduced/online-only).*
+public source). **Web client: kept as an explicitly-labeled, lower-trust
+"linked-satellite" client** (WhatsApp-web-style), gated behind an **upfront trust
+caveat** (its E2E crypto runs in **server-delivered JS** — the served-code surface
+the native app escapes). Decided shape:
+  - **Satellite-only** — the web client is **QR-linked from an existing native
+    device** and **never holds durable identity** (a brand-new user installs
+    native first; web can't be your sole device). Keeps identity/master key **out
+    of served JS**.
+  - **In-memory only** — no browser persistence (the use case is a possibly-shared/
+    borrowed machine); nothing survives tab close. **Can:** live chat send/receive,
+    fetch **recent** history on demand, view/edit notes online (in-memory CRDT),
+    **join voice** (live, no at-rest data). **Cannot:** hold full offline history,
+    be a full replica, or run backup export/restore.
+  - **Session TTL** — **session-scoped by default** (ends on tab close), opt-in
+    "keep me linked up to N days" for a trusted machine, and **always remotely
+    unlinkable** from the native device's device list.
+  - **Migration of today's web-first users → native: hard cutover at launch.** The
+    switch path: **install native → sign in with existing credentials** (one-time
+    server-verified bootstrap, provisions the device key) **→ automatic first-run
+    migration** pulls server-stored data local (D10) **→ account becomes
+    native-primary**, server drops durable storage, web becomes a satellite. At v8
+    launch, **standalone web is disabled** — users must install native to continue;
+    server data stays **pullable for a short window** (with an export fallback for
+    stragglers), then purged. Fastest route to full zero-at-rest; abrupt UX for
+    users without a native device, accepted.
+  *Status: decided — native (full, signed, reproducible) + web (lower-trust,
+  satellite-only, in-memory, voice-capable); hard cutover from standalone web at
+  launch.*
 
 ### Non-goals
 
@@ -787,6 +888,100 @@ web-first app. *Status: decided — native (full, signed, reproducible) + web
 - **Cross-relay contact continuity (D4c):** persistent multipath redundancy —
   **decided, full v8 scope** (failover routing + cross-path dedup + contact-link
   UI all in v8).
+
+### UI surface — how these decisions reach the user
+
+Where each decision actually shows up on screen. Organized by user-facing area
+(not by decision number); decisions are cross-referenced in **(Dx)**. Items marked
+*open* are UI choices still to settle during design; everything else follows from a
+locked decision. Existing UI invariants still hold — handle is the only identifier
+(`Word#1234`), contacts overlay the E2E display name, friends-gate all 1:1 reach.
+
+- **Install & first run (D1, D8, D12).** Per-platform **native app** downloads
+  (Win/macOS/Linux via signed installers/stores; iOS/Android via App Store/Play);
+  a "verify this build" affordance in **About** exposes the **reproducible-build**
+  hash (D12). First run: create-or-restore identity, then either **restore from an
+  existing device** (QR pairing, below) or start fresh; a **soft "add a second
+  device" nudge** appears once set up (D8).
+
+- **Unlock & lock (D3/D3a, D4).** A **lock screen** offering **biometric** (Face/
+  Touch ID / platform equivalent) as primary, with **password (Argon2id)** as the
+  always-available fallback and **recovery code** entry for cold-start on a fresh,
+  unpaired device (D3a). **Settings → Security** carries the per-device re-lock
+  toggle: *"Stay unlocked"* vs *"Require unlock when the device locks / after N min
+  idle"* (D4). The relay token refreshes silently — never surfaced.
+
+- **Friends, invites & relays (D4b, D4c, D5).**
+  - **Add a friend** → generate a **self-describing invite** rendered three ways:
+    an in-app **"add friend" button** (when shared through an existing Accord chat),
+    a **copyable universal link**, and a **QR code**. Redeeming one opens an **in-app
+    confirmation** (never a browser) (D4b).
+  - **Relays** are managed in settings: **"Add a relay"** = paste its HTTPS URL +
+    accept its invite; a **relay list** shows each connected relay and its status.
+    Handles are per-relay; the UI never implies one identity spans relays (D4b).
+  - **Contact detail** shows the relays a contact is **reachable via** ({Relay A,
+    Relay B, …}) with a **"link across relays"** action and a subtle **failover
+    indicator** ("via Relay B" when A is down) (D4c).
+  - **Verification:** a **Verify** screen shows the **SAS words** to compare
+    out-of-band, a **"verified" badge** on confirmed contacts, and automatic
+    key-integrity warnings in **two tiers** (D5): **soft** — a *contact's key
+    changed* (often a benign new device) shows a **non-blocking inline system
+    message + "unverified again" badge**, cleared by re-doing SAS; **hard** — a
+    *split-view / self-audit failure / inconsistent roots* (real relay-compromise
+    signal from the gossip check) shows a **blocking full-screen alert that halts
+    sending to affected contacts**, prompting SAS re-verify and offering to review/
+    disconnect the relay.
+
+- **Chat (D11, D6).** Message **edits** (pencil affordance, "edited" marker),
+  **reactions** (emoji picker; concurrent reactions merge silently), **read
+  receipts**, and **typing indicators**. **Delete** offers only
+  **delete-for-everyone** (no "delete for me"); deleted messages render as a
+  **"message deleted" placeholder** (D11). **Block** lives in the contact/message
+  menu — for a friend it **unfriends + revokes reach**; for a non-friend in a shared
+  group it **client-side hides** their messages (D6). Sealed-sender and
+  rate-limiting are invisible.
+
+- **Notes (D10, D9).** **Live collaborative editing** with remote **cursors/
+  selections** in shared notes; offline edits **merge with no conflict dialog** on
+  reconnect (D9). The **History dialog** lists auto-snapshots + named versions with
+  **restore** (D10). The **Share dialog** must show the **consent disclosure** that
+  *sharing this note also shares its full version history* (D10). A clear **offline
+  indicator** shows edits are local until sync.
+
+- **Notifications (D7).** **Settings → Notifications** exposes the **3-level
+  privacy toggle** — *Rich always* (default) / *Rich only when unlocked* / *Generic*
+  — plus a **per-conversation override** to force generic for sensitive chats.
+  Notifications render rich (sender + preview, decrypted on-device) or generic per
+  that setting; a first-run **push-permission** prompt gates the OS layer.
+
+- **Multi-device & backup (D8, D4c).** **New-device pairing** flow: the new device
+  shows a **QR**, the primary **scans** it, both confirm a **SAS**, then a **sync
+  progress** view streams history device-to-device. **Settings → Backup** offers
+  **"Export encrypted backup"** (a user-held file, encrypted under the recovery
+  code) and **"Restore from backup"** (D8). Onboarding surfaces the **≥2-device
+  nudge**.
+
+- **Connection, sync & offline status (D4, D6, D9).** A persistent, unobtrusive
+  **status affordance**: online/offline, which relays are connected, and
+  **sync state** (syncing / up-to-date / queued-while-offline). Everything works
+  offline; the UI makes "you're offline, changes will sync" legible rather than
+  erroring.
+
+- **The web client (D12).** A **lower-trust linked satellite**, gated behind an
+  **upfront "limited / lower-trust" notice**. Entry is **"link this browser"** →
+  scan a QR from a native device (no standalone web login). In-memory session: live
+  chat, recent history on demand, online note view/edit, and voice; **no** full
+  history / offline store / backup export (those controls absent or clearly
+  disabled, with a "get the app" prompt). Session ends on tab close by default
+  (opt-in keep-linked); the native device's **device list** can **remotely unlink**
+  it. At v8 launch, **standalone web is disabled** (hard cutover) — today's
+  web-first users **install native → sign in → auto-migrate** (D10), after which
+  web works only as a satellite.
+
+- **Attachments (flagged, see D6 open item).** Send/receive media UI exists today;
+  the v8 change (on-device storage + relay-blob transfer, with size/chunking/resume
+  still to specify) mostly affects **progress/failure/retry** states for large
+  transfers — to be detailed alongside the attachment-transfer design.
 
 ## v12 — Video streaming in voice channels?
 

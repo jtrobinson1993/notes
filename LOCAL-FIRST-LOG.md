@@ -60,11 +60,17 @@ Playwright version (currently 1.60.0).
   need for robust cross-platform PRF, so weak Linux-desktop PRF is a non-issue
   (consistent with the D1 choice). Written into roadmap D3 + new D3a.
 - **D12 — Trust / distribution.** **Adopted:** signed, store-distributed native
-  app + **reproducible builds** (verify shipped binary vs public source) — the
-  answer to the served-code problem. **Web client kept** as an **opt-in,
-  explicitly-labeled lower-trust linked client** (reduced/online-only, no full
-  local history per D2) with an **upfront trust caveat** (its E2E crypto runs in
-  server-delivered JS). Two tiers, for zero-install access + easier transition.
+  app + **reproducible builds** (verify shipped binary vs public source). **Web
+  client = lower-trust "linked satellite"** (flagged, crypto in served JS):
+  **satellite-only** (QR-linked from a native device, never holds durable identity/
+  MK — no standalone web), **in-memory only** (no persistence; shared-machine use
+  case), **CAN** live chat + recent history + online note edit + voice, **CANNOT**
+  full offline history / be a replica / backup export; **session-scoped TTL** (opt-in
+  keep-linked; remotely unlinkable). **Migration = HARD CUTOVER at launch:** install
+  native → sign in (server-verified bootstrap, provisions device key) → auto
+  first-run migration (D10) → native-primary, web becomes satellite; standalone web
+  disabled at launch, server data pullable a short window + export fallback, then
+  purged. (User: hard cutover; asked how web-only users switch.)
 - **D11 — Chat.** Messages append-only, immutable, ordered by `seq` (no CRDT) +
   relay-independent id (D4c); groups need relay fan-out. **Mutable overlays in a
   per-conversation Yjs doc:** edits = **LWW register** (single-author); reactions =
@@ -82,6 +88,25 @@ Playwright version (currently 1.60.0).
   history.** Content always syncs via CRDT regardless — this is only past
   revisions. **Migration:** first-run pulls server notes → decrypt → seed Yjs docs
   in SQLCipher; best-effort import legacy server snapshots as read-only versions.
+- **Attachments / media (decided, under D6/D2).** Per-file key; ciphertext blob →
+  relay **transient blob store** (hold-till-ack, zero-at-rest); key+metadata in the
+  E2E message; **chunked+resumable**; inline encrypted thumbnail; on-device
+  encrypted storage. **100 MB/file cap, 14-day blob TTL.** **Compression on send:**
+  video → **720p30**, images → max dim/quality, default-on + "original quality"
+  opt-out (bundled ffmpeg). **Local retention/storage mgmt (off by default, opt-in,
+  LOCAL-only ≠ delete-for-everyone):** modes = downscale old media→360p / evict
+  media keep messages / evict all > X days; manual clear; **per-device evicted
+  watermark** blocks re-sync; on-demand rehydration if still available. (User asked
+  for compression + retention.) Images **keep existing WebP pipeline**
+  (`imageOptimize.ts` resize+WebP@0.82); video 720p30 is the new transcode.
+- **Sealed-sender token mechanics (decided, D6).** Profile key = access root;
+  **delivery token = KDF(profile_key,"delivery")**; recipient registers a
+  **verifier (hash)** with relay; sender presents token, relay checks hash →
+  authorizes without learning sender. Sender identity cert sealed *inside*
+  ciphertext (verified vs D5 log). **Granularity: SHARED profile-key token** —
+  relay never learns friend count; cost = block rotates profile key + re-issues to
+  all remaining friends (Signal model). Group = analogous group token. Bootstrap
+  via invite (D4b). Write full design into accounts-and-crypto.md at build.
 - **D8 — New-device onboarding + data loss.** Mechanics already specced (QR pair →
   sealed MK → bulk history stream → CRDT sync). **Mitigations for "lose all devices
   = lose history" — BOTH:** (a) soft **≥2-device onboarding nudge** (not enforced);
@@ -192,15 +217,35 @@ Playwright version (currently 1.60.0).
 ## Decisions in progress / next
 
 - **ALL v8 decisions D1–D12 are now locked** (plus sub-decisions D3a, D4b, D4c).
-  See roadmap "Decisions to make" (each marked *decided*) + "Open questions"
-  (each resolved, with residual sub-threads to track noted inline).
-- **Residual sub-threads to track (not blockers):** key-transparency
-  auditing/gossip-ecosystem maturity (D5); sealed-sender's partial protection vs
-  IP correlation (D6, D4b); crypto-spec write-up of delivery-token issuance +
-  profile-key rotation in `accounts-and-crypto.md` (D6); optional future global
-  directory for same-handle-across-relays UX (D4b).
+  See roadmap "Decisions to make" (each marked *decided*) + "Open questions".
+- **All former sub-threads / deferred items now SPECCED (nothing punted to
+  implementation):**
+  1. **Attachments** — per-file key, transient relay blob store, chunked+resumable,
+     inline thumbnail, on-device encrypted storage, 100MB/14d; **compression**
+     (images keep WebP pipeline, video→720p30) + **local retention policy** (opt-in,
+     3 modes, evicted watermark).
+  2. **Sealed-sender token mechanics** — profile-key access root, KDF delivery
+     token + relay verifier, sealed identity cert; **shared token** (block = rotate
+     + re-issue to all).
+  3. **D5 gossip** — root-piggyback on E2E traffic + consistency check (split-view
+     alarm) + well-known roots endpoint. **Auditors = INDEPENDENT third parties**
+     (operator-run ones carry no trust value); v8 *enables* them (public roots +
+     open-source reference auditor + log spec), doesn't operate them — and users
+     already act as distributed auditors via gossip, so it's an enhancement not a
+     dependency. **Build-time: add a "Verifying key transparency" section to
+     README** with the independent-auditor recommendation.
+  4. **Key-integrity warnings** — two-tier (soft inline / hard blocking).
+  5. **Web tier** — lower-trust satellite-only, in-memory, voice-capable,
+     session-TTL; **hard cutover** migration for today's web-first users.
+- Only genuinely-post-v8 items left: IP-correlation mitigation (Tor/mixnet, out of
+  scope); third-party transparency auditors; opt-in global same-handle directory.
+- **UI surface section** in roadmap maps every decision to where it shows up; the
+  two former *open* UI choices (key-warning severity, web boundary) are now resolved.
+- **Branch:** committed + pushed to `origin/v8-local-first-decisions` (4 logical
+  commits: docs, editor fix, fonts, harness). This UI+triage pass is a follow-up
+  edit on that branch.
 - **Next phase = implementation.** Roadmap "Suggested phasing" (6 phases) is the
-  build order. Nothing committed yet — branch off `main` before starting code.
+  build order.
 
 ## Work completed
 
