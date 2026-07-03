@@ -13,5 +13,5 @@ The spec is split by app area under [`spec/`](spec/). Start at
 | [spec/profiles.md](spec/profiles.md) | v3.2 E2EE editable profiles (bio + avatar), visibility, key distribution |
 | [spec/notifications.md](spec/notifications.md) | Foreground chime + tab/badge unread + v3 phase 3 PWA install + content-free background Web Push |
 | [spec/security.md](spec/security.md) | Rendering/XSS safety, CSP, metadata, threat model |
-| [spec/roadmap.md](spec/roadmap.md) | Phasing + future versions (v3.1 – v8) |
+| [spec/roadmap.md](spec/roadmap.md) | Phasing + future versions (v3.1 – v9) |
 | [spec/testing.md](spec/testing.md) | The unit + e2e test plan (Vitest + Playwright) |
