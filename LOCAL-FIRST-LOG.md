@@ -51,6 +51,22 @@ Playwright version (currently 1.60.0).
 
 ## Decisions locked
 
+- **D14 — group authority: DECIDED (owner + admins kept).** Signal (GroupsV2) =
+  encrypted server-held group state + zkgroup anonymous credentials — zk part
+  overkill for us (relay already learns membership via fan-out; posture = no
+  *content/media*, user clarified). **Relay-held owner/admin-SIGNED membership
+  record**, versioned vs rollback → keeps v4's shipped owner/admin roles (user:
+  keep them; owner-only rejected — offline-owner blocks changes, owner loss
+  freezes group), kills offline races, stores no content; relay learns which
+  admin acted (documented trade).
+- **Per-operator push keys: IMPOSSIBLE (D7 amendment #2).** User asked if relay
+  operators can bring their own keys to avoid the gateway — no: APNs/FCM creds
+  are bound to the *app* (bundle id / Firebase project), only the publisher's
+  dev account can mint them; an operator would have to fork + distribute their
+  own app (breaks D12 single signed/reproducible build). This app-binding is
+  why Matrix built Sygnal. Partial exception: **Android UnifiedPush** (operator
+  self-hosts a distributor, e.g. ntfy, once the app supports it); **iOS has no
+  equivalent**. Gateway remains the post-v8 answer for third-party relays.
 - **Ordering (D11 amendment).** Relay stamps arrival time (stateless, no
   counter); sort key = **(relayTs, senderId, msgId)**; **NO dense seq is ever
   derived** (devices hold different subsets — floors/eviction/mid-history
@@ -251,14 +267,6 @@ Playwright version (currently 1.60.0).
 
 ## Decisions in progress / next
 
-- **D14 — group authority: PROPOSED, awaiting user confirm.** Signal (GroupsV2)
-  = encrypted server-held group state + zkgroup anonymous credentials (blind but
-  authoritative). The zk part is overkill for us — relay already learns
-  membership via fan-out queues, and the posture is about *content/media* (user
-  clarified). **Leaning: relay-held owner/admin-SIGNED membership record**,
-  versioned vs rollback → keeps v4's shipped owner/admin roles, kills offline
-  races, stores no content; relay learns which admin acted (trade). Open
-  sub-decision: owner+admins vs owner-only.
 - **New roadmap section: "Remaining pre-implementation spec work"** — the specs
   still to write, mapped to phases: relay wire/API spec + state inventory
   (security.md), D14 group state, SQLite schema + Rust/webview IPC boundary,

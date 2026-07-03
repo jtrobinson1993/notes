@@ -685,8 +685,16 @@ Verification / WhatsApp-style) as the automatic, everyone-gets-it default.
     pings, sees only {push token, timing, relay IP}) is **post-v8**; until then a
     third-party relay has web-push only — **no timely mobile wake** (iOS gives no
     reliable background wake without APNs; Android Doze kills sockets without
-    FCM). UnifiedPush (Android, user-chosen distributor) is a possible later
-    addition that bypasses both Google and the gateway.
+    FCM). **Per-operator push keys are not possible:** APNs/FCM credentials are
+    bound to the *app* (its bundle id / Firebase project), not to the server —
+    only the app publisher's developer account can mint keys that push to the
+    app, so a relay operator can't obtain their own (short of forking and
+    distributing their own app under their own bundle id + store account, which
+    breaks the single signed/reproducible build, D12). This app-binding is
+    exactly why Matrix ended up with Sygnal. Partial exception — **Android via
+    UnifiedPush**: once the app supports it, an operator (or user) can self-host
+    a distributor (e.g. ntfy) — no Google, no gateway; **iOS has no equivalent**
+    (even ntfy's iOS delivery rides a central APNs gateway).
   *Status: decided.*
 
 #### Multi-device & data transfer (no server backup)
@@ -942,7 +950,7 @@ never oversell what revocation covers:
     **new seed / new identity, re-verified with contacts out-of-band (SAS)**.
     Tier 1 must never be presented as covering this case.
 
-**D14 — Group authority (proposed — confirm before build).** Who enforces
+**D14 — Group authority (decided).** Who enforces
 membership/roles with no authoritative server. **Signal's answer (GroupsV2):**
 the member list + roles live **encrypted on Signal's servers** behind zkgroup
 anonymous credentials — server-authoritative but blind. The full zk machinery
@@ -956,11 +964,11 @@ update only if signed by the owner/an admin; members verify the same signatures
 client-side. This keeps v4's shipped **owner/admin roles** viable (no demotion
 on migration), resolves offline admin races by relay ordering, and stores no
 content. Trade to note: the relay learns *which admin* performed each
-membership change (it must verify the signature). **Open sub-decision:** keep
-owner **+ admins** (as shipped in v4) vs collapse to **owner-only**
-(single-writer membership — simpler still, but owner-offline blocks changes and
-total owner loss freezes the group; would need explicit ownership transfer).
-*Status: proposed — leaning relay-held signed record with owner+admin roles.*
+membership change (it must verify the signature). **Roles: owner + admins are
+kept** (as shipped in v4 — no demotion on migration); owner-only was considered
+and rejected (owner-offline would block all membership changes, and total owner
+loss would freeze the group). *Status: decided — relay-held signed group-state
+record, owner + admin roles.*
 
 ### Non-goals
 
@@ -995,9 +1003,9 @@ total owner loss freezes the group; would need explicit ownership transfer).
 
 ### Remaining pre-implementation spec work
 
-The design decisions are closed (D1–D13, UI-1–5; D14 pending one confirm); these
-are the spec documents/sections still to write before — or alongside — the phase
-that consumes them:
+The design decisions are closed (D1–D14, UI-1–5); these are the spec
+documents/sections still to write before — or alongside — the phase that
+consumes them:
 
 - **Relay wire/API spec + relay state inventory** — endpoints (device
   registration, mailbox fetch/ack, verifier registration, blob store, directory
@@ -1005,8 +1013,8 @@ that consumes them:
   client dedupe), and an honest enumeration of what the relay *does* persist
   (directory, KT log, verifiers, queues, push tokens, transient blobs) →
   [security.md](security.md) threat-model update. (Feeds phase 3.)
-- **Group authority (D14)** — confirm the leaning, then spec the signed
-  group-state record + role rules. (Phase 3/4.)
+- **Group authority (D14)** — spec the signed group-state record + owner/admin
+  role rules. (Phase 3/4.)
 - **Local SQLite schema + Rust/webview boundary** — table design (messages, CRDT
   docs, attachments, watermarks, outbox) and which side of the IPC holds keys /
   runs crypto. (Phase 1.)
@@ -1068,8 +1076,8 @@ that consumes them:
   (derived = per-relay identity keys only; everything rotatable is
   random-and-wrapped) + two-tier revocation (lost-device rotation vs identity
   compromise).
-- **Group authority (D14): open** — leaning a relay-held **signed** group-state
-  record (metadata-only at rest); confirm owner+admins vs owner-only.
+- **Group authority (D14): decided** — relay-held **signed** group-state record
+  (metadata-only at rest), owner + admin roles kept as shipped in v4.
 - **Push for third-party relays: deferred post-v8** — the first-party relay
   holds the APNs/FCM keys directly (D7); a Sygnal-style vendor gateway comes
   later, when third-party relays exist.
