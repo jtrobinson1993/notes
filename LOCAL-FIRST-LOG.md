@@ -241,6 +241,39 @@ Playwright version (currently 1.60.0).
   scope); third-party transparency auditors; opt-in global same-handle directory.
 - **UI surface section** in roadmap maps every decision to where it shows up; the
   two former *open* UI choices (key-warning severity, web boundary) are now resolved.
+- **NOW walking through UI/UX design decisions** (new "### UI/UX design decisions"
+  subsection in roadmap) — distinct from the D-decisions + the surface map. Areas:
+  (1) multi-relay presentation, (2) nav shell, (3) onboarding/first-run/migration,
+  (4) friends+invites+relay mgmt, (5) verification, (6) security settings,
+  (7) storage/retention, (8) chat, (9) notes, (10) web satellite, (11) status.
+  - **UI-1 — multi-relay = UNIFIED AGGREGATE (decided).** One inbox/friends/notes;
+    relays = background; "via Relay X" only when relevant; relay mgmt in Settings.
+    Matches D4c. **Forces:** contacts keyed on **verified identity not handle**
+    (same handle can differ across relays) — D4c-linked merge, unlinked same-handle
+    stay distinct w/ display-name/avatar/relay-tag disambiguation.
+  - **UI-2 — nav shell = keep inherited (decided).** Top-level Notes·Chat·Friends·
+    Settings, responsive rail/drawer; new v8 surfaces (Relays/Devices/Verification/
+    Notifications/Storage/Backup) under Settings; no per-relay switcher.
+  - **UI-3 — onboarding (decided).** Smart entry New/Existing. New: handle → unlock
+    front-loaded (biometric+mandatory password+confirmed recovery code) → prominent
+    skippable 2-device nudge. Existing: **pairing-first** (QR/SAS, brings history) ›
+    fallbacks recovery-code / import-backup. Web migrant: sign-in → auto-migrate.
+  - **Determined-by-derivation (locked, per surface map, no separate walk):**
+    security settings, notification toggle, storage screen, chat surfaces, notes
+    surfaces, verification badges/warnings, status, web gating.
+  - **UI-4 — add-someone / connect-relay (decided).** Add-friend → 3-carrier invite
+    (QR/link/in-app), relay-picker if multi; "I have an invite" paste/scan/tap;
+    unknown-relay invite → inline "Join [relay]?" then add; manual relay add in
+    Settings. **Relay self-names**; **welcome modal on join → set local nickname**
+    ("Bob's server"). **Default relay DEFERRED** (may add first-party default(s)
+    later; until then new user joins a relay during onboarding to mint handle).
+  - **UI-5 — contact surface = PROMOTE TO FULL CONTACT PAGE (decided).** Today only
+    `ProfileDialog.vue` (small modal: avatar/name/bio, read-only). Keep it as
+    quick-peek + "View full profile" → new **full contact page**: identity ·
+    verification (SAS + key warnings) · reachability (D4c relays/failover) · shared
+    notes+groups · notif override · Block. (User corrected me: no contact screen
+    exists today; it's the profile-pic modal.)
+  - **UI walkthrough COMPLETE** (UI-1..UI-5 + determined-by-derivation set).
 - **Branch:** committed + pushed to `origin/v8-local-first-decisions` (4 logical
   commits: docs, editor fix, fonts, harness). This UI+triage pass is a follow-up
   edit on that branch.

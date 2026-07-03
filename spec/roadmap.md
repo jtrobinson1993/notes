@@ -889,6 +889,84 @@ the native app escapes). Decided shape:
   **decided, full v8 scope** (failover routing + cross-path dedup + contact-link
   UI all in v8).
 
+### UI/UX design decisions
+
+Foundational UI/UX choices (distinct from the "decisions" above and from the
+surface-map below), worked through one at a time.
+
+- **UI-1 — Multi-relay presentation: unified aggregate (decided).** Several
+  connected relays appear as **one** friends list / chat inbox / notes space;
+  **relays are background connectivity**, not separate worlds. A subtle **"via
+  Relay X"** indicator appears only when relevant (e.g. on a contact's failover
+  state). Relay management lives in **Settings**. Chosen to match **D4c** (one
+  contact, reachable across relays, converging to a single thread) and the
+  architecture's "aggregate in one UI"; rejected the Discord-style per-relay
+  switcher (fights D4c, adds friction).
+  - **Forced consequence — same-handle disambiguation.** Because each relay mints
+    handles independently, `Alice#1234` on Relay A and Relay B may be **different
+    people**. So **contacts are keyed on verified identity, not the handle string**:
+    D4c-linked identities **merge into one entry**; unlinked same-handle contacts
+    stay **distinct entries**, disambiguated by E2E display name / avatar /
+    verification state, with a **relay tag surfaced whenever two entries would
+    otherwise look identical**.
+
+- **UI-2 — Navigation shell: keep the inherited responsive shell (decided).**
+  Top-level stays **Notes · Chat · Friends · Settings** (as today), responsive
+  desktop rail (`AppSidebar`) / mobile drawer-or-tabs (`AppDrawer`). **All new v8
+  surfaces live under Settings** — **Relays, Devices, Verification, Notifications,
+  Storage, Backup** — with contextual entry points elsewhere (e.g. verify from a
+  contact, link a device from onboarding). No per-relay switcher (UI-1 is unified).
+  Rejected promoting new destinations to top-level (heavier nav, diverges from
+  today).
+
+- **UI-3 — Onboarding / first-run / migration (decided).** A **single smart entry**
+  (Welcome → *New* / *Existing*). **New user:** mint handle → **unlock setup with
+  all factors front-loaded** (biometric primary + **mandatory password** +
+  **recovery code shown & confirmed** — front-loaded because the recovery code is
+  the cold-start path *and* the D8 backup-export key) → **prominent-but-skippable
+  "add a second device" nudge** → in. **Existing user, new device:** the
+  **highlighted primary path is "Pair with a device you have"** (QR + SAS → sealed
+  MK + history stream, D8), with clearly-secondary fallbacks **"Use recovery code"**
+  (warns: identity only, no history) and **"Import backup file"** (D8 export).
+  **Web→native migrant (hard cutover):** *Sign in* → existing-credential bootstrap
+  → **auto-migration progress** (pulls server data local, D10) → local unlock setup
+  → in. Design intent: pairing is the emphasized restore path; unlock factors are
+  front-loaded, not progressive.
+
+- **UI-4 — Add someone / connect a relay (decided).**
+  - **Add friend** (unified; per-relay under the hood): **"Add friend"** →
+    *generate invite* (QR + copyable link + in-app share button, D4b); if on
+    multiple relays, **pick which relay** (default = home relay). Or **"I have an
+    invite"** → paste / scan / tap → in-app confirmation.
+  - **Invite auto-joins an unknown relay:** redeeming an invite for a relay you're
+    not on shows inline **"Join [relay] to connect with [name]?"** → joins (derives
+    per-relay identity, claims handle) *then* adds the friend — no separate step.
+  - **Manual relay add:** Settings → Relays → **Add relay** (HTTPS URL + invite).
+  - **Relay naming:** a relay provides its **own self-declared name** (used in the
+    "via [relay]" indicator, UI-1). On **joining**, a **welcome modal** offers to
+    set a **local nickname** ("Bob's server") that overrides the display for that
+    user; nickname is local-only.
+  - **Default relay: deferred (not in v8 initially).** Architecture keeps room for
+    **configurable first-party default relay(s)** that new users auto-join — *may be
+    added later*. Until then a **brand-new user joins a relay during onboarding**
+    (enter a URL or redeem an invite) to mint their handle; a default relay later
+    would smooth this cold-start. *(Reconciles UI-3: the new-user path includes a
+    "join a relay to get started" step while no default exists.)*
+
+- **UI-5 — Contact surface: promote to a full contact page (decided).** Today the
+  only per-contact UI is **`ProfileDialog.vue`** — a small modal showing
+  avatar/display-name/bio, read-only. v8 adds surfaces with nowhere to live
+  (verification/SAS, multipath reachability, block, shared notes + mutual groups,
+  per-conversation notification override). Decision: **keep `ProfileDialog` as a
+  quick-peek** (avatar · name · handle · verified badge · a "View full profile"
+  entry) and add a **dedicated full contact page** holding the detail: **identity**
+  (display name, per-relay handles) · **verification** (verified state, "Verify via
+  SAS", key-change notices — hard alarms as a blocking banner) · **reachability**
+  (D4c relays + failover, "link another relay") · **shared** (notes + mutual
+  groups) · **notification override** (D7) · **Block** (= unfriend + revoke, D6).
+  Chosen over cramming everything into the modal — more room for the new surfaces,
+  at the cost of a new page to build.
+
 ### UI surface — how these decisions reach the user
 
 Where each decision actually shows up on screen. Organized by user-facing area
