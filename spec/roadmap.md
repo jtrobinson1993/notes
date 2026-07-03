@@ -672,6 +672,21 @@ Verification / WhatsApp-style) as the automatic, everyone-gets-it default.
     3. **Generic** → no NSE decryption at all.
     Plus a **per-conversation override** (force generic for sensitive chats). Fresh
     boot (Before-First-Unlock) is always generic until the first unlock.
+  - **Push credentials (decided) — no gateway in v8.** APNs/FCM sends require the
+    app vendor's push keys (an APNs `.p8` auth key / an FCM service-account key —
+    deployment secrets generated in the developer account, **not** App Store
+    login credentials). The **first-party relay holds them directly** (gitignored
+    `.env`, exactly like the existing integration keys) and pushes itself — the
+    vendor and the relay operator are the same party at launch, so **no new
+    infrastructure**. Keys are **never embedded in the public source or
+    binaries** (trivially extractable → anyone could push-spoof/spam as the app
+    and get the key revoked). A vendor-run **push gateway for third-party
+    self-hosted relays** (Matrix/Sygnal-style: stateless, forwards content-free
+    pings, sees only {push token, timing, relay IP}) is **post-v8**; until then a
+    third-party relay has web-push only — **no timely mobile wake** (iOS gives no
+    reliable background wake without APNs; Android Doze kills sockets without
+    FCM). UnifiedPush (Android, user-chosen distributor) is a possible later
+    addition that bypasses both Google and the gateway.
   *Status: decided.*
 
 #### Multi-device & data transfer (no server backup)
@@ -762,12 +777,54 @@ deterministic but possibly awkward result; acceptable for notes. *Status: decide
   *Status: decided — synced version history (with share-time disclosure);
   migration seeds current state + best-effort legacy-snapshot import.*
 
-**D11 — Chat implications.** Append-only **messages are immutable + ordered by
-`seq`** → simple device replication (no CRDT needed). History becomes a **local
-log** (Skype-style). Groups still need the relay for fan-out + offline queueing.
-**Messages carry a relay-independent id** (sender-assigned logical id/clock, not
-per-relay `seq`) so the same message can be sent/deduped across multiple relays —
-required by **D4c** multipath.
+**D11 — Chat implications.** Append-only **messages are immutable** → simple
+device replication (no CRDT needed). History becomes a **local log**
+(Skype-style). Groups still need the relay for fan-out + offline queueing.
+**Messages carry a relay-independent id** (sender-assigned unique id) so the same
+message can be sent/deduped across multiple relays — required by **D4c** multipath.
+
+**Ordering (decided) — relay arrival timestamp replaces server-assigned `seq`.**
+Today the server assigns a dense per-conversation `seq` (`MAX(seq)+1` in a DB
+transaction) and replies/edits/read-state all anchor on it; a zero-at-rest relay
+can't own a durable counter, and D4c multipath means no single relay even sees
+every message. The v8 model:
+  - **Sort key = `(relayTimestamp, senderId, messageId)`.** The relay stamps each
+    message at arrival (stateless — no counter to persist); the tuple tiebreak
+    makes same-millisecond collisions deterministic.
+  - **No dense integer `seq` is ever derived.** Devices hold different subsets of
+    a conversation (history floors, D6 local eviction, mid-history pairing), so
+    any local "sort and number" diverges across devices. Positions are never
+    materialized — only the sort key.
+  - **Anchors are message ids, not positions.** Replies, edits, and reactions
+    reference the sender-assigned message id; `ReplyRef` keeps embedding a
+    snapshot `{id, timestamp, sender, preview}` so every client renders the same
+    anchor even if the original is missing/evicted. **Read state = max
+    `(timestamp, id)` seen** — still a monotonic max register (overlay above).
+  - **Multipath mixes relay clocks — tolerated.** Under D4c failover one thread
+    can carry stamps from two relays with clock skew; fine for display order
+    (seconds, not hours), and duplicates sent down both paths dedupe by message
+    id. Nothing may assume one global clock.
+  - **Threat-model note:** the relay is trusted for *order* (it could reorder or
+    backdate stamps). Low impact — content is authenticated, replies snapshot
+    their context, and a relay can already withhold/delay delivery — but it
+    belongs in [security.md](security.md) when built.
+  - Offline-composed sends are stamped at upload (a batch lands at upload time,
+    not compose time — Signal behaves the same); local echo orders provisionally
+    until the ack returns the stamp.
+
+**Member-served history backfill — integrity (decided).** In local-first, a new
+joiner's history (per the inviter's share-history choice) is served from
+*members'* devices, so backfill must be tamper-evident: every message is
+**individually signed by its sender's identity key** over `{message id,
+conversation, content}` inside the E2E envelope — this extends D6's sealed
+sender *certificate* (which proves identity) to also sign the *content*. A
+member serving history can therefore never forge or alter what someone else
+said; the joiner verifies each signature against the D5 directory/transparency
+log. Residual (documented): a serving member can **omit** messages (selective
+history) — not fully preventable; mitigated by preferring the owner's / multiple
+devices as backfill sources. The relay arrival timestamp sits outside the
+signature (it's assigned post-send), so backfill *order* is only as trustworthy
+as the relay stamp — same trusted-for-order note as above.
 
 **Mutable-state mapping (decided).** The append-only message log stays outside
 Yjs (plain SQLite by `seq`); **mutable overlays live in a per-conversation Yjs
@@ -824,6 +881,87 @@ the native app escapes). Decided shape:
   satellite-only, in-memory, voice-capable); hard cutover from standalone web at
   launch.*
 
+#### Key hierarchy, revocation & groups
+
+**D13 — Key hierarchy (decided).** One derivation tree for every key v8
+introduces or keeps. The load-bearing split is **derived** (re-derivable from
+the seed; *cannot* rotate without rotating the seed) vs **random-and-wrapped**
+(independently rotatable) — anything that must rotate on revocation is random.
+(Write the as-built version into
+[`accounts-and-crypto.md`](accounts-and-crypto.md) at build.)
+
+```
+MK / master seed (random, per user — every full device holds it)
+│
+│  at-rest wrappings (ways to open the vault):
+│    ← OS-keychain vault key (biometric-gated; per device)      [D3]
+│    ← Argon2id(password)                                        [portable fallback]
+│    ← KDF(recovery code)                                        [cold start]
+│
+├─ DERIVED (deterministic, domain-separated KDF):
+│    └─ per-relay identity keypair  = KDF(MK, "relay-id" ‖ relay-fp)   [D4b]
+│
+└─ RANDOM, wrapped under MK (rotatable):
+     ├─ profile key                 rotates on: unfriend (the "block" action, D6),
+     │   │                                      device revocation
+     │   └─ delivery token = KDF(profile key, "delivery") → hash → relay verifier
+     ├─ per-conversation epoch keys rotates on: membership change, device revocation
+     ├─ per-note keys               rotates on: share revocation, device revocation
+     └─ preview key (also sealed to contacts; keychain class per D7 toggle)
+
+Per-device (random, OS keychain, never leaves the device):
+     ├─ device keypair — signs relay challenges → short-lived token (D4);
+     │                    pairing target for sealed MK (D8)
+     └─ SQLCipher key — local DB at rest (D2)
+
+Standalone:
+     ├─ per-file attachment keys (random per file, carried inside the E2E message)
+     └─ backup export key = KDF(recovery code / passphrase, "backup") (D8)
+```
+
+  - Terminology: **"block" is not a separate mechanism** — 1:1 block = unfriend →
+    profile-key rotation → delivery-token revocation, and in-group block is a
+    client-side hide (both per D6). The tree's rotation triggers say "unfriend"
+    accordingly.
+
+**D13a — Device revocation: two named tiers (decided).** So the UI and docs
+never oversell what revocation covers:
+  - **Tier 1 — "revoke lost device"** (the realistic case: lost/stolen but
+    locked; keychain + SQLCipher intact). Stop honoring the device's token
+    refresh (D4 — its relay access dies within the token window) **and rotate
+    everything it could decrypt**: profile key (+ re-issue delivery tokens to
+    all friends), every conversation/group epoch key it was in, every
+    shared-note key, and the preview key — O(friends + conversations + shared
+    notes) sealed messages, the same machinery as unfriend/member-removal
+    applied everywhere at once. Past content is compromised regardless (the
+    device held plaintext) — the same documented boundary as v5 revocation.
+  - **Tier 2 — "identity compromise"** (device known compromised while
+    *unlocked*). The attacker holds the master seed itself, so they can
+    re-derive the per-relay identity keys — the one thing rotation can't fix —
+    and could even sign a fraudulent "key rotation" attestation. Recovery =
+    **new seed / new identity, re-verified with contacts out-of-band (SAS)**.
+    Tier 1 must never be presented as covering this case.
+
+**D14 — Group authority (proposed — confirm before build).** Who enforces
+membership/roles with no authoritative server. **Signal's answer (GroupsV2):**
+the member list + roles live **encrypted on Signal's servers** behind zkgroup
+anonymous credentials — server-authoritative but blind. The full zk machinery
+buys us nothing, though: our relay **already learns group membership from
+fan-out queues** (D6 copies into each member's queue), and the zero-at-rest
+posture is about **content and media** (the legal/operational honeypot), not
+small membership metadata. **Leaning: a relay-held, signed group-state
+record** — the relay stores the current membership + roles document (it needs
+the member list to fan out anyway), versioned against rollback, and accepts an
+update only if signed by the owner/an admin; members verify the same signatures
+client-side. This keeps v4's shipped **owner/admin roles** viable (no demotion
+on migration), resolves offline admin races by relay ordering, and stores no
+content. Trade to note: the relay learns *which admin* performed each
+membership change (it must verify the signature). **Open sub-decision:** keep
+owner **+ admins** (as shipped in v4) vs collapse to **owner-only**
+(single-writer membership — simpler still, but owner-offline blocks changes and
+total owner loss freezes the group; would need explicit ownership transfer).
+*Status: proposed — leaning relay-held signed record with owner+admin roles.*
+
 ### Non-goals
 
 - **Pure peer-to-peer / DHT.** Availability (offline delivery), groups, and NAT
@@ -854,6 +992,41 @@ the native app escapes). Decided shape:
 6. **Key verification** (D5) — per-relay key-transparency log (AKD/CONIKS-style)
    as the automatic default **plus** SAS fingerprint verification as the
    server-trust-free anchor; **both in v8**.
+
+### Remaining pre-implementation spec work
+
+The design decisions are closed (D1–D13, UI-1–5; D14 pending one confirm); these
+are the spec documents/sections still to write before — or alongside — the phase
+that consumes them:
+
+- **Relay wire/API spec + relay state inventory** — endpoints (device
+  registration, mailbox fetch/ack, verifier registration, blob store, directory
+  + KT proofs, D4b challenge/token, push tokens), ack semantics (at-least-once +
+  client dedupe), and an honest enumeration of what the relay *does* persist
+  (directory, KT log, verifiers, queues, push tokens, transient blobs) →
+  [security.md](security.md) threat-model update. (Feeds phase 3.)
+- **Group authority (D14)** — confirm the leaning, then spec the signed
+  group-state record + role rules. (Phase 3/4.)
+- **Local SQLite schema + Rust/webview boundary** — table design (messages, CRDT
+  docs, attachments, watermarks, outbox) and which side of the IPC holds keys /
+  runs crypto. (Phase 1.)
+- **Friends-surface changes** — invite-only reach supersedes the shipped
+  friend-request-by-handle flow in [chat.md](chat.md); respec it + the CLAUDE.md
+  friends-gate invariant wording (enforcement moves from server checks to
+  delivery-token capabilities). (Phase 3.)
+- **Migration runbook** — cutover sequencing: bootstrap endpoint, pull window,
+  straggler export, purge criteria, the mixed-version period. (Phases 1/6.)
+- **Backup export format** — versioned container, exact contents, restore-merge
+  semantics against existing local state. (Phase 5.)
+- **KT log format + reference-auditor scope** — the published spec D5 promises.
+  (Phase 6.)
+- **Voice under v8** — signaling auth under D4 tokens; which relay carries the
+  ring for a D4c-linked contact. (Phase 3.)
+- **v8 test strategy** — [testing.md](testing.md) addendum: Rust-core units,
+  multi-device sync simulation, CRDT convergence properties, Tauri e2e. (Phase 1.)
+- **Protocol/version compatibility** — envelope + CRDT schema versioning across
+  app versions (your own devices will run different versions against each
+  other). (Phase 4.)
 
 ### Open questions
 
@@ -888,6 +1061,18 @@ the native app escapes). Decided shape:
 - **Cross-relay contact continuity (D4c):** persistent multipath redundancy —
   **decided, full v8 scope** (failover routing + cross-path dedup + contact-link
   UI all in v8).
+- **Message ordering (D11): decided** — relay arrival timestamp; sort key
+  `(relayTs, senderId, messageId)`; anchors by message id; **no dense `seq` is
+  ever derived**.
+- **Key hierarchy & revocation (D13/D13a): decided** — derivation tree
+  (derived = per-relay identity keys only; everything rotatable is
+  random-and-wrapped) + two-tier revocation (lost-device rotation vs identity
+  compromise).
+- **Group authority (D14): open** — leaning a relay-held **signed** group-state
+  record (metadata-only at rest); confirm owner+admins vs owner-only.
+- **Push for third-party relays: deferred post-v8** — the first-party relay
+  holds the APNs/FCM keys directly (D7); a Sygnal-style vendor gateway comes
+  later, when third-party relays exist.
 
 ### UI/UX design decisions
 
@@ -1060,6 +1245,57 @@ locked decision. Existing UI invariants still hold — handle is the only identi
   the v8 change (on-device storage + relay-blob transfer, with size/chunking/resume
   still to specify) mostly affects **progress/failure/retry** states for large
   transfers — to be detailed alongside the attachment-transfer design.
+
+## v9 — Public chats (post-v8)
+
+Direction decided during the v8 design pass; **deliberately post-v8** — nothing
+here is in the v8 rework's scope. This is the pseudo-Discord "public room"
+story.
+
+### Decided direction
+
+- **A new, distinct chat type — and it is NOT E2E-encrypted.** E2EE in a room
+  anyone with a link can join protects against nobody (any party — including a
+  relay operator — can join pseudonymously and read), while costing O(members)
+  rekey churn on every join/leave. Making public chats **plaintext-to-relay**
+  eliminates rekey churn, lets the **relay itself store + serve public history**
+  (which removes the member-served-backfill availability/tamper problem for this
+  chat type entirely), enables **server-enforced admin controls** (kick, delete,
+  slow-mode, …), and scales to large rooms. This is a **deliberate,
+  explicitly-public carve-out from zero-at-rest** — that posture exists to avoid
+  holding *private* content, which public-room content is not.
+- **Link-joinable, not directory-listed.** A standing, **multi-use group invite
+  link** (reuses the D4b invite machinery; grants room membership, not
+  friendship). Directory-style discovery is out of scope (open question below).
+- **Admission is manual.** A joiner waits until the **owner (or an admin) is
+  online and admits them** — per-joiner approval, with an optional **"admit
+  all"** switch for large influxes.
+- **Sender signatures still required** even in plaintext rooms (same per-message
+  identity signature as D11 backfill integrity), so neither the relay nor a
+  member can forge or alter what someone else said.
+
+### Open questions (punted from the v8 design pass — resolve when speccing v9)
+
+- **Moderation & operator implications:** a relay hosting plaintext public
+  content takes on real moderation duties (abuse/CSAM/DMCA exposure the
+  zero-at-rest design deliberately avoided). Likely **opt-in per relay** — an
+  operator chooses whether to enable public chats at all; needs its own
+  [security.md](security.md) section.
+- **Retention:** does public history live on the relay forever? Caps, pruning,
+  owner-configurable retention?
+- **Scale ceilings:** read receipts/typing must be suppressed or batched in
+  large rooms (N members ⇒ ~N² receipt events per fully-read message); media in
+  large rooms multiplies home-upload bandwidth (N × blob fetches per attachment)
+  — thumbnail-first / lazy fetch helps, but may need caps.
+- **Admin powers:** with plaintext rooms, message deletion / pinning / slow-mode
+  become server-enforceable — how much of the Discord moderation surface to
+  build, and does this pressure D14 toward keeping admin roles?
+- **Identity exposure:** joining exposes your per-relay handle to strangers —
+  read-only lurking? per-room display identity?
+- **Friends-gate interaction:** public-room co-members are strangers — confirm
+  co-membership implies **no** DM/share reach (invite-only still rules all 1:1),
+  unlike friends-of-friends group co-membership today.
+- **Discovery:** any directory/listing at all, or links only?
 
 ## v12 — Video streaming in voice channels?
 

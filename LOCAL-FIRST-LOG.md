@@ -51,6 +51,41 @@ Playwright version (currently 1.60.0).
 
 ## Decisions locked
 
+- **Ordering (D11 amendment).** Relay stamps arrival time (stateless, no
+  counter); sort key = **(relayTs, senderId, msgId)**; **NO dense seq is ever
+  derived** (devices hold different subsets — floors/eviction/mid-history
+  pairing, so counting diverges); anchors = **message ids** (ReplyRef keeps its
+  snapshot); read state = max (ts,id); multipath clock skew tolerated, dedupe by
+  id; relay is trusted for *order* (documented trade). **Backfill integrity:**
+  sender signs {id, conversation, content} inside the envelope (extends D6's
+  identity cert) → a member serving history can't forge others' messages;
+  **omission** is the residual. (User approved the outline as-is.)
+- **D13 / D13a — key hierarchy + device revocation.** Derivation tree now in the
+  roadmap (derived-from-seed = per-relay identity keys ONLY; everything that
+  must rotate is random+wrapped). Revocation = **two tiers**: (1) lost-locked
+  device → kill token refresh + rotate profile/conversation/note/preview keys
+  (O(everything), same machinery as unfriend, applied at once); (2)
+  compromised-**unlocked** device → attacker holds the seed → rotation can't fix
+  derived identity keys → **new identity + SAS re-verify with contacts**. Note:
+  "block" is not a mechanism — 1:1 block = unfriend→token revocation; group =
+  client-side hide (user re-confirmed).
+- **Push credentials (D7 amendment).** **No gateway in v8** — user isn't ready
+  for extra infra, and none is needed: vendor = first-party relay operator, so
+  the relay holds the APNs `.p8`/FCM keys in its gitignored `.env` (like KLIPY)
+  and pushes directly. These are push-signing deployment secrets, NOT App Store
+  credentials. Embedding keys in public source = rejected (extractable →
+  push-spoofing). Sygnal-style gateway for **third-party relays = post-v8**
+  (stateless, ~$5/mo when needed); until then third-party relays get no timely
+  mobile wake. UnifiedPush = possible later Android path.
+- **v9 — public chats (new roadmap section; post-v8 by user decision).** New
+  distinct chat type, **NOT E2EE** (E2EE is theater in link-joinable rooms;
+  plaintext → relay-served history, server-enforced admin, no rekey churn,
+  scale) — deliberate *public-content* carve-out from zero-at-rest (posture =
+  no *private* content/media). **Link-joinable** multi-use invite, no
+  directory; **admission = owner/admin admits each joiner** (+ "admit all").
+  Sender signatures still required. Open Qs punted into the section
+  (moderation/operator liability, retention, scale ceilings, admin powers,
+  identity exposure, friends-gate interaction, discovery).
 - **D3 / D3a — Local unlock.** OS keychain + biometric = **primary** local
   unlock on native shells; **PRF optional per-platform, never load-bearing**;
   **password (Argon2id) = portable cold-start path**; recovery code retained.
@@ -216,7 +251,23 @@ Playwright version (currently 1.60.0).
 
 ## Decisions in progress / next
 
-- **ALL v8 decisions D1–D12 are now locked** (plus sub-decisions D3a, D4b, D4c).
+- **D14 — group authority: PROPOSED, awaiting user confirm.** Signal (GroupsV2)
+  = encrypted server-held group state + zkgroup anonymous credentials (blind but
+  authoritative). The zk part is overkill for us — relay already learns
+  membership via fan-out queues, and the posture is about *content/media* (user
+  clarified). **Leaning: relay-held owner/admin-SIGNED membership record**,
+  versioned vs rollback → keeps v4's shipped owner/admin roles, kills offline
+  races, stores no content; relay learns which admin acted (trade). Open
+  sub-decision: owner+admins vs owner-only.
+- **New roadmap section: "Remaining pre-implementation spec work"** — the specs
+  still to write, mapped to phases: relay wire/API spec + state inventory
+  (security.md), D14 group state, SQLite schema + Rust/webview IPC boundary,
+  friends-surface respec (invite-only supersedes friend requests), migration
+  runbook, backup export format, KT log format, voice-under-v8, test-strategy
+  addendum, envelope/CRDT versioning. Relay API spec = user-agreed next deep
+  dive after these.
+- **ALL v8 decisions D1–D12 are now locked** (plus sub-decisions D3a, D4b, D4c,
+  and now D13/D13a; D11 ordering amended; D14 proposed).
   See roadmap "Decisions to make" (each marked *decided*) + "Open questions".
 - **All former sub-threads / deferred items now SPECCED (nothing punted to
   implementation):**
