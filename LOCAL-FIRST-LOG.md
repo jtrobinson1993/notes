@@ -79,10 +79,26 @@ Playwright version (currently 1.60.0).
 - **Crypto placement (DECIDED): Rust core.** Keys never cross IPC (= the
   Tauri webview↔Rust message channel); webview requests operations, never sees
   key material.
-- **Distribution channels + ffmpeg licensing: DEFERRED** until after
-  implementation, before shipping (user call). Flagged: GPL ffmpeg build ⇒
-  source-distribution obligation; alternatives = LGPL + openh264/VP9-AV1 or
-  platform-native encoders; Tauri updater key = security-critical.
+- **Media-codec licensing: DECIDED — LGPL ffmpeg, no GPL anywhere.** Key
+  insight: ffmpeg's hardware-encoder *wrappers* are LGPL (encoding happens in
+  OS/silicon) → one LGPL build covers all 5 platforms: h264_videotoolbox
+  (macOS/iOS) / h264_mf (Win) / h264_mediacodec (Android) / h264_vaapi +
+  **openh264 fallback** (BSD wrapper; Cisco prebuilt binary = their patent
+  grant, Firefox model) on Linux. Output stays H.264+AAC MP4 720p30 (universal
+  webview playback; VP9/AV1 spotty on iOS). LGPL obligations: dynamic link +
+  notices + ffmpeg source pointer; app license unaffected. GPL analysis for
+  the record: would've been workable for free self-hosting + ads/Patreon, but
+  bundling libx264 into an iOS App Store app is a real license conflict (VLC
+  precedent) → moot now.
+- **Distribution channels: still DEFERRED** until after implementation (user
+  call). Tauri updater key = security-critical.
+- **REPO HAS NO LICENSE (flagged during ffmpeg discussion).** Repo is PUBLIC
+  (gh confirms; spec table said "private" — fixed) with no LICENSE file ⇒
+  all-rights-reserved: nobody may legally self-host despite that being the
+  intent. Pick needed before v8 ships (also underpins D12 reproducible-build
+  verification). Options in roadmap: AGPL-3.0 (self-hosted-app standard; sole
+  copyright holder can dual-license own code for stores) vs MIT/Apache-2.0.
+  **Awaiting user pick.**
 - **v6 voice: MERGED to main (verified via merge-base).** User tested solo with
   two accounts — works; two-person audio-quality check still pending. Spec
   status updated (roadmap/SPEC/README). Branch cleanup: 19 merged remote
