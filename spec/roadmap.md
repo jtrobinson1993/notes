@@ -183,10 +183,12 @@ key-distribution problem as chat membership, so reuse that machinery:
 - **Delivery:** one PR covering notes-view + chat-sidebar folder sharing, channel
   sharing, revoke-with-key-rotation, and the grant-on-add-to-sidebar UX.
 
-## v6 — Voice ✅ implemented (`v6-voice`)
+## v6 — Voice ✅ shipped
 
-E2EE voice over WebRTC — **implemented**; see **[voice.md](voice.md)** for the
-as-built design (pending a manual two-browser audio check). Two surfaces:
+E2EE voice over WebRTC — **implemented and merged into `main`**; see
+**[voice.md](voice.md)** for the as-built design. Verified solo with two test
+accounts (audio works end-to-end); a two-person audio-*quality* check is still
+pending. Two surfaces:
 
 - **Voice channels** — joinable persistent rooms (the voice-type channels created
   in v4).
@@ -229,10 +231,13 @@ No plans for video (see v7).
 ## v8 — Local-first across minimal relays: your data lives on your devices
 
 **Status: long-term goal, large rework. Direction is chosen and **all design
-decisions D1–D12 are now resolved** (each marked *decided* below; see also
+decisions D1–D15 are now resolved** (each marked *decided* below; see also
 "Open questions", all closed). **Nothing here is built yet** — the next step is
 implementation per "Suggested phasing." This section captures the design digging
-done *before* committing engineering.**
+done *before* committing engineering. **Release strategy (decided): one
+release** — all six phases land on this branch/PR; no incremental releases of
+partial phases. The hard cutover (D12) happens when the branch merges + ships;
+the currently-deployed app keeps running unchanged until then.**
 
 This milestone **folds in the earlier "multiple servers (Discord-style)"
 plan**: multi-server survives as a **multi-relay client** (connect to several
@@ -395,8 +400,11 @@ brand-new device with no other device present to pair with unlocks via the
 has none until it pairs), so "cold-start" here only re-establishes
 identity/relay access, not data recovery — a natural fit for the password path.
 Rejecting the "must be passwordless" alternative avoids needing robust
-cross-platform PRF (broken on Linux desktop — D1) or a server-held wrapped key
-(which would dent the zero-at-rest posture). The model is therefore: biometric/
+cross-platform PRF (broken on Linux desktop — D1). Note the password cold-start
+*requires* a relay-held **wrapped-MK escrow** to exist — originally resisted
+here as denting the zero-at-rest posture, later adopted deliberately as **D15**
+(tiny key blobs under user-held secrets are not the content honeypot the
+posture exists to avoid). The model is therefore: biometric/
 keychain day-to-day on provisioned devices, **QR device-linking (D8)** to
 onboard a new device from an existing one, and **password as insurance** for the
 no-other-device case. *Status: decided.*
@@ -872,7 +880,10 @@ the native app escapes). Decided shape:
     borrowed machine); nothing survives tab close. **Can:** live chat send/receive,
     fetch **recent** history on demand, view/edit notes online (in-memory CRDT),
     **join voice** (live, no at-rest data). **Cannot:** hold full offline history,
-    be a full replica, or run backup export/restore.
+    be a full replica, or run backup export/restore. **Recent history is served
+    by a linked native device over the relay (WhatsApp-Web model, decided)** —
+    the relay stores nothing, so the satellite can only show history while a
+    linked device is online to serve it.
   - **Session TTL** — **session-scoped by default** (ends on tab close), opt-in
     "keep me linked up to N days" for a trusted machine, and **always remotely
     unlinkable** from the native device's device list.
@@ -970,6 +981,49 @@ and rejected (owner-offline would block all membership changes, and total owner
 loss would freeze the group). *Status: decided — relay-held signed group-state
 record, owner + admin roles.*
 
+**D15 — Account escrow, cold-start recovery & the fate of passkeys (decided).**
+Resolves a contradiction the consistency review caught: D3a promises a
+**password cold-start on a fresh, unpaired device** and D8 promises "the
+recovery code restores *identity*" — but with no other device, no backup file,
+and a stateless relay, those secrets would have **nothing to decrypt** (the MK
+is random; the per-relay identity keys derive from it).
+  - **Decision — relay-held wrapped-MK escrow.** The relay stores the
+    **password-wrapped and recovery-code-wrapped MK** (a few hundred bytes; the
+    same blobs as the shipped v1 model), registered on **every relay the user
+    joins** (identical ciphertext everywhere — redundancy, so a dead relay never
+    loses the escrow). This is an explicit, deliberate carve-out: the
+    zero-at-rest posture means zero **content** at rest — the relay already
+    persists the directory, KT log, delivery verifiers, and push tokens; key
+    blobs encrypted under secrets only the user holds are not the honeypot the
+    posture exists to avoid.
+  - **Why this is safe (the interception question).** **Argon2id runs
+    client-side and the password never leaves the device** — already true in the
+    shipped v1 model: the server stores only a *domain-separated auth-key hash*
+    for login, which is useless for unwrapping (different HKDF domain). An
+    honest-but-curious relay therefore never sees a password to intercept. The
+    historical caveat was **served code** — a malicious server could ship JS
+    that exfiltrates the password — and the **signed native app (D12) closes
+    exactly that hole**. Residual risk: a malicious relay can mount an
+    **offline brute-force against the password-wrapped blob** — mitigated by
+    Argon2id (m≈19 MiB, t=2) + the enforced 16-char minimum; the
+    recovery-code-wrapped blob (160-bit random) is computationally out of reach
+    regardless.
+  - **Passkeys are retained alongside the (mandatory) password.** Context:
+    today passkeys are **PRF-only** — registration *rejects* non-PRF passkeys,
+    because a passkey's sole job in v1 is wrapping MK via the PRF secret. Native
+    shells make PRF unreliable (D1/D3), so v8 **re-scopes** passkeys instead of
+    dropping them: (i) **bootstrap/recovery authentication** to a relay where
+    the shell supports WebAuthn — a synced passkey (iCloud Keychain / Google
+    Password Manager) makes fresh-device sign-in phishing-resistant and smooth,
+    with the password auth-key as the universal fallback; (ii) **opportunistic
+    PRF wrap** where PRF actually works (e.g. the D12 web satellite in real
+    browsers) — never load-bearing; (iii) day-to-day relay auth remains the
+    **device key** (D4) — passkeys are not involved. Registration stops
+    rejecting non-PRF passkeys (the auth role doesn't need PRF). The
+    **password is mandatory** (UI-3) because, absent reliable PRF, it is the
+    only universal MK-decryption factor — the recovery code stays break-glass.
+  *Status: decided.*
+
 ### Non-goals
 
 - **Pure peer-to-peer / DHT.** Availability (offline delivery), groups, and NAT
@@ -1016,14 +1070,20 @@ consumes them:
 - **Group authority (D14)** — spec the signed group-state record + owner/admin
   role rules. (Phase 3/4.)
 - **Local SQLite schema + Rust/webview boundary** — table design (messages, CRDT
-  docs, attachments, watermarks, outbox) and which side of the IPC holds keys /
-  runs crypto. (Phase 1.)
+  docs, attachments, watermarks, outbox) and the IPC command surface.
+  (**Crypto placement decided:** keys live in the **Rust core** and never cross
+  the IPC boundary — the webview requests sign/seal/encrypt/decrypt operations
+  and never sees key material, so a compromised webview can't exfiltrate keys.)
+  (Phase 1.)
 - **Friends-surface changes** — invite-only reach supersedes the shipped
   friend-request-by-handle flow in [chat.md](chat.md); respec it + the CLAUDE.md
   friends-gate invariant wording (enforcement moves from server checks to
   delivery-token capabilities). (Phase 3.)
 - **Migration runbook** — cutover sequencing: bootstrap endpoint, pull window,
-  straggler export, purge criteria, the mixed-version period. (Phases 1/6.)
+  straggler export, purge criteria, the mixed-version period. **Scope (decided):
+  migrate everything we can** — notes (D10), chat history, server-stored
+  encrypted attachments, profile blobs, and settings, not just notes.
+  (Phases 1/6.)
 - **Backup export format** — versioned container, exact contents, restore-merge
   semantics against existing local state. (Phase 5.)
 - **KT log format + reference-auditor scope** — the published spec D5 promises.
@@ -1035,6 +1095,14 @@ consumes them:
 - **Protocol/version compatibility** — envelope + CRDT schema versioning across
   app versions (your own devices will run different versions against each
   other). (Phase 4.)
+- **Desktop distribution channels + media-codec licensing (deferred — decide
+  after implementation, before shipping).** Store vs direct-download + Tauri
+  updater per OS (the updater signing key is security-critical — a compromise
+  is the served-code problem reborn), and the bundled-ffmpeg licensing
+  question: a GPL ffmpeg build (libx264) obligates source distribution of the
+  app; the alternatives are an LGPL-only build with **openh264 or VP9/AV1**, or
+  skipping bundled ffmpeg entirely in favour of **platform-native encoders**
+  (VideoToolbox / MediaCodec / Media Foundation) from the Rust core.
 
 ### Open questions
 
@@ -1081,6 +1149,12 @@ consumes them:
 - **Push for third-party relays: deferred post-v8** — the first-party relay
   holds the APNs/FCM keys directly (D7); a Sygnal-style vendor gateway comes
   later, when third-party relays exist.
+- **Cold-start escrow & passkeys (D15): decided** — relay-held
+  password/recovery-wrapped MK escrow (an explicit zero-*content*-at-rest
+  carve-out); passkeys retained for bootstrap auth + opportunistic PRF (never
+  load-bearing); the password is mandatory as the universal decrypt factor.
+- **Release strategy: decided** — one release; all six phases land on this
+  branch/PR; hard cutover on merge/ship.
 
 ### UI/UX design decisions
 
