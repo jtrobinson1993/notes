@@ -31,7 +31,7 @@ This spec is split by app area so you can load just the part you're working on:
 | Account recovery | Mandatory recovery code at signup (random ≥128-bit, shown once). No other recovery path |
 | Registration | Admin-generated invite links; the invitee creates their own account + passkey |
 | Distribution | Single multi-arch Docker image (amd64/arm64); install = one `docker run`/compose command |
-| Repo | Private GitHub repo `jtrobinson1993/notes` |
+| Repo | **Public** GitHub repo `jtrobinson1993/notes` — **no LICENSE file yet** (unlicensed = all-rights-reserved by default; pick pending, see roadmap "App source license") |
 
 ## Status at a glance
 

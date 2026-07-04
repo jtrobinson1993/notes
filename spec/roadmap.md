@@ -1095,14 +1095,38 @@ consumes them:
 - **Protocol/version compatibility** — envelope + CRDT schema versioning across
   app versions (your own devices will run different versions against each
   other). (Phase 4.)
-- **Desktop distribution channels + media-codec licensing (deferred — decide
-  after implementation, before shipping).** Store vs direct-download + Tauri
-  updater per OS (the updater signing key is security-critical — a compromise
-  is the served-code problem reborn), and the bundled-ffmpeg licensing
-  question: a GPL ffmpeg build (libx264) obligates source distribution of the
-  app; the alternatives are an LGPL-only build with **openh264 or VP9/AV1**, or
-  skipping bundled ffmpeg entirely in favour of **platform-native encoders**
-  (VideoToolbox / MediaCodec / Media Foundation) from the Rust core.
+- **Desktop distribution channels (deferred — decide after implementation,
+  before shipping).** Store vs direct-download + Tauri updater per OS (the
+  updater signing key is security-critical — a compromise is the served-code
+  problem reborn).
+- **Media-codec licensing (decided): LGPL ffmpeg, no GPL components.** The
+  bundled ffmpeg (D6 video transcode) is an **LGPL-only build** — no libx264 —
+  because ffmpeg's *hardware-encoder wrappers* are themselves LGPL: the actual
+  encoding runs in the OS/silicon, whose patent licensing is the platform
+  vendor's problem. Per platform: **`h264_videotoolbox`** (macOS/iOS),
+  **`h264_mf`** (Windows Media Foundation), **`h264_mediacodec`** (Android),
+  **`h264_vaapi`** where present on Linux, with **openh264** (BSD-licensed
+  wrapper; Cisco's prebuilt binary carries their H.264 patent grant when
+  downloaded from Cisco at install time — the Firefox model) as the
+  Linux/software fallback. Output stays **H.264 + AAC in MP4 @720p30** —
+  universally playable in every platform webview, unlike VP9/AV1 (spotty iOS
+  support). LGPL obligations: **dynamically link** ffmpeg, ship the license
+  notices, point to (or mirror) ffmpeg's source, and share any modifications
+  *to ffmpeg itself* — the app's own license is unaffected. Decode/demux/mux
+  for the transcode pipeline is ffmpeg-core (LGPL-fine; H.264 *decoding* never
+  needed libx264).
+- **App source license (open — user decision, needed regardless of ffmpeg).**
+  The repo is **public but has no LICENSE file**, which legally means
+  *all rights reserved* — despite the stated intent that people can self-host
+  for free, nobody currently has the right to run, fork, or redistribute it.
+  A license must be picked before v8 ships (it also underpins D12's
+  "reproducible builds anyone can verify" story). Candidates: **AGPL-3.0**
+  (self-hosters stay free; anyone offering it as a service must publish their
+  changes — the usual pick for self-hosted apps; as sole copyright holder the
+  author can still dual-license their own code for app-store distribution) vs
+  **MIT/Apache-2.0** (maximally permissive; closed forks allowed). Ads /
+  Patreon / paid hosting are compatible with **any** of these — open-source
+  licenses restrict licensing terms, not monetization.
 
 ### Open questions
 
