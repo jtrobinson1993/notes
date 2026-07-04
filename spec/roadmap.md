@@ -1061,12 +1061,11 @@ The design decisions are closed (D1–D14, UI-1–5); these are the spec
 documents/sections still to write before — or alongside — the phase that
 consumes them:
 
-- **Relay wire/API spec + relay state inventory** — endpoints (device
-  registration, mailbox fetch/ack, verifier registration, blob store, directory
-  + KT proofs, D4b challenge/token, push tokens), ack semantics (at-least-once +
-  client dedupe), and an honest enumeration of what the relay *does* persist
-  (directory, KT log, verifiers, queues, push tokens, transient blobs) →
-  [security.md](security.md) threat-model update. (Feeds phase 3.)
+- **Relay wire/API spec + relay state inventory** — **drafted: see
+  [relay.md](relay.md)** (endpoints, auth, mailbox/blob mechanics, the complete
+  durable/transient/never-stored inventory). Remaining: fold the state
+  inventory into the [security.md](security.md) threat model at build.
+  (Feeds phase 3.)
 - **Group authority (D14)** — spec the signed group-state record + owner/admin
   role rules. (Phase 3/4.)
 - **Local SQLite schema + Rust/webview boundary** — table design (messages, CRDT
@@ -1115,18 +1114,14 @@ consumes them:
   *to ffmpeg itself* — the app's own license is unaffected. Decode/demux/mux
   for the transcode pipeline is ffmpeg-core (LGPL-fine; H.264 *decoding* never
   needed libx264).
-- **App source license (open — user decision, needed regardless of ffmpeg).**
-  The repo is **public but has no LICENSE file**, which legally means
-  *all rights reserved* — despite the stated intent that people can self-host
-  for free, nobody currently has the right to run, fork, or redistribute it.
-  A license must be picked before v8 ships (it also underpins D12's
-  "reproducible builds anyone can verify" story). Candidates: **AGPL-3.0**
-  (self-hosters stay free; anyone offering it as a service must publish their
-  changes — the usual pick for self-hosted apps; as sole copyright holder the
-  author can still dual-license their own code for app-store distribution) vs
-  **MIT/Apache-2.0** (maximally permissive; closed forks allowed). Ads /
-  Patreon / paid hosting are compatible with **any** of these — open-source
-  licenses restrict licensing terms, not monetization.
+- **App source license (decided): AGPL-3.0-only.** `LICENSE` added at the repo
+  root; `license` set in every `package.json`; README states the terms.
+  Self-hosters stay free; anyone offering a modified version as a network
+  service must publish their changes; as sole copyright holder the author can
+  still dual-license their own code for app-store distribution. Ads / Patreon /
+  paid hosting remain fully compatible (the license restricts licensing terms,
+  not monetization). Also underpins D12's "reproducible builds anyone can
+  verify against public source."
 
 ### Open questions
 

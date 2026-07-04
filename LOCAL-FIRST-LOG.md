@@ -51,6 +51,19 @@ Playwright version (currently 1.60.0).
 
 ## Decisions locked
 
+- **License: AGPL-3.0-only (DECIDED, applied).** `LICENSE` at root (canonical
+  GNU text), `license` field in root/web/server/shared package.json, README
+  License section, spec README repo row + roadmap bullet updated. User picked
+  AGPL over MIT/Apache.
+- **Relay wire/API spec DRAFTED → `spec/relay.md`** (new spec file, indexed in
+  SPEC.md + spec/README.md). Contains: complete state inventory
+  (durable/transient/never-stored tables), challenge/token auth, escrow
+  endpoints, sealed-sender mailbox (send is deliberately UNauthenticated —
+  delivery token is the only credential; ephemeral flag for typing/presence),
+  blob store, directory+KT endpoints (+.well-known roots alias), signed
+  group-state GET/PUT with version anti-rollback, invites, push, satellite QR
+  link + device-served history forwarding, voice unchanged, IP rate limits.
+  Payload shapes = design intent; finalize at build → becomes as-built ref.
 - **D15 — account escrow + passkeys (DECIDED).** Consistency review caught a real
   contradiction: D3a password cold-start + D8 "recovery code restores identity"
   had **nothing to decrypt** on a stateless relay (no other device, no backup ⇒

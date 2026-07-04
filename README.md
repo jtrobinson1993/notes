@@ -161,3 +161,8 @@ macOS-only — on the Linux server Docker runs natively (see DEPLOY.md).
 Stack: TypeScript everywhere — Fastify + better-sqlite3 + @simplewebauthn
 (server); Vue 3 + Pinia + Pinia Colada + Reka UI + Tailwind, built with Vite
 (web); WebCrypto for all encryption.
+
+## License
+
+[AGPL-3.0-only](LICENSE). Self-hosting is free; if you run a modified version
+as a network service, the AGPL requires you to publish your modifications.

@@ -15,6 +15,7 @@ This spec is split by app area so you can load just the part you're working on:
 | [profiles.md](profiles.md) | v3.2 E2EE editable profiles — bio + avatar, the per-user profile key, visibility, distribution + rotation |
 | [notifications.md](notifications.md) | Foreground new-message chime + tab/badge unread + v3 phase 3 — PWA install + content-free background Web Push (service worker, VAPID, subscriptions) |
 | [security.md](security.md) | Cross-cutting security — rendering/XSS safety, CSP, metadata exposure, threat model |
+| [relay.md](relay.md) | **v8 relay design** — wire protocol, endpoints, auth, mailbox/blob mechanics, and the complete relay state inventory (not yet built) |
 | [roadmap.md](roadmap.md) | Phasing and future versions (v3.1 – v9) |
 | [testing.md](testing.md) | The unit + e2e test plan (Vitest + Playwright) |
 
@@ -31,7 +32,7 @@ This spec is split by app area so you can load just the part you're working on:
 | Account recovery | Mandatory recovery code at signup (random ≥128-bit, shown once). No other recovery path |
 | Registration | Admin-generated invite links; the invitee creates their own account + passkey |
 | Distribution | Single multi-arch Docker image (amd64/arm64); install = one `docker run`/compose command |
-| Repo | **Public** GitHub repo `jtrobinson1993/notes` — **no LICENSE file yet** (unlicensed = all-rights-reserved by default; pick pending, see roadmap "App source license") |
+| Repo | **Public** GitHub repo `jtrobinson1993/notes`, licensed **AGPL-3.0-only** |
 
 ## Status at a glance
 
