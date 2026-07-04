@@ -51,6 +51,44 @@ Playwright version (currently 1.60.0).
 
 ## Decisions locked
 
+- **D15 — account escrow + passkeys (DECIDED).** Consistency review caught a real
+  contradiction: D3a password cold-start + D8 "recovery code restores identity"
+  had **nothing to decrypt** on a stateless relay (no other device, no backup ⇒
+  MK gone). **Fix: relay-held wrapped-MK escrow** — password-wrapped +
+  recovery-wrapped MK (same blobs as shipped v1), registered on **every** relay
+  you join (redundancy). Explicit carve-out: zero-*content*-at-rest (relay
+  already persists directory/KT/verifiers/push tokens). Safe because Argon2id is
+  client-side, password never transmitted (v1 already works this way — server
+  stores only a domain-separated auth-key hash); native app closes the
+  served-code hole; residual = offline brute-force of the password blob
+  (Argon2id 19MiB/t2 + 16-char min; recovery blob 160-bit random = unbreakable).
+  User asked the interception question, confirmed stance secure → option (a).
+  **Passkeys RETAINED** (user: keep in addition to passwords) but re-scoped —
+  today they're PRF-only (non-PRF rejected!); v8: (i) bootstrap/recovery *auth*
+  where shell WebAuthn works (synced passkeys), (ii) opportunistic PRF wrap
+  (web satellite), never load-bearing; (iii) day-to-day relay auth stays device
+  key. Registration stops rejecting non-PRF passkeys. Password mandatory = the
+  only universal decrypt factor absent reliable PRF.
+- **Release strategy (DECIDED): ONE release.** All six phases land on this
+  branch/PR; hard cutover on merge/ship; deployed app untouched until then.
+- **Migration scope (DECIDED): everything we can** — notes + chat history +
+  attachments + profiles + settings; stated in the runbook item.
+- **Web satellite recent history (DECIDED): WhatsApp-Web model** — served by a
+  linked native device over the relay; satellite shows history only while a
+  linked device is online. Written into D12.
+- **Crypto placement (DECIDED): Rust core.** Keys never cross IPC (= the
+  Tauri webview↔Rust message channel); webview requests operations, never sees
+  key material.
+- **Distribution channels + ffmpeg licensing: DEFERRED** until after
+  implementation, before shipping (user call). Flagged: GPL ffmpeg build ⇒
+  source-distribution obligation; alternatives = LGPL + openh264/VP9-AV1 or
+  platform-native encoders; Tauri updater key = security-critical.
+- **v6 voice: MERGED to main (verified via merge-base).** User tested solo with
+  two accounts — works; two-person audio-quality check still pending. Spec
+  status updated (roadmap/SPEC/README). Branch cleanup: 19 merged remote
+  branches identified for deletion (mass-delete was permission-blocked — user
+  runs the command); `docs/device-linking-spec` left alone (PR #10 CLOSED, not
+  merged — may hold unmerged spec content worth salvaging for D8).
 - **D14 — group authority: DECIDED (owner + admins kept).** Signal (GroupsV2) =
   encrypted server-held group state + zkgroup anonymous credentials — zk part
   overkill for us (relay already learns membership via fan-out; posture = no
