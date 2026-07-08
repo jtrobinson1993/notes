@@ -71,6 +71,68 @@ fn settings_set(key: String, value: String, vault: VaultState) -> Result<(), Str
     store.set_setting(&key, &value).map_err(|e| e.to_string())
 }
 
+// ---- notes CRUD (local-first read/write path, D2) ----
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+fn notes_list(vault: VaultState) -> Result<Vec<store::NoteMeta>, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.list_notes().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn note_get(id: String, vault: VaultState) -> Result<store::NoteDoc, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store
+        .get_note(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("unknown note".into())
+}
+
+#[tauri::command]
+fn note_create(id: String, vault: VaultState) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.create_note(&id, now_ms()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn note_save(
+    id: String,
+    title: String,
+    search_text: String,
+    ydoc_state: Vec<u8>,
+    vault: VaultState,
+) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store
+        .save_note(&id, &title, &search_text, &ydoc_state, now_ms())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn note_delete(id: String, vault: VaultState) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.delete_note(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn notes_search(query: String, vault: VaultState) -> Result<Vec<store::NoteMeta>, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.search_notes(&query).map_err(|e| e.to_string())
+}
+
 // ---- attachments (encrypted blob files + SQLCipher-held per-file keys) ----
 
 #[derive(serde::Serialize)]
@@ -196,6 +258,12 @@ pub fn run() {
             vault_lock,
             settings_get,
             settings_set,
+            notes_list,
+            note_get,
+            note_create,
+            note_save,
+            note_delete,
+            notes_search,
             attachment_put,
             attachment_get,
             attachment_has,

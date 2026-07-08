@@ -53,6 +53,48 @@ export function settingsSet(key: string, value: string): Promise<void> {
   return invoke('settings_set', { key, value });
 }
 
+// ---- notes CRUD (local-first read/write path, D2) ----
+
+export interface NoteMeta {
+  id: string;
+  title: string | null;
+  folder_id: string | null;
+  /** `{ owner, access }` for shared-with-me notes; null for own notes. */
+  shared_json: string | null;
+  created: number;
+  updated: number;
+}
+
+export function notesList(): Promise<NoteMeta[]> {
+  return invoke<NoteMeta[]>('notes_list');
+}
+
+export function noteGet(id: string): Promise<{ meta: NoteMeta; ydoc_state: number[] | null }> {
+  return invoke('note_get', { id });
+}
+
+export function noteCreate(id: string): Promise<void> {
+  return invoke('note_create', { id });
+}
+
+/** Persist an edit: full encoded Y.Doc state + title + search projection. */
+export function noteSave(
+  id: string,
+  title: string,
+  searchText: string,
+  ydocState: number[],
+): Promise<void> {
+  return invoke('note_save', { id, title, searchText, ydocState });
+}
+
+export function noteDelete(id: string): Promise<void> {
+  return invoke('note_delete', { id });
+}
+
+export function notesSearch(query: string): Promise<NoteMeta[]> {
+  return invoke<NoteMeta[]>('notes_search', { query });
+}
+
 // ---- attachments (ciphertext blobs on the native filesystem) ----
 
 export interface AttachmentMeta {
