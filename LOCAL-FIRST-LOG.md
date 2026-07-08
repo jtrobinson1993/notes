@@ -445,13 +445,21 @@ Playwright version (currently 1.60.0).
     lib.rs exposes first IPC commands `vault_status/vault_unlock/vault_lock`
     with `Mutex<Vault>` managed state. Unit tests: roundtrip/reopen, wrong
     password, migration idempotency (cargo test running in background).
-  - **Next iterations (phase 1):** confirm cargo test green + commit; verify
-    `tauri dev` boots the real app in the WebKit webview; webview-side IPC
-    wrapper (`@tauri-apps/api` invoke, Tauri-detect); check
-    vite-plugin-pwa/service-worker behavior inside Tauri (likely disable SW in
-    the shell); FTS5 availability check; keychain (D3 primary unlock) via
-    `keyring`/Tauri stronghold decision; reproducible-build pipeline notes
-    (D12).
+  - **Iteration 3 — webview bridge + PWA guard (DONE):** `web/src/lib/native.ts`
+    (`isNative` via `isTauri()`, typed `vaultStatus/Unlock/Lock` invokes;
+    `@tauri-apps/api` dep); VitePWA **disabled under Tauri** via
+    `disable: !!process.env.TAURI_ENV_PLATFORM` (SW/manifest/install are
+    web-only; tauri:// origin doesn't support SW anyway); **FTS5 confirmed
+    available** in the sqlcipher bundle (new gate test — deferred FTS migration
+    unblocked); cargo test 6/6. Gotcha: web build "type errors" in sw.ts were a
+    **stale `shared/dist`** (build shared first — root `npm run build` does;
+    `-w web` alone doesn't).
+  - **Next iterations (phase 1):** keychain primary unlock (D3) — `keyring`
+    crate vs tauri-plugin-stronghold decision + random SQLCipher key +
+    password→wrap-MK realignment (D13 hierarchy); boot `tauri dev` visually
+    (user smoke test or /run skill); FTS5 migration v2 (messages_fts +
+    notes_fts); first-run server-data import (phase-1 migration piece,
+    spec/migration.md); reproducible-build pipeline (D12).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

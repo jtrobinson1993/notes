@@ -23,6 +23,7 @@
     "@pinia/colada": "^0.14.2",
     "@sapphi-red/web-noise-suppressor": "^0.3.5",
     "@simplewebauthn/browser": "^13.1.0",
+    "@tauri-apps/api": "^2.11.1",
     "codemirror": "^6.0.2",
     "emojibase-data": "^16.0.3",
     "fflate": "^0.8.3",
