@@ -53,6 +53,42 @@ export function settingsSet(key: string, value: string): Promise<void> {
   return invoke('settings_set', { key, value });
 }
 
+// ---- attachments (ciphertext blobs on the native filesystem) ----
+
+export interface AttachmentMeta {
+  id: string;
+  owner_kind: 'message' | 'note';
+  owner_id: string;
+  /** Per-file key from the E2E payload (rests in the SQLCipher DB). */
+  file_key: number[];
+  thumb: number[] | null;
+  size: number | null;
+  mime: string | null;
+  content_hash: string | null;
+}
+
+export interface AttachmentRow extends Omit<AttachmentMeta, 'owner_kind'> {
+  owner_kind: string;
+  state: 'present' | 'evicted' | 'expired';
+}
+
+/** Store attachment ciphertext exactly as it travels; idempotent. */
+export function attachmentPut(meta: AttachmentMeta, bytes: number[]): Promise<void> {
+  return invoke('attachment_put', { meta, bytes });
+}
+
+/** Fetch meta + ciphertext; `bytes` is null when evicted/expired. */
+export function attachmentGet(
+  id: string,
+): Promise<{ meta: AttachmentRow; bytes: number[] | null }> {
+  return invoke('attachment_get', { id });
+}
+
+/** Local space reclamation (D6 retention) — this device only. */
+export function attachmentEvict(id: string): Promise<void> {
+  return invoke('attachment_evict', { id });
+}
+
 // ---- first-run legacy import (spec/migration.md) ----
 // The webview decrypts with the existing v1 crypto and streams plaintext
 // batches to the core; each call is transactional and idempotent, so the

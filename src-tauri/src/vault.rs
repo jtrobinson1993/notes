@@ -102,6 +102,7 @@ pub struct Vault {
     keychain: Box<dyn Keychain>,
     store: Option<Store>,
     mk: Option<Secret32>,
+    blobs: crate::blobs::BlobStore,
 }
 
 impl Vault {
@@ -110,12 +111,20 @@ impl Vault {
     }
 
     pub fn with_keychain(data_dir: PathBuf, keychain: Box<dyn Keychain>) -> Self {
+        let blobs = crate::blobs::BlobStore::new(data_dir.join("blobs"));
         Self {
             data_dir,
             keychain,
             store: None,
             mk: None,
+            blobs,
         }
+    }
+
+    /// The attachment blob store (opaque ciphertext files — usable without
+    /// unlock, but every caller also needs the row from the locked store).
+    pub fn blobs(&self) -> &crate::blobs::BlobStore {
+        &self.blobs
     }
 
     fn db_path(&self) -> PathBuf {

@@ -188,6 +188,32 @@ pub struct ImportMessage {
     pub edited_at: Option<i64>,
 }
 
+#[derive(serde::Deserialize)]
+pub struct AttachmentMeta {
+    pub id: String,
+    pub owner_kind: String,
+    pub owner_id: String,
+    /// The per-file key from the E2E payload (protected at rest by SQLCipher).
+    pub file_key: Vec<u8>,
+    pub thumb: Option<Vec<u8>>,
+    pub size: Option<i64>,
+    pub mime: Option<String>,
+    pub content_hash: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct AttachmentRow {
+    pub id: String,
+    pub owner_kind: String,
+    pub owner_id: String,
+    pub file_key: Vec<u8>,
+    pub thumb: Option<Vec<u8>>,
+    pub size: Option<i64>,
+    pub mime: Option<String>,
+    pub content_hash: Option<String>,
+    pub state: String,
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -306,6 +332,63 @@ impl Store {
         }
         tx.commit()?;
         Ok(imported)
+    }
+
+    pub fn insert_attachment(&self, a: &AttachmentMeta, path: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO attachments(
+               id, owner_kind, owner_id, file_key, path, thumb, size, mime, content_hash, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'present')",
+            (
+                &a.id,
+                &a.owner_kind,
+                &a.owner_id,
+                &a.file_key,
+                path,
+                &a.thumb,
+                a.size,
+                &a.mime,
+                &a.content_hash,
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn attachment_meta(&self, id: &str) -> Result<Option<AttachmentRow>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, owner_kind, owner_id, file_key, thumb, size, mime, content_hash, state
+                 FROM attachments WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(AttachmentRow {
+                        id: r.get(0)?,
+                        owner_kind: r.get(1)?,
+                        owner_id: r.get(2)?,
+                        file_key: r.get(3)?,
+                        thumb: r.get(4)?,
+                        size: r.get(5)?,
+                        mime: r.get(6)?,
+                        content_hash: r.get(7)?,
+                        state: r.get(8)?,
+                    })
+                },
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?)
+    }
+
+    pub fn set_attachment_state(&self, id: &str, state: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE attachments SET state = ?2, path = CASE WHEN ?2 = 'present' THEN path ELSE NULL END
+             WHERE id = ?1",
+            (id, state),
+        )?;
+        Ok(())
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
@@ -503,6 +586,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(note_hits, 1);
+    }
+
+    #[test]
+    fn attachment_rows_track_state_through_evict() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[6u8; 32]).unwrap();
+        let meta = AttachmentMeta {
+            id: "att1".into(),
+            owner_kind: "message".into(),
+            owner_id: "m1".into(),
+            file_key: vec![1u8; 32],
+            thumb: None,
+            size: Some(1234),
+            mime: Some("image/webp".into()),
+            content_hash: Some("h".into()),
+        };
+        store.insert_attachment(&meta, "/blobs/at/att1").unwrap();
+
+        let row = store.attachment_meta("att1").unwrap().unwrap();
+        assert_eq!(row.state, "present");
+        assert_eq!(row.file_key, vec![1u8; 32]);
+
+        store.set_attachment_state("att1", "evicted").unwrap();
+        let row = store.attachment_meta("att1").unwrap().unwrap();
+        assert_eq!(row.state, "evicted");
+        let path: Option<String> = store
+            .conn
+            .query_row("SELECT path FROM attachments WHERE id='att1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(path, None);
+
+        assert!(store.attachment_meta("nope").unwrap().is_none());
     }
 
     #[test]

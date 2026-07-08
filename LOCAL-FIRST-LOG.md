@@ -508,10 +508,19 @@ Playwright version (currently 1.60.0).
     with stage/progress display; retry-safe; stores summary. Design: gate
     does NOT intercept legacy auth — login/setup pages render normally under
     it, migration overlays once mk is present.
-  - **Next iterations:** attachment FS layer (encrypted blob files + per-file
-    keys) + attachment import pass; boot `tauri dev` visually (user smoke
-    test — everything needed for an end-to-end run now exists); re-lock
-    policy setting (D4 layer A); reproducible builds (D12); phase 2 review.
+  - **Iteration 9 — attachment blob store (DONE, 18/18 cargo tests):**
+    `blobs.rs` — dumb byte store for attachment **ciphertext as it travels**
+    (per-file key stays in the SQLCipher `attachments` row; no re-encrypt);
+    two-level sharded paths, atomic tmp+rename writes, id charset guard
+    (path-traversal test), delete-on-evict. Store: `insert_attachment` /
+    `attachment_meta` / `set_attachment_state` (evict NULLs path). IPC:
+    `attachment_put/get/evict` (+ native.ts wrappers; get returns meta +
+    bytes|null when evicted). Vault owns `BlobStore` at `dataDir/blobs`.
+  - **Next iterations:** attachment import pass in migrate.ts (download
+    legacy blobs → attachmentPut; needs reading attachments.ts fetch path);
+    boot `tauri dev` visually (user smoke test — end-to-end now plausible);
+    re-lock policy setting (D4 layer A); reproducible builds (D12); phase 2
+    review.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
