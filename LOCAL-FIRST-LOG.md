@@ -627,12 +627,23 @@ Playwright version (currently 1.60.0).
     `message_delete` (content dropped, row stays as tombstone placeholder —
     D11 rendering). native.ts wrappers (`messagesPage/messagesIngest/
     messageEdit/messageDelete`).
-  - **Next iterations:** wire chat.ts onto it behind isNative — back-scroll
-    pages from SQLite (instant/offline) + tee every live WS message/edit/
-    delete into the store so the local log stays current; then phase 3
-    minimal relay (relay.md: device registration + challenge/token first).
-    Desk-session queue: mobile init, tauri dev smoke (notes now end-to-end),
-    biometric ACLs.
+  - **Iteration 19 — chat history local in the shell (DONE; web 434 green,
+    tc clean):** `lib/nativeChat.ts` — `viewToRow/rowToView` (extras bag
+    {attachments,gif,system,linkPreview} in one JSON column — **migrator
+    updated to match: system events now survive migration**, previously
+    lost); `loadHistoryLocal` with per-channel (ts,id) cursors + exhaustion;
+    `teeMessage/teeEdit` fire-and-forget. chat.ts: `loadHistory` reads the
+    local log when isNative (fresh open resets cursor); live WS 'message' /
+    'message-edited' + sendMessage/editMessage all tee into the log. Ids
+    keep the `legacy:{conv}:{seq}` composition → tees dedupe with migrated
+    rows. Reactions/read-state stay in-memory until the phase-4 Yjs overlay.
+    5 new tests (round-trip, tombstone, cursor paging, reset).
+  - **PHASE 1+2 NOW FUNCTIONALLY COMPLETE on desktop** (mobile init + smoke
+    test + signing pending). **Next: PHASE 3 — minimal relay** (relay.md):
+    start server-side with device registration + challenge/token auth (D4/
+    D4b), then mailbox + verifiers (D6), escrow (D15), directory+KT stub
+    (D5). Desk-session queue unchanged (mobile init, tauri smoke, biometric
+    ACLs, 1Password for signing).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
