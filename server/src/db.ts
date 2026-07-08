@@ -432,6 +432,29 @@ export function openDb(dataDir: string) {
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
 
+  // v8 relay tables (spec/relay.md): device identity keys (D4b), single-use
+  // auth challenges, and the relay's own pinned identity keypair.
+  db.exec(`
+CREATE TABLE IF NOT EXISTS relay_devices (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  pubkey TEXT NOT NULL UNIQUE,
+  name TEXT,
+  created_at INTEGER NOT NULL,
+  revoked INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS relay_challenges (
+  nonce TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_identity (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  pubkey TEXT NOT NULL,
+  privkey TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+`);
+
   // Idempotent migration: add users.display_name / name_color if missing.
   const userCols = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
   if (!userCols.some((c) => c.name === 'display_name')) {
@@ -616,6 +639,70 @@ export function openDb(dataDir: string) {
 
   return {
     raw: db as SqliteDatabase,
+
+    // ---- v8 relay (spec/relay.md) ----
+
+    /** Load-or-create the relay's pinned identity keypair (first boot mints it). */
+    ensureRelayIdentity(generate: () => { pubkey: string; privkey: string }): {
+      pubkey: string;
+      privkey: string;
+    } {
+      const row = db.prepare('SELECT pubkey, privkey FROM relay_identity WHERE id = 1').get() as
+        | { pubkey: string; privkey: string }
+        | undefined;
+      if (row) return row;
+      const fresh = generate();
+      db.prepare('INSERT INTO relay_identity (id, pubkey, privkey, created_at) VALUES (1, ?, ?, ?)').run(
+        fresh.pubkey,
+        fresh.privkey,
+        Date.now(),
+      );
+      return fresh;
+    },
+    /** Enroll a device key. Returns the id, or null if the key belongs to another user. */
+    enrollRelayDevice(userId: string, id: string, pubkey: string, name: string | null): string | null {
+      const existing = db.prepare('SELECT id, user_id FROM relay_devices WHERE pubkey = ?').get(pubkey) as
+        | { id: string; user_id: string }
+        | undefined;
+      if (existing) return existing.user_id === userId ? existing.id : null;
+      db.prepare(
+        'INSERT INTO relay_devices (id, user_id, pubkey, name, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(id, userId, pubkey, name, Date.now());
+      return id;
+    },
+    getRelayDeviceByPubkey(pubkey: string): { id: string; userId: string; revoked: boolean } | undefined {
+      const r = db.prepare('SELECT id, user_id, revoked FROM relay_devices WHERE pubkey = ?').get(pubkey) as
+        | { id: string; user_id: string; revoked: number }
+        | undefined;
+      return r ? { id: r.id, userId: r.user_id, revoked: r.revoked !== 0 } : undefined;
+    },
+    listRelayDevices(userId: string): { id: string; name: string | null; createdAt: number; revoked: boolean }[] {
+      return (
+        db.prepare('SELECT id, name, created_at, revoked FROM relay_devices WHERE user_id = ? ORDER BY created_at').all(
+          userId,
+        ) as { id: string; name: string | null; created_at: number; revoked: number }[]
+      ).map((r) => ({ id: r.id, name: r.name, createdAt: r.created_at, revoked: r.revoked !== 0 }));
+    },
+    /** D4: revocation = stop honoring the device's next challenge. */
+    revokeRelayDevice(userId: string, deviceId: string): boolean {
+      return (
+        db.prepare('UPDATE relay_devices SET revoked = 1 WHERE id = ? AND user_id = ?').run(deviceId, userId)
+          .changes > 0
+      );
+    },
+    createRelayChallenge(nonce: string): void {
+      db.prepare('INSERT INTO relay_challenges (nonce, created_at) VALUES (?, ?)').run(nonce, Date.now());
+      // Opportunistic prune so the table never grows past the expiry window.
+      db.prepare('DELETE FROM relay_challenges WHERE created_at < ?').run(Date.now() - 10 * 60_000);
+    },
+    /** Single-use: deletes the nonce; true only if it existed and was fresh. */
+    consumeRelayChallenge(nonce: string, maxAgeMs: number): boolean {
+      const row = db.prepare('SELECT created_at FROM relay_challenges WHERE nonce = ?').get(nonce) as
+        | { created_at: number }
+        | undefined;
+      db.prepare('DELETE FROM relay_challenges WHERE nonce = ?').run(nonce);
+      return row !== undefined && Date.now() - row.created_at <= maxAgeMs;
+    },
 
     userCount(): number {
       return (db.prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number }).c;
