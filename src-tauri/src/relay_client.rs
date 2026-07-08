@@ -183,6 +183,34 @@ impl RelayClient {
         Ok(())
     }
 
+    /// Publish this account's per-relay public keys to the directory (D5).
+    pub async fn directory_publish(
+        &self,
+        signing: &SigningKey,
+        identity_pub_b64: String,
+        sealing_pub_b64: String,
+    ) -> Result<(), String> {
+        let bearer = self.bearer(signing).await?;
+        let base = {
+            let guard = self.session.lock().unwrap();
+            guard.as_ref().ok_or("not connected to a relay")?.base_url.clone()
+        };
+        let res = reqwest::Client::new()
+            .put(format!("{base}/api/relay/directory"))
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({
+                "identityPubKey": identity_pub_b64,
+                "sealingPubKey": sealing_pub_b64,
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("directory publish failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("relay refused directory entry (HTTP {})", res.status()));
+        }
+        Ok(())
+    }
+
     pub fn status(&self) -> RelayStatus {
         let guard = self.session.lock().unwrap();
         match guard.as_ref() {

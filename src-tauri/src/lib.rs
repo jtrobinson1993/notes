@@ -95,6 +95,31 @@ async fn relay_connect(
     relay.connect(&url, &signing).await
 }
 
+/// Derive this account's per-relay identity (D4b) and publish it to the
+/// relay's key directory (D5). Requires the vault unlocked (MK) and a
+/// connected relay (its fingerprint is the derivation input).
+#[tauri::command]
+async fn relay_directory_publish(
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let (device, id_pub, seal_pub) = {
+        let vault = vault.lock().unwrap();
+        let device = vault.device_signing_key().map_err(|e| e.to_string())?;
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        (
+            device,
+            b64.encode(ident.signing_public()),
+            b64.encode(ident.sealing_public()),
+        )
+    };
+    relay.directory_publish(&device, id_pub, seal_pub).await
+}
+
 /// Register the wrapped-MK escrow with the connected relay (D15).
 #[tauri::command]
 async fn relay_escrow_upload(
@@ -369,6 +394,7 @@ pub fn run() {
             relay_connect,
             relay_status,
             relay_escrow_upload,
+            relay_directory_publish,
             messages_page,
             messages_ingest,
             message_edit,

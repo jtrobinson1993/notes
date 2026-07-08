@@ -473,6 +473,19 @@ CREATE TABLE IF NOT EXISTS relay_escrow (
   recovery_auth_hash TEXT,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS relay_directory (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  identity_pubkey TEXT NOT NULL,
+  sealing_pubkey TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_kt_roots (
+  epoch INTEGER PRIMARY KEY AUTOINCREMENT,
+  root_hash TEXT NOT NULL,
+  prev_root_hash TEXT,
+  signature TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `);
 
   // Idempotent migration: add users.display_name / name_color if missing.
@@ -806,6 +819,77 @@ CREATE TABLE IF NOT EXISTS relay_escrow (
             recoveryAuthHash: r.recovery_auth_hash,
           }
         : undefined;
+    },
+
+    /** D5 directory: bind this account's handle to its per-relay keys. */
+    setRelayDirectoryEntry(userId: string, identityPubkey: string, sealingPubkey: string): void {
+      db.prepare(
+        `INSERT INTO relay_directory (user_id, identity_pubkey, sealing_pubkey, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET identity_pubkey = excluded.identity_pubkey,
+           sealing_pubkey = excluded.sealing_pubkey, updated_at = excluded.updated_at`,
+      ).run(userId, identityPubkey, sealingPubkey, Date.now());
+    },
+    getRelayDirectoryByHandle(
+      handle: string,
+    ): { identityPubkey: string; sealingPubkey: string } | undefined {
+      const r = db
+        .prepare(
+          `SELECT d.identity_pubkey, d.sealing_pubkey FROM relay_directory d
+           JOIN users u ON u.id = d.user_id WHERE u.handle = ? COLLATE NOCASE`,
+        )
+        .get(handle) as { identity_pubkey: string; sealing_pubkey: string } | undefined;
+      return r ? { identityPubkey: r.identity_pubkey, sealingPubkey: r.sealing_pubkey } : undefined;
+    },
+    /** Every binding, handle-sorted — the input to the epoch digest. */
+    allRelayDirectoryEntries(): { handle: string; identityPubkey: string; sealingPubkey: string }[] {
+      return (
+        db.prepare(
+          `SELECT u.handle, d.identity_pubkey, d.sealing_pubkey FROM relay_directory d
+           JOIN users u ON u.id = d.user_id ORDER BY u.handle COLLATE NOCASE`,
+        ).all() as { handle: string; identity_pubkey: string; sealing_pubkey: string }[]
+      ).map((r) => ({
+        handle: r.handle,
+        identityPubkey: r.identity_pubkey,
+        sealingPubkey: r.sealing_pubkey,
+      }));
+    },
+    appendKtRoot(rootHash: string, prevRootHash: string | null, signature: string): number {
+      const res = db
+        .prepare('INSERT INTO relay_kt_roots (root_hash, prev_root_hash, signature, created_at) VALUES (?, ?, ?, ?)')
+        .run(rootHash, prevRootHash, signature, Date.now());
+      return Number(res.lastInsertRowid);
+    },
+    latestKtRoot(): { epoch: number; rootHash: string } | undefined {
+      const r = db
+        .prepare('SELECT epoch, root_hash FROM relay_kt_roots ORDER BY epoch DESC LIMIT 1')
+        .get() as { epoch: number; root_hash: string } | undefined;
+      return r ? { epoch: r.epoch, rootHash: r.root_hash } : undefined;
+    },
+    listKtRoots(sinceEpoch: number): {
+      epoch: number;
+      rootHash: string;
+      prevRootHash: string | null;
+      signature: string;
+      createdAt: number;
+    }[] {
+      return (
+        db.prepare(
+          'SELECT epoch, root_hash, prev_root_hash, signature, created_at FROM relay_kt_roots WHERE epoch > ? ORDER BY epoch',
+        ).all(sinceEpoch) as {
+          epoch: number;
+          root_hash: string;
+          prev_root_hash: string | null;
+          signature: string;
+          created_at: number;
+        }[]
+      ).map((r) => ({
+        epoch: r.epoch,
+        rootHash: r.root_hash,
+        prevRootHash: r.prev_root_hash,
+        signature: r.signature,
+        createdAt: r.created_at,
+      }));
     },
 
     createRelayChallenge(nonce: string): void {

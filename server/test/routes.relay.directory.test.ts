@@ -1,0 +1,131 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import { createPublicKey, generateKeyPairSync, randomBytes, sign as edSign, verify as edVerify } from 'node:crypto';
+import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+
+let ctx: TestApp;
+afterEach(async () => ctx && ctx.cleanup());
+
+const SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+function deviceKeys() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
+  return { pubKey: spki.subarray(spki.length - 32).toString('base64'), privateKey };
+}
+
+async function deviceBearer(cookie: string): Promise<string> {
+  const keys = deviceKeys();
+  await ctx.app.inject({
+    method: 'POST',
+    url: '/api/relay/devices',
+    headers: { cookie },
+    payload: { pubKey: keys.pubKey },
+  });
+  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
+  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
+  const nonce = challenge.json().nonce as string;
+  const signature = edSign(
+    null,
+    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
+    keys.privateKey,
+  ).toString('base64');
+  const token = await ctx.app.inject({
+    method: 'POST',
+    url: '/api/relay/auth/token',
+    payload: { pubKey: keys.pubKey, nonce, signature },
+  });
+  return `Bearer ${token.json().token as string}`;
+}
+
+const identityKeys = () => ({
+  identityPubKey: randomBytes(32).toString('base64'),
+  sealingPubKey: randomBytes(32).toString('base64'),
+});
+
+describe('directory + KT roots (D5)', () => {
+  it('registers keys, serves lookups, and publishes signed chained roots', async () => {
+    ctx = await makeApp();
+    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice.cookie);
+    const keys = identityKeys();
+
+    const put = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/relay/directory',
+      headers: { authorization: bearer },
+      payload: keys,
+    });
+    expect(put.statusCode).toBe(200);
+    const epoch1 = put.json().epoch as number;
+
+    const lookup = await ctx.app.inject({ method: 'GET', url: '/api/relay/directory/Alice%230001' });
+    expect(lookup.statusCode).toBe(200);
+    expect(lookup.json()).toMatchObject({ ...keys, epoch: epoch1 });
+
+    // Re-publishing the same keys does not mint a new epoch.
+    const rePut = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/relay/directory',
+      headers: { authorization: bearer },
+      payload: keys,
+    });
+    expect(rePut.json().epoch).toBe(epoch1);
+
+    // A key change chains a new epoch onto the previous root.
+    const rotated = identityKeys();
+    const put2 = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/relay/directory',
+      headers: { authorization: bearer },
+      payload: rotated,
+    });
+    const epoch2 = put2.json().epoch as number;
+    expect(epoch2).toBeGreaterThan(epoch1);
+
+    const roots = await ctx.app.inject({ method: 'GET', url: '/api/relay/kt/roots' });
+    const list = roots.json().roots as {
+      epoch: number;
+      rootHash: string;
+      prevRootHash: string | null;
+      signature: string;
+    }[];
+    expect(list).toHaveLength(2);
+    expect(list[0].prevRootHash).toBeNull();
+    expect(list[1].prevRootHash).toBe(list[0].rootHash);
+
+    // Signatures verify against the relay identity key from /info.
+    const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
+    const relayPub = createPublicKey({
+      key: Buffer.concat([SPKI_PREFIX, Buffer.from(info.json().identityPubKey as string, 'base64')]),
+      format: 'der',
+      type: 'spki',
+    });
+    for (const r of list) {
+      const payload = `kt-root|${r.rootHash}|${r.prevRootHash ?? 'genesis'}`;
+      expect(edVerify(null, Buffer.from(payload), relayPub, Buffer.from(r.signature, 'base64'))).toBe(true);
+    }
+
+    // since-filter + the well-known auditor alias.
+    const since = await ctx.app.inject({ method: 'GET', url: `/api/relay/kt/roots?since=${epoch1}` });
+    expect(since.json().roots).toHaveLength(1);
+    const wellKnown = await ctx.app.inject({ method: 'GET', url: '/.well-known/accord/kt-roots' });
+    expect(wellKnown.json()).toEqual(roots.json());
+  });
+
+  it('404s an unregistered handle and rejects malformed keys', async () => {
+    ctx = await makeApp();
+    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice.cookie);
+
+    const missing = await ctx.app.inject({ method: 'GET', url: '/api/relay/directory/Alice%230001' });
+    expect(missing.statusCode).toBe(404);
+
+    const bad = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/relay/directory',
+      headers: { authorization: bearer },
+      payload: { identityPubKey: 'short', sealingPubKey: 'short' },
+    });
+    expect(bad.statusCode).toBe(400);
+  });
+});
