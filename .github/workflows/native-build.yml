@@ -1,0 +1,114 @@
+# v8 native desktop builds (roadmap D12).
+#
+# Produces unsigned installers per OS + a SHA256SUMS manifest, so anyone can
+# rebuild from source with the pinned toolchains and compare hashes. This is
+# the verification substrate; OS code-signing/notarization is layered on
+# before shipping (needs signing secrets — see the commented hooks) and the
+# distribution-channel decision is deliberately deferred until after
+# implementation (roadmap "Desktop distribution channels").
+#
+# Reproducibility status: toolchains are pinned (rust-toolchain.toml, Node 22,
+# npm ci from the lockfile) and builds set SOURCE_DATE_EPOCH from the commit,
+# which stabilizes most archive timestamps. Bit-for-bit identity across
+# machines is NOT yet guaranteed (bundler metadata varies) — tracked v8 work,
+# verified by the double-build job below as the canary.
+
+name: Native build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v8*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14 # arm64
+            target: aarch64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1 # keep in sync with src-tauri/rust-toolchain.toml
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Linux webview/system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf
+      - run: npm ci
+      - name: Deterministic timestamp from the commit
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+      - name: Build (unsigned)
+        run: npx tauri build --target ${{ matrix.target }}
+        # Signing hooks (post distribution-channel decision):
+        #   macOS: APPLE_CERTIFICATE / APPLE_ID + notarytool
+        #   Windows: signtool cert
+        #   updater: TAURI_SIGNING_PRIVATE_KEY
+      - name: Hash artifacts
+        shell: bash
+        run: |
+          cd src-tauri/target/${{ matrix.target }}/release/bundle
+          find . -type f \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.AppImage' \
+            -o -name '*.deb' -o -name '*.rpm' -o -name '*.msi' -o -name '*.exe' \) \
+            -exec shasum -a 256 {} + | tee "$GITHUB_WORKSPACE/SHA256SUMS-${{ matrix.target }}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: accord-${{ matrix.target }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**
+            SHA256SUMS-${{ matrix.target }}.txt
+          retention-days: 30
+
+  # Reproducibility canary: build the Linux target twice from the same
+  # checkout and diff the hashes. When this goes green consistently we can
+  # publish "verify the build yourself" instructions (D12).
+  repro-canary:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+      - name: Linux webview/system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf
+      - run: npm ci
+      - name: Deterministic timestamp from the commit
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+      - name: Build twice and compare
+        run: |
+          npx tauri build --target x86_64-unknown-linux-gnu --bundles deb
+          sha256sum src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb > first.sum
+          rm -rf src-tauri/target/x86_64-unknown-linux-gnu/release/bundle
+          npx tauri build --target x86_64-unknown-linux-gnu --bundles deb
+          sha256sum src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb > second.sum
+          diff <(cut -d' ' -f1 first.sum) <(cut -d' ' -f1 second.sum) \
+            && echo "reproducible ✅" \
+            || echo "::warning::same-machine rebuild differs — determinism work remains"
