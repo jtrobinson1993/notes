@@ -5,6 +5,8 @@ import { useNotesStore } from './stores/notes';
 import { startChat, stopChat, useChatStore } from './stores/chat';
 import { useVoiceStore } from './stores/voice';
 import NotificationOptIn from './components/NotificationOptIn.vue';
+import NativeGate from './components/NativeGate.vue';
+import MigrationPrompt from './components/MigrationPrompt.vue';
 
 const session = useSessionStore();
 const notes = useNotesStore();
@@ -50,8 +52,13 @@ watch(
   <!-- Inset every page from the device safe areas (one boundary for the whole
        app, incl. pre-auth pages). env() insets are 0 on desktop, so it's inert. -->
   <div class="app-safe h-full">
-    <RouterView />
-    <!-- First-open notification opt-in (asks once per device; signed-in only). -->
-    <NotificationOptIn v-if="session.loggedIn" />
+    <!-- Native shell: the vault wall gates everything; in the browser the
+         gate slots straight through and the migration prompt stays hidden. -->
+    <NativeGate>
+      <RouterView />
+      <MigrationPrompt />
+      <!-- First-open notification opt-in (asks once per device; signed-in only). -->
+      <NotificationOptIn v-if="session.loggedIn" />
+    </NativeGate>
   </div>
 </template>

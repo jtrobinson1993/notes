@@ -56,6 +56,20 @@ fn vault_lock(vault: VaultState) {
     vault.lock().unwrap().lock();
 }
 
+#[tauri::command]
+fn settings_get(key: String, vault: VaultState) -> Result<Option<String>, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.get_setting(&key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn settings_set(key: String, value: String, vault: VaultState) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.set_setting(&key, &value).map_err(|e| e.to_string())
+}
+
 // ---- first-run legacy import (spec/migration.md) ----
 // The webview decrypts with the existing v1 crypto and streams plaintext
 // batches down; each command is transactional and idempotent.
@@ -113,6 +127,8 @@ pub fn run() {
             vault_unlock,
             vault_unlock_recovery,
             vault_lock,
+            settings_get,
+            settings_set,
             import_notes,
             import_conversations,
             import_contacts,
