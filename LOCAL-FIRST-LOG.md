@@ -604,12 +604,24 @@ Playwright version (currently 1.60.0).
     (delta persistence arrives with phase-4 sync); webview owns the Y.Doc.
     Gotcha fixed: delete_note FK order (versions → note → crdt_doc; doc_id
     captured first).
-  - **Next iterations (the local-first arc):** rewire `stores/notes.ts`
-    behind isNative onto these commands (list/create/edit/delete/search from
-    SQLite; keep server path for browser) — the delicate one, editor included;
-    then chat history reads from SQLite; then phase 3 minimal relay
-    (relay.md). Queued for desk sessions: mobile target init, tauri dev smoke
-    test. Also: biometric ACL hardening.
+  - **Iteration 17 — NOTES ARE LOCAL-FIRST IN THE SHELL (DONE; cargo 19/19,
+    web 430 green):** store migration **v6** (`notes.tags_json` — tags become
+    first-class; migrator populates it) + `notes_load_all` bulk IPC (startup
+    = one call). `lib/nativeNotes.ts` — Y.Doc-per-note owner (hydrate from
+    state; body edits = coarse replace in one transaction → single doc
+    lineage until phase-4 collab; encode → save with title/tags/search).
+    `stores/notes.ts` branches on isNative: loadFromCache → SQLite bulk;
+    sync → local no-op (store IS the truth; relay = phase 4); save/create/
+    remove → native fns (optimistic map update kept); **sharing guarded** in
+    native (`guardNativeSharing` throws "returns with relay sync" — local
+    edits would silently diverge from stale server ciphertext otherwise);
+    reset clears docs. Browser path byte-identical. 7 new tests
+    (nativeNotes hydration/save-roundtrip/lineage).
+  - **Next iterations:** chat history from SQLite (read path first:
+    conversation list + message pages from store when isNative; live
+    send/receive still via legacy WS until phase 3); then phase 3 minimal
+    relay. Desk-session queue: mobile init, tauri dev smoke test (NOW truly
+    end-to-end for notes), biometric ACLs.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

@@ -27,6 +27,14 @@ import {
 } from '../lib/idb';
 import { useSessionStore } from './session';
 import { useOrgStore } from './organization';
+import { isNative } from '../lib/native';
+import {
+  nativeCreateNote,
+  nativeDeleteNote,
+  nativeLoadNotes,
+  nativeSaveNote,
+  resetNativeNotes,
+} from '../lib/nativeNotes';
 
 export interface DecryptedNote {
   id: string;
@@ -91,8 +99,13 @@ export const useNotesStore = defineStore('notes', () => {
     });
   }
 
-  /** Instant load: decrypt whatever is in IndexedDB. */
+  /** Instant load: the local SQLite store (native) or IndexedDB (browser). */
   async function loadFromCache(): Promise<void> {
+    if (isNative) {
+      for (const n of await nativeLoadNotes()) notes.value.set(n.id, n);
+      loaded.value = true;
+      return;
+    }
     if (!session.user) return;
     await ensureCacheOwner(session.user.id);
     for (const record of await getCachedNotes()) {
@@ -165,6 +178,11 @@ export const useNotesStore = defineStore('notes', () => {
 
   /** Background sync: outbox first, then owned (since-cursor) + shared (full). */
   async function sync(): Promise<void> {
+    if (isNative) {
+      // Local-first: the store IS the source of truth; relay sync is phase 4.
+      if (!loaded.value) await loadFromCache();
+      return;
+    }
     if (syncing.value || !session.user) return;
     syncing.value = true;
     syncError.value = null;
@@ -200,6 +218,18 @@ export const useNotesStore = defineStore('notes', () => {
   }
 
   async function save(id: string, payload: NotePayload): Promise<void> {
+    if (isNative) {
+      const prior = notes.value.get(id);
+      notes.value.set(id, {
+        ...prior,
+        id,
+        payload,
+        createdAt: prior?.createdAt ?? Date.now(),
+        updatedAt: Date.now(),
+      });
+      await nativeSaveNote(id, payload);
+      return;
+    }
     const existing = notes.value.get(id);
     const sharedKey = sharedNoteKeys.get(id);
     const ownedRecord = records.get(id);
@@ -242,6 +272,7 @@ export const useNotesStore = defineStore('notes', () => {
 
   async function create(initial?: Partial<NotePayload>): Promise<string> {
     const id = crypto.randomUUID();
+    if (isNative) await nativeCreateNote(id);
     await save(id, { title: '', body: '', tags: [], ...initial });
     return id;
   }
@@ -252,6 +283,10 @@ export const useNotesStore = defineStore('notes', () => {
     sharedNoteKeys.delete(id);
     // Drop any folder assignment + sidebar pins for this note.
     useOrgStore().forgetNote(id);
+    if (isNative) {
+      await nativeDeleteNote(id);
+      return;
+    }
     await removeCachedNote(id);
     await removeOutbox(id);
     await api.noteDelete(id);
@@ -259,7 +294,17 @@ export const useNotesStore = defineStore('notes', () => {
 
   // ---- Sharing (owner side) ----
 
+  /** Sharing rides the legacy server; in the native shell it pauses until
+   *  relay-based sharing lands (phases 3–5) — local edits would silently
+   *  diverge from the stale server ciphertext otherwise. */
+  function guardNativeSharing(): void {
+    if (isNative) {
+      throw new Error('Sharing is temporarily unavailable in the app — it returns with relay sync.');
+    }
+  }
+
   async function shareWith(noteId: string, recipientId: string, recipientPublicKey: string, access: ShareAccess): Promise<void> {
+    guardNativeSharing();
     const record = records.get(noteId);
     if (!record) throw new Error('note not found');
     const noteKey = await unwrapNoteKey(mk(), record.wrappedKey);
@@ -297,6 +342,7 @@ export const useNotesStore = defineStore('notes', () => {
    *  updates (prior plaintext they held is considered compromised). Re-seals the
    *  fresh key to every remaining recipient. */
   async function revokeShare(noteId: string, recipientId: string): Promise<void> {
+    guardNativeSharing();
     if (!records.get(noteId)) throw new Error('not the owner');
     await api.unshareNote(noteId, recipientId);
     const newKey = await rotateNoteKey(noteId);
@@ -318,6 +364,7 @@ export const useNotesStore = defineStore('notes', () => {
     recipients: { id: string; publicKey: string | null }[],
     access: ShareAccess,
   ): Promise<void> {
+    guardNativeSharing();
     const org = useOrgStore();
     const folderIds = new Set(org.descendantFolderIds(folderId));
     const owned = [...notes.value.values()].filter((n) => {
@@ -335,6 +382,7 @@ export const useNotesStore = defineStore('notes', () => {
     notes.value = new Map();
     records.clear();
     sharedNoteKeys.clear();
+    resetNativeNotes();
     loaded.value = false;
   }
 

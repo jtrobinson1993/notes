@@ -155,6 +155,9 @@ const MIGRATIONS: &[&str] = &[
     // v5 — natural key for versions so the (retry-safe) migration can INSERT
     // OR IGNORE without duplicating snapshots on re-run.
     "CREATE UNIQUE INDEX ux_note_versions ON note_versions(note_id, kind, created);",
+    // v6 — tags as first-class metadata (the UI filters on them; they were
+    // only folded into search_text before).
+    "ALTER TABLE notes ADD COLUMN tags_json TEXT;",
 ];
 
 #[derive(serde::Deserialize)]
@@ -171,6 +174,8 @@ pub struct ImportNote {
     pub shared_json: Option<String>,
     /// The note's E2E key (unwrapped/unsealed during migration).
     pub note_key: Option<Vec<u8>>,
+    /// JSON string[] of the note's tags.
+    pub tags_json: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -219,6 +224,7 @@ pub struct NoteMeta {
     pub title: Option<String>,
     pub folder_id: Option<String>,
     pub shared_json: Option<String>,
+    pub tags_json: Option<String>,
     pub created: i64,
     pub updated: i64,
 }
@@ -314,8 +320,9 @@ impl Store {
             )?;
             imported += tx.execute(
                 "INSERT OR IGNORE INTO notes(
-                   id, title, doc_id, folder_id, search_text, created, updated, shared_json, note_key)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                   id, title, doc_id, folder_id, search_text, created, updated,
+                   shared_json, note_key, tags_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 (
                     &n.id,
                     &n.title,
@@ -326,6 +333,7 @@ impl Store {
                     n.updated,
                     &n.shared_json,
                     &n.note_key,
+                    &n.tags_json,
                 ),
             )?;
         }
@@ -410,18 +418,29 @@ impl Store {
 
     pub fn list_notes(&self) -> Result<Vec<NoteMeta>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, folder_id, shared_json, created, updated
+            "SELECT id, title, folder_id, shared_json, tags_json, created, updated
              FROM notes ORDER BY updated DESC",
         )?;
         let rows = stmt
+            .query_map([], map_note_meta)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Bulk load for app startup: every note's meta + doc state in one call
+    /// (the UI holds all decrypted notes in memory, mirroring the web path).
+    pub fn load_notes_with_docs(&self) -> Result<Vec<NoteDoc>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT n.id, n.title, n.folder_id, n.shared_json, n.tags_json, n.created, n.updated,
+                    d.ydoc_state
+             FROM notes n LEFT JOIN crdt_docs d ON d.id = n.doc_id
+             ORDER BY n.updated DESC",
+        )?;
+        let rows = stmt
             .query_map([], |r| {
-                Ok(NoteMeta {
-                    id: r.get(0)?,
-                    title: r.get(1)?,
-                    folder_id: r.get(2)?,
-                    shared_json: r.get(3)?,
-                    created: r.get(4)?,
-                    updated: r.get(5)?,
+                Ok(NoteDoc {
+                    meta: map_note_meta(r)?,
+                    ydoc_state: r.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -432,22 +451,15 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT n.id, n.title, n.folder_id, n.shared_json, n.created, n.updated,
+                "SELECT n.id, n.title, n.folder_id, n.shared_json, n.tags_json, n.created, n.updated,
                         d.ydoc_state
                  FROM notes n LEFT JOIN crdt_docs d ON d.id = n.doc_id
                  WHERE n.id = ?1",
                 [id],
                 |r| {
                     Ok(NoteDoc {
-                        meta: NoteMeta {
-                            id: r.get(0)?,
-                            title: r.get(1)?,
-                            folder_id: r.get(2)?,
-                            shared_json: r.get(3)?,
-                            created: r.get(4)?,
-                            updated: r.get(5)?,
-                        },
-                        ydoc_state: r.get(6)?,
+                        meta: map_note_meta(r)?,
+                        ydoc_state: r.get(7)?,
                     })
                 },
             )
@@ -481,13 +493,15 @@ impl Store {
         id: &str,
         title: &str,
         search_text: &str,
+        tags_json: &str,
         ydoc_state: &[u8],
         now: i64,
     ) -> Result<(), StoreError> {
         let tx = self.conn.unchecked_transaction()?;
         let changed = tx.execute(
-            "UPDATE notes SET title = ?2, search_text = ?3, updated = ?4 WHERE id = ?1",
-            (id, title, search_text, now),
+            "UPDATE notes SET title = ?2, search_text = ?3, tags_json = ?4, updated = ?5
+             WHERE id = ?1",
+            (id, title, search_text, tags_json, now),
         )?;
         if changed == 0 {
             return Err(StoreError::Db(rusqlite::Error::QueryReturnedNoRows));
@@ -521,21 +535,12 @@ impl Store {
 
     pub fn search_notes(&self, query: &str) -> Result<Vec<NoteMeta>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT n.id, n.title, n.folder_id, n.shared_json, n.created, n.updated
+            "SELECT n.id, n.title, n.folder_id, n.shared_json, n.tags_json, n.created, n.updated
              FROM notes_fts f JOIN notes n ON n.rowid = f.rowid
              WHERE notes_fts MATCH ?1 ORDER BY rank",
         )?;
         let rows = stmt
-            .query_map([query], |r| {
-                Ok(NoteMeta {
-                    id: r.get(0)?,
-                    title: r.get(1)?,
-                    folder_id: r.get(2)?,
-                    shared_json: r.get(3)?,
-                    created: r.get(4)?,
-                    updated: r.get(5)?,
-                })
-            })?
+            .query_map([query], map_note_meta)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -624,6 +629,18 @@ impl Store {
                 e => Err(e),
             })?)
     }
+}
+
+fn map_note_meta(r: &rusqlite::Row) -> rusqlite::Result<NoteMeta> {
+    Ok(NoteMeta {
+        id: r.get(0)?,
+        title: r.get(1)?,
+        folder_id: r.get(2)?,
+        shared_json: r.get(3)?,
+        tags_json: r.get(4)?,
+        created: r.get(5)?,
+        updated: r.get(6)?,
+    })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -736,6 +753,7 @@ mod tests {
             ydoc_state: vec![1, 2, 3],
             shared_json: Some(r#"{"owner":"Alice","access":"edit"}"#.into()),
             note_key: Some(vec![7u8; 32]),
+            tags_json: Some(r#"["work"]"#.into()),
         }];
         assert_eq!(store.import_notes(notes).unwrap(), 1);
 
@@ -820,23 +838,28 @@ mod tests {
 
         store.create_note("n1", 100).unwrap();
         store
-            .save_note("n1", "Rocket plans", "flight to the moon", &[1, 2, 3], 200)
+            .save_note("n1", "Rocket plans", "flight to the moon", r#"["space"]"#, &[1, 2, 3], 200)
             .unwrap();
 
         let list = store.list_notes().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title.as_deref(), Some("Rocket plans"));
+        assert_eq!(list[0].tags_json.as_deref(), Some(r#"["space"]"#));
         assert_eq!(list[0].updated, 200);
 
         let doc = store.get_note("n1").unwrap().unwrap();
         assert_eq!(doc.ydoc_state.as_deref(), Some(&[1u8, 2, 3][..]));
+
+        let all = store.load_notes_with_docs().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].ydoc_state.as_deref(), Some(&[1u8, 2, 3][..]));
 
         let hits = store.search_notes("moon").unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "n1");
 
         // Saving an unknown note errors rather than silently no-oping.
-        assert!(store.save_note("nope", "t", "s", &[], 1).is_err());
+        assert!(store.save_note("nope", "t", "s", "[]", &[], 1).is_err());
 
         store.delete_note("n1").unwrap();
         assert!(store.get_note("n1").unwrap().is_none());
