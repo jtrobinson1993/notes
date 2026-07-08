@@ -679,12 +679,26 @@ Playwright version (currently 1.60.0).
     POST /mailbox/ack (deletes own rows only — hold-until-ack per device).
     Tests: fan-out to 2 devices, per-device ack isolation, cross-device ack
     no-op, uniform refusal, strictly-increasing ts, oversize 413.
-  - **Next iterations (phase 3):** escrow endpoints (D15: PUT /escrow +
-    /escrow/fetch w/ auth-key proof + heavy rate limit); directory + KT stub
-    (D5); Rust client mailbox loop (send/fetch/ack + verifier registration
-    from profile key); **fold relay state inventory into security.md**
-    (mailbox/verifiers now real state); WS live delivery for device queues.
-    Desk queue unchanged.
+  - **Iteration 23 — escrow, both halves (DONE; server 317 green incl. 3
+    new, cargo 24/24):** server `relay_escrow` table + PUT /api/relay/escrow
+    (device-token authed, 8KB cap, opaque payload) + POST /escrow/fetch —
+    auth-key proof (server stores b64url(sha256(authKey raw)); presents b64
+    key), **route-level rate limit 5/min** (brute-force target), uniform 401
+    (wrong key / wrong kind / unknown handle identical). Rust: **auth keys =
+    HKDF under `accord/auth/{password,recovery}/v1`** (domain-separated from
+    wrap keys — fetch secret can never unwrap what it fetches); vault meta
+    gains `escrow{pw,rc auth hashes}` at create; `escrow_bundle()` = payload
+    JSON (wrapped pw/rc blobs + public KDF params; **vault-key wrap
+    deliberately excluded** — never leaves the device) + hashes;
+    `relay_escrow_upload` IPC → RelayClient PUT with bearer. Migration flow:
+    enroll → escrow upload (best-effort chain). Cold-start FETCH+restore
+    path (fresh device: fetch → unwrap w/ password → rebuild vault) still
+    TODO.
+  - **Next iterations (phase 3):** directory + KT stub (D5: handle→identity
+    pubkey registration + lookup; AKD log later); Rust client mailbox loop
+    (verifier registration from profile key, send/fetch/ack); escrow
+    cold-start restore; security.md relay-state inventory fold-in; WS live
+    delivery. Desk queue unchanged.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

@@ -95,6 +95,21 @@ async fn relay_connect(
     relay.connect(&url, &signing).await
 }
 
+/// Register the wrapped-MK escrow with the connected relay (D15).
+#[tauri::command]
+async fn relay_escrow_upload(
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let (signing, payload, pw_hash, rc_hash) = {
+        let vault = vault.lock().unwrap();
+        let signing = vault.device_signing_key().map_err(|e| e.to_string())?;
+        let (payload, pw, rc) = vault.escrow_bundle().map_err(|e| e.to_string())?;
+        (signing, payload, pw, rc)
+    };
+    relay.escrow_upload(&signing, payload, pw_hash, rc_hash).await
+}
+
 #[tauri::command]
 fn relay_status(
     relay: tauri::State<'_, relay_client::RelayClient>,
@@ -353,6 +368,7 @@ pub fn run() {
             device_public_key,
             relay_connect,
             relay_status,
+            relay_escrow_upload,
             messages_page,
             messages_ingest,
             message_edit,

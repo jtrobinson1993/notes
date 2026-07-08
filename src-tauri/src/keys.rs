@@ -19,6 +19,10 @@ use zeroize::Zeroizing;
 pub const INFO_MK_WRAP_VAULT: &[u8] = b"accord/mk-wrap/vault-key/v1";
 pub const INFO_MK_WRAP_PASSWORD: &[u8] = b"accord/mk-wrap/password/v1";
 pub const INFO_MK_WRAP_RECOVERY: &[u8] = b"accord/mk-wrap/recovery/v1";
+// Escrow auth keys (D15): domain-separated from the wrap keys, so the secret
+// a client presents to fetch escrow can never unwrap the blobs it receives.
+pub const INFO_AUTH_PASSWORD: &[u8] = b"accord/auth/password/v1";
+pub const INFO_AUTH_RECOVERY: &[u8] = b"accord/auth/recovery/v1";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
@@ -55,6 +59,17 @@ pub fn normalize_recovery_code(code: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric())
         .collect::<String>()
         .to_ascii_uppercase()
+}
+
+/// Escrow auth key: HKDF of the user secret under an auth-only domain.
+pub fn derive_auth_key(secret: &[u8], info: &[u8]) -> Result<Secret32, KeyError> {
+    derive_wrap_key(secret, info)
+}
+
+/// b64url(SHA-256(bytes)) — the form the relay stores for auth-key checks.
+pub fn sha256_b64url(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    data_encoding::BASE64URL_NOPAD.encode(&sha2::Sha256::digest(bytes))
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]

@@ -73,6 +73,16 @@ struct VaultMeta {
     wrapped_mk_vault: WrappedKey,
     wrapped_mk_password: WrappedKey,
     wrapped_mk_recovery: WrappedKey,
+    /// D15: auth-key hashes for the relay escrow (public data — hashes of
+    /// domain-separated keys the relay compares against on fetch).
+    #[serde(default)]
+    escrow: Option<EscrowMeta>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct EscrowMeta {
+    password_auth_hash: String,
+    recovery_auth_hash: String,
 }
 
 /// Minimal keychain abstraction: the OS secure store in production, an
@@ -175,6 +185,8 @@ impl Vault {
         let recovery_code = keys::generate_recovery_code();
         let recovery_norm = keys::normalize_recovery_code(&recovery_code);
 
+        let pw_auth = keys::derive_auth_key(password_secret.as_ref(), keys::INFO_AUTH_PASSWORD)?;
+        let rc_auth = keys::derive_auth_key(recovery_norm.as_bytes(), keys::INFO_AUTH_RECOVERY)?;
         let meta = VaultMeta {
             version: 1,
             kdf_salt,
@@ -192,6 +204,10 @@ impl Vault {
                 INFO_MK_WRAP_RECOVERY,
                 &mk,
             )?,
+            escrow: Some(EscrowMeta {
+                password_auth_hash: keys::sha256_b64url(pw_auth.as_ref()),
+                recovery_auth_hash: keys::sha256_b64url(rc_auth.as_ref()),
+            }),
         };
         std::fs::write(self.meta_path(), serde_json::to_vec_pretty(&meta)?)?;
 
@@ -264,6 +280,25 @@ impl Vault {
         let seed = keys::random_key();
         self.keychain_set(&name, &seed)?;
         Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
+    }
+
+    /// The escrow bundle for the relay (D15): opaque payload (wrapped blobs
+    /// + public KDF params) and the auth-key hashes. Everything here is safe
+    /// to hand to the relay — MK only appears wrapped under user secrets.
+    pub fn escrow_bundle(&self) -> Result<(String, String, String), VaultError> {
+        let meta = self.load_meta()?;
+        let escrow = meta.escrow.clone().ok_or(VaultError::NotInitialized)?;
+        let payload = serde_json::json!({
+            "v": 1,
+            "kdfSalt": meta.kdf_salt,
+            "kdfMKib": meta.kdf_m_kib,
+            "kdfT": meta.kdf_t,
+            "kdfP": meta.kdf_p,
+            "wrappedMkPassword": serde_json::to_value(&meta.wrapped_mk_password)?,
+            "wrappedMkRecovery": serde_json::to_value(&meta.wrapped_mk_recovery)?,
+        })
+        .to_string();
+        Ok((payload, escrow.password_auth_hash, escrow.recovery_auth_hash))
     }
 
     /// Drop the open store and zeroize MK.
@@ -409,6 +444,20 @@ mod tests {
             vault.create("another password"),
             Err(VaultError::AlreadyInitialized)
         ));
+    }
+
+    #[test]
+    fn escrow_bundle_is_present_and_opaque() {
+        let (_dir, mut vault) = new_vault();
+        vault.create("a long enough password").unwrap();
+        let (payload, pw_hash, rc_hash) = vault.escrow_bundle().unwrap();
+        assert_ne!(pw_hash, rc_hash); // separate auth domains
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["v"], 1);
+        assert!(parsed["wrappedMkPassword"]["ciphertext"].is_array());
+        // The payload never carries the vault-key wrap (that one never
+        // leaves the device) nor any raw key material.
+        assert!(parsed.get("wrappedMkVault").is_none());
     }
 
     #[test]

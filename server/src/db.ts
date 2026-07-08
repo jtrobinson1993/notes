@@ -466,6 +466,13 @@ CREATE TABLE IF NOT EXISTS relay_mailbox (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_relay_mailbox_device ON relay_mailbox(device_id, queue_id);
+CREATE TABLE IF NOT EXISTS relay_escrow (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  payload TEXT NOT NULL,
+  password_auth_hash TEXT,
+  recovery_auth_hash TEXT,
+  updated_at INTEGER NOT NULL
+);
 `);
 
   // Idempotent migration: add users.display_name / name_color if missing.
@@ -765,6 +772,40 @@ CREATE INDEX IF NOT EXISTS idx_relay_mailbox_device ON relay_mailbox(device_id, 
     pruneRelayMailbox(maxAgeMs: number): number {
       return db.prepare('DELETE FROM relay_mailbox WHERE created_at < ?').run(Date.now() - maxAgeMs)
         .changes;
+    },
+
+    /** D15 escrow: opaque wrapped-key payload + auth-key hashes. The blobs
+     *  are MK wrapped under user-held secrets — never usable by the relay. */
+    setRelayEscrow(
+      userId: string,
+      payload: string,
+      passwordAuthHash: string | null,
+      recoveryAuthHash: string | null,
+    ): void {
+      db.prepare(
+        `INSERT INTO relay_escrow (user_id, payload, password_auth_hash, recovery_auth_hash, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload,
+           password_auth_hash = excluded.password_auth_hash,
+           recovery_auth_hash = excluded.recovery_auth_hash,
+           updated_at = excluded.updated_at`,
+      ).run(userId, payload, passwordAuthHash, recoveryAuthHash, Date.now());
+    },
+    getRelayEscrow(userId: string):
+      | { payload: string; passwordAuthHash: string | null; recoveryAuthHash: string | null }
+      | undefined {
+      const r = db
+        .prepare('SELECT payload, password_auth_hash, recovery_auth_hash FROM relay_escrow WHERE user_id = ?')
+        .get(userId) as
+        | { payload: string; password_auth_hash: string | null; recovery_auth_hash: string | null }
+        | undefined;
+      return r
+        ? {
+            payload: r.payload,
+            passwordAuthHash: r.password_auth_hash,
+            recoveryAuthHash: r.recovery_auth_hash,
+          }
+        : undefined;
     },
 
     createRelayChallenge(nonce: string): void {
