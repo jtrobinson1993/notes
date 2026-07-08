@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryCache } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
 import AppModal from '../components/AppModal.vue';
+import DeviceLockSettings from '../components/settings/DeviceLockSettings.vue';
+import { isNative } from '../lib/native';
 import { MIN_PASSWORD_LENGTH, derivePasswordKey, derivePasswordAuthKey } from '../lib/password';
 import { b64, ub64 } from '../lib/b64';
 import { api } from '../lib/api';
@@ -822,6 +824,11 @@ async function importFiles(event: Event) {
 
       <!-- Security: passkeys + recovery code -->
       <section v-show="activeSection === 'security'" class="space-y-3">
+        <!-- Native shell only: local vault lock policy (v8 D4 layer A). -->
+        <template v-if="isNative">
+          <h2 class="text-lg font-semibold">Device lock</h2>
+          <DeviceLockSettings />
+        </template>
         <h2 class="text-lg font-semibold">Notifications</h2>
         <div class="flex items-center justify-between gap-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <div>
