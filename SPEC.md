@@ -14,5 +14,8 @@ The spec is split by app area under [`spec/`](spec/). Start at
 | [spec/notifications.md](spec/notifications.md) | Foreground chime + tab/badge unread + v3 phase 3 PWA install + content-free background Web Push |
 | [spec/security.md](spec/security.md) | Rendering/XSS safety, CSP, metadata, threat model |
 | [spec/relay.md](spec/relay.md) | v8 relay design — wire protocol, endpoints, and the complete state inventory (not yet built) |
+| [spec/local-store.md](spec/local-store.md) | v8 local store design — SQLite/SQLCipher schema, Rust-core IPC boundary, backup format (not yet built) |
+| [spec/key-transparency.md](spec/key-transparency.md) | v8 KT design — log format, proofs, roots endpoint, reference auditor (not yet built) |
+| [spec/migration.md](spec/migration.md) | v8 cutover runbook — per-user migration, purge timeline, stragglers (design) |
 | [spec/roadmap.md](spec/roadmap.md) | Phasing + future versions (v3.1 – v9) |
 | [spec/testing.md](spec/testing.md) | The unit + e2e test plan (Vitest + Playwright) |

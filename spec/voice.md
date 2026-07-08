@@ -327,3 +327,17 @@ Per [testing.md](testing.md) and `CLAUDE.md`:
 - **Silence suppression (Opus DTX)** — **future follow-up**, only if bandwidth
   becomes a problem; reintroduces a speech-timing leak that decoy traffic
   (also deferred) would then mitigate (see [§ Security & privacy](#security--privacy)).
+
+## v8 changes (design, not yet built)
+
+Voice survives v8 nearly untouched — the SFU/STUN/TURN stack and frame E2EE
+are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
+
+- **Auth:** signaling authenticates with the **device token** (roadmap D4)
+  instead of the legacy session cookie.
+- **Ringing across relays (D4c):** a 1:1 call offer is an envelope fanned out
+  over **every relay the contact is linked on** (deduped by call id, like any
+  D11 message); devices ring on the first copy. The media session runs on the
+  SFU of whichever relay carried the *accepted* offer. Voice channels are
+  per-relay by construction (groups don't span relays).
+- **Web satellite** (D12) can join voice — live media only, nothing at rest.
