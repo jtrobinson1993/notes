@@ -617,11 +617,22 @@ Playwright version (currently 1.60.0).
     edits would silently diverge from stale server ciphertext otherwise);
     reset clears docs. Browser path byte-identical. 7 new tests
     (nativeNotes hydration/save-roundtrip/lineage).
-  - **Next iterations:** chat history from SQLite (read path first:
-    conversation list + message pages from store when isNative; live
-    send/receive still via legacy WS until phase 3); then phase 3 minimal
-    relay. Desk-session queue: mobile init, tauri dev smoke test (NOW truly
-    end-to-end for notes), biometric ACLs.
+  - **Iteration 18 — chat-history primitives, Rust side (DONE, 20/20
+    cargo):** `messages_page` — backward paging by the **D11 sort key**
+    `(relay_ts, sender, id)` with an exclusive `(ts,id)` row-value cursor
+    (test proves order + no-overlap continuation); channel_id NULL = general
+    channel; limit clamped ≤500. Live-ingest surface for the interim
+    (legacy WS still transports): `messages_ingest` (idempotent batch =
+    import_messages), `message_edit` (content+edited_at in place),
+    `message_delete` (content dropped, row stays as tombstone placeholder —
+    D11 rendering). native.ts wrappers (`messagesPage/messagesIngest/
+    messageEdit/messageDelete`).
+  - **Next iterations:** wire chat.ts onto it behind isNative — back-scroll
+    pages from SQLite (instant/offline) + tee every live WS message/edit/
+    delete into the store so the local log stays current; then phase 3
+    minimal relay (relay.md: device registration + challenge/token first).
+    Desk-session queue: mobile init, tauri dev smoke (notes now end-to-end),
+    biometric ACLs.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
