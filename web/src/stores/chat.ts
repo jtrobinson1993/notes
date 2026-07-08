@@ -38,6 +38,8 @@ import { randomJoinPhrase } from '../lib/systemMessages';
 import { customEmojiForText, loadCustomEmoji, registerEmbeddedEmoji, resetCustomEmoji } from '../lib/emoji/custom';
 import { loadEmojiUsage, resetEmojiUsage } from '../lib/emoji/usage';
 import { b64 } from '../lib/b64';
+import { isNative } from '../lib/native';
+import { loadHistoryLocal, teeEdit, teeMessage } from '../lib/nativeChat';
 import { useSessionStore } from './session';
 import { useFriendsStore } from './friends';
 import { useProfileStore } from './profile';
@@ -557,6 +559,13 @@ export const useChatStore = defineStore('chat', () => {
    *  means the channel's start has been reached. */
   async function loadHistory(convId: string, channelId?: string, before?: number): Promise<number> {
     const chan = channelId ?? convId;
+    if (isNative) {
+      // Local log is the history source (instant + offline); a fresh open
+      // (no `before`) restarts the back-scroll cursor from the newest page.
+      const views = await loadHistoryLocal(convId, chan, HISTORY_LIMIT, before === undefined);
+      mergeMessages(chan, views);
+      return views.length;
+    }
     const raw = await api.conversationMessages(convId, { before, limit: HISTORY_LIMIT, channelId: chan });
     const views = await Promise.all(raw.map((m) => decryptOne(convId, m)));
     mergeMessages(chan, views);
@@ -580,9 +589,11 @@ export const useChatStore = defineStore('chat', () => {
     if (usedEmoji) payload.customEmoji = usedEmoji;
     const { ciphertext, iv } = await encryptMessage(key, payload);
     const sent = await api.messageSend(convId, { ciphertext, iv, epoch, channelId });
-    mergeMessages(channelId, [
-      { ...sent, text, gif: opts?.gif ?? null, attachments: opts?.attachments ?? [], replyTo: opts?.replyTo, linkPreview: opts?.linkPreview },
-    ]);
+    const view: ChatMessageView = {
+      ...sent, text, gif: opts?.gif ?? null, attachments: opts?.attachments ?? [], replyTo: opts?.replyTo, linkPreview: opts?.linkPreview,
+    };
+    mergeMessages(channelId, [view]);
+    if (isNative) teeMessage(view);
     bumpLastSeq(convId, channelId, sent.seq);
   }
 
@@ -604,7 +615,9 @@ export const useChatStore = defineStore('chat', () => {
     if (usedEmoji) payload.customEmoji = usedEmoji;
     const { ciphertext, iv } = await encryptMessage(key, payload);
     const updated = await api.messageEdit(convId, seq, { ciphertext, iv });
-    mergeMessages(channelId, [{ ...existing, ...updated, text }]);
+    const view: ChatMessageView = { ...existing, ...updated, text };
+    mergeMessages(channelId, [view]);
+    if (isNative) teeEdit(view);
   }
 
   async function decryptReactionOne(convId: string, r: ChatReaction): Promise<ChatReactionView> {
@@ -689,6 +702,7 @@ export const useChatStore = defineStore('chat', () => {
         if (!hasKey(m.conversationId)) await loadConversations();
         const view = await decryptOne(m.conversationId, m);
         mergeMessages(m.channelId, [view]);
+        if (isNative) teeMessage(view); // keep the local log current
         bumpLastSeq(m.conversationId, m.channelId, m.seq);
         // Chime for a message the user isn't looking at (another channel open,
         // or the tab/window unfocused) — never for our own echoed-back message.
@@ -705,7 +719,11 @@ export const useChatStore = defineStore('chat', () => {
         // Edits never advance unread; just replace the message in place (same
         // seq). Skip if we can't decrypt this conversation yet.
         if (!hasKey(m.conversationId)) break;
-        mergeMessages(m.channelId, [await decryptOne(m.conversationId, m)]);
+        {
+          const view = await decryptOne(m.conversationId, m);
+          mergeMessages(m.channelId, [view]);
+          if (isNative) teeEdit(view);
+        }
         break;
       }
       case 'reaction': {

@@ -138,9 +138,16 @@ export function toImportMessage(msg: ChatMessage, payload: MessagePayload): Impo
     content: payload.text || null,
     kind: system ? 'system' : 'text',
     reply_ref_json: payload.replyTo ? JSON.stringify(payload.replyTo) : null,
+    // One extras bag per message (same shape as nativeChat.viewToRow): the
+    // system event must ride along or migrated system notices lose their kind.
     attachments_json:
-      payload.attachments?.length || payload.gif
-        ? JSON.stringify({ attachments: payload.attachments ?? [], gif: payload.gif ?? null })
+      payload.attachments?.length || payload.gif || payload.system || payload.linkPreview
+        ? JSON.stringify({
+            attachments: payload.attachments ?? [],
+            gif: payload.gif ?? null,
+            system: payload.system ?? null,
+            linkPreview: payload.linkPreview ?? null,
+          })
         : null,
     edited_at: null, // legacy edits already replaced the ciphertext in place
   };
