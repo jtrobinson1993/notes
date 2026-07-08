@@ -122,6 +122,7 @@ export function toImportNote(
     ydoc_state: noteBodyToYdocState(body),
     shared_json: extras.sharedJson ?? null,
     note_key: extras.noteKey ? Array.from(extras.noteKey) : null,
+    tags_json: JSON.stringify(tags),
   };
 }
 

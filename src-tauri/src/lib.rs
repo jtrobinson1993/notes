@@ -105,17 +105,25 @@ fn note_create(id: String, vault: VaultState) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn notes_load_all(vault: VaultState) -> Result<Vec<store::NoteDoc>, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.load_notes_with_docs().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn note_save(
     id: String,
     title: String,
     search_text: String,
+    tags_json: String,
     ydoc_state: Vec<u8>,
     vault: VaultState,
 ) -> Result<(), String> {
     let vault = vault.lock().unwrap();
     let store = vault.store().map_err(|e| e.to_string())?;
     store
-        .save_note(&id, &title, &search_text, &ydoc_state, now_ms())
+        .save_note(&id, &title, &search_text, &tags_json, &ydoc_state, now_ms())
         .map_err(|e| e.to_string())
 }
 
@@ -259,6 +267,7 @@ pub fn run() {
             settings_get,
             settings_set,
             notes_list,
+            notes_load_all,
             note_get,
             note_create,
             note_save,

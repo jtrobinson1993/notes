@@ -61,15 +61,27 @@ export interface NoteMeta {
   folder_id: string | null;
   /** `{ owner, access }` for shared-with-me notes; null for own notes. */
   shared_json: string | null;
+  /** JSON string[] of tags. */
+  tags_json: string | null;
   created: number;
   updated: number;
+}
+
+export interface NoteDoc {
+  meta: NoteMeta;
+  ydoc_state: number[] | null;
 }
 
 export function notesList(): Promise<NoteMeta[]> {
   return invoke<NoteMeta[]>('notes_list');
 }
 
-export function noteGet(id: string): Promise<{ meta: NoteMeta; ydoc_state: number[] | null }> {
+/** Startup bulk load: every note's meta + Y.Doc state in one IPC call. */
+export function notesLoadAll(): Promise<NoteDoc[]> {
+  return invoke<NoteDoc[]>('notes_load_all');
+}
+
+export function noteGet(id: string): Promise<NoteDoc> {
   return invoke('note_get', { id });
 }
 
@@ -77,14 +89,15 @@ export function noteCreate(id: string): Promise<void> {
   return invoke('note_create', { id });
 }
 
-/** Persist an edit: full encoded Y.Doc state + title + search projection. */
+/** Persist an edit: full encoded Y.Doc state + title + tags + search text. */
 export function noteSave(
   id: string,
   title: string,
   searchText: string,
+  tagsJson: string,
   ydocState: number[],
 ): Promise<void> {
-  return invoke('note_save', { id, title, searchText, ydocState });
+  return invoke('note_save', { id, title, searchText, tagsJson, ydocState });
 }
 
 export function noteDelete(id: string): Promise<void> {
@@ -156,6 +169,8 @@ export interface ImportNote {
   shared_json: string | null;
   /** The note's E2E key (unwrapped/unsealed during migration; phase-4 sync). */
   note_key: number[] | null;
+  /** JSON string[] of the note's tags. */
+  tags_json: string | null;
 }
 
 export interface ImportConversation {
