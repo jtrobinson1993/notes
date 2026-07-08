@@ -43,3 +43,59 @@ export function vaultUnlockRecovery(code: string): Promise<void> {
 export function vaultLock(): Promise<void> {
   return invoke('vault_lock');
 }
+
+// ---- first-run legacy import (spec/migration.md) ----
+// The webview decrypts with the existing v1 crypto and streams plaintext
+// batches to the core; each call is transactional and idempotent, so the
+// migrator can resume after a partial failure by re-sending.
+
+export interface ImportNote {
+  id: string;
+  title: string | null;
+  search_text: string | null;
+  folder_id: string | null;
+  created: number;
+  updated: number;
+  /** Yjs doc binary (Y.encodeStateAsUpdate) seeded from the legacy note. */
+  ydoc_state: number[];
+}
+
+export interface ImportConversation {
+  id: string;
+  type: 'dm' | 'group';
+}
+
+export interface ImportContact {
+  id: string;
+  display_name: string | null;
+  is_friend: boolean;
+}
+
+export interface ImportMessage {
+  id: string;
+  conversation_id: string;
+  channel_id: string | null;
+  sender_contact_id: string | null;
+  relay_ts: number;
+  content: string | null;
+  kind: string;
+  reply_ref_json: string | null;
+  attachments_json: string | null;
+  edited_at: number | null;
+}
+
+export function importNotes(batch: ImportNote[]): Promise<number> {
+  return invoke<number>('import_notes', { batch });
+}
+
+export function importConversations(batch: ImportConversation[]): Promise<number> {
+  return invoke<number>('import_conversations', { batch });
+}
+
+export function importContacts(batch: ImportContact[]): Promise<number> {
+  return invoke<number>('import_contacts', { batch });
+}
+
+export function importMessages(batch: ImportMessage[]): Promise<number> {
+  return invoke<number>('import_messages', { batch });
+}

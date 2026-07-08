@@ -476,12 +476,20 @@ Playwright version (currently 1.60.0).
     `identity.rs` — per-relay identity = HKDF(MK, domain|relay_fp) →
     Ed25519 signing + X25519 sealing (`accord/relay-id/{ed25519,x25519}/v1`);
     tests prove determinism, cross-relay unlinkability, sign/verify.
-  - **Next iterations (phase 1):** first-run server-data import
-    (spec/migration.md — bootstrap sign-in against today's API, pull notes/
-    chat/attachments into the store); lock-screen UI wiring in the webview
-    behind `isNative` (create/unlock flows → vault commands); boot `tauri dev`
-    visually (user smoke test or /run skill); reproducible-build pipeline
-    (D12); then phase 2 wrap-up review.
+  - **Iteration 6 — import ingestion, Rust side (DONE, 14/14 tests):**
+    `import_notes/conversations/contacts/messages` IPC commands + store batch
+    methods — transactional, **INSERT OR IGNORE idempotent** (retry-after-
+    partial-failure safe; OR REPLACE would desync the FTS triggers), notes
+    carry a webview-built Yjs binary (`ydoc_state`) into `crdt_docs` (no yrs
+    dep needed — core treats doc state as opaque). native.ts typed wrappers +
+    batch interfaces. Design: legacy decrypt stays in webview TS (v1 crypto
+    reuse per migration.md); core ingests plaintext batches over IPC.
+  - **Next iterations:** webview migrator (`migrate.ts` — legacy sign-in
+    session → pull/decrypt notes+chat via existing api/crypto/idb modules →
+    stream batches, progress events); lock-screen UI behind `isNative`
+    (create/unlock → vault commands); boot `tauri dev` visually (user smoke
+    test); attachments import (blob download → per-file key → FS store —
+    needs the attachment FS layer first); reproducible builds (D12).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
