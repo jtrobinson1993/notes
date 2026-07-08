@@ -558,9 +558,23 @@ Playwright version (currently 1.60.0).
     note version history (D10 says best-effort legacy snapshots as read-only
     versions — decide whether to pull `/api/notes/:id/versions` during
     migration).
-  - **Next iterations:** profile-blob migration pass; legacy note-version
-    snapshots (best-effort, D10); boot `tauri dev` visually (user smoke
-    test); reproducible builds (D12); phase 1→2 review.
+  - **Iteration 14 — profile + note-version migration (DONE; cargo 18/18,
+    web 426 green):** store migration **v5** (unique index on
+    note_versions(note_id, kind, created) → INSERT OR IGNORE dedupe on
+    re-run) + `import_note_versions` IPC. `migrateOwnProfile` — profileDataGet
+    → unwrapProfileKey(mk) → decryptProfile → vault settings `profile.own`
+    (plaintext JSON), **`profile.key` (b64)** (matters: becomes the D6
+    delivery-token access root), `profile.epoch`. `migrateNoteVersions` —
+    per own note: /versions list → each decrypted like a NoteRecord → kind
+    'legacy' snapshots (JSON {title,body} bytes), best-effort per note (D10).
+    Contact profile blobs deliberately NOT migrated: contacts redistribute
+    their own profiles post-cutover; display-name cache already in contacts.
+    **THE LEGACY MIGRATION IS NOW SCOPE-COMPLETE** (notes+keys, shared notes,
+    versions, org settings, own profile+key, friends, convs, full history,
+    attachments+posters).
+  - **Next iterations:** boot `tauri dev` visually (user smoke test);
+    reproducible builds (D12); phase 1→2 review vs roadmap phasing (then
+    phase 3 = minimal relay — the big server-side chunk: relay.md endpoints).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

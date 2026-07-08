@@ -152,6 +152,9 @@ const MIGRATIONS: &[&str] = &[
     // notes: unsealed). Needed again in phase 4 when note updates sync over
     // the relay under the per-note key; SQLCipher protects it at rest.
     "ALTER TABLE notes ADD COLUMN note_key BLOB;",
+    // v5 — natural key for versions so the (retry-safe) migration can INSERT
+    // OR IGNORE without duplicating snapshots on re-run.
+    "CREATE UNIQUE INDEX ux_note_versions ON note_versions(note_id, kind, created);",
 ];
 
 #[derive(serde::Deserialize)]
@@ -168,6 +171,17 @@ pub struct ImportNote {
     pub shared_json: Option<String>,
     /// The note's E2E key (unwrapped/unsealed during migration).
     pub note_key: Option<Vec<u8>>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImportNoteVersion {
+    pub note_id: String,
+    /// `legacy` for imported v2 server snapshots (read-only, per D10).
+    pub kind: String,
+    pub name: Option<String>,
+    pub created: i64,
+    /// JSON `{title, body}` snapshot bytes.
+    pub snapshot: Vec<u8>,
 }
 
 #[derive(serde::Deserialize)]
@@ -297,6 +311,23 @@ impl Store {
                     &n.shared_json,
                     &n.note_key,
                 ),
+            )?;
+        }
+        tx.commit()?;
+        Ok(imported)
+    }
+
+    pub fn import_note_versions(
+        &self,
+        versions: Vec<ImportNoteVersion>,
+    ) -> Result<usize, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut imported = 0;
+        for v in versions {
+            imported += tx.execute(
+                "INSERT OR IGNORE INTO note_versions(note_id, kind, name, created, snapshot)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                (&v.note_id, &v.kind, &v.name, v.created, &v.snapshot),
             )?;
         }
         tx.commit()?;
@@ -557,6 +588,17 @@ mod tests {
             note_key: Some(vec![7u8; 32]),
         }];
         assert_eq!(store.import_notes(notes).unwrap(), 1);
+
+        // Version snapshots dedupe on (note_id, kind, created) across re-runs.
+        let version = || ImportNoteVersion {
+            note_id: "n1".into(),
+            kind: "legacy".into(),
+            name: None,
+            created: 42,
+            snapshot: br#"{"title":"t","body":"b"}"#.to_vec(),
+        };
+        assert_eq!(store.import_note_versions(vec![version()]).unwrap(), 1);
+        assert_eq!(store.import_note_versions(vec![version()]).unwrap(), 0);
 
         store
             .import_conversations(vec![ImportConversation {

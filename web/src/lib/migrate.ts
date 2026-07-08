@@ -15,6 +15,8 @@ import * as Y from 'yjs';
 import { api } from './api';
 import { decryptNotePayload, decryptSharedNotePayload, unwrapKey, unwrapNoteKey } from './crypto';
 import { decryptMessage, unsealConversationKey } from './chatCrypto';
+import { decryptProfile, unwrapProfileKey } from './profileCrypto';
+import { b64 } from './b64';
 import {
   attachmentHas,
   attachmentPut,
@@ -22,9 +24,11 @@ import {
   importConversations,
   importMessages,
   importNotes,
+  importNoteVersions,
   settingsSet,
   type ImportMessage,
   type ImportNote,
+  type ImportNoteVersion,
 } from './native';
 import { ub64 } from './b64';
 import type {
@@ -43,6 +47,7 @@ export interface MigrationProgress {
   stage:
     | 'notes'
     | 'shared-notes'
+    | 'versions'
     | 'settings'
     | 'contacts'
     | 'conversations'
@@ -57,7 +62,9 @@ export interface MigrationProgress {
 export interface MigrationSummary {
   notes: number;
   sharedNotes: number;
+  noteVersions: number;
   orgSettings: boolean;
+  profile: boolean;
   contacts: number;
   conversations: number;
   messages: number;
@@ -142,7 +149,7 @@ async function migrateNotes(
   mk: Uint8Array,
   pending: PendingBlob[],
   onProgress: (p: MigrationProgress) => void,
-): Promise<number> {
+): Promise<{ imported: number; ids: string[] }> {
   const { notes } = await api.notes(0);
   const live = notes.filter((n) => !n.deleted);
   let imported = 0;
@@ -157,7 +164,7 @@ async function migrateNotes(
     imported += await importNotes(batch);
     onProgress({ stage: 'notes', done: Math.min(i + NOTE_BATCH, live.length), total: live.length });
   }
-  return imported;
+  return { imported, ids: live.map((n) => n.id) };
 }
 
 async function migrateSharedNotes(
@@ -199,6 +206,55 @@ async function migrateOrgSettings(mk: Uint8Array): Promise<boolean> {
   const pt = await unwrapKey(mk, JSON.parse(remote.data), INFO_SETTINGS);
   await settingsSet('org.data', new TextDecoder().decode(pt));
   return true;
+}
+
+/** Own profile (bio/avatar/display name) + the profile key. The key matters
+ *  beyond the blob: it becomes the D6 delivery-token access root in v8. */
+async function migrateOwnProfile(mk: Uint8Array): Promise<boolean> {
+  const { profile } = await api.profileDataGet();
+  if (!profile) return false;
+  const profileKey = await unwrapProfileKey(mk, profile.ownerWrappedKey);
+  const data = await decryptProfile(profileKey, profile.ciphertext, profile.iv);
+  await settingsSet('profile.own', JSON.stringify(data));
+  await settingsSet('profile.key', b64(profileKey));
+  await settingsSet('profile.epoch', String(profile.epoch));
+  return true;
+}
+
+/** D10: best-effort import of legacy server version snapshots as read-only
+ *  `legacy` versions. Only own notes have server versions. */
+async function migrateNoteVersions(
+  mk: Uint8Array,
+  noteIds: string[],
+  onProgress: (p: MigrationProgress) => void,
+): Promise<number> {
+  let imported = 0;
+  let done = 0;
+  for (const noteId of noteIds) {
+    done += 1;
+    try {
+      const infos = await api.noteVersions(noteId);
+      const batch: ImportNoteVersion[] = [];
+      for (const info of infos) {
+        const v = await api.noteVersion(noteId, info.id);
+        const payload = await decryptNotePayload(mk, v as unknown as NoteRecord);
+        batch.push({
+          note_id: noteId,
+          kind: 'legacy',
+          name: null,
+          created: v.createdAt,
+          snapshot: Array.from(
+            new TextEncoder().encode(JSON.stringify({ title: payload.title, body: payload.body })),
+          ),
+        });
+      }
+      imported += await importNoteVersions(batch);
+    } catch {
+      // Best-effort per D10 — a note with unreadable versions still migrated.
+    }
+    onProgress({ stage: 'versions', done, total: noteIds.length });
+  }
+  return imported;
 }
 
 async function migrateAttachments(
@@ -309,7 +365,9 @@ export async function runLegacyMigration(
   const summary: MigrationSummary = {
     notes: 0,
     sharedNotes: 0,
+    noteVersions: 0,
     orgSettings: false,
+    profile: false,
     contacts: 0,
     conversations: 0,
     messages: 0,
@@ -317,9 +375,12 @@ export async function runLegacyMigration(
   };
   const pending: PendingBlob[] = [];
 
-  summary.notes = await migrateNotes(mk, pending, onProgress);
+  const notesResult = await migrateNotes(mk, pending, onProgress);
+  summary.notes = notesResult.imported;
   summary.sharedNotes = await migrateSharedNotes(keyPair, pending, onProgress);
+  summary.noteVersions = await migrateNoteVersions(mk, notesResult.ids, onProgress);
   summary.orgSettings = await migrateOrgSettings(mk);
+  summary.profile = await migrateOwnProfile(mk);
   onProgress({ stage: 'settings', done: 1, total: 1 });
   summary.contacts = await migrateContacts(onProgress);
 
