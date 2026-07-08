@@ -56,6 +56,41 @@ fn vault_lock(vault: VaultState) {
     vault.lock().unwrap().lock();
 }
 
+// ---- first-run legacy import (spec/migration.md) ----
+// The webview decrypts with the existing v1 crypto and streams plaintext
+// batches down; each command is transactional and idempotent.
+
+#[tauri::command]
+fn import_notes(batch: Vec<store::ImportNote>, vault: VaultState) -> Result<usize, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.import_notes(batch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_conversations(
+    batch: Vec<store::ImportConversation>,
+    vault: VaultState,
+) -> Result<usize, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.import_conversations(batch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_contacts(batch: Vec<store::ImportContact>, vault: VaultState) -> Result<usize, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.import_contacts(batch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_messages(batch: Vec<store::ImportMessage>, vault: VaultState) -> Result<usize, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.import_messages(batch).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -77,7 +112,11 @@ pub fn run() {
             vault_unlock_keychain,
             vault_unlock,
             vault_unlock_recovery,
-            vault_lock
+            vault_lock,
+            import_notes,
+            import_conversations,
+            import_contacts,
+            import_messages
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

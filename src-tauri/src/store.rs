@@ -147,6 +147,47 @@ const MIGRATIONS: &[&str] = &[
     ",
 ];
 
+#[derive(serde::Deserialize)]
+pub struct ImportNote {
+    pub id: String,
+    pub title: Option<String>,
+    pub search_text: Option<String>,
+    pub folder_id: Option<String>,
+    pub created: i64,
+    pub updated: i64,
+    /// Yjs doc binary, built webview-side from the decrypted legacy note.
+    pub ydoc_state: Vec<u8>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImportConversation {
+    pub id: String,
+    /// `dm` | `group` (field named `type` on the wire).
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImportContact {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub is_friend: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImportMessage {
+    pub id: String,
+    pub conversation_id: String,
+    pub channel_id: Option<String>,
+    pub sender_contact_id: Option<String>,
+    pub relay_ts: i64,
+    pub content: Option<String>,
+    pub kind: String,
+    pub reply_ref_json: Option<String>,
+    pub attachments_json: Option<String>,
+    pub edited_at: Option<i64>,
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -185,6 +226,86 @@ impl Store {
         Ok(self
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))?)
+    }
+
+    /// Batch-import legacy notes (spec/migration.md): the webview decrypts
+    /// with the existing v1 crypto and seeds each note as a Yjs doc binary;
+    /// the core stores rows + opaque doc state. `INSERT OR IGNORE` keeps
+    /// re-runs after a partial failure idempotent (first copy wins; the FTS
+    /// triggers stay consistent, which OR REPLACE would break).
+    pub fn import_notes(&self, notes: Vec<ImportNote>) -> Result<usize, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut imported = 0;
+        for n in notes {
+            let doc_id = format!("note:{}", n.id);
+            tx.execute(
+                "INSERT OR IGNORE INTO crdt_docs(id, scope, ydoc_state) VALUES (?1, 'note', ?2)",
+                (&doc_id, &n.ydoc_state),
+            )?;
+            imported += tx.execute(
+                "INSERT OR IGNORE INTO notes(id, title, doc_id, folder_id, search_text, created, updated)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (&n.id, &n.title, &doc_id, &n.folder_id, &n.search_text, n.created, n.updated),
+            )?;
+        }
+        tx.commit()?;
+        Ok(imported)
+    }
+
+    pub fn import_conversations(
+        &self,
+        conversations: Vec<ImportConversation>,
+    ) -> Result<usize, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut imported = 0;
+        for c in conversations {
+            imported += tx.execute(
+                "INSERT OR IGNORE INTO conversations(id, type) VALUES (?1, ?2)",
+                (&c.id, &c.kind),
+            )?;
+        }
+        tx.commit()?;
+        Ok(imported)
+    }
+
+    pub fn import_contacts(&self, contacts: Vec<ImportContact>) -> Result<usize, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut imported = 0;
+        for c in contacts {
+            imported += tx.execute(
+                "INSERT OR IGNORE INTO contacts(id, display_name, is_friend) VALUES (?1, ?2, ?3)",
+                (&c.id, &c.display_name, c.is_friend as i64),
+            )?;
+        }
+        tx.commit()?;
+        Ok(imported)
+    }
+
+    pub fn import_messages(&self, messages: Vec<ImportMessage>) -> Result<usize, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut imported = 0;
+        for m in messages {
+            imported += tx.execute(
+                "INSERT OR IGNORE INTO messages(
+                   id, conversation_id, channel_id, sender_contact_id, relay_ts,
+                   content, kind, reply_ref_json, attachments_json, edited_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                (
+                    &m.id,
+                    &m.conversation_id,
+                    &m.channel_id,
+                    &m.sender_contact_id,
+                    m.relay_ts,
+                    &m.content,
+                    &m.kind,
+                    &m.reply_ref_json,
+                    &m.attachments_json,
+                    m.edited_at,
+                ),
+            )?;
+        }
+        tx.commit()?;
+        Ok(imported)
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
@@ -303,6 +424,85 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hits, 1);
+    }
+
+    #[test]
+    fn import_batches_are_idempotent_and_fts_searchable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[5u8; 32]).unwrap();
+
+        let notes = vec![ImportNote {
+            id: "n1".into(),
+            title: Some("Meeting notes".into()),
+            search_text: Some("discuss quarterly sqlcipher rollout".into()),
+            folder_id: None,
+            created: 1,
+            updated: 2,
+            ydoc_state: vec![1, 2, 3],
+        }];
+        assert_eq!(store.import_notes(notes).unwrap(), 1);
+
+        store
+            .import_conversations(vec![ImportConversation {
+                id: "c1".into(),
+                kind: "dm".into(),
+            }])
+            .unwrap();
+        store
+            .import_contacts(vec![ImportContact {
+                id: "u1".into(),
+                display_name: Some("Alice".into()),
+                is_friend: true,
+            }])
+            .unwrap();
+        let msg = ImportMessage {
+            id: "m1".into(),
+            conversation_id: "c1".into(),
+            channel_id: None,
+            sender_contact_id: Some("u1".into()),
+            relay_ts: 1000,
+            content: Some("migrated hello".into()),
+            kind: "text".into(),
+            reply_ref_json: None,
+            attachments_json: None,
+            edited_at: None,
+        };
+        assert_eq!(store.import_messages(vec![msg]).unwrap(), 1);
+
+        // Re-running the same batch is a no-op (partial-failure retry safety).
+        let again = ImportMessage {
+            id: "m1".into(),
+            conversation_id: "c1".into(),
+            channel_id: None,
+            sender_contact_id: Some("u1".into()),
+            relay_ts: 1000,
+            content: Some("migrated hello".into()),
+            kind: "text".into(),
+            reply_ref_json: None,
+            attachments_json: None,
+            edited_at: None,
+        };
+        assert_eq!(store.import_messages(vec![again]).unwrap(), 0);
+
+        // Imported content is immediately searchable (FTS triggers fired).
+        let hits: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'migrated'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1);
+        let note_hits: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM notes_fts WHERE notes_fts MATCH 'sqlcipher'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(note_hits, 1);
     }
 
     #[test]
