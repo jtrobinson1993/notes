@@ -536,11 +536,18 @@ Playwright version (currently 1.60.0).
     (macOS lock notifications / mobile lifecycle). 4 new tests (fake timers).
     Gotcha: chaining vitest with git in one command produced a flaky partial
     run (1 "failure", 99 files) — clean re-run 103/791 green; don't chain.
-  - **Next iterations:** Settings → Security UI for the re-lock toggle +
-    manual Lock button (webview, native-only section); boot `tauri dev`
-    visually (user smoke test — full flow ready: setup → recovery → legacy
-    login → migration incl. blobs → idle re-lock); reproducible builds (D12);
-    shared-notes + settings-blob migration pass; phase 2 review.
+  - **Iteration 12 — device-lock Settings UI (DONE; web project 425 green):**
+    `settings/DeviceLockSettings.vue` (native-only, rendered at the top of
+    Settings → Security): policy select Stay-unlocked / Lock-when-idle +
+    minutes input (saves to vault-DB settings, re-arms `applyRelockPolicy`
+    immediately) + **Lock now** button (`lockVault`). SettingsPage change =
+    import + a 4-line `v-if="isNative"` block.
+  - **Next iterations:** boot `tauri dev` visually (user smoke test — full
+    phase-1 flow ready: setup → recovery → legacy login → migration incl.
+    blobs → idle re-lock + settings UI); reproducible builds (D12);
+    shared-notes + settings-blob migration pass; phase 1→2 review (phase 2
+    = local offline unlock — largely done already via D3 keychain work; audit
+    against roadmap phasing before declaring).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
