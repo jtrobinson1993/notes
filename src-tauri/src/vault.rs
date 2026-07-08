@@ -301,6 +301,26 @@ impl Vault {
         Ok((payload, escrow.password_auth_hash, escrow.recovery_auth_hash))
     }
 
+    /// D6 delivery token + verifier, derived from the profile key (which the
+    /// migration stored as the `profile.key` setting). Returns
+    /// `(token, verifier)`: the token goes sealed to friends; the verifier
+    /// (its hash) is what the relay stores. Requires the vault unlocked.
+    pub fn delivery_token(&self) -> Result<(String, String), VaultError> {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let store = self.store()?;
+        let key_b64 = store
+            .get_setting("profile.key")?
+            .ok_or(VaultError::NotInitialized)?;
+        let profile_key = b64
+            .decode(key_b64)
+            .map_err(|_| VaultError::Keychain("corrupt profile key setting".into()))?;
+        let raw = keys::derive_auth_key(&profile_key, keys::INFO_DELIVERY)?;
+        let token = b64.encode(raw.as_ref());
+        let verifier = keys::sha256_b64url(token.as_bytes());
+        Ok((token, verifier))
+    }
+
     /// Drop the open store and zeroize MK.
     pub fn lock(&mut self) {
         self.store = None;
@@ -458,6 +478,25 @@ mod tests {
         // The payload never carries the vault-key wrap (that one never
         // leaves the device) nor any raw key material.
         assert!(parsed.get("wrappedMkVault").is_none());
+    }
+
+    #[test]
+    fn delivery_token_is_deterministic_and_verifier_matches_convention() {
+        use base64::Engine as _;
+        let (_dir, mut vault) = new_vault();
+        vault.create("a long enough password").unwrap();
+        let profile_key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
+        vault.store().unwrap().set_setting("profile.key", &profile_key).unwrap();
+
+        let (token_a, verifier_a) = vault.delivery_token().unwrap();
+        let (token_b, verifier_b) = vault.delivery_token().unwrap();
+        assert_eq!(token_a, token_b);
+        assert_eq!(verifier_a, verifier_b);
+        // Server-side convention: verifier = b64url(sha256(utf8(token))).
+        assert_eq!(verifier_a, crate::keys::sha256_b64url(token_a.as_bytes()));
+        // Locked vault → no token.
+        vault.lock();
+        assert!(vault.delivery_token().is_err());
     }
 
     #[test]
