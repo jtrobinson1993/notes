@@ -469,11 +469,19 @@ Playwright version (currently 1.60.0).
     access control) = later per-platform hardening; storage layout already
     matches D13. Note: DB file copied to another machine is unreadable by
     design (SQLCipher key never leaves keychain) — new devices pair or restore.
-  - **Next iterations (phase 1):** FTS5 migration v2 (messages_fts + notes_fts
-    + triggers); identity derivation from MK (D4b per-relay keys, ed25519/x25519
-    -dalek); first-run server-data import (spec/migration.md); lock-screen UI
-    wiring in the webview behind `isNative`; boot `tauri dev` visually (user
-    smoke test or /run skill); reproducible-build pipeline (D12).
+  - **Iteration 5 — FTS search + D4b identities (DONE, 13/13 tests):**
+    store migration **v2** — `messages_fts` + `notes_fts` (FTS5
+    external-content + sync triggers; `notes.search_text` added as the
+    plaintext Yjs-body projection the notes engine writes on save);
+    `identity.rs` — per-relay identity = HKDF(MK, domain|relay_fp) →
+    Ed25519 signing + X25519 sealing (`accord/relay-id/{ed25519,x25519}/v1`);
+    tests prove determinism, cross-relay unlinkability, sign/verify.
+  - **Next iterations (phase 1):** first-run server-data import
+    (spec/migration.md — bootstrap sign-in against today's API, pull notes/
+    chat/attachments into the store); lock-screen UI wiring in the webview
+    behind `isNative` (create/unlock flows → vault commands); boot `tauri dev`
+    visually (user smoke test or /run skill); reproducible-build pipeline
+    (D12); then phase 2 wrap-up review.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

@@ -105,6 +105,46 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     ",
+    // v2 — FTS5 search (external-content tables + sync triggers). `notes`
+    // gains `search_text`: the plaintext projection of the Yjs doc, written by
+    // the notes engine on save so note bodies are searchable without loading
+    // docs (D2: search is the reason rows are decrypted under SQLCipher).
+    "
+    CREATE VIRTUAL TABLE messages_fts USING fts5(
+      content, content='messages', content_rowid='rowid'
+    );
+    CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN
+      INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
+    END;
+    CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, content)
+        VALUES ('delete', old.rowid, old.content);
+    END;
+    CREATE TRIGGER messages_fts_au AFTER UPDATE OF content ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, content)
+        VALUES ('delete', old.rowid, old.content);
+      INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
+    END;
+
+    ALTER TABLE notes ADD COLUMN search_text TEXT;
+    CREATE VIRTUAL TABLE notes_fts USING fts5(
+      title, search_text, content='notes', content_rowid='rowid'
+    );
+    CREATE TRIGGER notes_fts_ai AFTER INSERT ON notes BEGIN
+      INSERT INTO notes_fts(rowid, title, search_text)
+        VALUES (new.rowid, new.title, new.search_text);
+    END;
+    CREATE TRIGGER notes_fts_ad AFTER DELETE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, title, search_text)
+        VALUES ('delete', old.rowid, old.title, old.search_text);
+    END;
+    CREATE TRIGGER notes_fts_au AFTER UPDATE OF title, search_text ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, title, search_text)
+        VALUES ('delete', old.rowid, old.title, old.search_text);
+      INSERT INTO notes_fts(rowid, title, search_text)
+        VALUES (new.rowid, new.title, new.search_text);
+    END;
+    ",
 ];
 
 pub struct Store {
@@ -205,24 +245,59 @@ mod tests {
         ));
     }
 
-    /// Gate for the deferred FTS5 migration (see MIGRATIONS comment): proves
-    /// the bundled SQLCipher build ships the FTS5 module.
+    /// Message search stays consistent through insert, edit, and delete —
+    /// the external-content FTS table is maintained entirely by triggers.
     #[test]
-    fn fts5_is_available_in_bundle() {
+    fn message_fts_tracks_insert_update_delete() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("vault.db");
-        let store = Store::open(&path, &[3u8; 32]).unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[3u8; 32]).unwrap();
         store
             .conn
             .execute_batch(
-                "CREATE VIRTUAL TABLE fts_probe USING fts5(content);
-                 INSERT INTO fts_probe(content) VALUES ('hello encrypted world');",
+                "INSERT INTO conversations(id, type) VALUES ('c1', 'dm');
+                 INSERT INTO messages(id, conversation_id, relay_ts, content, kind)
+                   VALUES ('m1', 'c1', 1000, 'the quick brown fox', 'text');",
             )
-            .expect("FTS5 module missing from bundled SQLCipher");
+            .unwrap();
+        let count = |q: &str| -> i64 {
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM messages_fts WHERE messages_fts MATCH ?1",
+                    [q],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(count("quick"), 1);
+
+        store
+            .conn
+            .execute("UPDATE messages SET content = 'slow green turtle' WHERE id = 'm1'", [])
+            .unwrap();
+        assert_eq!(count("quick"), 0);
+        assert_eq!(count("turtle"), 1);
+
+        store.conn.execute("DELETE FROM messages WHERE id = 'm1'", []).unwrap();
+        assert_eq!(count("turtle"), 0);
+    }
+
+    #[test]
+    fn note_fts_searches_title_and_body_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[4u8; 32]).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO notes(id, title, search_text, created, updated)
+                 VALUES ('n1', 'Grocery list', 'buy oat milk and rye bread', 1, 1)",
+                [],
+            )
+            .unwrap();
         let hits: i64 = store
             .conn
             .query_row(
-                "SELECT count(*) FROM fts_probe WHERE fts_probe MATCH 'encrypted'",
+                "SELECT count(*) FROM notes_fts WHERE notes_fts MATCH 'rye'",
                 [],
                 |r| r.get(0),
             )
