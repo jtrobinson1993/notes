@@ -1,4 +1,5 @@
 mod blobs;
+mod envelope;
 mod identity;
 mod keys;
 mod relay_client;
@@ -118,6 +119,42 @@ async fn relay_directory_publish(
         )
     };
     relay.directory_publish(&device, id_pub, seal_pub).await
+}
+
+/// Seal an E2E envelope to a recipient's sealing key (envelope v1).
+#[tauri::command]
+fn envelope_seal(
+    recipient_sealing_pub: String,
+    kind: String,
+    payload: Vec<u8>,
+    vault: VaultState,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    let recipient: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(&recipient_sealing_pub)
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or("bad recipient key")?;
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let vault = vault.lock().unwrap();
+    let mk = vault.mk().map_err(|e| e.to_string())?;
+    let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+    envelope::seal(&recipient, &ident, &kind, &payload, now_ms()).map_err(|e| e.to_string())
+}
+
+/// Open an envelope addressed to this account's per-relay identity.
+#[tauri::command]
+fn envelope_open(
+    envelope_bytes: Vec<u8>,
+    vault: VaultState,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<envelope::Opened, String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let vault = vault.lock().unwrap();
+    let mk = vault.mk().map_err(|e| e.to_string())?;
+    let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+    envelope::open(&ident.sealing, &envelope_bytes).map_err(|e| e.to_string())
 }
 
 /// Derive the delivery token from the profile key and register its hash
@@ -449,6 +486,8 @@ pub fn run() {
             relay_directory_publish,
             relay_register_verifier,
             relay_send,
+            envelope_seal,
+            envelope_open,
             relay_mailbox_fetch,
             relay_mailbox_ack,
             messages_page,
