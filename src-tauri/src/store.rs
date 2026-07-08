@@ -219,6 +219,21 @@ pub struct ImportMessage {
 }
 
 #[derive(serde::Serialize)]
+pub struct MessageRow {
+    pub id: String,
+    pub conversation_id: String,
+    pub channel_id: Option<String>,
+    pub sender_contact_id: Option<String>,
+    pub relay_ts: i64,
+    pub content: Option<String>,
+    pub kind: String,
+    pub reply_ref_json: Option<String>,
+    pub attachments_json: Option<String>,
+    pub deleted: bool,
+    pub edited_at: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
 pub struct NoteMeta {
     pub id: String,
     pub title: Option<String>,
@@ -412,6 +427,81 @@ impl Store {
         }
         tx.commit()?;
         Ok(imported)
+    }
+
+    // ---- chat history (local log, D11 ordering) ----
+
+    /// Page a conversation's history backwards by the D11 sort key
+    /// `(relay_ts, sender, id)`. `before` = exclusive cursor from the oldest
+    /// row of the previous page; None = newest page.
+    pub fn messages_page(
+        &self,
+        conversation_id: &str,
+        channel_id: Option<&str>,
+        before: Option<(i64, String)>,
+        limit: u32,
+    ) -> Result<Vec<MessageRow>, StoreError> {
+        // channel_id NULL = the general channel (equals the conversation id
+        // in the legacy model); a distinct id = an extra group channel.
+        let (cursor_ts, cursor_id) = match &before {
+            Some((ts, id)) => (*ts, id.clone()),
+            None => (i64::MAX, String::from("\u{10FFFF}")),
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT id, conversation_id, channel_id, sender_contact_id, relay_ts,
+                    content, kind, reply_ref_json, attachments_json, deleted, edited_at
+             FROM messages
+             WHERE conversation_id = ?1
+               AND ((?2 IS NULL AND channel_id IS NULL) OR channel_id = ?2)
+               AND (relay_ts, id) < (?3, ?4)
+             ORDER BY relay_ts DESC, sender_contact_id DESC, id DESC
+             LIMIT ?5",
+        )?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![conversation_id, channel_id, cursor_ts, cursor_id, limit],
+                |r| {
+                    Ok(MessageRow {
+                        id: r.get(0)?,
+                        conversation_id: r.get(1)?,
+                        channel_id: r.get(2)?,
+                        sender_contact_id: r.get(3)?,
+                        relay_ts: r.get(4)?,
+                        content: r.get(5)?,
+                        kind: r.get(6)?,
+                        reply_ref_json: r.get(7)?,
+                        attachments_json: r.get(8)?,
+                        deleted: r.get::<_, i64>(9)? != 0,
+                        edited_at: r.get(10)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Live-ingest an edit (author replaced their content in place).
+    pub fn message_apply_edit(
+        &self,
+        id: &str,
+        content: Option<&str>,
+        edited_at: i64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE messages SET content = ?2, edited_at = ?3 WHERE id = ?1",
+            (id, content, edited_at),
+        )?;
+        Ok(())
+    }
+
+    /// Live-ingest a delete: content is dropped, the row stays as the
+    /// "message deleted" placeholder (D11 tombstone rendering).
+    pub fn message_apply_delete(&self, id: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE messages SET content = NULL, deleted = 1 WHERE id = ?1",
+            [id],
+        )?;
+        Ok(())
     }
 
     // ---- notes CRUD (the local-first read/write path, D2) ----
@@ -829,6 +919,55 @@ mod tests {
             )
             .unwrap();
         assert_eq!(note_hits, 1);
+    }
+
+    #[test]
+    fn message_paging_edits_and_deletes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[10u8; 32]).unwrap();
+        store
+            .import_conversations(vec![ImportConversation {
+                id: "c1".into(),
+                kind: "dm".into(),
+            }])
+            .unwrap();
+        let msg = |id: &str, ts: i64| ImportMessage {
+            id: id.into(),
+            conversation_id: "c1".into(),
+            channel_id: None,
+            sender_contact_id: Some("u1".into()),
+            relay_ts: ts,
+            content: Some(format!("msg {id}")),
+            kind: "text".into(),
+            reply_ref_json: None,
+            attachments_json: None,
+            edited_at: None,
+        };
+        store
+            .import_messages((1..=5).map(|i| msg(&format!("m{i}"), i * 100)).collect())
+            .unwrap();
+
+        // Newest page first, D11 order.
+        let page1 = store.messages_page("c1", None, None, 2).unwrap();
+        assert_eq!(
+            page1.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["m5", "m4"]
+        );
+        // Cursor from the oldest row continues without overlap.
+        let cursor = Some((page1[1].relay_ts, page1[1].id.clone()));
+        let page2 = store.messages_page("c1", None, cursor, 2).unwrap();
+        assert_eq!(
+            page2.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["m3", "m2"]
+        );
+
+        store.message_apply_edit("m5", Some("edited"), 999).unwrap();
+        store.message_apply_delete("m4").unwrap();
+        let page = store.messages_page("c1", None, None, 2).unwrap();
+        assert_eq!(page[0].content.as_deref(), Some("edited"));
+        assert_eq!(page[0].edited_at, Some(999));
+        assert!(page[1].deleted);
+        assert_eq!(page[1].content, None);
     }
 
     #[test]

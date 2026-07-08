@@ -71,6 +71,58 @@ fn settings_set(key: String, value: String, vault: VaultState) -> Result<(), Str
     store.set_setting(&key, &value).map_err(|e| e.to_string())
 }
 
+// ---- chat history (local log, D11) ----
+
+#[tauri::command]
+fn messages_page(
+    conversation_id: String,
+    channel_id: Option<String>,
+    before_ts: Option<i64>,
+    before_id: Option<String>,
+    limit: u32,
+    vault: VaultState,
+) -> Result<Vec<store::MessageRow>, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    let before = match (before_ts, before_id) {
+        (Some(ts), Some(id)) => Some((ts, id)),
+        _ => None,
+    };
+    store
+        .messages_page(&conversation_id, channel_id.as_deref(), before, limit.min(500))
+        .map_err(|e| e.to_string())
+}
+
+/// Live-ingest for new traffic while the legacy WS is still the transport:
+/// keeps the local log current after migration (idempotent batch insert).
+#[tauri::command]
+fn messages_ingest(batch: Vec<store::ImportMessage>, vault: VaultState) -> Result<usize, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.import_messages(batch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn message_edit(
+    id: String,
+    content: Option<String>,
+    edited_at: i64,
+    vault: VaultState,
+) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store
+        .message_apply_edit(&id, content.as_deref(), edited_at)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn message_delete(id: String, vault: VaultState) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.message_apply_delete(&id).map_err(|e| e.to_string())
+}
+
 // ---- notes CRUD (local-first read/write path, D2) ----
 
 fn now_ms() -> i64 {
@@ -266,6 +318,10 @@ pub fn run() {
             vault_lock,
             settings_get,
             settings_set,
+            messages_page,
+            messages_ingest,
+            message_edit,
+            message_delete,
             notes_list,
             notes_load_all,
             note_get,

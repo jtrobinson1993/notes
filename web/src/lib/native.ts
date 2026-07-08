@@ -53,6 +53,52 @@ export function settingsSet(key: string, value: string): Promise<void> {
   return invoke('settings_set', { key, value });
 }
 
+// ---- chat history (local log, D11) ----
+
+export interface MessageRow {
+  id: string;
+  conversation_id: string;
+  channel_id: string | null;
+  sender_contact_id: string | null;
+  relay_ts: number;
+  content: string | null;
+  kind: string;
+  reply_ref_json: string | null;
+  attachments_json: string | null;
+  deleted: boolean;
+  edited_at: number | null;
+}
+
+/** Page history backwards; `before` = `(relay_ts, id)` of the oldest row of
+ *  the previous page (exclusive), undefined for the newest page. */
+export function messagesPage(
+  conversationId: string,
+  channelId: string | null,
+  before: { ts: number; id: string } | undefined,
+  limit: number,
+): Promise<MessageRow[]> {
+  return invoke<MessageRow[]>('messages_page', {
+    conversationId,
+    channelId,
+    beforeTs: before?.ts ?? null,
+    beforeId: before?.id ?? null,
+    limit,
+  });
+}
+
+/** Write live traffic into the local log (idempotent by message id). */
+export function messagesIngest(batch: ImportMessage[]): Promise<number> {
+  return invoke<number>('messages_ingest', { batch });
+}
+
+export function messageEdit(id: string, content: string | null, editedAt: number): Promise<void> {
+  return invoke('message_edit', { id, content, editedAt });
+}
+
+export function messageDelete(id: string): Promise<void> {
+  return invoke('message_delete', { id });
+}
+
 // ---- notes CRUD (local-first read/write path, D2) ----
 
 export interface NoteMeta {
