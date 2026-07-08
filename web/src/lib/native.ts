@@ -71,6 +71,11 @@ export function relayEscrowUpload(): Promise<void> {
   return invoke('relay_escrow_upload');
 }
 
+/** Derive + publish this account's per-relay keys to the directory (D5). */
+export function relayDirectoryPublish(): Promise<void> {
+  return invoke('relay_directory_publish');
+}
+
 export function relayStatus(): Promise<{
   connected: boolean;
   base_url: string | null;

@@ -3,7 +3,7 @@
 // challenge → signed-nonce → short-lived-token auth flow (D4/D4b).
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createPrivateKey, randomBytes, sign as edSign } from 'node:crypto';
 import type { DB } from '../db.js';
 import { requireAuth } from '../session.js';
 import {
@@ -57,11 +57,78 @@ export function relayRoutes(app: FastifyInstance, db: DB): void {
   }
 
   // Public: the pinned-identity handshake surface (UI-4 shows the name).
+  // The full public key rides along so anyone can verify KT root signatures.
   app.get('/api/relay/info', async () => ({
     name: 'Accord relay',
     identityFingerprint: relayFp,
+    identityPubKey: identity.pubkey,
     apiVersion: 1,
   }));
+
+  // ---- key directory + transparency roots (D5) ----
+  // Interim log shape: signed, hash-chained epoch roots over a digest of the
+  // whole (sorted) directory. Append-only + consistency-checkable; per-entry
+  // inclusion proofs and VRF-blinded labels (full AKD lineage) land before
+  // the published KT spec is declared final — see key-transparency.md.
+
+  const signingKey = createPrivateKey({
+    key: Buffer.from(identity.privkey, 'base64'),
+    format: 'der',
+    type: 'pkcs8',
+  });
+
+  function publishEpoch(): number {
+    const digest = createHash('sha256');
+    for (const e of db.allRelayDirectoryEntries()) {
+      digest.update(`${e.handle}|${e.identityPubkey}|${e.sealingPubkey}\n`);
+    }
+    const rootHash = digest.digest('base64url');
+    const prev = db.latestKtRoot();
+    if (prev && prev.rootHash === rootHash) return prev.epoch; // no change, no epoch
+    const payload = `kt-root|${rootHash}|${prev?.rootHash ?? 'genesis'}`;
+    const signature = edSign(null, Buffer.from(payload), signingKey).toString('base64');
+    return db.appendKtRoot(rootHash, prev?.rootHash ?? null, signature);
+  }
+
+  // Register this account's per-relay public keys (device-token authed).
+  app.put('/api/relay/directory', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const b = request.body as { identityPubKey?: string; sealingPubKey?: string } | null;
+    if (!b?.identityPubKey || !b?.sealingPubKey || !rawKey(b.identityPubKey) || !rawKey(b.sealingPubKey)) {
+      return reply.code(400).send({ error: 'identityPubKey and sealingPubKey (base64, 32 bytes) required' });
+    }
+    db.setRelayDirectoryEntry(device.userId, b.identityPubKey, b.sealingPubKey);
+    return { epoch: publishEpoch() };
+  });
+
+  app.get('/api/relay/directory/:handle', async (request, reply) => {
+    const { handle } = request.params as { handle: string };
+    const entry = db.getRelayDirectoryByHandle(handle);
+    if (!entry) return reply.code(404).send({ error: 'unknown handle' });
+    return {
+      identityPubKey: entry.identityPubkey,
+      sealingPubKey: entry.sealingPubkey,
+      epoch: db.latestKtRoot()?.epoch ?? 0,
+    };
+  });
+
+  const rootsHandler = async (request: FastifyRequest) => {
+    const since = Number((request.query as { since?: string }).since ?? 0) || 0;
+    return {
+      relayFp,
+      roots: db.listKtRoots(since).map((r) => ({
+        epoch: r.epoch,
+        rootHash: r.rootHash,
+        prevRootHash: r.prevRootHash,
+        signature: r.signature,
+        timestamp: r.createdAt,
+      })),
+    };
+  };
+  app.get('/api/relay/kt/roots', rootsHandler);
+  // Third-party auditor surface (key-transparency.md).
+  app.get('/.well-known/accord/kt-roots', rootsHandler);
 
   // Enrollment rides the legacy session for now — exactly the migration
   // bootstrap ("sign in with existing credentials → device key enrolled");

@@ -694,11 +694,28 @@ Playwright version (currently 1.60.0).
     enroll → escrow upload (best-effort chain). Cold-start FETCH+restore
     path (fresh device: fetch → unwrap w/ password → rebuild vault) still
     TODO.
-  - **Next iterations (phase 3):** directory + KT stub (D5: handle→identity
-    pubkey registration + lookup; AKD log later); Rust client mailbox loop
-    (verifier registration from profile key, send/fetch/ack); escrow
-    cold-start restore; security.md relay-state inventory fold-in; WS live
-    delivery. Desk queue unchanged.
+  - **Iteration 24 — directory + KT roots (DONE; server 319 green incl. 2
+    new files, cargo 24/24):** `relay_directory` (user → identity+sealing
+    pubkeys) + `relay_kt_roots` (hash-chained signed epochs). PUT
+    /api/relay/directory (device-token authed) → **publishes a new signed
+    epoch only when the directory digest changed**; GET /directory/:handle;
+    GET /api/relay/kt/roots?since= + **/.well-known/accord/kt-roots**
+    auditor alias; /info now exposes the full relay pubkey so anyone can
+    verify root signatures (test does: chain links + ed25519 verify).
+    **Honest interim shape:** signed chained roots over a whole-directory
+    digest — append-only + consistency-checkable, but per-entry inclusion
+    proofs + VRF-blinded labels (full AKD lineage) still TODO before the KT
+    spec is declared final (noted in code + key-transparency.md governs).
+    Rust: `relay_directory_publish` — derives the per-relay identity
+    (identity.rs, MK + pinned relay fp) and publishes. Migration chain now:
+    **enroll → directory publish → escrow upload**. Gotcha: db-accessor
+    field casing leaked into the API response (identityPubkey vs
+    identityPubKey) — caught by test.
+  - **Next iterations (phase 3):** Rust client mailbox loop (delivery-token
+    derivation from profile key → verifier registration; send/fetch/ack);
+    escrow cold-start restore (fetch → unwrap → rebuild vault); WS live
+    delivery for device queues; security.md relay-state inventory fold-in.
+    Then phase 3 review vs relay.md. Desk queue unchanged.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
