@@ -12,6 +12,12 @@ export default defineConfig({
     // time — no runtime CDN calls, only the icons actually imported ship.
     Icons({ compiler: 'vue3' }),
     VitePWA({
+      // The PWA layer (service worker, manifest, install prompt) is web-only:
+      // inside the Tauri shell the app is a native install already, storage is
+      // the Rust core, and SW registration on the tauri:// origin is
+      // unsupported — so the whole plugin is disabled for Tauri dev/builds
+      // (Tauri always sets TAURI_ENV_PLATFORM).
+      disable: !!process.env.TAURI_ENV_PLATFORM,
       // Custom service worker (src/sw.ts) so we can host Web Push handlers, which
       // the generated worker can't. It keeps the precache + emoji runtime cache.
       strategies: 'injectManifest',

@@ -205,6 +205,31 @@ mod tests {
         ));
     }
 
+    /// Gate for the deferred FTS5 migration (see MIGRATIONS comment): proves
+    /// the bundled SQLCipher build ships the FTS5 module.
+    #[test]
+    fn fts5_is_available_in_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.db");
+        let store = Store::open(&path, &[3u8; 32]).unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE VIRTUAL TABLE fts_probe USING fts5(content);
+                 INSERT INTO fts_probe(content) VALUES ('hello encrypted world');",
+            )
+            .expect("FTS5 module missing from bundled SQLCipher");
+        let hits: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM fts_probe WHERE fts_probe MATCH 'encrypted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1);
+    }
+
     #[test]
     fn migrations_are_idempotent_on_reopen() {
         let dir = tempfile::tempdir().unwrap();
