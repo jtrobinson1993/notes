@@ -28,6 +28,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.49.1",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/ws": "^8.5.13",
     "@vitest/coverage-v8": "^4.1.8",
     "@vue/test-utils": "^2.4.6",

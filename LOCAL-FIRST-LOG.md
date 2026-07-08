@@ -425,6 +425,21 @@ Playwright version (currently 1.60.0).
 
 ## Work completed
 
+- **IMPLEMENTATION STARTED (phase 1) — Tauri v2 scaffold lands.** Running as a
+  self-paced /loop; all phases on this branch per release strategy.
+  - Installed Rust via rustup (1.96.1; `. ~/.cargo/env` needed in fresh shells).
+  - `@tauri-apps/cli@2.11.4` dev-dep at root; `src-tauri/` scaffolded via
+    `npx tauri init` — devUrl `localhost:5173`, frontendDist `../web/dist`,
+    before-commands use `npm run dev/build -w web`. Identifier
+    `dev.accord.app`, window 1200×800, Cargo metadata filled (AGPL). `cargo
+    check` passes clean. Crate name left as template `app`/`app_lib` (cosmetic).
+  - **Next iterations (phase 1):** verify `tauri dev` boots the real app in the
+    WebKit webview; D2 storage skeleton (rusqlite + SQLCipher bundle, schema
+    v1 from local-store.md, `PRAGMA user_version` migrations); first IPC
+    commands (`vault.*` stubs); check vite-plugin-pwa/service-worker behavior
+    inside Tauri (likely disable SW in the shell); then reproducible-build
+    pipeline notes (D12).
+
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
   CDN — matches the icon privacy posture), imported in `main.ts`; set Tailwind v4
