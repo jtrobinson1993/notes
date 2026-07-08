@@ -433,12 +433,25 @@ Playwright version (currently 1.60.0).
     before-commands use `npm run dev/build -w web`. Identifier
     `dev.accord.app`, window 1200×800, Cargo metadata filled (AGPL). `cargo
     check` passes clean. Crate name left as template `app`/`app_lib` (cosmetic).
-  - **Next iterations (phase 1):** verify `tauri dev` boots the real app in the
-    WebKit webview; D2 storage skeleton (rusqlite + SQLCipher bundle, schema
-    v1 from local-store.md, `PRAGMA user_version` migrations); first IPC
-    commands (`vault.*` stubs); check vite-plugin-pwa/service-worker behavior
-    inside Tauri (likely disable SW in the shell); then reproducible-build
-    pipeline notes (D12).
+  - **Iteration 2 — D2 storage skeleton (DONE, 5/5 tests green, committed):**
+    `src-tauri/src/store.rs` — SQLCipher whole-DB (rusqlite
+    `bundled-sqlcipher-vendored-openssl`), schema **v1** = full local-store.md
+    table set (FTS5 deferred to a later migration pending bundle support
+    check), forward-only `user_version` migrations, wrong-key rejection;
+    `src/vault.rs` — locked↔unlocked state machine, **password path only for
+    now** (Argon2id m=19MiB/t=2/p=1, matching web `password.ts`; salt sidecar
+    file; keychain/biometric primary + MK/D13 hierarchy come later — password
+    currently derives the SQLCipher key directly, TODO noted in module doc);
+    lib.rs exposes first IPC commands `vault_status/vault_unlock/vault_lock`
+    with `Mutex<Vault>` managed state. Unit tests: roundtrip/reopen, wrong
+    password, migration idempotency (cargo test running in background).
+  - **Next iterations (phase 1):** confirm cargo test green + commit; verify
+    `tauri dev` boots the real app in the WebKit webview; webview-side IPC
+    wrapper (`@tauri-apps/api` invoke, Tauri-detect); check
+    vite-plugin-pwa/service-worker behavior inside Tauri (likely disable SW in
+    the shell); FTS5 availability check; keychain (D3 primary unlock) via
+    `keyring`/Tauri stronghold decision; reproducible-build pipeline notes
+    (D12).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
