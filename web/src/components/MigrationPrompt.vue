@@ -4,7 +4,7 @@
 // pull-everything migration has completed. Re-running is safe (idempotent
 // imports), so a mid-run failure just re-offers the button.
 import { computed, ref, watch } from 'vue';
-import { isNative, settingsGet, settingsSet } from '../lib/native';
+import { isNative, relayEscrowUpload, settingsGet, settingsSet } from '../lib/native';
 import { enrollThisDevice, runLegacyMigration, type MigrationProgress } from '../lib/migrate';
 import { useSessionStore } from '../stores/session';
 
@@ -39,9 +39,12 @@ async function migrate() {
     });
     await settingsSet(DONE_KEY, '1');
     await settingsSet('migration.summary', JSON.stringify(summary));
-    // Device-key enrollment + first relay token (D4b). Best-effort here —
-    // the core silently re-auths on demand, and enrollment is idempotent.
-    await enrollThisDevice().catch(() => {});
+    // Device-key enrollment + first relay token (D4b), then the wrapped-MK
+    // escrow registration (D15). Best-effort here — the core silently
+    // re-auths on demand, and both operations are idempotent.
+    await enrollThisDevice()
+      .then(() => relayEscrowUpload())
+      .catch(() => {});
     status.value = 'done';
   } catch (e) {
     error.value = String(e);

@@ -153,6 +153,36 @@ impl RelayClient {
         Ok(guard.as_ref().ok_or("not connected to a relay")?.token.clone())
     }
 
+    /// Upload the D15 escrow bundle (device-token authed).
+    pub async fn escrow_upload(
+        &self,
+        signing: &SigningKey,
+        payload: String,
+        password_auth_hash: String,
+        recovery_auth_hash: String,
+    ) -> Result<(), String> {
+        let bearer = self.bearer(signing).await?;
+        let base = {
+            let guard = self.session.lock().unwrap();
+            guard.as_ref().ok_or("not connected to a relay")?.base_url.clone()
+        };
+        let res = reqwest::Client::new()
+            .put(format!("{base}/api/relay/escrow"))
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({
+                "payload": payload,
+                "passwordAuthHash": password_auth_hash,
+                "recoveryAuthHash": recovery_auth_hash,
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("escrow upload failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("relay refused escrow (HTTP {})", res.status()));
+        }
+        Ok(())
+    }
+
     pub fn status(&self) -> RelayStatus {
         let guard = self.session.lock().unwrap();
         match guard.as_ref() {

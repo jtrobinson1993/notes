@@ -152,6 +152,48 @@ export function relayRoutes(app: FastifyInstance, db: DB): void {
     return { acked: db.ackRelayMailbox(device.id, b.queueIds) };
   });
 
+  // ---- account escrow (D15) ----
+
+  // Upload/refresh the wrapped-MK escrow bundle. The payload is opaque to
+  // the relay: MK wrapped under user-held secrets, plus public KDF params.
+  app.put('/api/relay/escrow', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const b = request.body as
+      | { payload?: string; passwordAuthHash?: string; recoveryAuthHash?: string }
+      | null;
+    if (!b?.payload || b.payload.length > 8192) {
+      return reply.code(400).send({ error: 'payload required (max 8KB)' });
+    }
+    db.setRelayEscrow(device.userId, b.payload, b.passwordAuthHash ?? null, b.recoveryAuthHash ?? null);
+    return { ok: true };
+  });
+
+  // Cold-start fetch: prove knowledge of the domain-separated auth key
+  // (derived from the password or recovery code — a different HKDF domain
+  // than the wrap key, so it can't unwrap anything). Uniform 401; tight
+  // per-IP rate limit because these blobs are offline brute-force targets.
+  app.post(
+    '/api/relay/escrow/fetch',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const b = request.body as
+        | { handle?: string; authKind?: 'password' | 'recovery'; authKey?: string }
+        | null;
+      if (!b?.handle || !b?.authKey || (b.authKind !== 'password' && b.authKind !== 'recovery')) {
+        return reply.code(400).send({ error: 'handle, authKind, authKey required' });
+      }
+      const user = db.getUserByHandle(b.handle);
+      const escrow = user ? db.getRelayEscrow(user.id) : undefined;
+      const stored = b.authKind === 'password' ? escrow?.passwordAuthHash : escrow?.recoveryAuthHash;
+      const presented = createHash('sha256').update(Buffer.from(b.authKey, 'base64')).digest('base64url');
+      if (!escrow || !stored || presented !== stored) {
+        return reply.code(401).send({ error: 'escrow fetch refused' });
+      }
+      return { payload: escrow.payload };
+    },
+  );
+
   // Unauthenticated by design: the challenge is the first step of auth.
   app.post('/api/relay/auth/challenge', async () => {
     const nonce = randomBytes(32).toString('base64url');

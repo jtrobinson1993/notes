@@ -66,6 +66,11 @@ export function relayConnect(url: string): Promise<void> {
   return invoke('relay_connect', { url });
 }
 
+/** Upload the wrapped-MK escrow bundle to the connected relay (D15). */
+export function relayEscrowUpload(): Promise<void> {
+  return invoke('relay_escrow_upload');
+}
+
 export function relayStatus(): Promise<{
   connected: boolean;
   base_url: string | null;
