@@ -454,12 +454,26 @@ Playwright version (currently 1.60.0).
     unblocked); cargo test 6/6. Gotcha: web build "type errors" in sw.ts were a
     **stale `shared/dist`** (build shared first — root `npm run build` does;
     `-w web` alone doesn't).
-  - **Next iterations (phase 1):** keychain primary unlock (D3) — `keyring`
-    crate vs tauri-plugin-stronghold decision + random SQLCipher key +
-    password→wrap-MK realignment (D13 hierarchy); boot `tauri dev` visually
-    (user smoke test or /run skill); FTS5 migration v2 (messages_fts +
-    notes_fts); first-run server-data import (phase-1 migration piece,
-    spec/migration.md); reproducible-build pipeline (D12).
+  - **Iteration 4 — D13 hierarchy + keychain unlock (DONE, 9/9 tests):**
+    `keys.rs` (HKDF-SHA256 domain-separated wrap → AES-256-GCM; INFO_* strings
+    `accord/mk-wrap/{vault-key,password,recovery}/v1`; 160-bit base32 recovery
+    code, 8×4 groups, normalize on input) + `vault.rs` rework to the real tree:
+    **random SQLCipher key + vault key in OS keychain** (`keyring` crate;
+    entries namespaced `name@sha256(dataDir)[..8]`), **MK rests only wrapped**
+    (vault-key / Argon2id password / recovery) in `vault.meta.json` sidecar;
+    unlock paths = keychain (primary) / password / recovery; `create()` returns
+    the recovery code once. IPC: + `vault_create`, `vault_unlock_keychain`,
+    `vault_unlock_recovery`; native.ts updated. **Keychain is a trait**
+    (OsKeychain prod / MemKeychain tests — keyring's mock doesn't share state
+    across Entry instances, bit me). Biometric ACL gating (Secure Enclave
+    access control) = later per-platform hardening; storage layout already
+    matches D13. Note: DB file copied to another machine is unreadable by
+    design (SQLCipher key never leaves keychain) — new devices pair or restore.
+  - **Next iterations (phase 1):** FTS5 migration v2 (messages_fts + notes_fts
+    + triggers); identity derivation from MK (D4b per-relay keys, ed25519/x25519
+    -dalek); first-run server-data import (spec/migration.md); lock-screen UI
+    wiring in the webview behind `isNative`; boot `tauri dev` visually (user
+    smoke test or /run skill); reproducible-build pipeline (D12).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
