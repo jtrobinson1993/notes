@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { noteBodyToYdocState, toImportMessage, toImportNote } from '../../src/lib/migrate';
-import type { ChatMessage, MessagePayload, NoteRecord } from '@notes/shared';
+import {
+  collectBlobRefs,
+  noteBodyToYdocState,
+  toImportMessage,
+  toImportNote,
+} from '../../src/lib/migrate';
+import type { AttachmentRef, ChatMessage, MessagePayload, NoteRecord } from '@notes/shared';
 
 const record: NoteRecord = {
   id: 'n1',
@@ -83,6 +88,22 @@ describe('toImportMessage', () => {
     expect(m.channel_id).toBe('ch9');
     expect(m.kind).toBe('system');
     expect(m.content).toBeNull();
+  });
+
+  it('collects attachment refs including video posters as separate blobs', () => {
+    const ref: AttachmentRef = {
+      id: 'vid1',
+      name: 'clip.mp4',
+      type: 'video/mp4',
+      size: 999,
+      key: 'k',
+      iv: 'i',
+      poster: { id: 'poster1', key: 'pk', iv: 'pi', type: 'image/webp' },
+    };
+    const out = collectBlobRefs([ref], 'message', 'legacy:c1:7');
+    expect(out.map((p) => p.ref.id)).toEqual(['vid1', 'poster1']);
+    expect(out[1]).toMatchObject({ ownerKind: 'message', ownerId: 'legacy:c1:7' });
+    expect(collectBlobRefs(undefined, 'note', 'n1')).toEqual([]);
   });
 
   it('serializes reply refs and attachments', () => {

@@ -16,6 +16,8 @@ import { api } from './api';
 import { decryptNotePayload } from './crypto';
 import { decryptMessage, unsealConversationKey } from './chatCrypto';
 import {
+  attachmentHas,
+  attachmentPut,
   importContacts,
   importConversations,
   importMessages,
@@ -23,13 +25,21 @@ import {
   type ImportMessage,
   type ImportNote,
 } from './native';
-import type { ChatMessage, Conversation, Friend, MessagePayload, NoteRecord } from '@notes/shared';
+import { ub64 } from './b64';
+import type {
+  AttachmentRef,
+  ChatMessage,
+  Conversation,
+  Friend,
+  MessagePayload,
+  NoteRecord,
+} from '@notes/shared';
 
 const NOTE_BATCH = 50;
 const MESSAGE_PAGE = 200;
 
 export interface MigrationProgress {
-  stage: 'notes' | 'contacts' | 'conversations' | 'messages' | 'done';
+  stage: 'notes' | 'contacts' | 'conversations' | 'messages' | 'attachments' | 'done';
   done: number;
   total: number | null;
   detail?: string;
@@ -40,6 +50,31 @@ export interface MigrationSummary {
   contacts: number;
   conversations: number;
   messages: number;
+  attachments: number;
+}
+
+/** An attachment ref discovered during the note/message passes, remembered
+ *  with its owner so the blob pass can download after the cheap passes. */
+interface PendingBlob {
+  ref: Pick<AttachmentRef, 'id' | 'key' | 'iv' | 'type' | 'size'>;
+  ownerKind: 'message' | 'note';
+  ownerId: string;
+}
+
+export function collectBlobRefs(
+  attachments: AttachmentRef[] | undefined,
+  ownerKind: 'message' | 'note',
+  ownerId: string,
+): PendingBlob[] {
+  const out: PendingBlob[] = [];
+  for (const ref of attachments ?? []) {
+    out.push({ ref, ownerKind, ownerId });
+    // A video's poster is its own separately-encrypted blob.
+    if (ref.poster) {
+      out.push({ ref: { ...ref.poster, size: 0 }, ownerKind, ownerId });
+    }
+  }
+  return out;
 }
 
 /** Seed a Yjs doc from a legacy markdown body (the shape y-codemirror edits). */
@@ -84,6 +119,7 @@ export function toImportMessage(msg: ChatMessage, payload: MessagePayload): Impo
 
 async function migrateNotes(
   mk: Uint8Array,
+  pending: PendingBlob[],
   onProgress: (p: MigrationProgress) => void,
 ): Promise<number> {
   const { notes } = await api.notes(0);
@@ -94,9 +130,45 @@ async function migrateNotes(
     for (const record of live.slice(i, i + NOTE_BATCH)) {
       const payload = await decryptNotePayload(mk, record);
       batch.push(toImportNote(record, payload.title, payload.body, payload.tags));
+      pending.push(...collectBlobRefs(payload.attachments, 'note', record.id));
     }
     imported += await importNotes(batch);
     onProgress({ stage: 'notes', done: Math.min(i + NOTE_BATCH, live.length), total: live.length });
+  }
+  return imported;
+}
+
+async function migrateAttachments(
+  pending: PendingBlob[],
+  onProgress: (p: MigrationProgress) => void,
+): Promise<number> {
+  let imported = 0;
+  let done = 0;
+  for (const { ref, ownerKind, ownerId } of pending) {
+    done += 1;
+    try {
+      if (await attachmentHas(ref.id)) continue;
+      const bytes = await api.attachmentDownload(ref.id);
+      await attachmentPut(
+        {
+          id: ref.id,
+          owner_kind: ownerKind,
+          owner_id: ownerId,
+          file_key: Array.from(ub64(ref.key)),
+          iv: Array.from(ub64(ref.iv)),
+          thumb: null,
+          size: ref.size || bytes.length,
+          mime: ref.type || null,
+          content_hash: null,
+        },
+        Array.from(bytes),
+      );
+      imported += 1;
+    } catch {
+      // A missing/expired server blob is not fatal to the migration; the
+      // message keeps its ref and the attachment shows as unavailable.
+    }
+    onProgress({ stage: 'attachments', done, total: pending.length });
   }
   return imported;
 }
@@ -131,6 +203,7 @@ async function epochKeysFor(
 async function migrateConversation(
   conv: Conversation,
   keyPair: { privateKey: Uint8Array; publicKey: Uint8Array },
+  pending: PendingBlob[],
   onProgress: (p: MigrationProgress) => void,
 ): Promise<number> {
   const keys = await epochKeysFor(conv, keyPair);
@@ -144,7 +217,11 @@ async function migrateConversation(
       const key = keys.get(msg.epoch);
       if (!key) continue; // epoch predates my history floor — not mine to read
       try {
-        batch.push(toImportMessage(msg, await decryptMessage(key, msg.ciphertext, msg.iv)));
+        const payload = await decryptMessage(key, msg.ciphertext, msg.iv);
+        batch.push(toImportMessage(msg, payload));
+        pending.push(
+          ...collectBlobRefs(payload.attachments, 'message', `legacy:${conv.id}:${msg.seq}`),
+        );
       } catch {
         // Undecryptable rows (corrupt/foreign) are skipped, never fatal.
       }
@@ -166,9 +243,16 @@ export async function runLegacyMigration(
   keyPair: { privateKey: Uint8Array; publicKey: Uint8Array },
   onProgress: (p: MigrationProgress) => void = () => {},
 ): Promise<MigrationSummary> {
-  const summary: MigrationSummary = { notes: 0, contacts: 0, conversations: 0, messages: 0 };
+  const summary: MigrationSummary = {
+    notes: 0,
+    contacts: 0,
+    conversations: 0,
+    messages: 0,
+    attachments: 0,
+  };
+  const pending: PendingBlob[] = [];
 
-  summary.notes = await migrateNotes(mk, onProgress);
+  summary.notes = await migrateNotes(mk, pending, onProgress);
   summary.contacts = await migrateContacts(onProgress);
 
   const conversations = await api.conversations();
@@ -178,8 +262,10 @@ export async function runLegacyMigration(
   onProgress({ stage: 'conversations', done: conversations.length, total: conversations.length });
 
   for (const conv of conversations) {
-    summary.messages += await migrateConversation(conv, keyPair, onProgress);
+    summary.messages += await migrateConversation(conv, keyPair, pending, onProgress);
   }
+
+  summary.attachments = await migrateAttachments(pending, onProgress);
 
   onProgress({ stage: 'done', done: 1, total: 1 });
   return summary;
