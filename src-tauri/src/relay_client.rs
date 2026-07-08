@@ -60,6 +60,13 @@ struct TokenResponse {
     expires_in_sec: u64,
 }
 
+#[derive(serde::Serialize)]
+pub struct MailboxRow {
+    pub queue_id: i64,
+    pub relay_ts: i64,
+    pub envelope: Vec<u8>,
+}
+
 #[derive(serde::Serialize, Clone)]
 pub struct RelayStatus {
     pub connected: bool,
@@ -209,6 +216,118 @@ impl RelayClient {
             return Err(format!("relay refused directory entry (HTTP {})", res.status()));
         }
         Ok(())
+    }
+
+    fn base_url(&self) -> Result<String, String> {
+        let guard = self.session.lock().unwrap();
+        Ok(guard.as_ref().ok_or("not connected to a relay")?.base_url.clone())
+    }
+
+    /// Register hash(delivery token) so friends' sealed sends are accepted (D6).
+    pub async fn register_verifier(&self, signing: &SigningKey, verifier: String) -> Result<(), String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .put(format!("{base}/api/relay/verifier"))
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({ "verifier": verifier }))
+            .send()
+            .await
+            .map_err(|e| format!("verifier registration failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("relay refused verifier (HTTP {})", res.status()));
+        }
+        Ok(())
+    }
+
+    /// Sealed send (D6): deliberately NO device token — the recipient's
+    /// delivery token is the only credential, so the relay never learns who
+    /// sent the envelope.
+    pub async fn mailbox_send(
+        &self,
+        recipient_handle: &str,
+        delivery_token: &str,
+        envelope: Vec<u8>,
+    ) -> Result<i64, String> {
+        use base64::Engine as _;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/mailbox/send"))
+            .json(&serde_json::json!({
+                "deliveryToken": delivery_token,
+                "recipientHandle": recipient_handle,
+                "envelope": base64::engine::general_purpose::STANDARD.encode(&envelope),
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("send failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("delivery refused (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct SendResponse {
+            #[serde(rename = "relayTs")]
+            relay_ts: i64,
+        }
+        let body: SendResponse = res.json().await.map_err(|e| format!("bad send response: {e}"))?;
+        Ok(body.relay_ts)
+    }
+
+    pub async fn mailbox_fetch(&self, signing: &SigningKey) -> Result<Vec<MailboxRow>, String> {
+        use base64::Engine as _;
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .get(format!("{base}/api/relay/mailbox"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .map_err(|e| format!("mailbox fetch failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("mailbox fetch refused (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct Row {
+            #[serde(rename = "queueId")]
+            queue_id: i64,
+            #[serde(rename = "relayTs")]
+            relay_ts: i64,
+            envelope: String,
+        }
+        let rows: Vec<Row> = res.json().await.map_err(|e| format!("bad mailbox response: {e}"))?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(MailboxRow {
+                    queue_id: r.queue_id,
+                    relay_ts: r.relay_ts,
+                    envelope: base64::engine::general_purpose::STANDARD
+                        .decode(r.envelope)
+                        .map_err(|_| "corrupt envelope encoding".to_string())?,
+                })
+            })
+            .collect()
+    }
+
+    /// Hold-until-ack: only ack after the envelope is durably ingested.
+    pub async fn mailbox_ack(&self, signing: &SigningKey, queue_ids: Vec<i64>) -> Result<u64, String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/mailbox/ack"))
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({ "queueIds": queue_ids }))
+            .send()
+            .await
+            .map_err(|e| format!("ack failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("ack refused (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct AckResponse {
+            acked: u64,
+        }
+        let body: AckResponse = res.json().await.map_err(|e| format!("bad ack response: {e}"))?;
+        Ok(body.acked)
     }
 
     pub fn status(&self) -> RelayStatus {

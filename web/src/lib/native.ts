@@ -76,6 +76,32 @@ export function relayDirectoryPublish(): Promise<void> {
   return invoke('relay_directory_publish');
 }
 
+/** Register hash(delivery token) with the relay; resolves with the token
+ *  itself, which gets sealed to friends (D6). */
+export function relayRegisterVerifier(): Promise<string> {
+  return invoke<string>('relay_register_verifier');
+}
+
+/** Sealed send: the recipient's delivery token is the only credential. */
+export function relaySend(
+  recipientHandle: string,
+  deliveryToken: string,
+  envelope: number[],
+): Promise<number> {
+  return invoke<number>('relay_send', { recipientHandle, deliveryToken, envelope });
+}
+
+export function relayMailboxFetch(): Promise<
+  { queue_id: number; relay_ts: number; envelope: number[] }[]
+> {
+  return invoke('relay_mailbox_fetch');
+}
+
+/** Ack only after the envelopes are durably ingested (hold-until-ack). */
+export function relayMailboxAck(queueIds: number[]): Promise<number> {
+  return invoke<number>('relay_mailbox_ack', { queueIds });
+}
+
 export function relayStatus(): Promise<{
   connected: boolean;
   base_url: string | null;

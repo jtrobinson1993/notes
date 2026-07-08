@@ -23,6 +23,9 @@ pub const INFO_MK_WRAP_RECOVERY: &[u8] = b"accord/mk-wrap/recovery/v1";
 // a client presents to fetch escrow can never unwrap the blobs it receives.
 pub const INFO_AUTH_PASSWORD: &[u8] = b"accord/auth/password/v1";
 pub const INFO_AUTH_RECOVERY: &[u8] = b"accord/auth/recovery/v1";
+// D6: delivery token = KDF(profile key, "delivery") — the sealed-sender
+// capability friends present to the relay.
+pub const INFO_DELIVERY: &[u8] = b"accord/delivery/v1";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {

@@ -711,11 +711,24 @@ Playwright version (currently 1.60.0).
     **enroll → directory publish → escrow upload**. Gotcha: db-accessor
     field casing leaked into the API response (identityPubkey vs
     identityPubKey) — caught by test.
-  - **Next iterations (phase 3):** Rust client mailbox loop (delivery-token
-    derivation from profile key → verifier registration; send/fetch/ack);
-    escrow cold-start restore (fetch → unwrap → rebuild vault); WS live
-    delivery for device queues; security.md relay-state inventory fold-in.
-    Then phase 3 review vs relay.md. Desk queue unchanged.
+  - **Iteration 25 — client mailbox loop (DONE; cargo 25/25, tc clean; the
+    d61411d commit also landed once 1Password unblocked):**
+    `keys::INFO_DELIVERY` + `vault.delivery_token()` — token =
+    b64(HKDF(profile.key, "accord/delivery/v1")), verifier =
+    b64url(sha256(utf8(token))) **matching the server's hashing convention
+    exactly** (test pins it); requires unlock; errors when locked.
+    RelayClient: `register_verifier` (bearer), `mailbox_send` (**no bearer —
+    sealed**), `mailbox_fetch` (decodes envelopes), `mailbox_ack`. IPC:
+    `relay_register_verifier` (returns the token for sealing to friends),
+    `relay_send`, `relay_mailbox_fetch`, `relay_mailbox_ack` + native.ts
+    wrappers. Migration chain now: **enroll → directory → verifier →
+    escrow**.
+  - **Next iterations (phase 3):** envelope format v1 (sealed box to
+    recipient identity key, `{v, type}` header per relay.md versioning) +
+    a first end-to-end sealed message send/receive between two accounts on
+    the dev relay; escrow cold-start restore; WS live delivery;
+    security.md inventory fold-in; then phase-3 review vs relay.md. Desk
+    queue unchanged.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

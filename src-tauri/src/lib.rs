@@ -120,6 +120,58 @@ async fn relay_directory_publish(
     relay.directory_publish(&device, id_pub, seal_pub).await
 }
 
+/// Derive the delivery token from the profile key and register its hash
+/// with the relay (D6). Returns the token — the caller seals it to friends.
+#[tauri::command]
+async fn relay_register_verifier(
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<String, String> {
+    let (signing, token, verifier) = {
+        let vault = vault.lock().unwrap();
+        let signing = vault.device_signing_key().map_err(|e| e.to_string())?;
+        let (token, verifier) = vault.delivery_token().map_err(|e| e.to_string())?;
+        (signing, token, verifier)
+    };
+    relay.register_verifier(&signing, verifier).await?;
+    Ok(token)
+}
+
+#[tauri::command]
+async fn relay_send(
+    recipient_handle: String,
+    delivery_token: String,
+    envelope: Vec<u8>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<i64, String> {
+    relay.mailbox_send(&recipient_handle, &delivery_token, envelope).await
+}
+
+#[tauri::command]
+async fn relay_mailbox_fetch(
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<Vec<relay_client::MailboxRow>, String> {
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    relay.mailbox_fetch(&signing).await
+}
+
+#[tauri::command]
+async fn relay_mailbox_ack(
+    queue_ids: Vec<i64>,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<u64, String> {
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    relay.mailbox_ack(&signing, queue_ids).await
+}
+
 /// Register the wrapped-MK escrow with the connected relay (D15).
 #[tauri::command]
 async fn relay_escrow_upload(
@@ -395,6 +447,10 @@ pub fn run() {
             relay_status,
             relay_escrow_upload,
             relay_directory_publish,
+            relay_register_verifier,
+            relay_send,
+            relay_mailbox_fetch,
+            relay_mailbox_ack,
             messages_page,
             messages_ingest,
             message_edit,
