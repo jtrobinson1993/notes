@@ -542,12 +542,25 @@ Playwright version (currently 1.60.0).
     minutes input (saves to vault-DB settings, re-arms `applyRelockPolicy`
     immediately) + **Lock now** button (`lockVault`). SettingsPage change =
     import + a 4-line `v-if="isNative"` block.
-  - **Next iterations:** boot `tauri dev` visually (user smoke test — full
-    phase-1 flow ready: setup → recovery → legacy login → migration incl.
-    blobs → idle re-lock + settings UI); reproducible builds (D12);
-    shared-notes + settings-blob migration pass; phase 1→2 review (phase 2
-    = local offline unlock — largely done already via D3 keychain work; audit
-    against roadmap phasing before declaring).
+  - **Iteration 13 — shared-notes + org-settings migration (DONE; cargo
+    18/18, web 426 green):** store migration **v4** (`notes.note_key` —
+    every note's E2E key retained: own = `unwrapNoteKey(mk)`, shared =
+    unsealed `noteKeyRaw`; needed again for phase-4 relay sync under
+    per-note keys). `migrateSharedNotes` (api.sharedNotes →
+    decryptSharedNotePayload; `shared_json={owner,access}`; unsealable =
+    skipped non-fatal; attachments collected). `migrateOrgSettings`
+    (api.settingGet('notes-org') → unwrap INFO_SETTINGS → vault setting
+    **`org.data`** verbatim — folder assignment stays in the org blob like
+    the live app; notes.folder_id not materialized). New stages/summary
+    fields + prompt labels.
+  - **Migration scope now complete EXCEPT profile blobs** (own bio/avatar +
+    contact profile cache — server purge would eat them; migrate next) and
+    note version history (D10 says best-effort legacy snapshots as read-only
+    versions — decide whether to pull `/api/notes/:id/versions` during
+    migration).
+  - **Next iterations:** profile-blob migration pass; legacy note-version
+    snapshots (best-effort, D10); boot `tauri dev` visually (user smoke
+    test); reproducible builds (D12); phase 1→2 review.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

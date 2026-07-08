@@ -60,7 +60,19 @@ describe('toImportNote', () => {
   });
 
   it('omits the tag suffix when there are no tags', () => {
-    expect(toImportNote(record, 't', 'body', []).search_text).toBe('body');
+    const n = toImportNote(record, 't', 'body', []);
+    expect(n.search_text).toBe('body');
+    expect(n.shared_json).toBeNull();
+    expect(n.note_key).toBeNull();
+  });
+
+  it('carries shared metadata and the note key for shared notes', () => {
+    const n = toImportNote(record, 't', 'body', [], {
+      sharedJson: '{"owner":"Alice","access":"edit"}',
+      noteKey: new Uint8Array([1, 2, 3]),
+    });
+    expect(JSON.parse(n.shared_json!)).toMatchObject({ owner: 'Alice' });
+    expect(n.note_key).toEqual([1, 2, 3]);
   });
 });
 

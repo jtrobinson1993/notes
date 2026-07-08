@@ -110,6 +110,10 @@ export interface ImportNote {
   updated: number;
   /** Yjs doc binary (Y.encodeStateAsUpdate) seeded from the legacy note. */
   ydoc_state: number[];
+  /** `{ owner, access }` JSON for shared-with-me notes; null for own notes. */
+  shared_json: string | null;
+  /** The note's E2E key (unwrapped/unsealed during migration; phase-4 sync). */
+  note_key: number[] | null;
 }
 
 export interface ImportConversation {

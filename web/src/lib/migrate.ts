@@ -13,7 +13,7 @@
 
 import * as Y from 'yjs';
 import { api } from './api';
-import { decryptNotePayload } from './crypto';
+import { decryptNotePayload, decryptSharedNotePayload, unwrapKey, unwrapNoteKey } from './crypto';
 import { decryptMessage, unsealConversationKey } from './chatCrypto';
 import {
   attachmentHas,
@@ -22,6 +22,7 @@ import {
   importConversations,
   importMessages,
   importNotes,
+  settingsSet,
   type ImportMessage,
   type ImportNote,
 } from './native';
@@ -39,7 +40,15 @@ const NOTE_BATCH = 50;
 const MESSAGE_PAGE = 200;
 
 export interface MigrationProgress {
-  stage: 'notes' | 'contacts' | 'conversations' | 'messages' | 'attachments' | 'done';
+  stage:
+    | 'notes'
+    | 'shared-notes'
+    | 'settings'
+    | 'contacts'
+    | 'conversations'
+    | 'messages'
+    | 'attachments'
+    | 'done';
   done: number;
   total: number | null;
   detail?: string;
@@ -47,6 +56,8 @@ export interface MigrationProgress {
 
 export interface MigrationSummary {
   notes: number;
+  sharedNotes: number;
+  orgSettings: boolean;
   contacts: number;
   conversations: number;
   messages: number;
@@ -84,16 +95,26 @@ export function noteBodyToYdocState(body: string): number[] {
   return Array.from(Y.encodeStateAsUpdate(doc));
 }
 
-export function toImportNote(record: NoteRecord, title: string, body: string, tags: string[]): ImportNote {
+export function toImportNote(
+  record: Pick<NoteRecord, 'id' | 'createdAt' | 'updatedAt'>,
+  title: string,
+  body: string,
+  tags: string[],
+  extras: { sharedJson?: string; noteKey?: Uint8Array } = {},
+): ImportNote {
   return {
     id: record.id,
     title,
     // Tags ride in the search projection until the tag model is ported.
     search_text: tags.length ? `${body}\n${tags.join(' ')}` : body,
-    folder_id: null, // folders are personal-organization settings; ported with the settings blob
+    // Folder assignment stays in the org settings blob (migrated as
+    // `org.data`), same as the live app — folder_id is not materialized.
+    folder_id: null,
     created: record.createdAt,
     updated: record.updatedAt,
     ydoc_state: noteBodyToYdocState(body),
+    shared_json: extras.sharedJson ?? null,
+    note_key: extras.noteKey ? Array.from(extras.noteKey) : null,
   };
 }
 
@@ -129,13 +150,55 @@ async function migrateNotes(
     const batch: ImportNote[] = [];
     for (const record of live.slice(i, i + NOTE_BATCH)) {
       const payload = await decryptNotePayload(mk, record);
-      batch.push(toImportNote(record, payload.title, payload.body, payload.tags));
+      const noteKey = await unwrapNoteKey(mk, record.wrappedKey);
+      batch.push(toImportNote(record, payload.title, payload.body, payload.tags, { noteKey }));
       pending.push(...collectBlobRefs(payload.attachments, 'note', record.id));
     }
     imported += await importNotes(batch);
     onProgress({ stage: 'notes', done: Math.min(i + NOTE_BATCH, live.length), total: live.length });
   }
   return imported;
+}
+
+async function migrateSharedNotes(
+  keyPair: { privateKey: Uint8Array; publicKey: Uint8Array },
+  pending: PendingBlob[],
+  onProgress: (p: MigrationProgress) => void,
+): Promise<number> {
+  const records = await api.sharedNotes();
+  const batch: ImportNote[] = [];
+  for (const record of records) {
+    try {
+      const { payload, noteKeyRaw } = await decryptSharedNotePayload(
+        keyPair.privateKey,
+        keyPair.publicKey,
+        record,
+      );
+      batch.push(
+        toImportNote(record, payload.title, payload.body, payload.tags, {
+          sharedJson: JSON.stringify({ owner: record.ownerDisplayName, access: record.access }),
+          noteKey: noteKeyRaw,
+        }),
+      );
+      pending.push(...collectBlobRefs(payload.attachments, 'note', record.id));
+    } catch {
+      // An unsealable shared note (revoked mid-flight) is skipped, not fatal.
+    }
+  }
+  const imported = await importNotes(batch);
+  onProgress({ stage: 'shared-notes', done: records.length, total: records.length });
+  return imported;
+}
+
+const ORG_SETTING_KEY = 'notes-org'; // matches stores/organization.ts
+const INFO_SETTINGS = 'notes:wrap:settings:v1';
+
+async function migrateOrgSettings(mk: Uint8Array): Promise<boolean> {
+  const remote = await api.settingGet(ORG_SETTING_KEY);
+  if (!remote) return false;
+  const pt = await unwrapKey(mk, JSON.parse(remote.data), INFO_SETTINGS);
+  await settingsSet('org.data', new TextDecoder().decode(pt));
+  return true;
 }
 
 async function migrateAttachments(
@@ -245,6 +308,8 @@ export async function runLegacyMigration(
 ): Promise<MigrationSummary> {
   const summary: MigrationSummary = {
     notes: 0,
+    sharedNotes: 0,
+    orgSettings: false,
     contacts: 0,
     conversations: 0,
     messages: 0,
@@ -253,6 +318,9 @@ export async function runLegacyMigration(
   const pending: PendingBlob[] = [];
 
   summary.notes = await migrateNotes(mk, pending, onProgress);
+  summary.sharedNotes = await migrateSharedNotes(keyPair, pending, onProgress);
+  summary.orgSettings = await migrateOrgSettings(mk);
+  onProgress({ stage: 'settings', done: 1, total: 1 });
   summary.contacts = await migrateContacts(onProgress);
 
   const conversations = await api.conversations();
