@@ -1,3 +1,4 @@
+mod blobs;
 mod identity;
 mod keys;
 mod store;
@@ -70,6 +71,54 @@ fn settings_set(key: String, value: String, vault: VaultState) -> Result<(), Str
     store.set_setting(&key, &value).map_err(|e| e.to_string())
 }
 
+// ---- attachments (encrypted blob files + SQLCipher-held per-file keys) ----
+
+#[derive(serde::Serialize)]
+struct AttachmentGetResponse {
+    meta: store::AttachmentRow,
+    /// Ciphertext bytes; `None` when evicted/expired (meta still describes it).
+    bytes: Option<Vec<u8>>,
+}
+
+#[tauri::command]
+fn attachment_put(
+    meta: store::AttachmentMeta,
+    bytes: Vec<u8>,
+    vault: VaultState,
+) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    let path = vault.blobs().write(&meta.id, &bytes).map_err(|e| e.to_string())?;
+    store
+        .insert_attachment(&meta, &path.to_string_lossy())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn attachment_get(id: String, vault: VaultState) -> Result<AttachmentGetResponse, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    let meta = store
+        .attachment_meta(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("unknown attachment")?;
+    let bytes = if meta.state == "present" {
+        Some(vault.blobs().read(&id).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    Ok(AttachmentGetResponse { meta, bytes })
+}
+
+/// Local, per-device space reclamation (D6 retention — NOT delete-for-everyone).
+#[tauri::command]
+fn attachment_evict(id: String, vault: VaultState) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    vault.blobs().remove(&id).map_err(|e| e.to_string())?;
+    store.set_attachment_state(&id, "evicted").map_err(|e| e.to_string())
+}
+
 // ---- first-run legacy import (spec/migration.md) ----
 // The webview decrypts with the existing v1 crypto and streams plaintext
 // batches down; each command is transactional and idempotent.
@@ -129,6 +178,9 @@ pub fn run() {
             vault_lock,
             settings_get,
             settings_set,
+            attachment_put,
+            attachment_get,
+            attachment_evict,
             import_notes,
             import_conversations,
             import_contacts,
