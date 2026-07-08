@@ -139,6 +139,16 @@ fn import_notes(batch: Vec<store::ImportNote>, vault: VaultState) -> Result<usiz
 }
 
 #[tauri::command]
+fn import_note_versions(
+    batch: Vec<store::ImportNoteVersion>,
+    vault: VaultState,
+) -> Result<usize, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.import_note_versions(batch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn import_conversations(
     batch: Vec<store::ImportConversation>,
     vault: VaultState,
@@ -191,6 +201,7 @@ pub fn run() {
             attachment_has,
             attachment_evict,
             import_notes,
+            import_note_versions,
             import_conversations,
             import_contacts,
             import_messages

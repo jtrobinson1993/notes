@@ -50,7 +50,7 @@ const stageLabel = computed(() => {
   const p = progress.value;
   if (!p) return '';
   const counts = p.total !== null ? ` (${p.done}/${p.total})` : ` (${p.done})`;
-  return `${{ notes: 'Notes', 'shared-notes': 'Shared notes', settings: 'Settings', contacts: 'Friends', conversations: 'Chats', messages: 'Messages', attachments: 'Attachments', done: 'Finishing' }[p.stage]}${counts}`;
+  return `${{ notes: 'Notes', 'shared-notes': 'Shared notes', versions: 'Note history', settings: 'Settings', contacts: 'Friends', conversations: 'Chats', messages: 'Messages', attachments: 'Attachments', done: 'Finishing' }[p.stage]}${counts}`;
 });
 </script>
 

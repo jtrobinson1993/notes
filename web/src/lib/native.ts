@@ -144,6 +144,19 @@ export function importNotes(batch: ImportNote[]): Promise<number> {
   return invoke<number>('import_notes', { batch });
 }
 
+export interface ImportNoteVersion {
+  note_id: string;
+  kind: 'legacy';
+  name: string | null;
+  created: number;
+  /** JSON `{title, body}` snapshot bytes. */
+  snapshot: number[];
+}
+
+export function importNoteVersions(batch: ImportNoteVersion[]): Promise<number> {
+  return invoke<number>('import_note_versions', { batch });
+}
+
 export function importConversations(batch: ImportConversation[]): Promise<number> {
   return invoke<number>('import_conversations', { batch });
 }
