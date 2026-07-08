@@ -453,6 +453,19 @@ CREATE TABLE IF NOT EXISTS relay_identity (
   privkey TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS relay_verifiers (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  verifier TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_mailbox (
+  queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL REFERENCES relay_devices(id) ON DELETE CASCADE,
+  relay_ts INTEGER NOT NULL,
+  envelope BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_relay_mailbox_device ON relay_mailbox(device_id, queue_id);
 `);
 
   // Idempotent migration: add users.display_name / name_color if missing.
@@ -690,6 +703,70 @@ CREATE TABLE IF NOT EXISTS relay_identity (
           .changes > 0
       );
     },
+    getRelayDeviceById(id: string): { id: string; userId: string; revoked: boolean } | undefined {
+      const r = db.prepare('SELECT id, user_id, revoked FROM relay_devices WHERE id = ?').get(id) as
+        | { id: string; user_id: string; revoked: number }
+        | undefined;
+      return r ? { id: r.id, userId: r.user_id, revoked: r.revoked !== 0 } : undefined;
+    },
+    /** Recipient registers hash(delivery token) — the relay checks the hash,
+     *  never sees the token, never learns the sender (D6). */
+    setRelayVerifier(userId: string, verifier: string): void {
+      db.prepare(
+        `INSERT INTO relay_verifiers (user_id, verifier, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET verifier = excluded.verifier, updated_at = excluded.updated_at`,
+      ).run(userId, verifier, Date.now());
+    },
+    getRelayVerifier(userId: string): string | undefined {
+      return (
+        db.prepare('SELECT verifier FROM relay_verifiers WHERE user_id = ?').get(userId) as
+          | { verifier: string }
+          | undefined
+      )?.verifier;
+    },
+    activeRelayDeviceIds(userId: string): string[] {
+      return (
+        db.prepare('SELECT id FROM relay_devices WHERE user_id = ? AND revoked = 0').all(userId) as {
+          id: string;
+        }[]
+      ).map((r) => r.id);
+    },
+    /** Fan one envelope out to every given device queue (one transaction). */
+    enqueueRelayEnvelope(deviceIds: string[], relayTs: number, envelope: Buffer): void {
+      const insert = db.prepare(
+        'INSERT INTO relay_mailbox (device_id, relay_ts, envelope, created_at) VALUES (?, ?, ?, ?)',
+      );
+      const tx = db.transaction((ids: string[]) => {
+        for (const id of ids) insert.run(id, relayTs, envelope, Date.now());
+      });
+      tx(deviceIds);
+    },
+    fetchRelayMailbox(
+      deviceId: string,
+      limit: number,
+    ): { queueId: number; relayTs: number; envelope: Buffer }[] {
+      return (
+        db.prepare(
+          'SELECT queue_id, relay_ts, envelope FROM relay_mailbox WHERE device_id = ? ORDER BY queue_id LIMIT ?',
+        ).all(deviceId, limit) as { queue_id: number; relay_ts: number; envelope: Buffer }[]
+      ).map((r) => ({ queueId: r.queue_id, relayTs: r.relay_ts, envelope: r.envelope }));
+    },
+    /** Hold-until-ack: delete only the caller's own rows (D6). */
+    ackRelayMailbox(deviceId: string, queueIds: number[]): number {
+      const del = db.prepare('DELETE FROM relay_mailbox WHERE device_id = ? AND queue_id = ?');
+      const tx = db.transaction((ids: number[]) => {
+        let n = 0;
+        for (const id of ids) n += del.run(deviceId, id).changes;
+        return n;
+      });
+      return tx(queueIds);
+    },
+    /** Undelivered TTL (~30 days, D6): expiry ≠ data loss (devices re-sync). */
+    pruneRelayMailbox(maxAgeMs: number): number {
+      return db.prepare('DELETE FROM relay_mailbox WHERE created_at < ?').run(Date.now() - maxAgeMs)
+        .changes;
+    },
+
     createRelayChallenge(nonce: string): void {
       db.prepare('INSERT INTO relay_challenges (nonce, created_at) VALUES (?, ?)').run(nonce, Date.now());
       // Opportunistic prune so the table never grows past the expiry window.
