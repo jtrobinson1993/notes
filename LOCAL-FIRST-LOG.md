@@ -723,12 +723,23 @@ Playwright version (currently 1.60.0).
     `relay_send`, `relay_mailbox_fetch`, `relay_mailbox_ack` + native.ts
     wrappers. Migration chain now: **enroll → directory → verifier →
     escrow**.
-  - **Next iterations (phase 3):** envelope format v1 (sealed box to
-    recipient identity key, `{v, type}` header per relay.md versioning) +
-    a first end-to-end sealed message send/receive between two accounts on
-    the dev relay; escrow cold-start restore; WS live delivery;
-    security.md inventory fold-in; then phase-3 review vs relay.md. Desk
-    queue unchanged.
+  - **Iteration 26 — envelope v1 (DONE; cargo 28/28, tc clean):**
+    `envelope.rs` — outer `{v:1, eph, nonce, ct}` sealed box (ephemeral
+    X25519 ECDH → HKDF-SHA256 salted w/ eph pub → AES-256-GCM); inner
+    `{kind, payload, senderIdentityPub, sig, sentAt}` — **sender cert inside
+    ciphertext** (D6) and **sig over domain|kind|payload** (D11 backfill
+    integrity). `UnknownVersion(v)` error = buffer-and-retry, never drop
+    (relay.md policy). Tests: roundtrip + sender pub match; wrong recipient
+    → Decrypt; tampered ct → Decrypt; v=2 → UnknownVersion. IPC
+    `envelope_seal/open` (derive own identity from MK + pinned relay fp) +
+    native.ts wrappers. NOTE: true two-account E2E over a running relay =
+    integration-sim layer (testing.md G/I), not yet scripted — crypto +
+    transport are each covered separately so far.
+  - **Next iterations (phase 3):** escrow cold-start restore (fetch →
+    unwrap w/ password → rebuild vault on a fresh device); WS live delivery
+    for device queues; security.md relay-state inventory fold-in; phase-3
+    review vs relay.md (what's built vs spec: blob store, group state,
+    invites, push registration still unbuilt). Desk queue unchanged.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

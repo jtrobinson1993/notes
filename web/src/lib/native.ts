@@ -91,6 +91,26 @@ export function relaySend(
   return invoke<number>('relay_send', { recipientHandle, deliveryToken, envelope });
 }
 
+/** Seal an E2E envelope (v1) to a recipient's sealing key. */
+export function envelopeSeal(
+  recipientSealingPub: string,
+  kind: string,
+  payload: number[],
+): Promise<number[]> {
+  return invoke<number[]>('envelope_seal', { recipientSealingPub, kind, payload });
+}
+
+/** Open an envelope addressed to this account; sender key is verified
+ *  against the content signature (check it against the directory too). */
+export function envelopeOpen(envelopeBytes: number[]): Promise<{
+  kind: string;
+  payload: number[];
+  sender_identity_pub: string;
+  sent_at: number;
+}> {
+  return invoke('envelope_open', { envelopeBytes });
+}
+
 export function relayMailboxFetch(): Promise<
   { queue_id: number; relay_ts: number; envelope: number[] }[]
 > {
