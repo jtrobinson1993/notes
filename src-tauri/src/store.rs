@@ -148,6 +148,10 @@ const MIGRATIONS: &[&str] = &[
     // v3 — legacy attachments are AES-GCM with an external 12-byte IV carried
     // in their AttachmentRef; store it beside the key.
     "ALTER TABLE attachments ADD COLUMN iv BLOB;",
+    // v4 — retain each note's E2E key (own notes: unwrapped from MK; shared
+    // notes: unsealed). Needed again in phase 4 when note updates sync over
+    // the relay under the per-note key; SQLCipher protects it at rest.
+    "ALTER TABLE notes ADD COLUMN note_key BLOB;",
 ];
 
 #[derive(serde::Deserialize)]
@@ -160,6 +164,10 @@ pub struct ImportNote {
     pub updated: i64,
     /// Yjs doc binary, built webview-side from the decrypted legacy note.
     pub ydoc_state: Vec<u8>,
+    /// `{ owner, access }` for shared-with-me notes; None for own notes.
+    pub shared_json: Option<String>,
+    /// The note's E2E key (unwrapped/unsealed during migration).
+    pub note_key: Option<Vec<u8>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -275,9 +283,20 @@ impl Store {
                 (&doc_id, &n.ydoc_state),
             )?;
             imported += tx.execute(
-                "INSERT OR IGNORE INTO notes(id, title, doc_id, folder_id, search_text, created, updated)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                (&n.id, &n.title, &doc_id, &n.folder_id, &n.search_text, n.created, n.updated),
+                "INSERT OR IGNORE INTO notes(
+                   id, title, doc_id, folder_id, search_text, created, updated, shared_json, note_key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                (
+                    &n.id,
+                    &n.title,
+                    &doc_id,
+                    &n.folder_id,
+                    &n.search_text,
+                    n.created,
+                    n.updated,
+                    &n.shared_json,
+                    &n.note_key,
+                ),
             )?;
         }
         tx.commit()?;
@@ -534,6 +553,8 @@ mod tests {
             created: 1,
             updated: 2,
             ydoc_state: vec![1, 2, 3],
+            shared_json: Some(r#"{"owner":"Alice","access":"edit"}"#.into()),
+            note_key: Some(vec![7u8; 32]),
         }];
         assert_eq!(store.import_notes(notes).unwrap(), 1);
 
