@@ -526,11 +526,21 @@ Playwright version (currently 1.60.0).
     renders unavailable). Migration scope now: notes+tags, friends, convs,
     full history, attachments+posters. Still deferred: shared-with-me notes,
     settings/folders blob, profile blobs.
-  - **Next iterations:** boot `tauri dev` visually (user smoke test — the
-    end-to-end flow is complete: setup → recovery → legacy login → full
-    migration incl. blobs); re-lock policy setting (D4 layer A); reproducible
-    builds (D12); shared-notes + settings-blob migration pass; phase 2
-    review.
+  - **Iteration 11 — D4 idle re-lock (DONE; suite 791 green; landed with
+    iter-10 in ae22ec3 once 1Password unblocked):** `nativeVault.ts` —
+    **shared gate state** (moved out of NativeGate.vue so re-lockers can flip
+    the wall), `initGate/markUnlocked/lockVault`, `relock.policy`
+    ('stay' default | 'on-idle') + `relock.idleMinutes` (default 15) read
+    from vault-DB settings, idle timer with pointer/key/wheel activity reset,
+    teardown on lock. OS device-lock detection = per-platform follow-up
+    (macOS lock notifications / mobile lifecycle). 4 new tests (fake timers).
+    Gotcha: chaining vitest with git in one command produced a flaky partial
+    run (1 "failure", 99 files) — clean re-run 103/791 green; don't chain.
+  - **Next iterations:** Settings → Security UI for the re-lock toggle +
+    manual Lock button (webview, native-only section); boot `tauri dev`
+    visually (user smoke test — full flow ready: setup → recovery → legacy
+    login → migration incl. blobs → idle re-lock); reproducible builds (D12);
+    shared-notes + settings-blob migration pass; phase 2 review.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
