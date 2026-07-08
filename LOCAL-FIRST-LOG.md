@@ -572,9 +572,36 @@ Playwright version (currently 1.60.0).
     **THE LEGACY MIGRATION IS NOW SCOPE-COMPLETE** (notes+keys, shared notes,
     versions, org settings, own profile+key, friends, convs, full history,
     attachments+posters).
-  - **Next iterations:** boot `tauri dev` visually (user smoke test);
-    reproducible builds (D12); phase 1→2 review vs roadmap phasing (then
-    phase 3 = minimal relay — the big server-side chunk: relay.md endpoints).
+  - **Iteration 15 — phase 1→2 review + D12 starter (DONE).**
+    **Phase review vs roadmap phasing (honest):**
+    - Phase 1 "native shells": desktop ✓; **mobile targets NOT initialized**
+      (`tauri ios init` / `tauri android init` — needs Xcode/Android SDKs on
+      this machine; queue for a desk session with the user).
+    - Phase 1 "move durable storage to local SQLite": store/vault/blobs all
+      exist ✓ BUT **the UI still runs on server+idb** — the big D2 refactor
+      (notes.ts + session.ts stores read/write via IPC when isNative) is
+      **unstarted and is the next major arc**. Migration fills the store;
+      nothing reads it yet.
+    - Phase 1 "import on first run": ✓ scope-complete (iter 7–14).
+    - Phase 1 "code-signing + reproducible builds": started this iteration
+      (below); signing waits on the deferred distribution-channel decision.
+    - Phase 2 "local offline unlock": ✓ effectively done (keychain primary /
+      password / recovery, re-lock policy + UI). Remaining hardening:
+      biometric ACLs (Secure Enclave access control) per platform; relay
+      token (D4 layer B) belongs to phase 3.
+    **D12 starter:** `src-tauri/rust-toolchain.toml` (pin 1.96.1); ci.yml +
+    `rust-core` job (cargo test --locked, rust-cache); new
+    **`.github/workflows/native-build.yml`** — 3-OS matrix (mac arm64 /
+    linux / windows), pinned toolchains, SOURCE_DATE_EPOCH from commit,
+    unsigned bundles + SHA256SUMS artifacts, signing hooks commented, and a
+    **repro-canary job** (same-machine double build, hash diff → warning
+    until determinism work lands).
+  - **Next iterations (the local-first arc — biggest remaining v8 chunk):**
+    1) notes store reads/writes via IPC when isNative (list/create/edit/
+    delete/search from SQLite; Yjs doc as source of truth); 2) chat history
+    from SQLite; 3) then phase 3 minimal relay (relay.md). Also queued:
+    mobile target init (desk session), tauri dev smoke test (desk session),
+    biometric ACL hardening.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

@@ -1,0 +1,5 @@
+# Pinned toolchain — one input to the D12 reproducible-build story: every
+# builder (dev machines, CI, independent verifiers) compiles with the same
+# rustc. Bump deliberately, in its own commit.
+[toolchain]
+channel = "1.96.1"
