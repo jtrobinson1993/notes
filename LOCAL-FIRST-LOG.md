@@ -639,11 +639,27 @@ Playwright version (currently 1.60.0).
     rows. Reactions/read-state stay in-memory until the phase-4 Yjs overlay.
     5 new tests (round-trip, tombstone, cursor paging, reset).
   - **PHASE 1+2 NOW FUNCTIONALLY COMPLETE on desktop** (mobile init + smoke
-    test + signing pending). **Next: PHASE 3 — minimal relay** (relay.md):
-    start server-side with device registration + challenge/token auth (D4/
-    D4b), then mailbox + verifiers (D6), escrow (D15), directory+KT stub
-    (D5). Desk-session queue unchanged (mobile init, tauri smoke, biometric
-    ACLs, 1Password for signing).
+    test + signing pending).
+  - **Iteration 20 — PHASE 3 STARTS: relay device auth (DONE; server 309
+    green incl. 8 new, tsc clean):** `server/src/relayAuth.ts` — per-boot
+    HMAC device tokens (`v1.{deviceId}.{exp}.{mac}`, 15-min TTL, stateless;
+    restart = silent re-auth; revocation = refuse next challenge, D4),
+    ed25519 raw-key SPKI wrap + signature verify, fingerprint =
+    b64url(sha256(pubkey)) (doubles as device id), relay identity keygen.
+    DB: `relay_devices` / `relay_challenges` (single-use, self-pruning) /
+    `relay_identity` (pinned keypair minted first boot) + accessors.
+    `routes/relay.ts`: GET /api/relay/info (public, stable fp); device
+    enroll/list/revoke on the **legacy session** (= the migration bootstrap
+    enrollment path; QR pairing is the later second path); POST
+    /auth/challenge + /auth/token — signature payload `{nonce}|{relayFp}`
+    (D4b no-cross-relay-replay), **nonce burns even on bad signature**.
+    Tests: fp stability, idempotent enroll, cross-account 409, bad key 400,
+    happy token path, burn+replay, unknown/revoked 401, token expiry/tamper.
+  - **Next iterations (phase 3):** Rust-core client side of relay auth
+    (device keypair in keychain, enroll-on-migration, silent token refresh
+    loop); then mailbox + delivery-token verifiers (D6) server-side; escrow
+    endpoints (D15); directory + KT (D5, key-transparency.md). Desk-session
+    queue unchanged (mobile init, tauri smoke, biometric ACLs).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

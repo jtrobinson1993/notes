@@ -21,6 +21,7 @@ import { gifRoutes } from './routes/gifs.js';
 import { emojiRoutes } from './routes/emoji.js';
 import { ogRoutes } from './routes/og.js';
 import { pushRoutes } from './routes/push.js';
+import { relayRoutes } from './routes/relay.js';
 import { createRealtime, WS_MAX_PAYLOAD } from './realtime.js';
 import { createPush } from './push.js';
 import { createVoice } from './voice.js';
@@ -73,6 +74,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   emojiRoutes(app, config);
   ogRoutes(app);
   pushRoutes(app, db, push);
+  relayRoutes(app, db);
   voice.register(app);
   realtime.register(app);
 
