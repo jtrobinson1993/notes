@@ -3,19 +3,12 @@
 // created/unlocked. In the browser (isNative false) it slots straight
 // through. Flow: uninitialized → password setup → recovery-code display →
 // ready; locked → silent keychain attempt → password/recovery fallback.
+// Gate state is shared via nativeVault.ts so the idle re-locker (D4 layer A)
+// and manual Lock actions can flip the app back to this wall.
 import { onMounted, ref } from 'vue';
-import {
-  isNative,
-  vaultCreate,
-  vaultStatus,
-  vaultUnlock,
-  vaultUnlockKeychain,
-  vaultUnlockRecovery,
-} from '../lib/native';
+import { vaultCreate, vaultUnlock, vaultUnlockRecovery } from '../lib/native';
+import { gateState as state, initGate, markUnlocked } from '../lib/nativeVault';
 
-type GateState = 'checking' | 'setup' | 'recovery' | 'locked' | 'ready';
-
-const state = ref<GateState>(isNative ? 'checking' : 'ready');
 const password = ref('');
 const confirm = ref('');
 const recoveryInput = ref('');
@@ -26,23 +19,7 @@ const busy = ref(false);
 
 const MIN_PASSWORD = 16; // matches the web client's enforced minimum
 
-onMounted(async () => {
-  if (!isNative) return;
-  const status = await vaultStatus();
-  if (status === 'uninitialized') {
-    state.value = 'setup';
-  } else if (status === 'locked') {
-    // Primary path (D3): OS keychain, no prompt. Fall back to the form.
-    try {
-      await vaultUnlockKeychain();
-      state.value = 'ready';
-    } catch {
-      state.value = 'locked';
-    }
-  } else {
-    state.value = 'ready';
-  }
-});
+onMounted(() => void initGate());
 
 async function createVault() {
   error.value = '';
@@ -75,7 +52,7 @@ async function unlock() {
     else await vaultUnlock(password.value);
     password.value = '';
     recoveryInput.value = '';
-    state.value = 'ready';
+    markUnlocked();
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -85,7 +62,7 @@ async function unlock() {
 
 function confirmRecoverySaved() {
   recoveryCode.value = '';
-  state.value = 'ready';
+  markUnlocked();
 }
 </script>
 

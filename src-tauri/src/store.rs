@@ -145,6 +145,9 @@ const MIGRATIONS: &[&str] = &[
         VALUES (new.rowid, new.title, new.search_text);
     END;
     ",
+    // v3 — legacy attachments are AES-GCM with an external 12-byte IV carried
+    // in their AttachmentRef; store it beside the key.
+    "ALTER TABLE attachments ADD COLUMN iv BLOB;",
 ];
 
 #[derive(serde::Deserialize)]
@@ -195,6 +198,8 @@ pub struct AttachmentMeta {
     pub owner_id: String,
     /// The per-file key from the E2E payload (protected at rest by SQLCipher).
     pub file_key: Vec<u8>,
+    /// AES-GCM IV for the blob (legacy refs carry it separately).
+    pub iv: Option<Vec<u8>>,
     pub thumb: Option<Vec<u8>>,
     pub size: Option<i64>,
     pub mime: Option<String>,
@@ -207,6 +212,7 @@ pub struct AttachmentRow {
     pub owner_kind: String,
     pub owner_id: String,
     pub file_key: Vec<u8>,
+    pub iv: Option<Vec<u8>>,
     pub thumb: Option<Vec<u8>>,
     pub size: Option<i64>,
     pub mime: Option<String>,
@@ -337,13 +343,14 @@ impl Store {
     pub fn insert_attachment(&self, a: &AttachmentMeta, path: &str) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT OR IGNORE INTO attachments(
-               id, owner_kind, owner_id, file_key, path, thumb, size, mime, content_hash, state)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'present')",
+               id, owner_kind, owner_id, file_key, iv, path, thumb, size, mime, content_hash, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'present')",
             (
                 &a.id,
                 &a.owner_kind,
                 &a.owner_id,
                 &a.file_key,
+                &a.iv,
                 path,
                 &a.thumb,
                 a.size,
@@ -354,11 +361,15 @@ impl Store {
         Ok(())
     }
 
+    pub fn has_attachment(&self, id: &str) -> Result<bool, StoreError> {
+        Ok(self.attachment_meta(id)?.is_some())
+    }
+
     pub fn attachment_meta(&self, id: &str) -> Result<Option<AttachmentRow>, StoreError> {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, owner_kind, owner_id, file_key, thumb, size, mime, content_hash, state
+                "SELECT id, owner_kind, owner_id, file_key, iv, thumb, size, mime, content_hash, state
                  FROM attachments WHERE id = ?1",
                 [id],
                 |r| {
@@ -367,11 +378,12 @@ impl Store {
                         owner_kind: r.get(1)?,
                         owner_id: r.get(2)?,
                         file_key: r.get(3)?,
-                        thumb: r.get(4)?,
-                        size: r.get(5)?,
-                        mime: r.get(6)?,
-                        content_hash: r.get(7)?,
-                        state: r.get(8)?,
+                        iv: r.get(4)?,
+                        thumb: r.get(5)?,
+                        size: r.get(6)?,
+                        mime: r.get(7)?,
+                        content_hash: r.get(8)?,
+                        state: r.get(9)?,
                     })
                 },
             )
@@ -597,6 +609,7 @@ mod tests {
             owner_kind: "message".into(),
             owner_id: "m1".into(),
             file_key: vec![1u8; 32],
+            iv: Some(vec![2u8; 12]),
             thumb: None,
             size: Some(1234),
             mime: Some("image/webp".into()),
@@ -607,6 +620,8 @@ mod tests {
         let row = store.attachment_meta("att1").unwrap().unwrap();
         assert_eq!(row.state, "present");
         assert_eq!(row.file_key, vec![1u8; 32]);
+        assert_eq!(row.iv, Some(vec![2u8; 12]));
+        assert!(store.has_attachment("att1").unwrap());
 
         store.set_attachment_state("att1", "evicted").unwrap();
         let row = store.attachment_meta("att1").unwrap().unwrap();

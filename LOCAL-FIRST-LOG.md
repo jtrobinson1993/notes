@@ -516,10 +516,20 @@ Playwright version (currently 1.60.0).
     `attachment_meta` / `set_attachment_state` (evict NULLs path). IPC:
     `attachment_put/get/evict` (+ native.ts wrappers; get returns meta +
     bytes|null when evicted). Vault owns `BlobStore` at `dataDir/blobs`.
-  - **Next iterations:** attachment import pass in migrate.ts (download
-    legacy blobs → attachmentPut; needs reading attachments.ts fetch path);
-    boot `tauri dev` visually (user smoke test — end-to-end now plausible);
-    re-lock policy setting (D4 layer A); reproducible builds (D12); phase 2
+  - **Iteration 10 — migrator attachment pass (DONE; cargo 18/18, migrate
+    tests 7/7):** store migration **v3** (`attachments.iv` — legacy AES-GCM
+    blobs carry an external IV in their ref); `collectBlobRefs` gathers refs
+    during the note+message passes (**video posters = separate blobs**);
+    final 'attachments' stage downloads via `api.attachmentDownload`, skips
+    already-imported (`attachment_has` probe), stores ciphertext as-is with
+    key+iv in the row; missing/expired server blobs are non-fatal (ref stays,
+    renders unavailable). Migration scope now: notes+tags, friends, convs,
+    full history, attachments+posters. Still deferred: shared-with-me notes,
+    settings/folders blob, profile blobs.
+  - **Next iterations:** boot `tauri dev` visually (user smoke test — the
+    end-to-end flow is complete: setup → recovery → legacy login → full
+    migration incl. blobs); re-lock policy setting (D4 layer A); reproducible
+    builds (D12); shared-notes + settings-blob migration pass; phase 2
     review.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added

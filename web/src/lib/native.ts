@@ -61,6 +61,8 @@ export interface AttachmentMeta {
   owner_id: string;
   /** Per-file key from the E2E payload (rests in the SQLCipher DB). */
   file_key: number[];
+  /** AES-GCM IV for the blob (legacy refs carry it separately). */
+  iv: number[] | null;
   thumb: number[] | null;
   size: number | null;
   mime: string | null;
@@ -82,6 +84,11 @@ export function attachmentGet(
   id: string,
 ): Promise<{ meta: AttachmentRow; bytes: number[] | null }> {
   return invoke('attachment_get', { id });
+}
+
+/** Cheap existence probe (used by the migrator to skip re-downloads). */
+export function attachmentHas(id: string): Promise<boolean> {
+  return invoke<boolean>('attachment_has', { id });
 }
 
 /** Local space reclamation (D6 retention) — this device only. */

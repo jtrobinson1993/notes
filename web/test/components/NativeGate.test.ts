@@ -8,6 +8,9 @@ const native = vi.hoisted(() => ({
   vaultUnlock: vi.fn(),
   vaultUnlockKeychain: vi.fn(),
   vaultUnlockRecovery: vi.fn(),
+  vaultLock: vi.fn(),
+  // markUnlocked() kicks the re-lock policy read; default = stay unlocked.
+  settingsGet: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('../../src/lib/native', () => native);
 
@@ -25,6 +28,7 @@ describe('NativeGate', () => {
   it('slots straight through in the browser', async () => {
     native.isNative = false;
     const w = mountGate();
+    await flushPromises();
     expect(w.find('[data-testid="app"]').exists()).toBe(true);
     expect(native.vaultStatus).not.toHaveBeenCalled();
   });

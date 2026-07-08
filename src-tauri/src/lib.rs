@@ -110,6 +110,14 @@ fn attachment_get(id: String, vault: VaultState) -> Result<AttachmentGetResponse
     Ok(AttachmentGetResponse { meta, bytes })
 }
 
+/// Cheap existence probe so the migrator can skip already-imported blobs.
+#[tauri::command]
+fn attachment_has(id: String, vault: VaultState) -> Result<bool, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.has_attachment(&id).map_err(|e| e.to_string())
+}
+
 /// Local, per-device space reclamation (D6 retention — NOT delete-for-everyone).
 #[tauri::command]
 fn attachment_evict(id: String, vault: VaultState) -> Result<(), String> {
@@ -180,6 +188,7 @@ pub fn run() {
             settings_set,
             attachment_put,
             attachment_get,
+            attachment_has,
             attachment_evict,
             import_notes,
             import_conversations,
