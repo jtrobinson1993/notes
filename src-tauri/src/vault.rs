@@ -25,6 +25,7 @@ const KDF_P: u32 = 1;
 const KEYRING_SERVICE: &str = "dev.accord.app";
 const KEYRING_SQLCIPHER: &str = "sqlcipher-key";
 const KEYRING_VAULT: &str = "vault-key";
+const KEYRING_DEVICE: &str = "device-key";
 
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
@@ -249,6 +250,20 @@ impl Vault {
         self.store = Some(Store::open(&self.db_path(), &sqlcipher_key)?);
         self.mk = Some(mk);
         Ok(())
+    }
+
+    /// The per-device Ed25519 identity key (D4b) — created on first use,
+    /// lives in the OS keychain, never leaves the device. Deliberately
+    /// usable while the vault is **locked**: it gates the relay handshake,
+    /// not the data (D4 — pushes/sync survive a locked vault).
+    pub fn device_signing_key(&self) -> Result<ed25519_dalek::SigningKey, VaultError> {
+        let name = self.keychain_user(KEYRING_DEVICE);
+        if let Ok(seed) = self.keychain_get(&name) {
+            return Ok(ed25519_dalek::SigningKey::from_bytes(&seed));
+        }
+        let seed = keys::random_key();
+        self.keychain_set(&name, &seed)?;
+        Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
     }
 
     /// Drop the open store and zeroize MK.

@@ -1,6 +1,7 @@
 mod blobs;
 mod identity;
 mod keys;
+mod relay_client;
 mod store;
 mod vault;
 
@@ -69,6 +70,36 @@ fn settings_set(key: String, value: String, vault: VaultState) -> Result<(), Str
     let vault = vault.lock().unwrap();
     let store = vault.store().map_err(|e| e.to_string())?;
     store.set_setting(&key, &value).map_err(|e| e.to_string())
+}
+
+// ---- relay auth (D4/D4b client half) ----
+
+#[tauri::command]
+fn device_public_key(vault: VaultState) -> Result<String, String> {
+    let vault = vault.lock().unwrap();
+    let key = vault.device_signing_key().map_err(|e| e.to_string())?;
+    Ok(relay_client::device_public_key_b64(&key))
+}
+
+#[tauri::command]
+async fn relay_connect(
+    url: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    // Take the key before any await: the vault mutex must not cross it.
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    relay.connect(&url, &signing).await
+}
+
+#[tauri::command]
+fn relay_status(
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> relay_client::RelayStatus {
+    relay.status()
 }
 
 // ---- chat history (local log, D11) ----
@@ -307,6 +338,7 @@ pub fn run() {
             }
             let data_dir = app.path().app_data_dir()?;
             app.manage(Mutex::new(Vault::new(data_dir)));
+            app.manage(relay_client::RelayClient::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -318,6 +350,9 @@ pub fn run() {
             vault_lock,
             settings_get,
             settings_set,
+            device_public_key,
+            relay_connect,
+            relay_status,
             messages_page,
             messages_ingest,
             message_edit,

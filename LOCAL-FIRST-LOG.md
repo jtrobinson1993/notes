@@ -655,11 +655,22 @@ Playwright version (currently 1.60.0).
     (D4b no-cross-relay-replay), **nonce burns even on bad signature**.
     Tests: fp stability, idempotent enroll, cross-account 409, bad key 400,
     happy token path, burn+replay, unknown/revoked 401, token expiry/tamper.
-  - **Next iterations (phase 3):** Rust-core client side of relay auth
-    (device keypair in keychain, enroll-on-migration, silent token refresh
-    loop); then mailbox + delivery-token verifiers (D6) server-side; escrow
-    endpoints (D15); directory + KT (D5, key-transparency.md). Desk-session
-    queue unchanged (mobile init, tauri smoke, biometric ACLs).
+  - **Iteration 21 — relay auth client half (DONE; cargo 23/23, web 434
+    green):** vault gains `device_signing_key()` — Ed25519 seed in OS
+    keychain, created on first use, **usable while vault locked** (D4: relay
+    session survives lock). `relay_client.rs` — connect = GET info (pin fp)
+    → challenge → sign `{nonce}|{fp}` → token; `bearer()` silently
+    re-fetches inside a 60s expiry margin (D4 layer B); reqwest
+    (rustls)+base64 deps; tests: sig binds relay fp (cross-relay replay
+    fails), refresh margin, stable pubkey. IPC `device_public_key` /
+    `relay_connect` / `relay_status`; managed `RelayClient`. Webview:
+    `api.relayEnrollDevice`; `enrollThisDevice()` in migrate.ts —
+    **MigrationPrompt enrolls the device key + opens the token session right
+    after a successful migration** (best-effort + idempotent).
+  - **Next iterations (phase 3):** mailbox + delivery-token verifiers (D6)
+    server-side (sealed send: NO device token on send; token = capability;
+    per-device queues hold-until-ack + WS delivery); then escrow endpoints
+    (D15); directory + KT (D5). Desk queue unchanged.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

@@ -53,6 +53,27 @@ export function settingsSet(key: string, value: string): Promise<void> {
   return invoke('settings_set', { key, value });
 }
 
+// ---- relay auth (D4/D4b client half) ----
+
+/** This device's Ed25519 public key (created on first use, keychain-held). */
+export function devicePublicKey(): Promise<string> {
+  return invoke<string>('device_public_key');
+}
+
+/** Handshake with a relay: pin its fingerprint, prove the device key, hold a
+ *  silently-refreshing bearer token in the core. */
+export function relayConnect(url: string): Promise<void> {
+  return invoke('relay_connect', { url });
+}
+
+export function relayStatus(): Promise<{
+  connected: boolean;
+  base_url: string | null;
+  relay_fp: string | null;
+}> {
+  return invoke('relay_status');
+}
+
 // ---- chat history (local log, D11) ----
 
 export interface MessageRow {

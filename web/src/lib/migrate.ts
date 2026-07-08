@@ -20,6 +20,8 @@ import { b64 } from './b64';
 import {
   attachmentHas,
   attachmentPut,
+  devicePublicKey,
+  relayConnect,
   importContacts,
   importConversations,
   importMessages,
@@ -214,6 +216,16 @@ async function migrateOrgSettings(mk: Uint8Array): Promise<boolean> {
   const pt = await unwrapKey(mk, JSON.parse(remote.data), INFO_SETTINGS);
   await settingsSet('org.data', new TextDecoder().decode(pt));
   return true;
+}
+
+/** Enroll this device's key with the relay (migration.md step 1's "device
+ *  key enrolled") and open the token session. Rides the legacy session
+ *  cookie; safe to re-run (enrollment is idempotent per key). */
+export async function enrollThisDevice(): Promise<void> {
+  const pubKey = await devicePublicKey();
+  const name = `${navigator.platform || 'desktop'}`.slice(0, 64);
+  await api.relayEnrollDevice(pubKey, name);
+  await relayConnect(window.location.origin);
 }
 
 /** Own profile (bio/avatar/display name) + the profile key. The key matters

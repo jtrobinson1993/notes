@@ -198,6 +198,10 @@ export const api = {
     req<Friend>('POST', `/api/friends/requests/${encodeURIComponent(id)}/accept`),
   friendRequestDecline: (id: string) =>
     req<{ ok: true }>('POST', `/api/friends/requests/${encodeURIComponent(id)}/decline`),
+  // ---- v8 relay (device enrollment rides the legacy session) ----
+  relayEnrollDevice: (pubKey: string, name: string) =>
+    req<{ deviceId: string }>('POST', '/api/relay/devices', { pubKey, name }),
+
   friends: () => req<Friend[]>('GET', '/api/friends'),
   unfriend: (userId: string) => req<{ ok: true }>('DELETE', `/api/friends/${encodeURIComponent(userId)}`),
 
