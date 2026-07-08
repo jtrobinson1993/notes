@@ -2,8 +2,8 @@
 // (via the legacy session — the migration bootstrap path), and the
 // challenge → signed-nonce → short-lived-token auth flow (D4/D4b).
 
-import type { FastifyInstance } from 'fastify';
-import { randomBytes } from 'node:crypto';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { createHash, randomBytes } from 'node:crypto';
 import type { DB } from '../db.js';
 import { requireAuth } from '../session.js';
 import {
@@ -11,9 +11,13 @@ import {
   generateRelayIdentity,
   issueDeviceToken,
   verifyDeviceSignature,
+  verifyDeviceToken,
 } from '../relayAuth.js';
 
 const CHALLENGE_MAX_AGE_MS = 2 * 60_000;
+const MAILBOX_TTL_MS = 30 * 24 * 60 * 60_000; // D6: undelivered ~30 days
+const MAILBOX_FETCH_LIMIT = 200;
+const MAX_ENVELOPE_B64 = 256 * 1024; // messages only; blobs get their own store
 
 function rawKey(b64: string): Buffer | null {
   try {
@@ -27,6 +31,30 @@ function rawKey(b64: string): Buffer | null {
 export function relayRoutes(app: FastifyInstance, db: DB): void {
   const identity = db.ensureRelayIdentity(generateRelayIdentity);
   const relayFp = fingerprintB64url(Buffer.from(identity.pubkey, 'base64'));
+
+  /** Device-token auth for fetch-side routes (send is deliberately not
+   *  device-authenticated — the delivery token is the only credential). */
+  function requireDevice(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): { id: string; userId: string } | null {
+    const header = request.headers.authorization;
+    const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
+    const deviceId = token ? verifyDeviceToken(token) : null;
+    const device = deviceId ? db.getRelayDeviceById(deviceId) : undefined;
+    if (!device || device.revoked) {
+      void reply.code(401).send({ error: 'device token required' });
+      return null;
+    }
+    return { id: device.id, userId: device.userId };
+  }
+
+  // Relay timestamps are non-decreasing within this process (D11 ordering).
+  let lastTs = 0;
+  function stampTs(): number {
+    lastTs = Math.max(lastTs + 1, Date.now());
+    return lastTs;
+  }
 
   // Public: the pinned-identity handshake surface (UI-4 shows the name).
   app.get('/api/relay/info', async () => ({
@@ -58,6 +86,70 @@ export function relayRoutes(app: FastifyInstance, db: DB): void {
       return reply.code(404).send({ error: 'unknown device' });
     }
     return { ok: true };
+  });
+
+  // ---- sealed-sender mailbox (D6) ----
+
+  // Recipient registers hash(delivery token). Device-token authed: only the
+  // account's own devices may rotate its verifier.
+  app.put('/api/relay/verifier', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const b = request.body as { verifier?: string } | null;
+    if (!b?.verifier || b.verifier.length > 128) {
+      return reply.code(400).send({ error: 'verifier required' });
+    }
+    db.setRelayVerifier(device.userId, b.verifier);
+    return { ok: true };
+  });
+
+  // Sealed send: NO device token — the delivery token is the only credential,
+  // so the relay never links an envelope to a sender account (D6). Uniform
+  // 401 for bad handle/verifier/token: no handle enumeration via probes.
+  app.post('/api/relay/mailbox/send', async (request, reply) => {
+    const b = request.body as
+      | { deliveryToken?: string; recipientHandle?: string; envelope?: string }
+      | null;
+    if (!b?.deliveryToken || !b?.recipientHandle || !b?.envelope) {
+      return reply.code(400).send({ error: 'deliveryToken, recipientHandle, envelope required' });
+    }
+    if (b.envelope.length > MAX_ENVELOPE_B64) {
+      return reply.code(413).send({ error: 'envelope too large' });
+    }
+    const user = db.getUserByHandle(b.recipientHandle);
+    const verifier = user ? db.getRelayVerifier(user.id) : undefined;
+    const presented = createHash('sha256').update(b.deliveryToken).digest('base64url');
+    if (!user || !verifier || presented !== verifier) {
+      return reply.code(401).send({ error: 'delivery refused' });
+    }
+    const devices = db.activeRelayDeviceIds(user.id);
+    const relayTs = stampTs();
+    if (devices.length) {
+      db.enqueueRelayEnvelope(devices, relayTs, Buffer.from(b.envelope, 'base64'));
+    }
+    db.pruneRelayMailbox(MAILBOX_TTL_MS); // opportunistic TTL sweep
+    return { relayTs };
+  });
+
+  app.get('/api/relay/mailbox', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const rows = db.fetchRelayMailbox(device.id, MAILBOX_FETCH_LIMIT);
+    return rows.map((r) => ({
+      queueId: r.queueId,
+      relayTs: r.relayTs,
+      envelope: r.envelope.toString('base64'),
+    }));
+  });
+
+  app.post('/api/relay/mailbox/ack', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const b = request.body as { queueIds?: number[] } | null;
+    if (!Array.isArray(b?.queueIds) || b.queueIds.some((q) => !Number.isInteger(q))) {
+      return reply.code(400).send({ error: 'queueIds required' });
+    }
+    return { acked: db.ackRelayMailbox(device.id, b.queueIds) };
   });
 
   // Unauthenticated by design: the challenge is the first step of auth.

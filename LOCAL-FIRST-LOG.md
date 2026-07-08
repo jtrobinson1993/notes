@@ -667,10 +667,24 @@ Playwright version (currently 1.60.0).
     `api.relayEnrollDevice`; `enrollThisDevice()` in migrate.ts —
     **MigrationPrompt enrolls the device key + opens the token session right
     after a successful migration** (best-effort + idempotent).
-  - **Next iterations (phase 3):** mailbox + delivery-token verifiers (D6)
-    server-side (sealed send: NO device token on send; token = capability;
-    per-device queues hold-until-ack + WS delivery); then escrow endpoints
-    (D15); directory + KT (D5). Desk queue unchanged.
+  - **Iteration 22 — sealed-sender mailbox, server (DONE; server 314 green
+    incl. 5 new, build clean):** tables `relay_verifiers` (user →
+    b64url(sha256(deliveryToken))) + `relay_mailbox` (per-DEVICE queues).
+    Routes: PUT /api/relay/verifier (device-token authed); POST
+    /mailbox/send — **no device token by design** (delivery token = the only
+    credential; relay never links envelope→sender), **uniform 401** for bad
+    handle/verifier/token (no handle enumeration), 256KB envelope cap (blobs
+    get their own store), **monotonic relayTs stamp** (D11), fan-out to all
+    active devices, opportunistic 30d TTL sweep; GET /mailbox (limit 200) +
+    POST /mailbox/ack (deletes own rows only — hold-until-ack per device).
+    Tests: fan-out to 2 devices, per-device ack isolation, cross-device ack
+    no-op, uniform refusal, strictly-increasing ts, oversize 413.
+  - **Next iterations (phase 3):** escrow endpoints (D15: PUT /escrow +
+    /escrow/fetch w/ auth-key proof + heavy rate limit); directory + KT stub
+    (D5); Rust client mailbox loop (send/fetch/ack + verifier registration
+    from profile key); **fold relay state inventory into security.md**
+    (mailbox/verifiers now real state); WS live delivery for device queues.
+    Desk queue unchanged.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
