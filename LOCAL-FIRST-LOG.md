@@ -596,12 +596,20 @@ Playwright version (currently 1.60.0).
     unsigned bundles + SHA256SUMS artifacts, signing hooks commented, and a
     **repro-canary job** (same-machine double build, hash diff → warning
     until determinism work lands).
-  - **Next iterations (the local-first arc — biggest remaining v8 chunk):**
-    1) notes store reads/writes via IPC when isNative (list/create/edit/
-    delete/search from SQLite; Yjs doc as source of truth); 2) chat history
-    from SQLite; 3) then phase 3 minimal relay (relay.md). Also queued:
-    mobile target init (desk session), tauri dev smoke test (desk session),
-    biometric ACL hardening.
+  - **Iteration 16 — notes CRUD, Rust side (DONE, 19/19 cargo):**
+    store methods `list_notes / get_note / create_note / save_note /
+    delete_note / search_notes` (FTS rank) + IPC `notes_list / note_get /
+    note_create / note_save / note_delete / notes_search` + native.ts
+    wrappers. Save = full encoded Y.Doc state + title + search projection
+    (delta persistence arrives with phase-4 sync); webview owns the Y.Doc.
+    Gotcha fixed: delete_note FK order (versions → note → crdt_doc; doc_id
+    captured first).
+  - **Next iterations (the local-first arc):** rewire `stores/notes.ts`
+    behind isNative onto these commands (list/create/edit/delete/search from
+    SQLite; keep server path for browser) — the delicate one, editor included;
+    then chat history reads from SQLite; then phase 3 minimal relay
+    (relay.md). Queued for desk sessions: mobile target init, tauri dev smoke
+    test. Also: biometric ACL hardening.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no

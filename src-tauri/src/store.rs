@@ -213,6 +213,22 @@ pub struct ImportMessage {
     pub edited_at: Option<i64>,
 }
 
+#[derive(serde::Serialize)]
+pub struct NoteMeta {
+    pub id: String,
+    pub title: Option<String>,
+    pub folder_id: Option<String>,
+    pub shared_json: Option<String>,
+    pub created: i64,
+    pub updated: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct NoteDoc {
+    pub meta: NoteMeta,
+    pub ydoc_state: Option<Vec<u8>>,
+}
+
 #[derive(serde::Deserialize)]
 pub struct AttachmentMeta {
     pub id: String,
@@ -388,6 +404,140 @@ impl Store {
         }
         tx.commit()?;
         Ok(imported)
+    }
+
+    // ---- notes CRUD (the local-first read/write path, D2) ----
+
+    pub fn list_notes(&self) -> Result<Vec<NoteMeta>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, folder_id, shared_json, created, updated
+             FROM notes ORDER BY updated DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(NoteMeta {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    folder_id: r.get(2)?,
+                    shared_json: r.get(3)?,
+                    created: r.get(4)?,
+                    updated: r.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn get_note(&self, id: &str) -> Result<Option<NoteDoc>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT n.id, n.title, n.folder_id, n.shared_json, n.created, n.updated,
+                        d.ydoc_state
+                 FROM notes n LEFT JOIN crdt_docs d ON d.id = n.doc_id
+                 WHERE n.id = ?1",
+                [id],
+                |r| {
+                    Ok(NoteDoc {
+                        meta: NoteMeta {
+                            id: r.get(0)?,
+                            title: r.get(1)?,
+                            folder_id: r.get(2)?,
+                            shared_json: r.get(3)?,
+                            created: r.get(4)?,
+                            updated: r.get(5)?,
+                        },
+                        ydoc_state: r.get(6)?,
+                    })
+                },
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?)
+    }
+
+    pub fn create_note(&self, id: &str, now: i64) -> Result<(), StoreError> {
+        let doc_id = format!("note:{id}");
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO crdt_docs(id, scope) VALUES (?1, 'note')",
+            [&doc_id],
+        )?;
+        tx.execute(
+            "INSERT INTO notes(id, title, doc_id, created, updated) VALUES (?1, '', ?2, ?3, ?3)",
+            (id, &doc_id, now),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Persist an edit: the webview owns the Y.Doc and sends its full encoded
+    /// state (delta persistence arrives with the phase-4 sync engine) plus
+    /// the display title + plaintext search projection.
+    pub fn save_note(
+        &self,
+        id: &str,
+        title: &str,
+        search_text: &str,
+        ydoc_state: &[u8],
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE notes SET title = ?2, search_text = ?3, updated = ?4 WHERE id = ?1",
+            (id, title, search_text, now),
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Db(rusqlite::Error::QueryReturnedNoRows));
+        }
+        tx.execute(
+            "UPDATE crdt_docs SET ydoc_state = ?2
+             WHERE id = (SELECT doc_id FROM notes WHERE id = ?1)",
+            (id, ydoc_state),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_note(&self, id: &str) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        // FK order: versions reference the note, the note references its doc.
+        let doc_id: Option<String> = tx
+            .query_row("SELECT doc_id FROM notes WHERE id = ?1", [id], |r| r.get(0))
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        tx.execute("DELETE FROM note_versions WHERE note_id = ?1", [id])?;
+        tx.execute("DELETE FROM notes WHERE id = ?1", [id])?;
+        if let Some(doc_id) = doc_id {
+            tx.execute("DELETE FROM crdt_docs WHERE id = ?1", [&doc_id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn search_notes(&self, query: &str) -> Result<Vec<NoteMeta>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT n.id, n.title, n.folder_id, n.shared_json, n.created, n.updated
+             FROM notes_fts f JOIN notes n ON n.rowid = f.rowid
+             WHERE notes_fts MATCH ?1 ORDER BY rank",
+        )?;
+        let rows = stmt
+            .query_map([query], |r| {
+                Ok(NoteMeta {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    folder_id: r.get(2)?,
+                    shared_json: r.get(3)?,
+                    created: r.get(4)?,
+                    updated: r.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     pub fn insert_attachment(&self, a: &AttachmentMeta, path: &str) -> Result<(), StoreError> {
@@ -661,6 +811,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(note_hits, 1);
+    }
+
+    #[test]
+    fn note_crud_lifecycle_with_fts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[8u8; 32]).unwrap();
+
+        store.create_note("n1", 100).unwrap();
+        store
+            .save_note("n1", "Rocket plans", "flight to the moon", &[1, 2, 3], 200)
+            .unwrap();
+
+        let list = store.list_notes().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title.as_deref(), Some("Rocket plans"));
+        assert_eq!(list[0].updated, 200);
+
+        let doc = store.get_note("n1").unwrap().unwrap();
+        assert_eq!(doc.ydoc_state.as_deref(), Some(&[1u8, 2, 3][..]));
+
+        let hits = store.search_notes("moon").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "n1");
+
+        // Saving an unknown note errors rather than silently no-oping.
+        assert!(store.save_note("nope", "t", "s", &[], 1).is_err());
+
+        store.delete_note("n1").unwrap();
+        assert!(store.get_note("n1").unwrap().is_none());
+        assert_eq!(store.search_notes("moon").unwrap().len(), 0);
+        let docs: i64 = store
+            .conn
+            .query_row("SELECT count(*) FROM crdt_docs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(docs, 0);
     }
 
     #[test]
