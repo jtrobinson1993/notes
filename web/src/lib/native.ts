@@ -44,6 +44,15 @@ export function vaultLock(): Promise<void> {
   return invoke('vault_lock');
 }
 
+/** Local (device-only) settings stored in the encrypted vault DB. */
+export function settingsGet(key: string): Promise<string | null> {
+  return invoke<string | null>('settings_get', { key });
+}
+
+export function settingsSet(key: string, value: string): Promise<void> {
+  return invoke('settings_set', { key, value });
+}
+
 // ---- first-run legacy import (spec/migration.md) ----
 // The webview decrypts with the existing v1 crypto and streams plaintext
 // batches to the core; each call is transactional and idempotent, so the

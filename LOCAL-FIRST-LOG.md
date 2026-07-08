@@ -497,11 +497,21 @@ Playwright version (currently 1.60.0).
     tested in `web/test/lib/migrate.test.ts`. **Deferred from this pass:**
     shared-with-me notes, attachment blobs (need encrypted-FS layer),
     settings/folders blob, profile blobs.
-  - **Next iterations:** lock-screen + migration UI behind `isNative` (create
-    vault w/ recovery display → legacy sign-in → run migrator w/ progress);
-    attachment FS layer + attachment import pass; boot `tauri dev` visually
-    (user smoke test); reproducible builds (D12); then phase-2 review (D3/D4
-    remaining bits: re-lock policy setting).
+  - **Iteration 8 — native gate + migration UI (DONE; suite 786 green, 5 new
+    component tests):** `NativeGate.vue` wraps `<RouterView>` in App.vue —
+    browser slots straight through; native: uninitialized → password setup
+    (16-min) → **recovery-code display (shown once, confirm)** → ready;
+    locked → **silent keychain attempt** → password/recovery fallback form.
+    `MigrationPrompt.vue` overlay: shows when native + legacy session
+    unlocked + `migration.done` unset (vault-DB settings via new
+    `settings_get/set` IPC); runs `runLegacyMigration(session.mk, keyPair)`
+    with stage/progress display; retry-safe; stores summary. Design: gate
+    does NOT intercept legacy auth — login/setup pages render normally under
+    it, migration overlays once mk is present.
+  - **Next iterations:** attachment FS layer (encrypted blob files + per-file
+    keys) + attachment import pass; boot `tauri dev` visually (user smoke
+    test — everything needed for an end-to-end run now exists); re-lock
+    policy setting (D4 layer A); reproducible builds (D12); phase 2 review.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
