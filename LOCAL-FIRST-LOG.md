@@ -484,12 +484,24 @@ Playwright version (currently 1.60.0).
     dep needed — core treats doc state as opaque). native.ts typed wrappers +
     batch interfaces. Design: legacy decrypt stays in webview TS (v1 crypto
     reuse per migration.md); core ingests plaintext batches over IPC.
-  - **Next iterations:** webview migrator (`migrate.ts` — legacy sign-in
-    session → pull/decrypt notes+chat via existing api/crypto/idb modules →
-    stream batches, progress events); lock-screen UI behind `isNative`
-    (create/unlock → vault commands); boot `tauri dev` visually (user smoke
-    test); attachments import (blob download → per-file key → FS store —
-    needs the attachment FS layer first); reproducible builds (D12).
+  - **Iteration 7 — webview migrator (DONE, 6 new tests; suite 781 green):**
+    `web/src/lib/migrate.ts` — `runLegacyMigration(mk, keyPair, onProgress)`:
+    notes via `api.notes(0)` → `decryptNotePayload` → **Yjs doc seeded
+    webview-side** (`yjs` dep added; `Y.Text('content')` matching the future
+    y-codemirror binding) → batched `importNotes`; friends → contacts;
+    conversations + full history paged (`before`/limit 200) → per-epoch keys
+    unsealed once per conv → `decryptMessage` → batched import. Legacy msg id
+    = `legacy:{convId}:{seq}`; general channel → NULL channel_id; tags folded
+    into search_text; undecryptable rows skipped (epoch floor / corrupt).
+    Pure mappers (`toImportNote/toImportMessage/noteBodyToYdocState`) unit-
+    tested in `web/test/lib/migrate.test.ts`. **Deferred from this pass:**
+    shared-with-me notes, attachment blobs (need encrypted-FS layer),
+    settings/folders blob, profile blobs.
+  - **Next iterations:** lock-screen + migration UI behind `isNative` (create
+    vault w/ recovery display → legacy sign-in → run migrator w/ progress);
+    attachment FS layer + attachment import pass; boot `tauri dev` visually
+    (user smoke test); reproducible builds (D12); then phase-2 review (D3/D4
+    remaining bits: re-lock policy setting).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
