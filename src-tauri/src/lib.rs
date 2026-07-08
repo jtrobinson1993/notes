@@ -1,3 +1,4 @@
+mod identity;
 mod keys;
 mod store;
 mod vault;
