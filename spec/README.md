@@ -16,6 +16,9 @@ This spec is split by app area so you can load just the part you're working on:
 | [notifications.md](notifications.md) | Foreground new-message chime + tab/badge unread + v3 phase 3 — PWA install + content-free background Web Push (service worker, VAPID, subscriptions) |
 | [security.md](security.md) | Cross-cutting security — rendering/XSS safety, CSP, metadata exposure, threat model |
 | [relay.md](relay.md) | **v8 relay design** — wire protocol, endpoints, auth, mailbox/blob mechanics, and the complete relay state inventory (not yet built) |
+| [local-store.md](local-store.md) | **v8 local store design** — SQLite/SQLCipher schema, the Rust-core "headless client" IPC boundary, backup export format, retention mechanics (not yet built) |
+| [key-transparency.md](key-transparency.md) | **v8 KT design** — AKD/CONIKS log format, proof types, gossip + alarms, public roots endpoint, reference-auditor scope (not yet built) |
+| [migration.md](migration.md) | **v8 cutover runbook** — bootstrap sign-in, pull-everything migration, identity attestation, purge timeline, stragglers (design) |
 | [roadmap.md](roadmap.md) | Phasing and future versions (v3.1 – v9) |
 | [testing.md](testing.md) | The unit + e2e test plan (Vitest + Playwright) |
 

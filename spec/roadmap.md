@@ -1057,43 +1057,45 @@ is random; the per-relay identity keys derive from it).
 
 ### Remaining pre-implementation spec work
 
-The design decisions are closed (D1–D14, UI-1–5); these are the spec
-documents/sections still to write before — or alongside — the phase that
-consumes them:
+The design decisions are closed (D1–D15, UI-1–5). **All items below are now
+drafted** — each links to its spec; what remains at build time is finalizing
+exact payload/table shapes and folding the relay state inventory into the
+[security.md](security.md) threat model:
 
 - **Relay wire/API spec + relay state inventory** — **drafted: see
   [relay.md](relay.md)** (endpoints, auth, mailbox/blob mechanics, the complete
   durable/transient/never-stored inventory). Remaining: fold the state
   inventory into the [security.md](security.md) threat model at build.
   (Feeds phase 3.)
-- **Group authority (D14)** — spec the signed group-state record + owner/admin
-  role rules. (Phase 3/4.)
-- **Local SQLite schema + Rust/webview boundary** — table design (messages, CRDT
-  docs, attachments, watermarks, outbox) and the IPC command surface.
-  (**Crypto placement decided:** keys live in the **Rust core** and never cross
-  the IPC boundary — the webview requests sign/seal/encrypt/decrypt operations
-  and never sees key material, so a compromised webview can't exfiltrate keys.)
-  (Phase 1.)
-- **Friends-surface changes** — invite-only reach supersedes the shipped
-  friend-request-by-handle flow in [chat.md](chat.md); respec it + the CLAUDE.md
-  friends-gate invariant wording (enforcement moves from server checks to
-  delivery-token capabilities). (Phase 3.)
-- **Migration runbook** — cutover sequencing: bootstrap endpoint, pull window,
-  straggler export, purge criteria, the mixed-version period. **Scope (decided):
-  migrate everything we can** — notes (D10), chat history, server-stored
-  encrypted attachments, profile blobs, and settings, not just notes.
-  (Phases 1/6.)
-- **Backup export format** — versioned container, exact contents, restore-merge
-  semantics against existing local state. (Phase 5.)
-- **KT log format + reference-auditor scope** — the published spec D5 promises.
+- **Group authority (D14)** — **drafted:** signed group-state record endpoints +
+  anti-rollback in [relay.md](relay.md) § Group state; fine-grained role rules
+  at build. (Phase 3/4.)
+- **Local SQLite schema + Rust/webview boundary** — **drafted:
+  [local-store.md](local-store.md)** (schema sketch, domain-level IPC command
+  surface, headless-client architecture; keys live in the Rust core and never
+  cross IPC). (Phase 1.)
+- **Friends-surface changes** — **drafted:** [chat.md](chat.md) § "v8 — friends
+  & invites" (invite-only supersedes request-by-handle; enforcement moves to
+  delivery-token capabilities). CLAUDE.md invariant wording updates at cutover.
+  (Phase 3.)
+- **Migration runbook** — **drafted: [migration.md](migration.md)** (bootstrap
+  sign-in, pull-everything scope, old-key→new-key attestation, T+60 purge,
+  straggler export, rollback posture). (Phases 1/6.)
+- **Backup export format** — **drafted:** [local-store.md](local-store.md)
+  § Backup export format (versioned encrypted container, media toggle,
+  point-in-time restore + delta-sync). (Phase 5.)
+- **KT log format + reference-auditor scope** — **drafted:
+  [key-transparency.md](key-transparency.md)** (the publishable D5 spec).
   (Phase 6.)
-- **Voice under v8** — signaling auth under D4 tokens; which relay carries the
-  ring for a D4c-linked contact. (Phase 3.)
-- **v8 test strategy** — [testing.md](testing.md) addendum: Rust-core units,
-  multi-device sync simulation, CRDT convergence properties, Tauri e2e. (Phase 1.)
-- **Protocol/version compatibility** — envelope + CRDT schema versioning across
-  app versions (your own devices will run different versions against each
-  other). (Phase 4.)
+- **Voice under v8** — **drafted:** [voice.md](voice.md) § "v8 changes"
+  (device-token auth; multipath ring, dedup by call id; media on the relay
+  that carried the accepted offer). (Phase 3.)
+- **v8 test strategy** — **drafted:** [testing.md](testing.md) § "v8 additions"
+  (layers F–K: Rust-core units, sync simulation, CRDT convergence properties,
+  relay integration, auditor, native e2e). (Phase 1.)
+- **Protocol/version compatibility** — **drafted:** [relay.md](relay.md)
+  § Envelope versioning + [local-store.md](local-store.md) § Versioning
+  (never-drop-data policy; buffer + "update the app"). (Phase 4.)
 - **Desktop distribution channels (deferred — decide after implementation,
   before shipping).** Store vs direct-download + Tauri updater per OS (the
   updater signing key is security-critical — a compromise is the served-code

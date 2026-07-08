@@ -162,6 +162,17 @@ auth moving from session cookie to the device token. No at-rest data.
   surface**: revoked token (unfriend/kick → key rotation, D6/D13) = relay
   refuses delivery.
 
+## Envelope versioning
+
+Every envelope carries a leading `{ v: <int>, type: <string> }` header
+**inside the plaintext framing** (the relay treats the body as opaque and
+never interprets `v` — versioning is client↔client). Rules: minor additions
+are backward-compatible optional fields; a client receiving `v` **newer than
+it supports** stores the raw envelope, renders a "message from a newer version
+— update the app" placeholder, and re-decodes after upgrade (never drops
+data). CRDT payloads carry their own `docSchema` — the local-store side of the
+same policy ([local-store.md](local-store.md)).
+
 ## Explicitly not in the protocol
 
 Federation (relay↔relay anything), server-side search, durable message/media

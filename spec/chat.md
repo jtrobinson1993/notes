@@ -872,3 +872,20 @@ show a lock icon and a Manage-members dialog (`ChannelMembersDialog`).
 - A chat-sidebar **"share folder"** that bulk-grants every note + private channel
   in a chat folder to chosen participants in one action.
 - A **grant-on-pin** prompt (offer to grant participants when pinning a note).
+
+## v8 — friends & invites (design, not yet built)
+
+v8 (roadmap D4b/D6) **supersedes the friend-request-by-handle flow above**:
+
+- **Invite-only friendship.** Adding a friend = redeeming a self-describing
+  invite (QR / universal link / in-app button). There is no "send request to
+  `Word#1234`" — no enumerable handle-reach surface at all.
+- **Enforcement moves server → capability.** Today the server checks the
+  friendship table on DM/share; in v8 the relay checks a **delivery token**
+  (issued on friending, derived from the profile key) with no identity
+  attached. The friends-gate invariant survives, enforced cryptographically:
+  no token, no delivery.
+- **Unfriend (= block)** rotates the profile key and re-issues tokens to
+  remaining friends — the relay then refuses the removed person's sends;
+  in-group blocking stays a client-side hide. Friend requests, the pending
+  list, and `POST /api/friends/request`-style routes are removed at cutover.

@@ -51,6 +51,23 @@ Playwright version (currently 1.60.0).
 
 ## Decisions locked
 
+- **ALL pre-implementation specs DRAFTED (list in roadmap now fully linked).**
+  New files: **`spec/local-store.md`** (SQLCipher schema sketch, Rust core =
+  headless client — storage+crypto+networking in Rust, webview = UI only,
+  domain-level IPC commands, backup `.accordbackup` format:
+  Argon2id+XChaCha20-Poly1305 over zstd tar, media toggle; DB `user_version` +
+  CRDT `docSchema` versioning), **`spec/key-transparency.md`** (AKD/CONIKS via
+  Meta `akd` crate + napi binding [confirm at build], VRF-blinded labels,
+  heartbeat epochs, proof table, root gossip, .well-known roots JSON, reference
+  auditor CLI = chain-verify + watch mode), **`spec/migration.md`** (T-0 ship /
+  per-user pull-everything / **old-key-signs-new-key attestation** into KT
+  genesis for the D4b identity switch / T+60 purge / straggler v2-format export
+  +30d / rollback = legacy store read-only till purge; mixed period = app
+  unusable till migrated, coordinate personally). Smaller: chat.md § v8 friends
+  (invite-only supersedes request-by-handle), voice.md § v8 (device-token auth;
+  multipath ring dedup by call id; media on relay that carried accepted offer),
+  testing.md § v8 layers F–K, relay.md § envelope versioning (never-drop:
+  buffer + "update app" placeholder). All indexed in SPEC.md + spec/README.md.
 - **License: AGPL-3.0-only (DECIDED, applied).** `LICENSE` at root (canonical
   GNU text), `license` field in root/web/server/shared package.json, README
   License section, spec README repo row + roadmap bullet updated. User picked

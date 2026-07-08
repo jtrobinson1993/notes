@@ -127,3 +127,31 @@ Run against a real built server + web with a temp `DATA_DIR`, seeded.
   of Layer B and E.
 - Add `vitest`, `@vitest/coverage-v8`, `@vue/test-utils`, `@playwright/test` as
   dev deps; remove the ad-hoc `jsdom`/`tsx` harness pattern once Vitest lands.
+
+## v8 additions (design — not yet built)
+
+New layers the local-first rework requires (roadmap D1–D15;
+[relay.md](relay.md), [local-store.md](local-store.md)):
+
+- **Layer F — Rust core unit (cargo test) · P0.** Crypto vectors (seal/unseal,
+  sign, Argon2id, KDF domains — cross-checked against the existing TS
+  implementations during the port), SQLCipher open/lock/zeroize, schema
+  migrations, backup export/restore round-trip, eviction watermarks.
+- **Layer G — multi-device sync simulation (cargo test, in-process) · P0.**
+  Two+ headless cores against an in-process mock relay: at-least-once delivery
+  + dedupe by message id, D11 tuple ordering (incl. same-ms tiebreak and
+  cross-relay clock skew), offline queue/drain, tombstone delete-wins,
+  evicted-watermark no-refetch, D4c multipath failover + cross-path dedup.
+- **Layer H — CRDT convergence properties · P0.** Property tests: random
+  concurrent op interleavings (edits/reactions/read-state/notes) converge to
+  identical state on all replicas; overlay projection is deterministic.
+- **Layer I — relay integration (Vitest `server` project, extended) · P0.**
+  Sealed-send auth matrix (valid/revoked/absent token; no device token on
+  send), group-state signature + version anti-rollback, escrow fetch rate
+  limits, KT inclusion/consistency proofs served correctly, blob TTL/ack
+  deletion, ephemeral-flag never queued.
+- **Layer J — KT auditor · P1.** Reference auditor detects a forked/rewritten/
+  stalled root chain (fixture logs with deliberate tampering).
+- **Layer K — native e2e (tauri-driver/WebDriver, Linux CI) · P2.** Unlock →
+  send → receive → search smoke; the existing Playwright e2e continues to
+  cover the web satellite.
