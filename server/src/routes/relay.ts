@@ -10,6 +10,7 @@ import { join, resolve, sep } from 'node:path';
 import type { Config } from '../config.js';
 import type { DB } from '../db.js';
 import type { RelayLive } from '../relayLive.js';
+import type { VoiceSignal } from '../voiceSignal.js';
 import { requireAuth } from '../session.js';
 import { newToken } from '../util.js';
 import { directoryRoot, inclusionProof, leafHash } from '../ktMerkle.js';
@@ -67,6 +68,7 @@ export function relayRoutes(
   db: DB,
   live?: RelayLive,
   config?: Config,
+  voiceSignal?: VoiceSignal,
 ): void {
   const identity = db.ensureRelayIdentity(generateRelayIdentity);
   const relayFp = fingerprintB64url(Buffer.from(identity.pubkey, 'base64'));
@@ -100,6 +102,11 @@ export function relayRoutes(
   // recipient's connected devices to fetch immediately.
   if (live) {
     live.register(app, deviceIdForToken, config?.rateLimitMax ?? 600);
+  }
+
+  // v8 voice signaling socket (device-token authed; call-id-scoped frame relay).
+  if (voiceSignal) {
+    voiceSignal.register(app, deviceIdForToken, config?.rateLimitMax ?? 600);
   }
 
   /** Current member identity pubkeys of a group, from its signed state record

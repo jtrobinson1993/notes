@@ -328,16 +328,36 @@ Per [testing.md](testing.md) and `CLAUDE.md`:
   becomes a problem; reintroduces a speech-timing leak that decoy traffic
   (also deferred) would then mitigate (see [§ Security & privacy](#security--privacy)).
 
-## v8 changes (design, not yet built)
+## v8 changes (partially built)
 
 Voice survives v8 nearly untouched — the SFU/STUN/TURN stack and frame E2EE
 are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
 
-- **Auth:** signaling authenticates with the **device token** (roadmap D4)
-  instead of the legacy session cookie.
-- **Ringing across relays (D4c):** a 1:1 call offer is an envelope fanned out
-  over **every relay the contact is linked on** (deduped by call id, like any
-  D11 message); devices ring on the first copy. The media session runs on the
-  SFU of whichever relay carried the *accepted* offer. Voice channels are
-  per-relay by construction (groups don't span relays).
+- **Auth — built.** A **dedicated** device-token-authed signaling socket
+  `GET /api/relay/voice` (`server/src/voiceSignal.ts`), separate from the legacy
+  cookie-authed `/api/ws` so it survives the D12 cutover unchanged (the legacy
+  realtime hub can be deleted without touching voice). Bearer token only — no
+  cookie, no Origin check (native client, no CSRF surface), mirroring the relay
+  live-nudge hub.
+- **Signaling model — built (single-relay).** Frames are relayed between the
+  devices in a call, keyed by an **unguessable call id** (the routing
+  capability). Client frames: `join`/`leave`/`signal` (+ `ping`); server frames:
+  `hello`, `joined {peers}`, `peer-join`, `peer-leave`, `signal {payload}`,
+  `error`. The relay forwards only for a call the sender actually joined; the
+  `payload` is opaque **E2E-sealed** SDP/ICE the relay never reads. Per-call
+  member cap (8) + per-socket call cap + 64 KB frame cap + call-id entropy check
+  are defense-in-depth: a *leaked* call id still can't eavesdrop (payloads are
+  sealed to the peer's key) and can't pack unlimited listeners into a room. The
+  relay learns only *which authenticated devices share a call id* — the same
+  fact the SFU already exposes.
+- **Ringing across relays (D4c) — follow-up (not built).** A 1:1 call offer will
+  be an envelope fanned out over **every relay the contact is linked on**
+  (deduped by call id, like any D11 message); devices ring on the first copy;
+  media runs on the SFU of whichever relay carried the *accepted* offer. First
+  cut is single-relay: the initial ring (call id + sealed offer) rides the
+  existing sealed-sender **mailbox**, then both parties `join` that call id on
+  the signaling socket. Fan-out is deferred deliberately — simultaneous
+  multi-relay delivery is a recognizable call-setup signature and gives
+  colluding relays a timing linkage, so the multi-relay path needs independent
+  per-relay sealing (call id inside the ciphertext) + sized/jittered delivery.
 - **Web satellite** (D12) can join voice — live media only, nothing at rest.

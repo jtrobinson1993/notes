@@ -1184,13 +1184,35 @@ Playwright version (currently 1.60.0).
     consistency/extension (append-only tree proof) — that needs the AKD
     history-tree structure, which the per-epoch snapshot Merkle root can't
     provide. key-transparency.md auditor section → built.
-  - **Remaining v8 spec (larger, phase 3/5/6):** (3) voice under v8
-    (device-token auth, multipath ring) — entangled w/ legacy cookie realtime
-    auth; needs a coexistence design call. (4) content-free push (D7,
-    deprioritized). (5) KT full AKD: VRF label blinding + consistency proofs
-    (large — the `akd` crate + napi binding per spec; a genuine dependency/
-    architecture lift). (6) D12 legacy→v8 cutover (the production migration —
-    needs the user). NOTE:
+  - **USER DECISION (this session) — voice-under-v8 chosen; coexistence =
+    dedicated socket (option 2), scope = single-relay first.** User picked the
+    voice track, and explicitly: (Q1) a **separate** device-token signaling
+    socket over dual-accept-on-/api/ws — "avoid cutover work" (the legacy
+    /api/ws chat hub is deleted at D12; a dedicated v8 socket needs no rework);
+    (Q2) **single-relay first** — device-token signaling + offer/answer now,
+    cross-relay fan-out (D4c) a deliberate follow-up (fan-out has a timing-
+    correlation privacy cost that needs independent per-relay sealing + jitter).
+  - **DONE (iter 79) — v8 voice signaling socket (device-token, single-relay).**
+    New `server/src/voiceSignal.ts`: `GET /api/relay/voice`, device-bearer authed
+    (reuses `deviceIdForToken`; no cookie/Origin, mirrors relayLive). Call-id-
+    keyed frame relay — `join`/`leave`/`signal`/`ping` in; `hello`/`joined`/
+    `peer-join`/`peer-leave`/`signal`/`error` out. Forwards only for a call the
+    sender joined; opaque E2E-sealed payload the relay never reads. Hardening:
+    per-call cap 8 (leaked id can't pack listeners), per-socket call cap 8, 64KB
+    frame cap, call-id entropy regex; all-sockets heartbeat set (not just
+    joined). Wired via relayRoutes(…, voiceSignal) in app.ts. Tests
+    (voiceSignal.test.ts, real ws): greet/anon-reject, 2-party sealed relay
+    (not echoed to sender), non-member signal dropped, peer-leave, room cap,
+    malformed call id. server 371, tsc clean. voice.md §v8 → partially built.
+    NOTE `/api/relay/ws` was already the live-nudge hub → signaling is at
+    `/api/relay/voice`.
+  - **Remaining v8 spec:** voice follow-ups: (a) native client — relay_client
+    voice WS + call-offer envelope via mailbox (ring) + WebRTC/mediasoup wiring
+    under device-token; (b) D4c cross-relay fan-out + call-id dedup. Then:
+    (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
+    consistency proofs (large — `akd` crate + napi; dependency/architecture
+    lift). (6) D12 legacy→v8 cutover (production migration — needs the user).
+    NOTE:
     best-effort caveats as before; unsigned commits (1Password) — re-sign via
     `git rebase --exec 'git commit --amend --no-edit -S' 38dacc7`. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
