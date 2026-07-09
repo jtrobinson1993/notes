@@ -970,15 +970,24 @@ Playwright version (currently 1.60.0).
     reach a friend, or None), `list_friends`, `remove_friend` (unfriend). Test
     (cargo 43, +1): full lifecycle. Accessors have transient dead-code warnings
     until the IPC + friend-accept drain wire them (next).
-  - **Next (friends cutover, on the foundation):** (a) IPC `record_friend`/
-    `list_friends`/`friend_addressing`/`remove_friend` + native.ts; (b)
-    **friend-accept drain handling** — add a `friend-accept` branch to
-    `message::disposition`/drain that extracts `{handle, deliveryToken}` from the
-    verified envelope, records the friend (their identity=verified sender,
-    sealing from directory), and reciprocates my delivery token via a sealed
-    send; (c) friends UI (invite create/redeem, list). Then v8 DMs (create a
-    `conversations` row per friend) → outbound send → chat cutover steps 3–5
-    become reachable end-to-end.
+  - **DONE (iter 45) — friend-accept drain handling (D4b).** `message.rs`:
+    `KIND_FRIEND_ACCEPT` (invitee→inviter, triggers reciprocation) +
+    `KIND_FRIEND_CONFIRM` (inviter→invitee, terminal — no loop). `disposition()`
+    parses the signed `{handle, deliveryToken, sealingPub}` into
+    `FriendAcceptData` (identity from the **verified** sender, not payload;
+    garbage/bad-key → Discard) → new `Disposition::Friend` + `DrainReport.friends`.
+    Drain: on Friend → `upsert_relay` + `record_friend` → ack. `redeemFriendInvite`
+    now includes my `sealingPub` (for reciprocity). Tests: cargo 46 (+3), web 463.
+    **Reciprocation deferred** (drain replying a friend-confirm to an accept).
+  - **Next (friends cutover):** (a) **reciprocation** — on a friend-accept
+    (`f.reciprocate`), the drain seals a friend-confirm (my handle/token/sealing)
+    to the new friend's sealing key + sends via their delivery token (now known),
+    so the invitee records me too → mutual. (b) IPC `list_friends`/
+    `friend_addressing`/`remove_friend` + native.ts + friends UI (invite
+    create/redeem, list). (c) v8 DMs: create a `conversations` row per friend →
+    outbound send (compose `ChatMessagePayload` → seal to friend's sealing key →
+    `relay_send` w/ their delivery token) → chat cutover steps 3–5 reachable
+    end-to-end.
   - **Other open threads:** OPEN FOLLOW-UPS: live WS stop signal;
     sender→contact interim; blob chunked/resumable + group per-member-ack GC.
     Desk queue: mobile init, tauri smoke, biometric ACLs. iters 31–42 committed
