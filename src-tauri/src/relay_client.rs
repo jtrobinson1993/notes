@@ -330,6 +330,37 @@ impl RelayClient {
         Ok(body.acked)
     }
 
+    /// Cold-start (D15/D3a): fetch the wrapped-MK escrow from a relay by
+    /// proving the auth key. Static — no session needed (this runs before
+    /// any vault exists on a fresh device).
+    pub async fn escrow_fetch(
+        base_url: &str,
+        handle: &str,
+        auth_kind: &str,
+        auth_key_b64: &str,
+    ) -> Result<String, String> {
+        let base = base_url.trim_end_matches('/');
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/escrow/fetch"))
+            .json(&serde_json::json!({
+                "handle": handle,
+                "authKind": auth_kind,
+                "authKey": auth_key_b64,
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("escrow fetch failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("escrow fetch refused (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct FetchResponse {
+            payload: String,
+        }
+        let body: FetchResponse = res.json().await.map_err(|e| format!("bad escrow response: {e}"))?;
+        Ok(body.payload)
+    }
+
     pub fn status(&self) -> RelayStatus {
         let guard = self.session.lock().unwrap();
         match guard.as_ref() {

@@ -85,6 +85,23 @@ struct EscrowMeta {
     recovery_auth_hash: String,
 }
 
+/// The relay escrow payload — mirror of what `escrow_bundle()` serializes.
+#[derive(serde::Deserialize)]
+struct EscrowPayload {
+    #[serde(rename = "kdfSalt")]
+    kdf_salt: [u8; 16],
+    #[serde(rename = "kdfMKib")]
+    kdf_m_kib: u32,
+    #[serde(rename = "kdfT")]
+    kdf_t: u32,
+    #[serde(rename = "kdfP")]
+    kdf_p: u32,
+    #[serde(rename = "wrappedMkPassword")]
+    wrapped_mk_password: WrappedKey,
+    #[serde(rename = "wrappedMkRecovery")]
+    wrapped_mk_recovery: WrappedKey,
+}
+
 /// Minimal keychain abstraction: the OS secure store in production, an
 /// in-memory map in tests (keyring's own mock doesn't share state across
 /// `Entry` instances).
@@ -214,6 +231,72 @@ impl Vault {
         self.store = Some(Store::open(&self.db_path(), &sqlcipher_key)?);
         self.mk = Some(mk);
         Ok(recovery_code)
+    }
+
+    /// Cold-start restore (D15/D3a): rebuild the vault on a fresh device from
+    /// a relay escrow payload + the account password. Unwraps MK from the
+    /// escrow, then re-wraps it under a **new** local key set (fresh vault
+    /// key + SQLCipher key in this device's keychain), producing a
+    /// provisioned-but-empty vault. History arrives via device pairing/sync
+    /// or a backup import — the escrow only restores identity (D8).
+    pub fn restore_from_escrow(
+        &mut self,
+        escrow_payload: &str,
+        password: &str,
+    ) -> Result<(), VaultError> {
+        if self.meta_path().exists() {
+            return Err(VaultError::AlreadyInitialized);
+        }
+        let esc: EscrowPayload =
+            serde_json::from_str(escrow_payload).map_err(VaultError::Meta)?;
+        let secret = derive_password_secret_with(
+            password,
+            &esc.kdf_salt,
+            esc.kdf_m_kib,
+            esc.kdf_t,
+            esc.kdf_p,
+        )?;
+        let mk = keys::unwrap(secret.as_ref(), INFO_MK_WRAP_PASSWORD, &esc.wrapped_mk_password)
+            .map_err(|_| VaultError::WrongPassword)?;
+
+        // Recovery code is not recoverable from escrow (it was random at
+        // signup); a restored device keeps the escrow's recovery wrap so the
+        // original code still works, and re-derives fresh local wraps.
+        std::fs::create_dir_all(&self.data_dir)?;
+        let sqlcipher_key = keys::random_key();
+        let vault_key = keys::random_key();
+        self.keychain_set(&self.keychain_user(KEYRING_SQLCIPHER), &sqlcipher_key)?;
+        self.keychain_set(&self.keychain_user(KEYRING_VAULT), &vault_key)?;
+
+        let mut kdf_salt = [0u8; 16];
+        rand::rng().fill_bytes(&mut kdf_salt);
+        let password_secret = derive_password_secret(password, &kdf_salt)?;
+        let pw_auth = keys::derive_auth_key(password_secret.as_ref(), keys::INFO_AUTH_PASSWORD)?;
+
+        let meta = VaultMeta {
+            version: 1,
+            kdf_salt,
+            kdf_m_kib: KDF_M_KIB,
+            kdf_t: KDF_T,
+            kdf_p: KDF_P,
+            wrapped_mk_vault: keys::wrap(vault_key.as_ref(), INFO_MK_WRAP_VAULT, &mk)?,
+            wrapped_mk_password: keys::wrap(password_secret.as_ref(), INFO_MK_WRAP_PASSWORD, &mk)?,
+            // Carry the original recovery wrap forward so the user's existing
+            // recovery code still opens this device.
+            wrapped_mk_recovery: esc.wrapped_mk_recovery,
+            escrow: Some(EscrowMeta {
+                password_auth_hash: keys::sha256_b64url(pw_auth.as_ref()),
+                // Recovery auth hash is re-derivable only from the code, which
+                // we don't have here; leave the escrow's value untouched by
+                // not re-uploading until the user re-enters it.
+                recovery_auth_hash: String::new(),
+            }),
+        };
+        std::fs::write(self.meta_path(), serde_json::to_vec_pretty(&meta)?)?;
+
+        self.store = Some(Store::open(&self.db_path(), &sqlcipher_key)?);
+        self.mk = Some(mk);
+        Ok(())
     }
 
     /// Primary unlock (D3): keychain only — no user secret. Biometric gating
@@ -478,6 +561,36 @@ mod tests {
         // The payload never carries the vault-key wrap (that one never
         // leaves the device) nor any raw key material.
         assert!(parsed.get("wrappedMkVault").is_none());
+    }
+
+    #[test]
+    fn restore_from_escrow_recovers_same_mk_on_a_fresh_device() {
+        // Device 1: create, remember MK (via a settings marker), export escrow.
+        let (_d1, mut v1) = new_vault();
+        let recovery = v1.create("a long enough password").unwrap();
+        v1.store().unwrap().set_setting("marker", "hello").unwrap();
+        let (payload, _pw, _rc) = v1.escrow_bundle().unwrap();
+
+        // Device 2 (fresh keychain + data dir): restore from escrow + password.
+        let (_d2, mut v2) = new_vault();
+        assert_eq!(v2.status(), VaultStatus::Uninitialized);
+        v2.restore_from_escrow(&payload, "a long enough password").unwrap();
+        assert_eq!(v2.status(), VaultStatus::Unlocked);
+        // Same MK ⇒ per-relay identities re-derive identically (the point).
+        assert_eq!(v1.mk().unwrap().as_ref(), v2.mk().unwrap().as_ref());
+        // Fresh store — escrow restores identity, not history (D8).
+        assert!(v2.store().unwrap().get_setting("marker").unwrap().is_none());
+
+        // Wrong password is rejected.
+        let (_d3, mut v3) = new_vault();
+        assert!(matches!(
+            v3.restore_from_escrow(&payload, "the wrong password!!"),
+            Err(VaultError::WrongPassword)
+        ));
+
+        // The original recovery code still opens the restored device.
+        v2.lock();
+        v2.unlock_recovery(&recovery).unwrap();
     }
 
     #[test]

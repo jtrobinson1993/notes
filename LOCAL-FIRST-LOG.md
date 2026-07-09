@@ -735,11 +735,36 @@ Playwright version (currently 1.60.0).
     native.ts wrappers. NOTE: true two-account E2E over a running relay =
     integration-sim layer (testing.md G/I), not yet scripted — crypto +
     transport are each covered separately so far.
-  - **Next iterations (phase 3):** escrow cold-start restore (fetch →
-    unwrap w/ password → rebuild vault on a fresh device); WS live delivery
-    for device queues; security.md relay-state inventory fold-in; phase-3
-    review vs relay.md (what's built vs spec: blob store, group state,
-    invites, push registration still unbuilt). Desk queue unchanged.
+  - **Iteration 27 — escrow cold-start restore, crypto core (DONE, tested;
+    fetch protocol has an OPEN design decision — see below; cargo 29/29):**
+    `vault.restore_from_escrow(payload, password)` — unwraps MK from the
+    escrow payload with the password (using the payload's own kdf_salt),
+    mints a **fresh local key set** (new vault+SQLCipher keys in this
+    device's keychain), carries the **original recovery wrap forward** (so
+    the user's existing recovery code still opens the restored device),
+    provisioned-but-empty store (escrow = identity, not history, per D8).
+    Test proves: fresh device recovers the SAME MK (⇒ per-relay identities
+    re-derive), wrong password rejected, original recovery code still works,
+    store is empty. `RelayClient::escrow_fetch` (static, no session) also in.
+  - **⚠ OPEN DESIGN DECISION — escrow-fetch salt chicken-and-egg (caught &
+    NOT papered over):** the fetch auth key = HKDF(argon2id(password,
+    **kdf_salt**)), but kdf_salt lives *inside* the escrow payload you're
+    fetching. Deadlock. I pulled back a half-baked IPC command that hand-
+    waved this. **Standard resolution (every password-vault system does
+    this — Bitwarden/Signal-PIN):** expose per-account KDF salt/params by
+    handle *before* auth. To keep the D6 uniform-401 anti-enumeration
+    posture, the params endpoint should return a **deterministic pseudo-salt
+    (HMAC(relaySecret, handle)) for unknown/escrow-less handles** so probing
+    can't distinguish. Needs: store kdf_salt in the escrow row (or parse the
+    public field out of the payload), add POST /api/relay/escrow/kdf, derive
+    client-side, then the existing uniform fetch. **Do this as the very next
+    iteration** before wiring the restore UI.
+  - **Next iterations (phase 3):** (1) escrow KDF-params endpoint +
+    pseudo-salt + client fetch wiring + restore UI in NativeGate; (2) WS
+    live delivery for device queues; (3) security.md relay-state inventory
+    fold-in; (4) phase-3 review vs relay.md (still unbuilt: transient blob
+    store, group-state record, invite redeem, push registration). Desk
+    queue unchanged.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
