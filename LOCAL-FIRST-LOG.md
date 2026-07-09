@@ -1134,10 +1134,13 @@ Playwright version (currently 1.60.0).
     — RelayClient `blob_upload`/`blob_download` (DM) + `group_blob_upload`/
     `group_blob_download`; IPC `attachment_upload`(encrypt→upload→`AttachmentRef`)
     + `attachment_fetch`(download→decrypt); native.ts `attachmentUpload`/
-    `attachmentFetch` + `MessageAttachment`. Next: (c) thread an attachments arg
-    through `relay_send_message`/`relay_send_group_message` (payload
-    `attachments_json` carries the refs); (d) UI file picker + image render
-    (fetch on demand, object URL).
+    `attachmentFetch` + `MessageAttachment`. (c) [DONE iter 74] **send
+    integration** — `new_text` + both send IPCs + native.ts/nativeDm/nativeGroup
+    take `attachments_json` (AttachmentRef[] JSON), carried in the payload (row
+    `attachments_json`, already in `rowToView`). cargo 62, web 487. Next: (d)
+    **UI** — NativeChat file picker → `attachmentUpload(kind,target,...)` per
+    file → `sendDm`/`sendGroup` with the refs; render: for image mimes,
+    `attachmentFetch` → object URL; else a download chip.
   - **Remaining v8 spec (larger, phase 3/5/6):** blob chunked/resumable transfer. (3) voice under v8
     (device-token auth, multipath ring). (4) content-free push (D7). (5) KT
     inclusion proofs / auditor (phase 6). (6) D12 legacy→v8 cutover. NOTE:
