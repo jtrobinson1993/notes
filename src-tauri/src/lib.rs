@@ -1,3 +1,4 @@
+mod attachment;
 mod blobs;
 mod envelope;
 mod identity;
