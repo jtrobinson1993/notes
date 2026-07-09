@@ -1048,12 +1048,18 @@ Playwright version (currently 1.60.0).
     unknown target skipped — FIFO puts sends before deletes).
     `relay_delete_message` IPC (seal→send→tombstone local) + `relayDeleteMessage`
     + NativeChat hover-delete → "Message deleted" tombstone. cargo 50, web 477.
-  - **Remaining spec work (continuing):** (1) v8 message **edit** (mirror
-    delete: KIND_EDIT + auth check + IPC + UI); (2) reactions/read-state for v8
-    DMs; (3) group messaging (send/fan-out on the D14 record + group blobs);
-    (4) blob chunked/resumable; (5) voice under v8 (device-token auth); (6) KT
-    inclusion proofs / auditor (phase 6); (7) README/spec currency. NOTE:
-    reciprocal friend-confirm best-effort; live WS task no stop signal; unsigned
+  - **DONE (iter 55) — v8 message edit (D11).** Mirror of delete: `KIND_EDIT` +
+    `EditData`, disposition `Edit`, author-only auth in the drain
+    (`message_sender == verified sender`). `relay_edit_message` IPC (seal→send→
+    apply local) + `relayEditMessage` + NativeChat inline editor + "(edited)"
+    marker. cargo 51, web 478. **v8 DM basic messaging is complete**:
+    send/edit/delete, live receive, tombstones — all authenticated E2E.
+  - **Remaining spec work (continuing):** (1) reactions/read-state for v8 DMs;
+    (2) group messaging (send/fan-out on the D14 record + group blobs); (3) blob
+    chunked/resumable; (4) voice under v8 (device-token auth); (5) KT inclusion
+    proofs / auditor (phase 6); (6) README/spec currency. NOTE: reciprocal
+    friend-confirm best-effort; edits/deletes of a not-yet-seen message are
+    dropped (FIFO makes this rare); live WS task no stop signal; unsigned
     commits (1Password) — re-sign later.
   - **v8 MESSAGING CORE COMPLETE** (iters 42–50): unified msg identity/order,
     live-render wiring, friend store + full invite→mutual-friend handshake,
