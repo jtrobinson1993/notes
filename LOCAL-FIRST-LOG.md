@@ -1119,11 +1119,17 @@ Playwright version (currently 1.60.0).
     `{kind}`; open/send route by kind; create-group footer form; group
     "Add member" friend picker; message actions gated DM-only (group
     edit/react = follow-up). web 486. **GROUP MESSAGING COMPLETE incl. UI.**
-  - **Remaining v8 spec (larger/optional):** group edit/delete/react fan-out;
-    blob chunked/resumable transfer; voice under v8 (device-token auth); KT
-    inclusion proofs / auditor (phase 6); README/spec currency for the native
-    surface. NOTE: best-effort caveats as before; unsigned commits (1Password)
-    — re-sign via `git rebase --exec 'git commit --amend --no-edit -S' 38dacc7`. (b) **group creation** — genesis D14 record (me=owner) + set group
+  - **DONE (iter 70) — group edit/delete/react fan-out (D11/D14).** Outbound
+    group variants (`relay_group_delete_message`/`relay_group_edit_message`/
+    `relay_group_react` via shared `group_seal_fanout` → `group_send`); inbound
+    already handled. NativeChat routes actions by `active.kind`, un-gated for
+    groups. web 487. **v8 DM + group messaging now full parity
+    (send/edit/delete/react/unread/live).**
+  - **Remaining v8 spec (larger/optional, phase 3/5/6):** blob chunked/resumable
+    transfer; voice under v8 (device-token auth, multipath ring); KT inclusion
+    proofs / auditor (phase 6); README/spec currency for the native surface.
+    NOTE: best-effort caveats as before; unsigned commits (1Password) — re-sign
+    via `git rebase --exec 'git commit --amend --no-edit -S' 38dacc7`. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
