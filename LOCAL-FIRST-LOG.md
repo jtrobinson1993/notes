@@ -856,15 +856,28 @@ Playwright version (currently 1.60.0).
     relay), and what stays visible (timing/size, group membership, device count,
     **sender IP** — sealed-sender doesn't erase it). Forward-ref from the
     existing metadata para. Doc-only (no code/tests).
-  - **Next iterations (phase 3, chat-store-independent):** phase-3 review vs
-    relay.md — still unbuilt: **transient blob store** (D6; its up/download auth
-    model + blobId anti-enumeration needs careful DESIGN first, not a mechanical
-    build — flag for design pass), group-state record (D14), invite redeem
-    (D4b), push registration (D7). OPEN FOLLOW-UPS: live WS task has no stop
-    signal (reconnects until process exit); sender→contact resolution interim
-    (identity key as id). DEFERRED (needs user call): v8 chat store model
-    rework = phase-4/5 chat cutover. Desk queue unchanged (mobile init, tauri
-    smoke, biometric ACLs).
+  - **DONE (iter 36) — friend invite-redeem, server half (D4b).** The invite
+    token = a **one-time delivery capability**: redeem drops one sealed
+    "friend-accept" envelope (invitee's own delivery token, sealed E2E to the
+    inviter) into the inviter's mailbox; reciprocation is an ordinary sealed
+    send. `relay_invites` (token_hash PK / inviter / expiry / used) — stores
+    only `hash(token)`; `redeemRelayInvite` **atomically** claims unused+
+    unexpired (double-redeem → one winner). Routes: mint (device token, TTL cap
+    14d); **redeem = CAPABILITY ONLY, no device token** (requiring it would let
+    the relay link "X redeemed Y's invite" = a graph edge, defeating D6);
+    uniform 401 for unknown/expired/used; non-consuming rate-limited check.
+    Reuses mailbox fan-out + live-nudge. Tests (server 330, +5). relay.md
+    invites section rewritten to as-built. **Client half deferred** (assemble
+    invite, seal accept, reciprocate, friends-store wiring).
+  - **Next iterations (phase 3, chat-store-independent):** (1) invite-redeem
+    **client half** (friends-store integration — moderate). (2) still unbuilt:
+    **transient blob store** (D6 — up/download auth + blobId anti-enumeration
+    needs a DESIGN pass first, not a mechanical build), group-state record
+    (D14), push registration (D7, user-deprioritized). OPEN FOLLOW-UPS: live WS
+    task has no stop signal (reconnects until process exit); sender→contact
+    resolution interim (identity key as id). DEFERRED (needs user call): v8 chat
+    store model rework = phase-4/5 chat cutover. Desk queue unchanged (mobile
+    init, tauri smoke, biometric ACLs).
   - **NOTE — unsigned commits:** iters 31–32 (`a9460bb`, `7399261`, `fc4e143`)
     committed with `-c commit.gpgsign=false` because the 1Password op-ssh-sign
     agent was locked (user approved "unsigned this once"). Re-sign later once
