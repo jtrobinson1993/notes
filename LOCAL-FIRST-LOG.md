@@ -1054,13 +1054,21 @@ Playwright version (currently 1.60.0).
     apply local) + `relayEditMessage` + NativeChat inline editor + "(edited)"
     marker. cargo 51, web 478. **v8 DM basic messaging is complete**:
     send/edit/delete, live receive, tombstones — all authenticated E2E.
-  - **Remaining spec work (continuing):** (1) reactions/read-state for v8 DMs;
-    (2) group messaging (send/fan-out on the D14 record + group blobs); (3) blob
-    chunked/resumable; (4) voice under v8 (device-token auth); (5) KT inclusion
-    proofs / auditor (phase 6); (6) README/spec currency. NOTE: reciprocal
-    friend-confirm best-effort; edits/deletes of a not-yet-seen message are
-    dropped (FIFO makes this rare); live WS task no stop signal; unsigned
-    commits (1Password) — re-sign later.
+  - **DONE (iter 56) — local unread tracking for v8 DMs (D11) + FK fix.**
+    Migration v8 (`conversations.last_read_ts`), `mark_conversation_read` /
+    `conversation_unread`; `dm_mark_read`/`dm_unread` IPC; `listDms` carries
+    unread, `openDm` marks read; NativeChat unread badge. **Fixed a real latent
+    FK bug**: `ensure_conversation` FKs to `relays`, but the relay row was only
+    upserted in the drain's friend branch — a send/open before any friend-accept
+    drain hit a 787. Now upserted before every `ensure_conversation`. cargo 52,
+    web 479.
+  - **Remaining spec work (continuing):** (1) reactions for v8 DMs; (2) read
+    *receipts* (networked — show the peer you read); (3) group messaging
+    (send/fan-out on D14 + group blobs); (4) blob chunked/resumable; (5) voice
+    under v8; (6) KT inclusion proofs / auditor (phase 6); (7) README/spec
+    currency. NOTE: reciprocal friend-confirm best-effort; edits/deletes of a
+    not-yet-seen message dropped (FIFO makes rare); live WS task no stop signal;
+    unsigned commits — re-sign later.
   - **v8 MESSAGING CORE COMPLETE** (iters 42–50): unified msg identity/order,
     live-render wiring, friend store + full invite→mutual-friend handshake,
     outbound send, spoof-proof DM identity, native DM API. Remaining v8 work is
