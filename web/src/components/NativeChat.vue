@@ -9,7 +9,7 @@ import IconSend from '~icons/mynaui/send-solid';
 import IconBack from '~icons/mynaui/chevron-left';
 import { listDms, openDm, sendDm, type DmSummary } from '../lib/nativeDm';
 import { createInvite, redeemInvite } from '../lib/nativeFriends';
-import { relayDeleteMessage } from '../lib/native';
+import { relayDeleteMessage, relayEditMessage } from '../lib/native';
 import { onMailIngested } from '../lib/nativeRelay';
 import type { ChatMessageView } from '../stores/chat';
 
@@ -60,6 +60,30 @@ async function remove(messageId: string): Promise<void> {
   busy.value = true;
   try {
     await relayDeleteMessage(active.value.contactId, messageId);
+    await reloadActive();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+const editingId = ref<string | null>(null);
+const editDraft = ref('');
+function startEdit(m: ChatMessageView): void {
+  editingId.value = m.key ?? null;
+  editDraft.value = m.text ?? '';
+}
+function cancelEdit(): void {
+  editingId.value = null;
+}
+async function saveEdit(messageId: string): Promise<void> {
+  const text = editDraft.value.trim();
+  if (!text || !active.value || busy.value) return;
+  busy.value = true;
+  try {
+    await relayEditMessage(active.value.contactId, messageId, text);
+    editingId.value = null;
     await reloadActive();
   } catch (e) {
     error.value = String(e);
@@ -198,23 +222,38 @@ onUnmounted(() => unsub?.());
           class="group flex items-center gap-1"
           :class="m.senderId === 'self' ? 'justify-end' : 'justify-start'"
         >
-          <button
-            v-if="m.senderId === 'self' && m.text !== null && m.key"
-            data-testid="delete-msg"
-            class="text-xs text-red-500 opacity-0 group-hover:opacity-100"
-            @click="remove(m.key)"
+          <!-- inline edit -->
+          <form
+            v-if="editingId === m.key"
+            class="flex flex-1 items-center gap-1"
+            @submit.prevent="saveEdit(m.key!)"
           >
-            Delete
-          </button>
-          <span
-            v-if="m.text === null"
-            class="max-w-[75%] rounded-2xl bg-neutral-500/10 px-3 py-1.5 text-sm italic opacity-60"
-          >Message deleted</span>
-          <span
-            v-else
-            class="max-w-[75%] break-words rounded-2xl px-3 py-1.5 text-sm"
-            :class="m.senderId === 'self' ? 'bg-blue-600 text-white' : 'bg-neutral-500/15'"
-          >{{ m.text }}</span>
+            <input
+              v-model="editDraft"
+              data-testid="edit-input"
+              class="flex-1 rounded border border-neutral-500/30 bg-transparent px-2 py-1 text-sm"
+            />
+            <button type="submit" class="text-xs text-blue-500">Save</button>
+            <button type="button" class="text-xs opacity-60" @click="cancelEdit">Cancel</button>
+          </form>
+          <template v-else>
+            <span
+              v-if="m.senderId === 'self' && m.text !== null && m.key"
+              class="flex gap-1 opacity-0 group-hover:opacity-100"
+            >
+              <button data-testid="edit-msg" class="text-xs text-blue-500" @click="startEdit(m)">Edit</button>
+              <button data-testid="delete-msg" class="text-xs text-red-500" @click="remove(m.key)">Delete</button>
+            </span>
+            <span
+              v-if="m.text === null"
+              class="max-w-[75%] rounded-2xl bg-neutral-500/10 px-3 py-1.5 text-sm italic opacity-60"
+            >Message deleted</span>
+            <span
+              v-else
+              class="max-w-[75%] break-words rounded-2xl px-3 py-1.5 text-sm"
+              :class="m.senderId === 'self' ? 'bg-blue-600 text-white' : 'bg-neutral-500/15'"
+            >{{ m.text }}<span v-if="m.editedAt" class="ml-1 text-[10px] opacity-60">(edited)</span></span>
+          </template>
         </li>
       </ul>
       <form class="flex items-center gap-2 border-t border-neutral-500/20 p-3" @submit.prevent="send">

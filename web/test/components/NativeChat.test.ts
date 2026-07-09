@@ -17,7 +17,7 @@ vi.mock('../../src/lib/nativeFriends', () => friends);
 const relay = vi.hoisted(() => ({ onMailIngested: vi.fn(() => () => {}) }));
 vi.mock('../../src/lib/nativeRelay', () => relay);
 
-const nativeMod = vi.hoisted(() => ({ relayDeleteMessage: vi.fn() }));
+const nativeMod = vi.hoisted(() => ({ relayDeleteMessage: vi.fn(), relayEditMessage: vi.fn() }));
 vi.mock('../../src/lib/native', () => nativeMod);
 
 import NativeChat from '../../src/components/NativeChat.vue';
@@ -105,6 +105,31 @@ describe('NativeChat', () => {
     await flushPromises();
     expect(nativeMod.relayDeleteMessage).toHaveBeenCalledWith('idA', 'm2');
     expect(w.text()).toContain('Message deleted');
+  });
+
+  it('edits an own message via relayEditMessage', async () => {
+    nativeMod.relayEditMessage.mockResolvedValue(undefined);
+    dm.openDm
+      .mockResolvedValueOnce({
+        conversationId: 'dm:A',
+        messages: [view({ key: 'm2', senderId: 'self', text: 'typo' })],
+      })
+      .mockResolvedValueOnce({
+        conversationId: 'dm:A',
+        messages: [view({ key: 'm2', senderId: 'self', text: 'fixed', editedAt: 5 })],
+      });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.findAll('aside button')[1].trigger('click');
+    await flushPromises();
+
+    await w.find('[data-testid="edit-msg"]').trigger('click');
+    await w.find('[data-testid="edit-input"]').setValue('fixed');
+    await w.findAll('form')[0].trigger('submit'); // inline edit form (before composer)
+    await flushPromises();
+    expect(nativeMod.relayEditMessage).toHaveBeenCalledWith('idA', 'm2', 'fixed');
+    expect(w.text()).toContain('fixed');
+    expect(w.text()).toContain('(edited)');
   });
 
   it('redeems an invite then refreshes the DM list', async () => {

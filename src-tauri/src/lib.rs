@@ -254,6 +254,7 @@ async fn relay_mailbox_drain(
     let mut imports = Vec::new();
     let mut friends = Vec::new();
     let mut deletes = Vec::new();
+    let mut edits = Vec::new();
     let mut ack_ids = Vec::new();
     let mut buffered = 0usize;
     for row in rows {
@@ -282,6 +283,10 @@ async fn relay_mailbox_drain(
             }
             message::Disposition::Delete(d) => {
                 deletes.push(*d);
+                ack_ids.push(row.queue_id);
+            }
+            message::Disposition::Edit(e) => {
+                edits.push(*e);
                 ack_ids.push(row.queue_id);
             }
             message::Disposition::Discard => ack_ids.push(row.queue_id),
@@ -330,6 +335,15 @@ async fn relay_mailbox_drain(
             let author = store.message_sender(&d.target_id).map_err(|e| e.to_string())?;
             if author.as_deref() == Some(d.editor_id.as_str()) {
                 store.message_apply_delete(&d.target_id).map_err(|e| e.to_string())?;
+            }
+        }
+        // Edits (D11): same author-only authority as deletes.
+        for e in &edits {
+            let author = store.message_sender(&e.target_id).map_err(|e| e.to_string())?;
+            if author.as_deref() == Some(e.editor_id.as_str()) {
+                store
+                    .message_apply_edit(&e.target_id, Some(&e.content), e.edited_at)
+                    .map_err(|e| e.to_string())?;
             }
         }
         (ingested, my_handle)
@@ -594,6 +608,54 @@ async fn relay_delete_message(
         let vault = vault.lock().unwrap();
         let store = vault.store().map_err(|e| e.to_string())?;
         store.message_apply_delete(&message_id).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Edit a v8 message I sent (D11): seal an edit envelope to the friend, deliver
+/// it, and update my local copy. The recipient applies it only because the
+/// edit's verified sender matches the message's author.
+#[tauri::command]
+async fn relay_edit_message(
+    contact_id: String,
+    message_id: String,
+    content: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let (ident, addressing) = {
+        let vault = vault.lock().unwrap();
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        let store = vault.store().map_err(|e| e.to_string())?;
+        let addressing = store
+            .friend_addressing(&contact_id, &relay_fp)
+            .map_err(|e| e.to_string())?
+            .ok_or("not a friend on this relay")?;
+        (ident, addressing)
+    };
+    let edited_at = now_ms();
+    let payload = serde_json::to_vec(
+        &serde_json::json!({ "id": message_id, "content": content, "editedAt": edited_at }),
+    )
+    .map_err(|e| e.to_string())?;
+    let sealing: [u8; 32] = addressing
+        .sealing_pub
+        .clone()
+        .try_into()
+        .map_err(|_| "friend has a malformed sealing key".to_string())?;
+    let envelope =
+        envelope::seal(&sealing, &ident, message::KIND_EDIT, &payload, edited_at).map_err(|e| e.to_string())?;
+    relay
+        .mailbox_send(&addressing.handle, &addressing.delivery_token, envelope)
+        .await?;
+    {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store
+            .message_apply_edit(&message_id, Some(&content), edited_at)
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -912,6 +974,7 @@ pub fn run() {
             relay_mailbox_drain,
             relay_send_message,
             relay_delete_message,
+            relay_edit_message,
             messages_page,
             messages_ingest,
             message_edit,

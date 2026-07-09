@@ -25,6 +25,9 @@ pub const KIND_FRIEND_CONFIRM: &str = "friend-confirm";
 /// Delete a previously-sent message (D11 tombstone). Payload `{ id }` targets
 /// the message; only the original sender may delete it (checked on apply).
 pub const KIND_DELETE: &str = "delete";
+/// Edit a previously-sent message. Payload `{ id, content, editedAt }`; only the
+/// original sender may edit it (checked on apply).
+pub const KIND_EDIT: &str = "edit";
 
 /// A verified delete request: drop `target_id` iff its recorded sender equals
 /// `editor_id` (the verified envelope sender).
@@ -33,9 +36,26 @@ pub struct DeleteData {
     pub editor_id: String,
 }
 
+/// A verified edit request: replace `target_id`'s content iff its recorded
+/// sender equals `editor_id`.
+pub struct EditData {
+    pub target_id: String,
+    pub editor_id: String,
+    pub content: String,
+    pub edited_at: i64,
+}
+
 #[derive(serde::Deserialize)]
 struct DeletePayload {
     id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct EditPayload {
+    id: String,
+    content: String,
+    #[serde(rename = "editedAt")]
+    edited_at: i64,
 }
 
 const CURRENT_VERSION: u32 = 1;
@@ -207,6 +227,9 @@ pub enum Disposition {
     /// A verified delete (D11): tombstone the target iff the verified sender is
     /// its original author, then ack.
     Delete(Box<DeleteData>),
+    /// A verified edit (D11): replace the target's content iff the verified
+    /// sender is its original author, then ack.
+    Edit(Box<EditData>),
 }
 
 /// Decide the fate of one delivered envelope from the `open` result and its
@@ -235,6 +258,15 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
                 Ok(p) => Disposition::Delete(Box::new(DeleteData {
                     target_id: p.id,
                     editor_id: opened.sender_identity_pub,
+                })),
+                Err(_) => Disposition::Discard,
+            },
+            KIND_EDIT => match serde_json::from_slice::<EditPayload>(&opened.payload) {
+                Ok(p) => Disposition::Edit(Box::new(EditData {
+                    target_id: p.id,
+                    editor_id: opened.sender_identity_pub,
+                    content: p.content,
+                    edited_at: p.edited_at,
                 })),
                 Err(_) => Disposition::Discard,
             },
@@ -476,6 +508,38 @@ mod tests {
         let bad = Opened {
             kind: KIND_DELETE.into(),
             payload: b"nope".to_vec(),
+            sender_identity_pub: "x".into(),
+            sent_at: 0,
+        };
+        assert!(matches!(disposition(Ok(bad), 1), Disposition::Discard));
+    }
+
+    #[test]
+    fn edit_carries_target_content_and_verified_editor() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let payload =
+            serde_json::to_vec(&serde_json::json!({ "id": "m7", "content": "fixed", "editedAt": 42 }))
+                .unwrap();
+        let opened = Opened {
+            kind: KIND_EDIT.into(),
+            payload,
+            sender_identity_pub: b64.encode([3u8; 32]),
+            sent_at: 0,
+        };
+        match disposition(Ok(opened), 1) {
+            Disposition::Edit(e) => {
+                assert_eq!(e.target_id, "m7");
+                assert_eq!(e.content, "fixed");
+                assert_eq!(e.edited_at, 42);
+                assert_eq!(e.editor_id, b64.encode([3u8; 32]));
+            }
+            _ => panic!("expected Edit"),
+        }
+        // Missing content → discard.
+        let bad = Opened {
+            kind: KIND_EDIT.into(),
+            payload: serde_json::to_vec(&serde_json::json!({ "id": "m7" })).unwrap(),
             sender_identity_pub: "x".into(),
             sent_at: 0,
         };
