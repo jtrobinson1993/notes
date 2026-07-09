@@ -945,13 +945,22 @@ Playwright version (currently 1.60.0).
       delegates. `rowToView` sets key=row.id, sortKey=relay_ts. ConversationView
       render key = `m.key ?? String(seq)` (v8 ids no longer collide on NaN seq).
       Legacy behavior preserved via fallbacks. Tests (web 463, +3).
-    - **Next steps:** (2) wire `nativeRelay` `onIngested` → refresh the active
-      conversation so drained v8 rows live-render; (3) v8 conversation identity
-      (how a v8 DM/group maps to a local conv id + channel); (4) move
-      edits/reactions/read-state off `seq` to `(key)` / relay-native (big —
-      reactions+read-state are seq-keyed on the wire too); (5) outbound v8 send
-      (compose `ChatMessagePayload` → seal → `relay_send`, gated on friend
-      delivery tokens).
+    - **DONE (iter 43) step 2 — live-render drained v8 rows.** Chat store
+      registers `setOnMailIngested(() => reloadActiveFromLog())` (native only);
+      `reloadActiveFromLog` re-reads the open conversation's newest local-log
+      page → `orderMessages` merges idempotently (dedup by id). Thin glue over
+      tested units; end-to-end effect awaits v8 convs existing locally. Suite
+      green (463).
+    - **Next steps:** (3) **v8 conversation identity** — how a v8 DM/group
+      becomes a local `conversations` entry the user can open (gated on friends
+      for DMs / group-state for groups); this is the true unblocker for
+      end-to-end v8 messaging and interlocks with the friends cutover. (4) move
+      edits/reactions/read-state off `seq` (big — seq-keyed on the wire too).
+      (5) outbound v8 send (compose `ChatMessagePayload` → seal → `relay_send`,
+      gated on friend delivery tokens). NOTE: the cutover's later steps
+      interdepend with the **friends cutover** (friends → delivery tokens → v8
+      DMs → v8 messages) — likely need a friends/contacts store with
+      {handle, identity_pub, sealing_pub, delivery_token} in the Rust core.
   - **Other open threads:** friends-store cutover (process `friend-accept` on
     drain + reciprocate + friends UI); OPEN FOLLOW-UPS: live WS stop signal;
     sender→contact interim; blob chunked/resumable + group per-member-ack GC.
