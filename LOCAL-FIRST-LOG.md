@@ -1041,13 +1041,20 @@ Playwright version (currently 1.60.0).
     messaging is now usable end-to-end from the UI** (add friend via invite →
     DM → send/receive live). User directive: keep implementing the spec
     continuously (no long heartbeats).
-  - **Remaining spec work (continuing):** (1) edits/reactions/read-state for v8
-    DMs (currently read-only render); (2) group messaging (send/fan-out on the
-    D14 group-state record + group blobs); (3) blob chunked/resumable transfer;
-    (4) voice under v8 (device-token auth); (5) KT inclusion proofs / auditor
-    (phase 6); (6) README/spec currency for the v8 native surface. NOTE:
-    reciprocal friend-confirm best-effort in drain; live WS task no stop signal;
-    unsigned commits (1Password) — re-sign later.
+  - **DONE (iter 54) — v8 message delete (D11).** `KIND_DELETE` + `DeleteData`;
+    disposition → `Delete` (editor = verified sender). `store.message_sender`
+    (authority source). Drain applies a delete only if the target's recorded
+    sender == the delete's verified sender (a friend can't delete my messages;
+    unknown target skipped — FIFO puts sends before deletes).
+    `relay_delete_message` IPC (seal→send→tombstone local) + `relayDeleteMessage`
+    + NativeChat hover-delete → "Message deleted" tombstone. cargo 50, web 477.
+  - **Remaining spec work (continuing):** (1) v8 message **edit** (mirror
+    delete: KIND_EDIT + auth check + IPC + UI); (2) reactions/read-state for v8
+    DMs; (3) group messaging (send/fan-out on the D14 record + group blobs);
+    (4) blob chunked/resumable; (5) voice under v8 (device-token auth); (6) KT
+    inclusion proofs / auditor (phase 6); (7) README/spec currency. NOTE:
+    reciprocal friend-confirm best-effort; live WS task no stop signal; unsigned
+    commits (1Password) — re-sign later.
   - **v8 MESSAGING CORE COMPLETE** (iters 42–50): unified msg identity/order,
     live-render wiring, friend store + full invite→mutual-friend handshake,
     outbound send, spoof-proof DM identity, native DM API. Remaining v8 work is
