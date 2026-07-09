@@ -89,6 +89,23 @@ export function relayDirectoryPublish(): Promise<void> {
   return invoke('relay_directory_publish');
 }
 
+/** Mint a friend invite (D4b): store hash(token) + expiry; resolves with the
+ *  absolute expiry (ms). The raw token stays client-side (goes in the invite). */
+export function relayInviteMint(tokenHash: string, expiresInSec?: number): Promise<number> {
+  return invoke<number>('relay_invite_mint', { tokenHash, expiresInSec: expiresInSec ?? null });
+}
+
+/** Redeem a friend invite: drop the pre-sealed friend-accept envelope into the
+ *  inviter's mailbox (capability only). Resolves with the relay stamp. */
+export function relayInviteRedeem(token: string, envelope: number[]): Promise<number> {
+  return invoke<number>('relay_invite_redeem', { token, envelope });
+}
+
+/** This account's per-relay directory keys (base64) for assembling an invite. */
+export function relayMyDirectoryKeys(): Promise<{ identity_pub: string; sealing_pub: string }> {
+  return invoke('relay_my_directory_keys');
+}
+
 /** Register hash(delivery token) with the relay; resolves with the token
  *  itself, which gets sealed to friends (D6). */
 export function relayRegisterVerifier(): Promise<string> {

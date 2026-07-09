@@ -296,6 +296,68 @@ impl RelayClient {
         Ok(())
     }
 
+    /// Mint a friend invite (device-authed, D4b): store `hash(token)` + expiry
+    /// for a future friend. Returns the absolute expiry (ms).
+    pub async fn invite_mint(
+        &self,
+        signing: &SigningKey,
+        token_hash: String,
+        expires_in_sec: Option<u32>,
+    ) -> Result<i64, String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let mut body = serde_json::json!({ "tokenHash": token_hash });
+        if let Some(s) = expires_in_sec {
+            body["expiresInSec"] = serde_json::json!(s);
+        }
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/invites"))
+            .bearer_auth(bearer)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("invite mint failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("relay refused invite (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct MintResponse {
+            #[serde(rename = "expiresAt")]
+            expires_at: i64,
+        }
+        let body: MintResponse = res.json().await.map_err(|e| format!("bad mint response: {e}"))?;
+        Ok(body.expires_at)
+    }
+
+    /// Redeem a friend invite (capability only — deliberately NO device token;
+    /// requiring one would let the relay link the redeemer to the inviter = a
+    /// social-graph edge, D4b/D6). Drops the pre-sealed friend-accept envelope
+    /// into the inviter's mailbox and returns the relay stamp.
+    pub async fn invite_redeem(&self, token: &str, envelope: Vec<u8>) -> Result<i64, String> {
+        use base64::Engine as _;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/invites/redeem"))
+            .json(&serde_json::json!({
+                "token": token,
+                "envelope": base64::engine::general_purpose::STANDARD.encode(&envelope),
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("invite redeem failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("invite redeem refused (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct RedeemResponse {
+            #[serde(rename = "relayTs")]
+            relay_ts: i64,
+        }
+        let body: RedeemResponse =
+            res.json().await.map_err(|e| format!("bad redeem response: {e}"))?;
+        Ok(body.relay_ts)
+    }
+
     /// Sealed send (D6): deliberately NO device token — the recipient's
     /// delivery token is the only credential, so the relay never learns who
     /// sent the envelope.

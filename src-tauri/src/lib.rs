@@ -273,6 +273,58 @@ async fn relay_mailbox_drain(
     Ok(message::DrainReport { ingested, acked, buffered })
 }
 
+/// Mint a friend invite (D4b): the client hashes its own random token and this
+/// stores `hash(token)` + expiry at the relay. Returns the absolute expiry (ms).
+#[tauri::command]
+async fn relay_invite_mint(
+    token_hash: String,
+    expires_in_sec: Option<u32>,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<i64, String> {
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    relay.invite_mint(&signing, token_hash, expires_in_sec).await
+}
+
+/// Redeem a friend invite (D4b): drop the pre-sealed friend-accept envelope
+/// into the inviter's mailbox. Capability only — no device key involved.
+#[tauri::command]
+async fn relay_invite_redeem(
+    token: String,
+    envelope: Vec<u8>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<i64, String> {
+    relay.invite_redeem(&token, envelope).await
+}
+
+/// This account's per-relay directory keys (b64) for assembling a friend invite
+/// (embeds the inviter's pinned keys). Requires the vault unlocked + a relay.
+#[tauri::command]
+fn relay_my_directory_keys(
+    vault: VaultState,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<MyDirectoryKeys, String> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let vault = vault.lock().unwrap();
+    let mk = vault.mk().map_err(|e| e.to_string())?;
+    let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+    Ok(MyDirectoryKeys {
+        identity_pub: b64.encode(ident.signing_public()),
+        sealing_pub: b64.encode(ident.sealing_public()),
+    })
+}
+
+#[derive(serde::Serialize)]
+struct MyDirectoryKeys {
+    identity_pub: String,
+    sealing_pub: String,
+}
+
 /// Register the wrapped-MK escrow with the connected relay (D15).
 #[tauri::command]
 async fn relay_escrow_upload(
@@ -570,6 +622,9 @@ pub fn run() {
             relay_connect,
             relay_status,
             relay_escrow_upload,
+            relay_invite_mint,
+            relay_invite_redeem,
+            relay_my_directory_keys,
             relay_directory_publish,
             relay_register_verifier,
             relay_send,
