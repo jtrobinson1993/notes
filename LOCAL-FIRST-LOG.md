@@ -1019,6 +1019,11 @@ Playwright version (currently 1.60.0).
     `sendDm(contactId, text)` (→ `relaySendMessage`). No server, no seq. Tests
     (web 466, +3). Deliberately separate from the legacy server-sourced chat
     store (which stays for the browser path).
+  - **DONE (iter 51) — persist `identity.handle` natively (D4b).** The public
+    handle isn't in the E2E profile blob, so `migrateOwnProfile` now captures it
+    from `api.me()` into the `identity.handle` setting = one native source (friends
+    UI reads it to name me in invites/seal accepts; drain reads it to
+    reciprocate). Unblocks the friends UI. web 466, tc clean.
   - **Next (UI — the remaining piece; UI-heavy, wants the browser harness):**
     (a) **friends UI** — invite create (`createFriendInvite` → QR/link), redeem
     (`redeemFriendInvite` — paste/scan), friends list (`listDms`). (b) **DM view**
