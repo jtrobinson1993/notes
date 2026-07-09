@@ -4,7 +4,14 @@
 //! Decrypted content lives in rows so local search can work; the at-rest
 //! boundary is the SQLCipher key, never field-level ciphertext.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
@@ -158,6 +165,11 @@ const MIGRATIONS: &[&str] = &[
     // v6 — tags as first-class metadata (the UI filters on them; they were
     // only folded into search_text before).
     "ALTER TABLE notes ADD COLUMN tags_json TEXT;",
+    // v7 — v8 friend addressing (D4b/D6): a contact's per-relay sealing key (to
+    // seal envelopes to them) + delivery token (to send via the sealed
+    // mailbox), established on invite redemption / friend-accept.
+    "ALTER TABLE contact_relays ADD COLUMN sealing_pub BLOB;
+     ALTER TABLE contact_relays ADD COLUMN delivery_token TEXT;",
 ];
 
 #[derive(serde::Deserialize)]
@@ -202,6 +214,38 @@ pub struct ImportContact {
     pub id: String,
     pub display_name: Option<String>,
     pub is_friend: bool,
+}
+
+/// A v8 friend's per-relay addressing to record on invite redeem / friend-accept.
+#[derive(serde::Deserialize)]
+pub struct FriendRecord {
+    pub contact_id: String,
+    pub display_name: Option<String>,
+    pub relay_id: String,
+    pub handle: String,
+    /// Friend's per-relay Ed25519 identity key.
+    pub identity_pub: Vec<u8>,
+    /// Friend's X25519 sealing key (seal envelopes to this).
+    pub sealing_pub: Vec<u8>,
+    /// Capability to send to the friend via the sealed mailbox (D6).
+    pub delivery_token: String,
+}
+
+/// Everything needed to seal + send to a friend on a relay.
+#[derive(serde::Serialize)]
+pub struct FriendAddressing {
+    pub handle: String,
+    pub identity_pub: Vec<u8>,
+    pub sealing_pub: Vec<u8>,
+    pub delivery_token: String,
+}
+
+/// A friend list entry.
+#[derive(serde::Serialize)]
+pub struct FriendSummary {
+    pub contact_id: String,
+    pub handle: String,
+    pub display_name: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -400,6 +444,121 @@ impl Store {
         }
         tx.commit()?;
         Ok(imported)
+    }
+
+    /// Persist (idempotently) a relay this device is a member of, so friend and
+    /// conversation rows can reference it (D4/local-store).
+    pub fn upsert_relay(
+        &self,
+        relay_id: &str,
+        url: &str,
+        identity_fp: &str,
+        our_identity_pub: &[u8],
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO relays(id, url, identity_fp, our_identity_pub, joined_at)
+               VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET url = excluded.url,
+               identity_fp = excluded.identity_fp,
+               our_identity_pub = excluded.our_identity_pub",
+            (relay_id, url, identity_fp, our_identity_pub, now_ms()),
+        )?;
+        Ok(())
+    }
+
+    /// Record (or refresh) a v8 friend's per-relay addressing (D4b/D6): the
+    /// contact is marked a friend and gains everything needed to reach them —
+    /// handle, identity key, sealing key, and delivery token. Idempotent; the
+    /// relay row must already exist (see `upsert_relay`).
+    pub fn record_friend(&self, f: &FriendRecord) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO contacts(id, display_name, is_friend) VALUES (?1, ?2, 1)
+             ON CONFLICT(id) DO UPDATE SET is_friend = 1,
+               display_name = COALESCE(excluded.display_name, contacts.display_name)",
+            (&f.contact_id, &f.display_name),
+        )?;
+        tx.execute(
+            "INSERT INTO contact_relays(contact_id, relay_id, handle, identity_pub, sealing_pub, delivery_token)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(contact_id, relay_id) DO UPDATE SET handle = excluded.handle,
+               identity_pub = excluded.identity_pub, sealing_pub = excluded.sealing_pub,
+               delivery_token = excluded.delivery_token",
+            (
+                &f.contact_id,
+                &f.relay_id,
+                &f.handle,
+                &f.identity_pub,
+                &f.sealing_pub,
+                &f.delivery_token,
+            ),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Everything needed to seal + send to a friend on a relay, or None if not a
+    /// friend there (or addressing not yet exchanged).
+    pub fn friend_addressing(
+        &self,
+        contact_id: &str,
+        relay_id: &str,
+    ) -> Result<Option<FriendAddressing>, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT cr.handle, cr.identity_pub, cr.sealing_pub, cr.delivery_token
+                   FROM contact_relays cr JOIN contacts c ON c.id = cr.contact_id
+                  WHERE cr.contact_id = ?1 AND cr.relay_id = ?2 AND c.is_friend = 1
+                    AND cr.sealing_pub IS NOT NULL AND cr.delivery_token IS NOT NULL",
+                (contact_id, relay_id),
+                |r| {
+                    Ok(FriendAddressing {
+                        handle: r.get(0)?,
+                        identity_pub: r.get(1)?,
+                        sealing_pub: r.get(2)?,
+                        delivery_token: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// List v8 friends on a relay (for the friends list + starting DMs).
+    pub fn list_friends(&self, relay_id: &str) -> Result<Vec<FriendSummary>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT cr.contact_id, cr.handle, c.display_name
+               FROM contact_relays cr JOIN contacts c ON c.id = cr.contact_id
+              WHERE cr.relay_id = ?1 AND c.is_friend = 1 AND c.blocked_hidden = 0
+                AND cr.delivery_token IS NOT NULL
+              ORDER BY cr.handle",
+        )?;
+        let rows = stmt
+            .query_map((relay_id,), |r| {
+                Ok(FriendSummary {
+                    contact_id: r.get(0)?,
+                    handle: r.get(1)?,
+                    display_name: r.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Unfriend (D4b — the local half; the caller rotates the profile key +
+    /// re-issues tokens to remaining friends). Drops the friend flag and their
+    /// addressing so we can no longer reach them.
+    pub fn remove_friend(&self, contact_id: &str, relay_id: &str) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE contact_relays SET sealing_pub = NULL, delivery_token = NULL
+              WHERE contact_id = ?1 AND relay_id = ?2",
+            (contact_id, relay_id),
+        )?;
+        tx.execute("UPDATE contacts SET is_friend = 0 WHERE id = ?1", (contact_id,))?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn import_messages(&self, messages: Vec<ImportMessage>) -> Result<usize, StoreError> {
@@ -1053,5 +1212,49 @@ mod tests {
         Store::open(&path, &key).unwrap();
         let store = Store::open(&path, &key).unwrap();
         assert_eq!(store.schema_version().unwrap(), MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn friend_addressing_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[11u8; 32]).unwrap();
+        store
+            .upsert_relay("r1", "https://relay.example", "fp", &[9u8; 32])
+            .unwrap();
+
+        // Not a friend yet.
+        assert!(store.friend_addressing("c1", "r1").unwrap().is_none());
+        assert!(store.list_friends("r1").unwrap().is_empty());
+
+        let rec = |token: &str, name: Option<&str>| FriendRecord {
+            contact_id: "c1".into(),
+            display_name: name.map(str::to_string),
+            relay_id: "r1".into(),
+            handle: "Alice#0001".into(),
+            identity_pub: vec![1u8; 32],
+            sealing_pub: vec![2u8; 32],
+            delivery_token: token.into(),
+        };
+        store.record_friend(&rec("deliv-a", Some("Alice"))).unwrap();
+
+        let a = store.friend_addressing("c1", "r1").unwrap().expect("friend addressing");
+        assert_eq!(a.handle, "Alice#0001");
+        assert_eq!(a.sealing_pub, vec![2u8; 32]);
+        assert_eq!(a.delivery_token, "deliv-a");
+
+        // Re-record refreshes (e.g. a rotated delivery token) without dropping name.
+        store.record_friend(&rec("deliv-a2", None)).unwrap();
+        let a2 = store.friend_addressing("c1", "r1").unwrap().unwrap();
+        assert_eq!(a2.delivery_token, "deliv-a2");
+
+        let friends = store.list_friends("r1").unwrap();
+        assert_eq!(friends.len(), 1);
+        assert_eq!(friends[0].contact_id, "c1");
+        assert_eq!(friends[0].display_name.as_deref(), Some("Alice"));
+
+        // Unfriend drops addressing + the friend flag (can no longer reach them).
+        store.remove_friend("c1", "r1").unwrap();
+        assert!(store.friend_addressing("c1", "r1").unwrap().is_none());
+        assert!(store.list_friends("r1").unwrap().is_empty());
     }
 }
