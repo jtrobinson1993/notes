@@ -500,6 +500,12 @@ CREATE TABLE IF NOT EXISTS relay_blobs (
   size INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS relay_group_state (
+  group_id TEXT PRIMARY KEY,
+  record TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `);
 
   // Idempotent v8 migration: relay_escrow.kdf_params (added after the table).
@@ -876,6 +882,30 @@ CREATE TABLE IF NOT EXISTS relay_blobs (
         return rows.map((r) => r.blob_id);
       });
       return sweep();
+    },
+
+    /** D14 group-state: the current signed record (opaque string) + its version.
+     *  The relay enforces monotonic version + admin-signed; trust is client-side. */
+    getRelayGroupState(groupId: string): { record: string; version: number } | undefined {
+      return db
+        .prepare('SELECT record, version FROM relay_group_state WHERE group_id = ?')
+        .get(groupId) as { record: string; version: number } | undefined;
+    },
+    putRelayGroupState(groupId: string, record: string, version: number): void {
+      db.prepare(
+        `INSERT INTO relay_group_state (group_id, record, version, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(group_id) DO UPDATE SET record = excluded.record,
+           version = excluded.version, updated_at = excluded.updated_at`,
+      ).run(groupId, record, version, Date.now());
+    },
+    /** The requester's own per-relay directory entry (for the group member gate). */
+    getRelayDirectoryByUserId(
+      userId: string,
+    ): { identityPubkey: string; sealingPubkey: string } | undefined {
+      const r = db
+        .prepare('SELECT identity_pubkey, sealing_pubkey FROM relay_directory WHERE user_id = ?')
+        .get(userId) as { identity_pubkey: string; sealing_pubkey: string } | undefined;
+      return r ? { identityPubkey: r.identity_pubkey, sealingPubkey: r.sealing_pubkey } : undefined;
     },
 
     /** D15 escrow: opaque wrapped-key payload + auth-key hashes. The blobs

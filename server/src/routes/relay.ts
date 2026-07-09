@@ -20,6 +20,33 @@ import {
   verifyDeviceToken,
 } from '../relayAuth.js';
 
+/** Owner/admin identity pubkeys from a parsed group record — the set whose
+ *  signature the relay accepts for an update (D14). */
+function groupAdminPubkeys(rec: unknown): string[] {
+  const members = (rec as { members?: unknown })?.members;
+  if (!Array.isArray(members)) return [];
+  return members
+    .filter(
+      (m): m is { identityPubKey: string; role: string } =>
+        !!m &&
+        typeof (m as { identityPubKey?: unknown }).identityPubKey === 'string' &&
+        ((m as { role?: unknown }).role === 'owner' || (m as { role?: unknown }).role === 'admin'),
+    )
+    .map((m) => m.identityPubKey);
+}
+
+/** True if `signature` over `record` verifies against any of `pubkeys`
+ *  (base64 raw Ed25519). Malformed keys/sigs simply don't match. */
+function signedByAny(pubkeys: string[], record: string, signature: Buffer): boolean {
+  return pubkeys.some((pk) => {
+    try {
+      return verifyDeviceSignature(Buffer.from(pk, 'base64'), record, signature);
+    } catch {
+      return false;
+    }
+  });
+}
+
 const CHALLENGE_MAX_AGE_MS = 2 * 60_000;
 const MAILBOX_TTL_MS = 30 * 24 * 60 * 60_000; // D6: undelivered ~30 days
 const MAILBOX_FETCH_LIMIT = 200;
@@ -422,6 +449,84 @@ export function relayRoutes(
       return { ok: true };
     });
   }
+
+  // ---- group state (D14) ----
+  // The group's authority record is a client-signed, opaque JSON string. The
+  // relay does ordering + availability, NOT trust: it accepts a new version
+  // only if (a) it is signed by a key the *current* record calls an owner/admin
+  // (genesis is self-authorizing against its own admin set), and (b) its version
+  // strictly exceeds the current one (anti-rollback). Clients independently
+  // verify the full signature chain. Fine-grained role rules (e.g. only the
+  // owner may remove admins) are client-enforced. groupIds must be unguessable
+  // (a genesis for an unknown id just creates that group).
+  const MAX_GROUP_RECORD = 64 * 1024;
+
+  app.put('/api/relay/groups/:id/state', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const { id } = request.params as { id: string };
+    const b = request.body as { record?: string; adminSignature?: string } | null;
+    if (!b?.record || !b?.adminSignature || b.record.length > MAX_GROUP_RECORD) {
+      return reply.code(400).send({ error: 'record and adminSignature required' });
+    }
+    let parsed: { groupId?: unknown; version?: unknown };
+    try {
+      parsed = JSON.parse(b.record);
+    } catch {
+      return reply.code(400).send({ error: 'record must be JSON' });
+    }
+    if (parsed.groupId !== id) {
+      return reply.code(400).send({ error: 'record groupId mismatch' });
+    }
+    const version = parsed.version;
+    if (!Number.isInteger(version)) {
+      return reply.code(400).send({ error: 'record needs an integer version' });
+    }
+    const newAdmins = groupAdminPubkeys(parsed);
+    if (!newAdmins.length) {
+      return reply.code(400).send({ error: 'record needs an owner/admin' });
+    }
+    const sig = Buffer.from(b.adminSignature, 'base64');
+    const current = db.getRelayGroupState(id);
+    // Update: authorize against the CURRENT admins (so a member can't self-
+    // escalate by naming themselves admin). Genesis: self-authorize.
+    const authorizers = current
+      ? groupAdminPubkeys(JSON.parse(current.record))
+      : newAdmins;
+    if (!signedByAny(authorizers, b.record, sig)) {
+      return reply.code(403).send({ error: 'not signed by a current admin' });
+    }
+    if (current && (version as number) <= current.version) {
+      return reply.code(409).send({ error: 'version not newer than current' });
+    }
+    db.putRelayGroupState(id, b.record, version as number);
+    return { version };
+  });
+
+  app.get('/api/relay/groups/:id/state', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const { id } = request.params as { id: string };
+    const current = db.getRelayGroupState(id);
+    // Uniform 404 for missing OR not-a-member — non-members don't learn a group
+    // exists. Membership = the requester's directory identity key is in members.
+    if (!current) return reply.code(404).send({ error: 'not found' });
+    const me = db.getRelayDirectoryByUserId(device.userId);
+    let members: unknown[] = [];
+    try {
+      const m = (JSON.parse(current.record) as { members?: unknown }).members;
+      if (Array.isArray(m)) members = m;
+    } catch {
+      /* stored record is always valid JSON (validated on PUT) */
+    }
+    const isMember =
+      !!me &&
+      members.some(
+        (m) => (m as { identityPubKey?: unknown })?.identityPubKey === me.identityPubkey,
+      );
+    if (!isMember) return reply.code(404).send({ error: 'not found' });
+    return { record: current.record, version: current.version };
+  });
 
   // ---- account escrow (D15) ----
 

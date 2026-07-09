@@ -140,11 +140,28 @@ whole-blob); group blobs on D14.
 
 ## Group state (D14)
 
-- `GET /api/groups/:id/state` (member: device token) → current signed record.
-- `PUT /api/groups/:id/state` `{ record, version, adminSignature }` — relay
-  verifies the signature against the *current* record's owner/admin set and
-  rejects `version ≤ current` (no rollback). Members verify the same signature
-  chain client-side; the relay's job is ordering + availability, not trust.
+The group's authority record is a **client-signed, opaque JSON string**
+`{ groupId, version, members:[{ identityPubKey, role }], channels[] }`. The relay
+does **ordering + availability, not trust**.
+
+- `PUT /api/relay/groups/:id/state` `{ record, adminSignature }` (device token) —
+  accepted iff (a) `adminSignature` over the exact `record` string verifies
+  against a key the **current** record calls `owner`/`admin` (**genesis is
+  self-authorizing** against its own admin set), and (b) the record's `version`
+  **strictly exceeds** the current one (anti-rollback). `version` lives *inside*
+  the signed record, so it can't be swapped. → `{ version }`; `403` if not
+  admin-signed, `409` if not newer, `400` on malformed/`groupId` mismatch. A
+  plain `member` can't self-escalate: a record naming themselves admin still
+  needs a *current* admin's signature.
+- `GET /api/relay/groups/:id/state` (device token) → `{ record, version }`.
+  **Member-gated**: the requester's directory identity key must appear in
+  `members`; non-members and unknown groups both get a **uniform 404** (a
+  non-member can't even learn the group exists).
+
+Clients independently verify the full signature chain. **Fine-grained role rules**
+(e.g. only the owner may remove admins; channel ACLs) are client-enforced — the
+relay only guarantees monotonic, admin-signed versions. `groupId`s must be
+unguessable (a genesis PUT for an unknown id just creates that group).
 
 ## Invites (D4b)
 
