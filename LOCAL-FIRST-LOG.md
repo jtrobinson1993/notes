@@ -1067,11 +1067,18 @@ Playwright version (currently 1.60.0).
     disposition (reactor = verified sender); drain applies add/remove;
     `relay_react` + `conversation_reactions` IPC + native.ts. cargo 54, web 479.
     **UI (chips + picker) next.**
-  - **Remaining spec work (continuing):** (1) reactions **UI** (chips grouped by
-    emoji, quick-react, mine highlighted); (2) group messaging (send/fan-out on
-    D14 + group blobs); (3) blob chunked/resumable; (4) voice under v8; (5) KT
-    inclusion proofs / auditor (phase 6); (6) README/spec currency. NOTE:
-    reciprocal friend-confirm best-effort; edits/deletes of a not-yet-seen
+  - **DONE (iter 58) — v8 DM reactions UI (D11).** NativeChat loads reactions
+    on open/reload/ingest, groups by emoji per message, renders chips (mine
+    highlighted); hover 👍 quick-react; chip click toggles (relayReact
+    add/remove). Message rows → columns (bubble + chips). web 480. **v8 DM
+    messaging is now feature-complete: send / edit / delete / react / unread /
+    live, all authenticated E2E.**
+  - **Remaining spec work (larger, continuing):** (1) **group messaging** —
+    send/fan-out on the D14 group-state record + consume group blobs (biggest
+    remaining gap); (2) blob chunked/resumable transfer; (3) voice under v8
+    (device-token auth); (4) KT inclusion proofs / auditor (phase 6);
+    (5) README/spec currency for the v8 native surface. NOTE: reciprocal
+    friend-confirm best-effort; edits/deletes/reactions of a not-yet-seen
     message dropped (FIFO rare); live WS task no stop signal; unsigned commits.
   - **v8 MESSAGING CORE COMPLETE** (iters 42–50): unified msg identity/order,
     live-render wiring, friend store + full invite→mutual-friend handshake,
