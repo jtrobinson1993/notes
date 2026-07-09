@@ -358,6 +358,82 @@ impl RelayClient {
         Ok(body.relay_ts)
     }
 
+    /// Publish/replace a group's signed state record (D14, device-authed).
+    pub async fn group_state_put(
+        &self,
+        signing: &SigningKey,
+        group_id: &str,
+        record: &str,
+        admin_signature: &str,
+    ) -> Result<(), String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .put(format!("{base}/api/relay/groups/{group_id}/state"))
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({ "record": record, "adminSignature": admin_signature }))
+            .send()
+            .await
+            .map_err(|e| format!("group state put failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("relay refused group state (HTTP {})", res.status()));
+        }
+        Ok(())
+    }
+
+    /// Register a group's blob/send verifier = hash(group token) (D14, member).
+    pub async fn group_verifier_put(
+        &self,
+        signing: &SigningKey,
+        group_id: &str,
+        verifier: &str,
+    ) -> Result<(), String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .put(format!("{base}/api/relay/groups/{group_id}/verifier"))
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({ "verifier": verifier }))
+            .send()
+            .await
+            .map_err(|e| format!("group verifier put failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("relay refused group verifier (HTTP {})", res.status()));
+        }
+        Ok(())
+    }
+
+    /// Group send (D6/D14): one group-key-sealed envelope, group-token authed
+    /// (no device token — sender-anonymous). The relay fans it to all members.
+    pub async fn group_send(
+        &self,
+        group_id: &str,
+        group_token: &str,
+        envelope: Vec<u8>,
+    ) -> Result<i64, String> {
+        use base64::Engine as _;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/groups/{group_id}/send"))
+            .json(&serde_json::json!({
+                "groupToken": group_token,
+                "envelope": base64::engine::general_purpose::STANDARD.encode(&envelope),
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("group send failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("group send refused (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            #[serde(rename = "relayTs")]
+            relay_ts: i64,
+        }
+        let body: Resp = res.json().await.map_err(|e| format!("bad group send response: {e}"))?;
+        Ok(body.relay_ts)
+    }
+
     /// Sealed send (D6): deliberately NO device token — the recipient's
     /// delivery token is the only credential, so the relay never learns who
     /// sent the envelope.

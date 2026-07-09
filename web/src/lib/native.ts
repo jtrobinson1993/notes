@@ -207,6 +207,24 @@ export function dmUnread(conversationId: string): Promise<number> {
   return invoke<number>('dm_unread', { conversationId });
 }
 
+// ---- groups (D14) ----
+
+export interface GroupSummary {
+  group_id: string;
+  name: string | null;
+}
+
+/** Create a group I own (D14): publishes the genesis record + verifier and
+ *  stores the group key. Resolves with the group id. Add members separately. */
+export function groupCreate(name: string): Promise<string> {
+  return invoke<string>('group_create', { name });
+}
+
+/** Groups I'm a member of. */
+export function groupList(): Promise<GroupSummary[]> {
+  return invoke<GroupSummary[]>('group_list');
+}
+
 /** Sealed send: the recipient's delivery token is the only credential. */
 export function relaySend(
   recipientHandle: string,

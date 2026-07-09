@@ -528,6 +528,81 @@ fn dm_unread(conversation_id: String, vault: VaultState) -> Result<i64, String> 
         .map_err(|e| e.to_string())
 }
 
+/// Create a group I own (D14): publish my directory keys, PUT a genesis
+/// group-state record (me = owner, signed by my identity), register the group
+/// verifier derived from a fresh group key, and store the key + a local group
+/// conversation. Returns the group id. Add members separately.
+#[tauri::command]
+async fn group_create(
+    name: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    use ed25519_dalek::Signer as _;
+    use rand::RngCore as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let status = relay.status();
+    let relay_fp = status.relay_fp.ok_or("not connected to a relay")?;
+    let base_url = status.base_url.ok_or("not connected to a relay")?;
+
+    let (signing, ident) = {
+        let vault = vault.lock().unwrap();
+        let signing = vault.device_signing_key().map_err(|e| e.to_string())?;
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        (signing, ident)
+    };
+    let my_identity_b64 = b64.encode(ident.signing_public());
+    // My directory entry must exist for the group verifier's member check.
+    relay
+        .directory_publish(&signing, my_identity_b64.clone(), b64.encode(ident.sealing_public()))
+        .await?;
+
+    let group_key = keys::random_key();
+    let group_id = {
+        let mut idb = [0u8; 16];
+        rand::rng().fill_bytes(&mut idb);
+        format!("grp:{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(idb))
+    };
+    // Genesis record, signed by my identity (the owner).
+    let record = serde_json::json!({
+        "groupId": group_id,
+        "version": 1,
+        "members": [{ "identityPubKey": my_identity_b64, "role": "owner" }],
+    })
+    .to_string();
+    let admin_sig = b64.encode(ident.signing.sign(record.as_bytes()).to_bytes());
+    relay.group_state_put(&signing, &group_id, &record, &admin_sig).await?;
+
+    let (_token, verifier) =
+        keys::group_token_verifier(group_key.as_ref()).map_err(|e| e.to_string())?;
+    relay.group_verifier_put(&signing, &group_id, &verifier).await?;
+
+    {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store
+            .upsert_relay(&relay_fp, &base_url, &relay_fp, &ident.signing_public())
+            .map_err(|e| e.to_string())?;
+        store
+            .upsert_group(&group_id, group_key.as_ref(), Some(&name))
+            .map_err(|e| e.to_string())?;
+        store
+            .ensure_conversation(&group_id, "group", &relay_fp)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(group_id)
+}
+
+/// Groups I'm a member of (D14) — for the group list.
+#[tauri::command]
+fn group_list(vault: VaultState) -> Result<Vec<store::GroupSummary>, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.list_groups().map_err(|e| e.to_string())
+}
+
 /// Unfriend, local half (D4b): drop the friend flag + their addressing so we can
 /// no longer reach them. The caller also rotates the profile key + re-issues
 /// tokens to remaining friends (a follow-up flow).
@@ -1077,6 +1152,8 @@ pub fn run() {
             dm_conversation_id_for,
             dm_mark_read,
             dm_unread,
+            group_create,
+            group_list,
             relay_directory_publish,
             relay_register_verifier,
             relay_send,
