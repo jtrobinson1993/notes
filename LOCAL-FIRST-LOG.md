@@ -1094,10 +1094,13 @@ Playwright version (currently 1.60.0).
     — RelayClient `group_state_put`/`group_verifier_put`/`group_send`;
     `group_create` IPC (publish directory → PUT genesis record signed by me →
     register verifier from a fresh group key → store key + group conv);
-    `group_list` IPC + native.ts `groupCreate`/`groupList`. Next: **group send**
-    (`seal_group` → `group_send` + tee), **inbound drain** (relay-native group
-    messages: `open_group` with the stored group key when conv is a group),
-    **key distribution to members** (seal group key + a group-add record), UI. (b) **group creation** — genesis D14 record (me=owner) + set group
+    `group_list` IPC + native.ts `groupCreate`/`groupList`. (a5) [DONE iter 64]
+    **group send** — `relay_send_group_message` (group key → token → seal_group
+    → `group_send` fan-out → tee same id). Next: **inbound group drain** — the
+    drain tries the DM `open` first, then `open_group` against each stored group
+    key; a hit routes the message to that group_id (not `dm_conversation_id`).
+    Then **key distribution to members** (add-member: seal the group key to a
+    friend + bump the D14 record) and **group UI** (create/list/open/send). (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
