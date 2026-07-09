@@ -1290,14 +1290,24 @@ Playwright version (currently 1.60.0).
     socket), no graph lookups. So the v8 SFU server is a **parallel module**
     (reusing the mediasoup worker/router/transport machinery but capability-
     authed, room = call id), NOT a tweak to voice.ts.
+  - **DONE (iter 85) — call UI (panel + reactive composable).** New
+    `NativeCallPanel.vue` — presentational; hidden when idle/ended; renders phase
+    (Incoming call / Calling… / Connecting… / In call) with accept+decline on a
+    ring, single Cancel/Hang up otherwise; emits accept/decline/hangup; Myna
+    telephone icons; z-modal. New `useNativeCall.ts` composable — wraps
+    createNativeCall, exposes reactive `state`/`peerId` refs (updated via the
+    engine onState hook, reading peerId at transition time) + start/stop +
+    placeCall/accept/decline/hangup. Tests: panel (hidden idle/ended, ring
+    buttons+emits, cancel/hangup states, Unknown fallback) + composable (reactive
+    transitions, action/lifecycle delegation). web 512, tsc clean.
   - **Remaining v8 spec:** voice follow-ups (all SFU): (a) **v8 SFU server**
     (parallel module: device-token + call-id-capability room auth, mediasoup
     transport/produce/consume, member cap) — large, mediasoup-worker-backed.
     (b) **mediasoup-client CallMedia impl** (webview) behind `join(callId)`/
-    `close()` + frame E2EE via insertable streams. (c) **call UI** — incoming-
-    call panel + in-call controls, driven by createNativeCall (state via
-    onState). (d) D4c cross-relay fan-out + call-id dedup (deliberately deferred).
-    Then:
+    `close()` + frame E2EE via insertable streams. (c) **mount** NativeCallPanel
+    in the app shell bound to useNativeCall + a call button in NativeChat
+    (placeCall) — small, waits on a real CallMedia to be useful. (d) D4c
+    cross-relay fan-out + call-id dedup (deliberately deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).
