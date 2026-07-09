@@ -174,6 +174,16 @@ export function dmConversationId(contactId: string): Promise<string> {
   return invoke<string>('dm_conversation_id_for', { contactId });
 }
 
+/** Mark a DM read up to its newest message (local unread tracking). */
+export function dmMarkRead(conversationId: string): Promise<void> {
+  return invoke('dm_mark_read', { conversationId });
+}
+
+/** Unread inbound message count for a DM conversation. */
+export function dmUnread(conversationId: string): Promise<number> {
+  return invoke<number>('dm_unread', { conversationId });
+}
+
 /** Sealed send: the recipient's delivery token is the only credential. */
 export function relaySend(
   recipientHandle: string,

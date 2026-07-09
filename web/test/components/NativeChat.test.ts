@@ -27,7 +27,7 @@ const view = (over: Record<string, unknown>) => ({ seq: 0, senderId: '', text: '
 beforeEach(() => {
   vi.clearAllMocks();
   dm.listDms.mockResolvedValue([
-    { contactId: 'idA', handle: 'A#1', displayName: 'Alice', conversationId: 'dm:A' },
+    { contactId: 'idA', handle: 'A#1', displayName: 'Alice', conversationId: 'dm:A', unread: 0 },
   ]);
   dm.openDm.mockResolvedValue({ conversationId: 'dm:A', messages: [] });
   relay.onMailIngested.mockReturnValue(() => {});
@@ -83,6 +83,15 @@ describe('NativeChat', () => {
     await w.find('[data-testid="make-invite"]').trigger('click');
     await flushPromises();
     expect(w.find('[data-testid="invite-link"]').text()).toContain('accord://friend?i=abc');
+  });
+
+  it('shows an unread badge from the DM list', async () => {
+    dm.listDms.mockResolvedValue([
+      { contactId: 'idA', handle: 'A#1', displayName: 'Alice', conversationId: 'dm:A', unread: 4 },
+    ]);
+    const w = mount(NativeChat);
+    await flushPromises();
+    expect(w.find('[data-testid="unread-badge"]').text()).toBe('4');
   });
 
   it('deletes an own message via relayDeleteMessage and shows the tombstone', async () => {

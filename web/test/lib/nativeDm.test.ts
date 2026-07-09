@@ -4,6 +4,8 @@ const native = vi.hoisted(() => ({
   friendsList: vi.fn(),
   dmConversationId: vi.fn(),
   relaySendMessage: vi.fn(),
+  dmMarkRead: vi.fn().mockResolvedValue(undefined),
+  dmUnread: vi.fn().mockResolvedValue(0),
 }));
 vi.mock('../../src/lib/native', () => native);
 
@@ -15,21 +17,22 @@ import { listDms, openDm, sendDm } from '../../src/lib/nativeDm';
 beforeEach(() => vi.clearAllMocks());
 
 describe('nativeDm', () => {
-  it('lists one DM per friend, resolved to its conversation id', async () => {
+  it('lists one DM per friend, resolved to its conversation id + unread count', async () => {
     native.friendsList.mockResolvedValue([
       { contact_id: 'idA', handle: 'A#1', display_name: 'Alice' },
       { contact_id: 'idB', handle: 'B#2', display_name: null },
     ]);
     native.dmConversationId.mockImplementation((id: string) => Promise.resolve(`dm:${id}`));
+    native.dmUnread.mockImplementation((conv: string) => Promise.resolve(conv === 'dm:idA' ? 3 : 0));
 
     const dms = await listDms();
     expect(dms).toEqual([
-      { contactId: 'idA', handle: 'A#1', displayName: 'Alice', conversationId: 'dm:idA' },
-      { contactId: 'idB', handle: 'B#2', displayName: null, conversationId: 'dm:idB' },
+      { contactId: 'idA', handle: 'A#1', displayName: 'Alice', conversationId: 'dm:idA', unread: 3 },
+      { contactId: 'idB', handle: 'B#2', displayName: null, conversationId: 'dm:idB', unread: 0 },
     ]);
   });
 
-  it('opens a DM: resolves the conversation id and loads the newest local page', async () => {
+  it('opens a DM: resolves the id, loads the newest page, and marks it read', async () => {
     native.dmConversationId.mockResolvedValue('dm:idA');
     nativeChat.loadHistoryLocal.mockResolvedValue([{ key: 'm1' }]);
 
@@ -37,6 +40,7 @@ describe('nativeDm', () => {
     expect(conversationId).toBe('dm:idA');
     // channel id == conversation id (DMs have no sub-channels); reset = true.
     expect(nativeChat.loadHistoryLocal).toHaveBeenCalledWith('dm:idA', 'dm:idA', 50, true);
+    expect(native.dmMarkRead).toHaveBeenCalledWith('dm:idA');
     expect(messages).toEqual([{ key: 'm1' }]);
   });
 

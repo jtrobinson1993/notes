@@ -302,10 +302,11 @@ async fn relay_mailbox_drain(
         let vault = vault.lock().unwrap();
         let store = vault.store().map_err(|e| e.to_string())?;
         let my_handle = store.get_setting("identity.handle").map_err(|e| e.to_string())?;
+        // Persist the relay row so friend + conversation rows can FK to it.
+        store
+            .upsert_relay(&relay_fp, &base_url, &relay_fp, &my_identity_pub)
+            .map_err(|e| e.to_string())?;
         if !friends.is_empty() {
-            store
-                .upsert_relay(&relay_fp, &base_url, &relay_fp, &my_identity_pub)
-                .map_err(|e| e.to_string())?;
             for f in &friends {
                 store
                     .record_friend(&store::FriendRecord {
@@ -468,7 +469,9 @@ fn dm_conversation_id_for(
     vault: VaultState,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<String, String> {
-    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let status = relay.status();
+    let relay_fp = status.relay_fp.ok_or("not connected to a relay")?;
+    let base_url = status.base_url.ok_or("not connected to a relay")?;
     let vault = vault.lock().unwrap();
     let mk = vault.mk().map_err(|e| e.to_string())?;
     let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
@@ -479,9 +482,32 @@ fn dm_conversation_id_for(
         .ok_or("not a friend on this relay")?;
     let conv_id = identity::dm_conversation_id(&ident.signing_public(), &addressing.identity_pub);
     store
+        .upsert_relay(&relay_fp, &base_url, &relay_fp, &ident.signing_public())
+        .map_err(|e| e.to_string())?;
+    store
         .ensure_conversation(&conv_id, "dm", &relay_fp)
         .map_err(|e| e.to_string())?;
     Ok(conv_id)
+}
+
+/// Mark a DM conversation read up to its newest message (local unread, D11).
+#[tauri::command]
+fn dm_mark_read(conversation_id: String, vault: VaultState) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store
+        .mark_conversation_read(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Unread inbound message count for a DM conversation (D11).
+#[tauri::command]
+fn dm_unread(conversation_id: String, vault: VaultState) -> Result<i64, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store
+        .conversation_unread(&conversation_id)
+        .map_err(|e| e.to_string())
 }
 
 /// Unfriend, local half (D4b): drop the friend flag + their addressing so we can
@@ -513,7 +539,9 @@ async fn relay_send_message(
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<String, String> {
     use base64::Engine as _;
-    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let status = relay.status();
+    let relay_fp = status.relay_fp.ok_or("not connected to a relay")?;
+    let base_url = status.base_url.ok_or("not connected to a relay")?;
     // Identity (to seal), the friend's addressing, and the derived DM
     // conversation id (both sides compute the same one) — before any await.
     let (ident, addressing, conversation_id) = {
@@ -527,6 +555,9 @@ async fn relay_send_message(
             .ok_or("not a friend on this relay")?;
         let conversation_id =
             identity::dm_conversation_id(&ident.signing_public(), &addressing.identity_pub);
+        store
+            .upsert_relay(&relay_fp, &base_url, &relay_fp, &ident.signing_public())
+            .map_err(|e| e.to_string())?;
         store
             .ensure_conversation(&conversation_id, "dm", &relay_fp)
             .map_err(|e| e.to_string())?;
@@ -964,6 +995,8 @@ pub fn run() {
             friend_addressing,
             friend_remove,
             dm_conversation_id_for,
+            dm_mark_read,
+            dm_unread,
             relay_directory_publish,
             relay_register_verifier,
             relay_send,

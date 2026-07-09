@@ -34,6 +34,7 @@ async function open(dm: DmSummary): Promise<void> {
   active.value = dm;
   const res = await openDm(dm.contactId, PAGE);
   messages.value = res.messages;
+  await refreshDms(); // opening marked it read → clear its unread badge
 }
 
 async function reloadActive(): Promise<void> {
@@ -151,11 +152,16 @@ onUnmounted(() => unsub?.());
       <ul class="flex-1 overflow-y-auto">
         <li v-for="dm in dms" :key="dm.contactId">
           <button
-            class="w-full truncate px-3 py-2 text-left text-sm hover:bg-neutral-500/10"
+            class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-neutral-500/10"
             :class="{ 'bg-neutral-500/10': active?.contactId === dm.contactId }"
             @click="open(dm)"
           >
-            {{ dm.displayName || dm.handle }}
+            <span class="flex-1 truncate">{{ dm.displayName || dm.handle }}</span>
+            <span
+              v-if="dm.unread > 0"
+              data-testid="unread-badge"
+              class="shrink-0 rounded-full bg-blue-600 px-1.5 text-xs text-white"
+            >{{ dm.unread > 99 ? '99+' : dm.unread }}</span>
           </button>
         </li>
         <li v-if="!dms.length" class="px-3 py-6 text-center text-xs opacity-60">

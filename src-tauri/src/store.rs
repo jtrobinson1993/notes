@@ -170,6 +170,8 @@ const MIGRATIONS: &[&str] = &[
     // mailbox), established on invite redemption / friend-accept.
     "ALTER TABLE contact_relays ADD COLUMN sealing_pub BLOB;
      ALTER TABLE contact_relays ADD COLUMN delivery_token TEXT;",
+    // v8 — per-conversation read marker (local unread tracking, D11).
+    "ALTER TABLE conversations ADD COLUMN last_read_ts INTEGER NOT NULL DEFAULT 0;",
 ];
 
 #[derive(serde::Deserialize)]
@@ -676,6 +678,31 @@ impl Store {
             [id],
         )?;
         Ok(())
+    }
+
+    /// Mark a conversation read up to its newest message (local unread, D11).
+    pub fn mark_conversation_read(&self, conversation_id: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE conversations SET last_read_ts = COALESCE(
+               (SELECT MAX(relay_ts) FROM messages WHERE conversation_id = ?1), last_read_ts)
+             WHERE id = ?1",
+            [conversation_id],
+        )?;
+        Ok(())
+    }
+
+    /// Count of unread inbound (not-mine, not-deleted) messages in a conversation
+    /// — messages newer than its read marker.
+    pub fn conversation_unread(&self, conversation_id: &str) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM messages m
+               JOIN conversations c ON c.id = m.conversation_id
+              WHERE m.conversation_id = ?1 AND m.relay_ts > c.last_read_ts
+                AND m.deleted = 0
+                AND (m.sender_contact_id IS NULL OR m.sender_contact_id != 'self')",
+            [conversation_id],
+            |r| r.get(0),
+        )?)
     }
 
     /// The `sender_contact_id` of a message, or None if unknown — the authority
@@ -1231,6 +1258,41 @@ mod tests {
         assert_eq!(path, None);
 
         assert!(store.attachment_meta("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn conversation_unread_tracks_inbound_after_read_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[12u8; 32]).unwrap();
+        store.upsert_relay("r1", "https://r.example", "fp", &[1u8; 32]).unwrap();
+        store.ensure_conversation("c1", "dm", "r1").unwrap();
+        let msg = |id: &str, ts: i64, sender: &str| ImportMessage {
+            id: id.into(),
+            conversation_id: "c1".into(),
+            channel_id: None,
+            sender_contact_id: Some(sender.into()),
+            relay_ts: ts,
+            content: Some("x".into()),
+            kind: "text".into(),
+            reply_ref_json: None,
+            attachments_json: None,
+            edited_at: None,
+        };
+        store
+            .import_messages(vec![
+                msg("m1", 10, "friend"),
+                msg("m2", 20, "self"), // my own message never counts as unread
+                msg("m3", 30, "friend"),
+            ])
+            .unwrap();
+        assert_eq!(store.conversation_unread("c1").unwrap(), 2); // m1 + m3
+
+        store.mark_conversation_read("c1").unwrap();
+        assert_eq!(store.conversation_unread("c1").unwrap(), 0);
+
+        // A newer inbound message becomes unread again.
+        store.import_messages(vec![msg("m4", 40, "friend")]).unwrap();
+        assert_eq!(store.conversation_unread("c1").unwrap(), 1);
     }
 
     #[test]

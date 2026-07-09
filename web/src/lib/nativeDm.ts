@@ -5,7 +5,7 @@
 // derived from the two friends' keys, so this path needs neither the server nor
 // the seq model.
 
-import { dmConversationId, friendsList, relaySendMessage } from './native';
+import { dmConversationId, dmMarkRead, dmUnread, friendsList, relaySendMessage } from './native';
 import { loadHistoryLocal } from './nativeChat';
 import type { ChatMessageView } from '../stores/chat';
 
@@ -16,18 +16,24 @@ export interface DmSummary {
   displayName: string | null;
   /** Deterministic DM conversation id (both sides compute the same one). */
   conversationId: string;
+  /** Unread inbound message count. */
+  unread: number;
 }
 
-/** One v8 DM per friend, each resolved to its deterministic conversation id. */
+/** One v8 DM per friend, each resolved to its conversation id + unread count. */
 export async function listDms(): Promise<DmSummary[]> {
   const friends = await friendsList();
   return Promise.all(
-    friends.map(async (f) => ({
-      contactId: f.contact_id,
-      handle: f.handle,
-      displayName: f.display_name,
-      conversationId: await dmConversationId(f.contact_id),
-    })),
+    friends.map(async (f) => {
+      const conversationId = await dmConversationId(f.contact_id);
+      return {
+        contactId: f.contact_id,
+        handle: f.handle,
+        displayName: f.display_name,
+        conversationId,
+        unread: await dmUnread(conversationId),
+      };
+    }),
   );
 }
 
@@ -40,6 +46,7 @@ export async function openDm(
   const conversationId = await dmConversationId(contactId);
   // DMs have no sub-channels: channel id == conversation id.
   const messages = await loadHistoryLocal(conversationId, conversationId, limit, true);
+  await dmMarkRead(conversationId); // opening clears unread
   return { conversationId, messages };
 }
 
