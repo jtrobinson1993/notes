@@ -5,8 +5,19 @@
 // delivery token) is deliberately NOT here yet — that's the legacy
 // friends-store cutover.
 
-import { envelopeSeal, relayInviteMint, relayInviteRedeem, relayMyDirectoryKeys } from './native';
+import {
+  envelopeSeal,
+  relayInviteMint,
+  relayInviteRedeem,
+  relayMyDirectoryKeys,
+  settingsSet,
+} from './native';
 import { buildInvite, generateInviteToken, inviteTokenHash, parseInvite } from './invites';
+
+/** Device setting: my own handle, so the drain can name me when it reciprocates
+ *  a friend-confirm. Captured here because invite creation is the point where
+ *  the UI knows my handle and also the prerequisite for ever reciprocating. */
+const MY_HANDLE_KEY = 'identity.handle';
 
 /** Envelope `kind` for the sealed friend-accept dropped on redeem. */
 export const FRIEND_ACCEPT_KIND = 'friend-accept';
@@ -24,6 +35,7 @@ export async function createFriendInvite(opts: {
 }): Promise<{ invite: string; expiresAt: number }> {
   const token = generateInviteToken();
   const expiresAt = await relayInviteMint(await inviteTokenHash(token), opts.expiresInSec);
+  await settingsSet(MY_HANDLE_KEY, opts.handle); // so the drain can reciprocate
   const keys = await relayMyDirectoryKeys();
   const invite = buildInvite({
     relayUrl: opts.relayUrl,

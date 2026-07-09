@@ -237,14 +237,18 @@ async fn relay_mailbox_drain(
     // Take the device key (for fetch/ack), the sealing secret (to open
     // envelopes), and my identity pub (to persist the relay row) before any
     // await — the vault mutex must not cross it.
-    let (signing, sealing, my_identity_pub) = {
+    // Take, before any await (the vault mutex must not cross it): the device
+    // key (fetch/ack), my full relay identity (open + reciprocal seal), my
+    // delivery token (to hand to new friends), and my identity pub (relay row).
+    let (signing, ident, my_delivery_token) = {
         let vault = vault.lock().unwrap();
         let signing = vault.device_signing_key().map_err(|e| e.to_string())?;
         let mk = vault.mk().map_err(|e| e.to_string())?;
         let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
-        let my_identity_pub = ident.signing_public().to_vec();
-        (signing, ident.sealing, my_identity_pub)
+        let (token, _verifier) = vault.delivery_token().map_err(|e| e.to_string())?;
+        (signing, ident, token)
     };
+    let my_identity_pub = ident.signing_public().to_vec();
 
     let rows = relay.mailbox_fetch(&signing).await?;
     let mut imports = Vec::new();
@@ -252,7 +256,7 @@ async fn relay_mailbox_drain(
     let mut ack_ids = Vec::new();
     let mut buffered = 0usize;
     for row in rows {
-        match message::disposition(envelope::open(&sealing, &row.envelope), row.relay_ts) {
+        match message::disposition(envelope::open(&ident.sealing, &row.envelope), row.relay_ts) {
             message::Disposition::Ingest(m) => {
                 imports.push(*m);
                 ack_ids.push(row.queue_id);
@@ -267,32 +271,61 @@ async fn relay_mailbox_drain(
     }
 
     // Persist first; only ack once durably stored (hold-until-ack). Friends
-    // (D4b): record the verified sender's addressing so we can reach them.
-    // Reciprocation (replying a friend-confirm to an accept) is a follow-up.
+    // (D4b): record the verified sender's addressing so we can reach them, and
+    // read my own handle (persisted at invite creation) for reciprocation.
     let friend_count = friends.len();
-    let ingested = {
+    let (ingested, my_handle) = {
         let vault = vault.lock().unwrap();
         let store = vault.store().map_err(|e| e.to_string())?;
+        let my_handle = store.get_setting("identity.handle").map_err(|e| e.to_string())?;
         if !friends.is_empty() {
             store
                 .upsert_relay(&relay_fp, &base_url, &relay_fp, &my_identity_pub)
                 .map_err(|e| e.to_string())?;
-            for f in friends {
+            for f in &friends {
                 store
                     .record_friend(&store::FriendRecord {
-                        contact_id: f.contact_id,
+                        contact_id: f.contact_id.clone(),
                         display_name: None,
                         relay_id: relay_fp.clone(),
-                        handle: f.handle,
-                        identity_pub: f.identity_pub,
-                        sealing_pub: f.sealing_pub,
-                        delivery_token: f.delivery_token,
+                        handle: f.handle.clone(),
+                        identity_pub: f.identity_pub.clone(),
+                        sealing_pub: f.sealing_pub.clone(),
+                        delivery_token: f.delivery_token.clone(),
                     })
                     .map_err(|e| e.to_string())?;
             }
         }
-        store.import_messages(imports).map_err(|e| e.to_string())?
+        (
+            store.import_messages(imports).map_err(|e| e.to_string())?,
+            my_handle,
+        )
     };
+
+    // Reciprocate: on a friend-accept (not a confirm), seal a friend-confirm
+    // with my addressing back to the new friend's sealing key and send it via
+    // their now-known delivery token, so they record me too → mutual (D4b).
+    // Best-effort; a dropped confirm is retried by the invitee re-drawing later.
+    if let Some(handle) = my_handle {
+        use base64::Engine as _;
+        let my_sealing_b64 = base64::engine::general_purpose::STANDARD.encode(ident.sealing_public());
+        for f in &friends {
+            if !f.reciprocate {
+                continue;
+            }
+            let recipient: [u8; 32] = match f.sealing_pub.clone().try_into() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let payload = message::friend_payload(&handle, &my_delivery_token, &my_sealing_b64);
+            match envelope::seal(&recipient, &ident, message::KIND_FRIEND_CONFIRM, &payload, now_ms()) {
+                Ok(env) => {
+                    let _ = relay.mailbox_send(&f.handle, &f.delivery_token, env).await;
+                }
+                Err(e) => log::warn!("friend-confirm seal failed: {e}"),
+            }
+        }
+    }
     let acked = if ack_ids.is_empty() {
         0
     } else {

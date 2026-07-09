@@ -5,6 +5,7 @@ const native = vi.hoisted(() => ({
   relayInviteRedeem: vi.fn(),
   relayMyDirectoryKeys: vi.fn(),
   envelopeSeal: vi.fn(),
+  settingsSet: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../../src/lib/native', () => native);
 
@@ -38,6 +39,8 @@ describe('createFriendInvite', () => {
     expect(native.relayInviteMint).toHaveBeenCalledTimes(1);
     const mintedHash = native.relayInviteMint.mock.calls[0][0] as string;
     expect(mintedHash).toBe(await inviteTokenHash(parsed.token));
+    // My handle is persisted so the drain can reciprocate a friend-confirm.
+    expect(native.settingsSet).toHaveBeenCalledWith('identity.handle', 'Word#1234');
   });
 
   it('passes an explicit TTL through', async () => {
