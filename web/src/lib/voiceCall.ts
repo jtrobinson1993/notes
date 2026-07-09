@@ -1,50 +1,42 @@
-// v8 voice call engine — the framework-agnostic lifecycle + signaling brain
-// (spec/voice.md § v8). Sits between the signaling seam (nativeVoice: join /
-// leave / signal frames + the voice:frame stream) and a media layer (a thin
-// RTCPeerConnection wrapper in the webview — the decided home for media, since
-// browser libwebrtc is the hardened, maintained stack; frame E2EE rides
-// insertable streams). This module owns *no* WebRTC types so it is fully unit
-// testable with a fake media + spy effects; the real app injects an
-// RTCPeerConnection-backed CallMedia and the nativeVoice IPCs.
+// v8 voice call engine — the framework-agnostic lifecycle brain
+// (spec/voice.md § v8). Media flows through the relay's **mediasoup SFU** (as v6
+// already does, and as the spec requires so neither caller learns the other's
+// IP), NOT peer-to-peer. So this engine handles *call control* only — ring,
+// accept, hangup, and peer presence — while the actual audio is produced/
+// consumed against the SFU by the injected `CallMedia` (a mediasoup-client
+// wrapper in the webview; browser libwebrtc + insertable-streams frame E2EE).
+// The engine owns no WebRTC/mediasoup types, so it is fully unit testable with a
+// fake media + spy effects.
 //
-// Roles: the *caller* mints a ring (relayCallOffer), joins, and — once the
-// callee appears (`peer-join`) — sends the SDP offer. The *callee* answers an
-// inbound ring, joins, and replies to the offer. Either side streams ICE. SDP
-// and ICE travel as opaque, E2E-sealed `signal` payloads tagged by kind.
+// Presence drives the flow: the *caller* mints a ring (relayCallOffer) and joins
+// the call's signaling room; when the callee accepts and appears (`peer-join`)
+// the caller joins the SFU room too. The *callee* answers an inbound ring and
+// joins both. Each side produces its mic to the SFU and consumes the other's
+// track; `onMediaConnected` marks the call live. The signaling socket only
+// carries control — no SDP/ICE ever crosses it (the SFU handles transport).
 
 export type CallState = 'idle' | 'dialing' | 'ringing' | 'connecting' | 'connected' | 'ended';
 
 export type CallRole = 'caller' | 'callee';
 
-/** A signal payload as it rides a `signal` frame — tagged so the peer knows how
- *  to apply it. `data` is opaque SDP/ICE (E2E-sealed end to end). */
-export interface CallSignal {
-  kind: 'offer' | 'answer' | 'ice';
-  data: unknown;
-}
-
-/** The media layer the engine drives (an RTCPeerConnection wrapper in the app).
- *  Every method is async/opaque so the engine stays WebRTC-agnostic. */
+/** The media layer the engine drives — a mediasoup-client SFU wrapper in the
+ *  app. `join` connects to the SFU room (== call id): create transports, produce
+ *  the mic, consume peers. Opaque/async so the engine stays media-agnostic. */
 export interface CallMedia {
-  /** Caller: produce the SDP offer to send. */
-  createOffer(): Promise<unknown>;
-  /** Callee: apply the remote offer, produce the SDP answer to send. */
-  handleOffer(offer: unknown): Promise<unknown>;
-  /** Caller: apply the remote answer. */
-  handleAnswer(answer: unknown): Promise<void>;
-  /** Either: add a remote ICE candidate. */
-  addIce(candidate: unknown): Promise<void>;
-  /** Release mic + peer connection. */
+  /** Connect to the SFU room and start producing/consuming. */
+  join(callId: string): Promise<void>;
+  /** Release mic, transports, and consumers. */
   close(): void;
 }
 
-/** Side effects the engine issues, injected so it never imports the IPC layer. */
+/** Side effects the engine issues, injected so it never imports the IPC layer.
+ *  `join`/`leave` operate the call-control **signaling room** (not the SFU). */
 export interface CallEffects {
   /** Mint a ring for a contact; resolves to the call id to join. */
   placeRing(contactId: string): Promise<string>;
+  /** Join / leave the signaling room (peer-join/peer-leave presence). */
   join(callId: string): Promise<void>;
   leave(callId: string): Promise<void>;
-  sendSignal(callId: string, payload: CallSignal): Promise<void>;
   /** Notify the UI of a state change. */
   onState?(state: CallState): void;
 }
@@ -55,6 +47,8 @@ export class VoiceCall {
   callId: string | null = null;
   /** For an incoming ring: the verified caller's identity pubkey. */
   peerId: string | null = null;
+  /** Whether we've joined the SFU (so hangup knows to close media). */
+  private mediaJoined = false;
 
   constructor(private media: CallMedia, private fx: CallEffects) {}
 
@@ -67,8 +61,8 @@ export class VoiceCall {
     return this.state !== 'idle' && this.state !== 'ended';
   }
 
-  /** Outgoing: ring a contact and join the call room. The offer is sent once the
-   *  callee appears (`peer-join`), so we don't offer into an empty room. */
+  /** Outgoing: ring a contact and join the signaling room. We join the SFU only
+   *  once the callee accepts (`peer-join`), so the mic isn't hot while it rings. */
   async placeCall(contactId: string): Promise<void> {
     if (this.busy) throw new Error('already in a call');
     this.role = 'caller';
@@ -88,11 +82,12 @@ export class VoiceCall {
     this.set('ringing');
   }
 
-  /** Callee accepts: join the room and wait for the caller's offer. */
+  /** Callee accepts: join the signaling room and the SFU (produce mic). */
   async accept(): Promise<void> {
     if (this.state !== 'ringing' || !this.callId) return;
     this.set('connecting');
     await this.fx.join(this.callId);
+    await this.joinMedia(this.callId);
   }
 
   /** Callee declines a ring before answering (never joined → nothing to leave). */
@@ -101,7 +96,7 @@ export class VoiceCall {
     this.reset('ended');
   }
 
-  /** Hang up an active/ringing/dialing call: leave the room and release media. */
+  /** Hang up an active/ringing/dialing call: release media + leave the room. */
   async hangup(): Promise<void> {
     if (this.state === 'idle' || this.state === 'ended') return;
     const id = this.callId;
@@ -109,63 +104,38 @@ export class VoiceCall {
     if (id) await this.fx.leave(id);
   }
 
-  /** A local ICE candidate from the media layer — forward it to the peer. */
-  async localIce(candidate: unknown): Promise<void> {
-    if (!this.callId || !this.busy) return;
-    await this.fx.sendSignal(this.callId, { kind: 'ice', data: candidate });
-  }
-
-  /** The media layer reports the peer connection is live. */
+  /** The media layer reports SFU audio is flowing. */
   onMediaConnected(): void {
     if (this.state === 'connecting') this.set('connected');
   }
 
-  /** Handle one inbound signaling frame (from nativeVoice `voice:frame`). */
-  async onFrame(frame: { type: string; callId?: string; payload?: unknown }): Promise<void> {
-    // Only frames for our current call matter.
-    if (!this.callId || frame.callId !== this.callId) return;
+  /** Handle one inbound call-control frame (from nativeVoice `voice:frame`). */
+  async onFrame(frame: { type: string; callId?: string }): Promise<void> {
+    if (!this.callId || frame.callId !== this.callId) return; // not our call
     switch (frame.type) {
       case 'peer-join':
-        // Caller: the callee joined → send the offer now.
+        // Caller: the callee accepted and joined → join the SFU ourselves.
         if (this.role === 'caller' && this.state === 'dialing') {
           this.set('connecting');
-          const offer = await this.media.createOffer();
-          await this.fx.sendSignal(this.callId, { kind: 'offer', data: offer });
+          await this.joinMedia(this.callId);
         }
         return;
-      case 'signal':
-        await this.applySignal(frame.payload as CallSignal | undefined);
-        return;
       case 'peer-leave':
-        // Remote hung up / dropped.
-        this.reset('ended');
+        this.reset('ended'); // remote hung up / dropped
         return;
       default:
         return;
     }
   }
 
-  private async applySignal(sig: CallSignal | undefined): Promise<void> {
-    if (!sig || !this.callId) return;
-    switch (sig.kind) {
-      case 'offer':
-        // Callee applies the offer and replies with an answer.
-        if (this.role === 'callee') {
-          const answer = await this.media.handleOffer(sig.data);
-          await this.fx.sendSignal(this.callId, { kind: 'answer', data: answer });
-        }
-        return;
-      case 'answer':
-        if (this.role === 'caller') await this.media.handleAnswer(sig.data);
-        return;
-      case 'ice':
-        await this.media.addIce(sig.data);
-        return;
-    }
+  private async joinMedia(callId: string): Promise<void> {
+    await this.media.join(callId);
+    this.mediaJoined = true;
   }
 
   private reset(state: CallState): void {
-    this.media.close();
+    if (this.mediaJoined) this.media.close();
+    this.mediaJoined = false;
     this.set(state);
     this.role = null;
     this.callId = null;

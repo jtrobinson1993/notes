@@ -355,13 +355,16 @@ are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
   up, inbound peer frames out as the `voice:frame` Tauri event (web
   `nativeVoice.ts` fans them to the call UI). The **call engine** —
   `web/src/lib/voiceCall.ts`, a framework-agnostic `VoiceCall` state machine
-  (idle→dialing/ringing→connecting→connected→ended; role-aware offer/answer/ICE
-  over opaque tagged `signal` payloads) — is **built** and unit-tested against an
-  injected media interface. *Not yet built:* the media layer behind that
-  interface — **decided: webview WebRTC** (getUserMedia + RTCPeerConnection +
-  mediasoup client, frame E2EE via insertable streams), reusing the hardened
-  browser stack rather than a Rust-core WebRTC reimplementation — plus the call
-  UI (incoming-call panel from `DrainReport.calls`).
+  (idle→dialing/ringing→connecting→connected→ended) — is **built** and
+  unit-tested against an injected media interface. It handles **call control
+  only** (ring/accept/hangup + peer presence); the signaling socket carries no
+  SDP/ICE. *Not yet built:* the media layer — **decided: mediasoup SFU** (as v6,
+  so neither caller learns the other's IP), driven in the **webview** via
+  mediasoup-client (browser libwebrtc + insertable-streams frame E2EE) behind
+  the `CallMedia.join(callId)`/`close()` interface. Remaining: device-token auth
+  on the mediasoup transport/produce/consume endpoints (v6's are cookie-authed),
+  the mediasoup-client `CallMedia` impl, and the call UI (incoming-call panel
+  from `DrainReport.calls`).
 - **Ringing — single-relay built; cross-relay (D4c) follow-up.** *Built:* the
   caller mints a fresh unguessable **call id** and seals a `call-offer {callId}`
   envelope (`KIND_CALL_OFFER`) into the callee's **mailbox** (`relay_call_offer`

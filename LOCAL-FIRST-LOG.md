@@ -1254,12 +1254,34 @@ Playwright version (currently 1.60.0).
     decline (no join/leave), idempotent hangup, peer-leave ends, wrong-callId
     frames ignored. 10 tests (both roles, full negotiation, guards). web 502,
     tsc clean.
-  - **Remaining v8 spec:** voice follow-ups: (a) **call UI + RTCPeerConnection
-    CallMedia impl** — an incoming-call panel (consume DrainReport.calls →
-    VoiceCall.onIncomingRing), getUserMedia + RTCPeerConnection behind the
-    CallMedia interface, wire VoiceCall to nativeVoice (onVoiceFrame→onFrame,
-    localIce, join/leave/sendSignal) + frame E2EE via insertable streams.
-    (b) D4c cross-relay fan-out + call-id dedup (deliberately deferred). Then:
+  - **USER DECISION (this session) — v8 1:1 media = SFU (mediasoup), not P2P.**
+    I caught that iter-82's engine mis-modeled negotiation as P2P (offer/answer/
+    ice peer-to-peer), but v6 `server/src/voice.ts` is a mediasoup **SFU**
+    (transport/produce/consume) and the spec's privacy claim depends on it
+    (media via SFU ⇒ neither caller learns the other's IP). User confirmed
+    **SFU**. Consequence: the signal relay carries **call-control only**
+    (ring/accept/hangup + peer presence); media goes through the SFU; no peer SDP
+    on the signaling socket.
+  - **DONE (iter 83) — reshape call engine to the SFU model.** Rewrote
+    `voiceCall.ts`: dropped the P2P `CallSignal`/offer/answer/ice + `sendSignal`;
+    `CallMedia` is now `join(callId)`(connect to SFU room = call id, produce mic,
+    consume peers) / `close()`. Flow is presence-driven: caller rings + joins the
+    signaling room (mic NOT hot while ringing), joins the SFU only on `peer-join`
+    (callee accepted); callee joins signaling + SFU on accept; `onMediaConnected`
+    ⇒ connected; peer-leave/hangup ⇒ ended (close media iff joined). 9 tests
+    rewritten (both roles, mic-not-hot-while-ringing, decline/hangup/busy/
+    peer-leave, wrong-callId ignore). web (voiceCall 9), tsc clean. NOTE: the
+    generic `signal` relay capability (server + voiceSignal IPC) stays in place
+    but the engine no longer uses it.
+  - **Remaining v8 spec:** voice follow-ups (all SFU now): (a) **device-token
+    auth on the mediasoup endpoints** — v6 voice.ts transport/produce/consume are
+    session-cookie (`requireAuth`) authed; v8 native needs a device-token path
+    (dedicated v8 voice REST, per the earlier dedicated-socket decision, or
+    dual-auth). (b) **mediasoup-client CallMedia impl** (webview) behind the
+    `join(callId)`/`close()` interface + frame E2EE via insertable streams.
+    (c) **call UI** — incoming-call panel from DrainReport.calls →
+    VoiceCall.onIncomingRing; wire onVoiceFrame→onFrame. (d) D4c cross-relay
+    fan-out + call-id dedup (deliberately deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).
