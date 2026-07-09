@@ -799,17 +799,34 @@ Playwright version (currently 1.60.0).
     (cargo 35): url map/reject, frame strictness, backoff cap+overflow, and a
     **local WS server** asserting the bearer rides the handshake + only mail
     frames fire (hello ignored). clippy-clean.
+  - **DONE (iter 32) — message-envelope payload schema + inbound drain
+    (D6/D11).** New `src-tauri/src/message.rs`: `ChatMessagePayload` v1
+    (**snake_case sealed JSON**, like the sibling `Inner` cert — Rust-only, no
+    JS/HTTP boundary). Deliberately **no sender field** (authenticated by the
+    envelope sig; receiver stamps `sender_contact_id` from the *verified*
+    `sender_identity_pub` — interim: the identity key IS the contact id until
+    contacts move to v8) and **no ordering field** (`sent_at` is display-only;
+    D11 order = relay delivery `relay_ts`). `id` = sender-assigned global
+    idempotency key. `disposition()` = **pure drain policy**: Buffer only on
+    version skew / unhandled kind (never-drop across update); **Discard (ack)**
+    anything permanently invalid (undecryptable / forged sig / authed-but-
+    garbage) so a malformed/forged inject can't wedge the queue. Command
+    `relay_mailbox_drain`: fetch → open/verify → decode → ingest → ack, acking
+    only after durable store (hold-until-ack). native.ts `relayMailboxDrain` +
+    `DrainReport`. spec/chat.md documents payload + ack policy. cargo 42.
   - **Next iterations (phase 3):** (1) **frontend `relay:mail` listener +
-    inbound drain** — but the drain (fetch → `envelope_open` → map → ingest →
-    ack) needs the **v8 chat message-envelope payload schema** defined first
-    (what rides inside a message envelope: conv id, content, reply refs,
-    attachments); that's the real next design+build unit. (2) security.md
+    live render** — wire `listen('relay:mail')` → `relayMailboxDrain()` →
+    refresh the chat store/view (needs chat-store integration so drained rows
+    render live); also drain on reconnect + startup. (2) security.md
     relay-state inventory fold-in; (3) phase-3 review vs relay.md (still
     unbuilt: transient blob store, group-state record, invite redeem, push
-    registration). NOTE: live task has no explicit stop signal yet (reconnects
-    forever until process exit) — lifecycle refinement (stop on disconnect/
-    relay switch) is a follow-up. Desk queue unchanged (mobile init, tauri
-    smoke, biometric ACLs).
+    registration). OPEN FOLLOW-UPS: live WS task has no stop signal (reconnects
+    until process exit); sender→contact resolution is interim (identity key as
+    id). Desk queue unchanged (mobile init, tauri smoke, biometric ACLs).
+  - **NOTE — unsigned commits:** iters 31–32 (`a9460bb`, `7399261`, `fc4e143`)
+    committed with `-c commit.gpgsign=false` because the 1Password op-ssh-sign
+    agent was locked (user approved "unsigned this once"). Re-sign later once
+    unlocked: `git rebase --exec 'git commit --amend --no-edit -S' 38dacc7`.
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
