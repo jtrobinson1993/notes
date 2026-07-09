@@ -1114,9 +1114,16 @@ Playwright version (currently 1.60.0).
     `createGroup`/`addGroupMember`, mirrors nativeDm; group conv id == group id;
     unread reuses dm_unread). web +3. Next: **integrate into NativeChat** — a
     combined DM+group list (active can be either), create-group button,
-    add-member picker (friends), route send to `sendDm`/`sendGroup`. Remaining
-    after group UI: blob chunked/resumable, voice-v8, KT proofs, README/spec
-    currency. (b) **group creation** — genesis D14 record (me=owner) + set group
+    add-member picker (friends), route send to `sendDm`/`sendGroup`. (a10)
+    [DONE iter 69] **groups in NativeChat** — unified DM+group list on an active
+    `{kind}`; open/send route by kind; create-group footer form; group
+    "Add member" friend picker; message actions gated DM-only (group
+    edit/react = follow-up). web 486. **GROUP MESSAGING COMPLETE incl. UI.**
+  - **Remaining v8 spec (larger/optional):** group edit/delete/react fan-out;
+    blob chunked/resumable transfer; voice under v8 (device-token auth); KT
+    inclusion proofs / auditor (phase 6); README/spec currency for the native
+    surface. NOTE: best-effort caveats as before; unsigned commits (1Password)
+    — re-sign via `git rebase --exec 'git commit --amend --no-edit -S' 38dacc7`. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
