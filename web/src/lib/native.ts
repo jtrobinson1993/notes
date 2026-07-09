@@ -225,6 +225,12 @@ export function groupList(): Promise<GroupSummary[]> {
   return invoke<GroupSummary[]>('group_list');
 }
 
+/** Add a friend to a group I administer (D14): update the signed record + hand
+ *  them the group key via a sealed group-invite. */
+export function groupAddMember(groupId: string, contactId: string): Promise<void> {
+  return invoke('group_add_member', { groupId, contactId });
+}
+
 /** Send a text to a group (D6/D14): the core seals one envelope under the group
  *  key, the relay fans it to all members, and it tees locally. Resolves with the
  *  message id. */

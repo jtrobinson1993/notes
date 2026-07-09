@@ -381,6 +381,32 @@ impl RelayClient {
         Ok(())
     }
 
+    /// Fetch a group's current signed state record (D14, member device-authed).
+    pub async fn group_state_get(
+        &self,
+        signing: &SigningKey,
+        group_id: &str,
+    ) -> Result<(String, i64), String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .get(format!("{base}/api/relay/groups/{group_id}/state"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .map_err(|e| format!("group state get failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("group state unavailable (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            record: String,
+            version: i64,
+        }
+        let body: Resp = res.json().await.map_err(|e| format!("bad group state: {e}"))?;
+        Ok((body.record, body.version))
+    }
+
     /// Register a group's blob/send verifier = hash(group token) (D14, member).
     pub async fn group_verifier_put(
         &self,

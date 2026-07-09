@@ -125,6 +125,27 @@ struct FriendPayload {
     sealing_pub: String,
 }
 
+/// Add a member (by identity key) to a group-state record and bump its version
+/// (D14). Idempotent on the member (no duplicate), but always advances the
+/// version so the signed update is accepted (anti-rollback). Returns the new
+/// record JSON string to sign + PUT.
+pub fn group_record_add_member(record: &str, identity_pub_b64: &str) -> Result<String, MessageError> {
+    let mut v: serde_json::Value = serde_json::from_str(record).map_err(|_| MessageError::Malformed)?;
+    let version = v.get("version").and_then(|x| x.as_i64()).ok_or(MessageError::Malformed)?;
+    let members = v
+        .get_mut("members")
+        .and_then(|m| m.as_array_mut())
+        .ok_or(MessageError::Malformed)?;
+    let exists = members
+        .iter()
+        .any(|m| m.get("identityPubKey").and_then(|k| k.as_str()) == Some(identity_pub_b64));
+    if !exists {
+        members.push(serde_json::json!({ "identityPubKey": identity_pub_b64, "role": "member" }));
+    }
+    v["version"] = serde_json::json!(version + 1);
+    serde_json::to_string(&v).map_err(|_| MessageError::Malformed)
+}
+
 /// Serialize a friend-accept/confirm payload (D4b) — my handle + delivery token
 /// + sealing key (base64). Symmetric with `FriendAcceptData::parse`, and matches
 /// the TS `redeemFriendInvite` shape, so either side can produce what the other
@@ -638,6 +659,27 @@ mod tests {
         assert!(matches!(disposition(Ok(mk("remove")), 1), Disposition::React(r) if !r.add));
         // Unknown op → discard.
         assert!(matches!(disposition(Ok(mk("nope")), 1), Disposition::Discard));
+    }
+
+    #[test]
+    fn group_record_add_member_appends_and_bumps_version() {
+        let rec = serde_json::json!({
+            "groupId": "g1", "version": 3,
+            "members": [{ "identityPubKey": "OWNER", "role": "owner" }],
+        })
+        .to_string();
+        let out = group_record_add_member(&rec, "NEWB").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["version"], 4);
+        let members = v["members"].as_array().unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.iter().any(|m| m["identityPubKey"] == "NEWB" && m["role"] == "member"));
+
+        // Re-adding an existing member doesn't duplicate but still bumps version.
+        let again = group_record_add_member(&out, "NEWB").unwrap();
+        let v2: serde_json::Value = serde_json::from_str(&again).unwrap();
+        assert_eq!(v2["version"], 5);
+        assert_eq!(v2["members"].as_array().unwrap().len(), 2);
     }
 
     #[test]

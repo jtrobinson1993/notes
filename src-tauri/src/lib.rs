@@ -649,6 +649,75 @@ async fn group_create(
     Ok(group_id)
 }
 
+/// Add a friend to a group I administer (D14): add them to the signed group
+/// record (version bump, re-signed by me) and hand them the group key via a
+/// DM-sealed group-invite. Requires the vault unlocked + the group key locally.
+#[tauri::command]
+async fn group_add_member(
+    group_id: String,
+    contact_id: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    use base64::Engine as _;
+    use ed25519_dalek::Signer as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let (signing, ident, group_key, group_name, addressing) = {
+        let vault = vault.lock().unwrap();
+        let signing = vault.device_signing_key().map_err(|e| e.to_string())?;
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        let store = vault.store().map_err(|e| e.to_string())?;
+        let group_key = store
+            .group_key(&group_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("not a member of this group")?;
+        let group_name = store
+            .list_groups()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|g| g.group_id == group_id)
+            .and_then(|g| g.name);
+        let addressing = store
+            .friend_addressing(&contact_id, &relay_fp)
+            .map_err(|e| e.to_string())?
+            .ok_or("not a friend on this relay")?;
+        (signing, ident, group_key, group_name, addressing)
+    };
+
+    // 1. Add the friend to the signed group-state record.
+    let (record, _version) = relay.group_state_get(&signing, &group_id).await?;
+    let friend_identity_b64 = b64.encode(&addressing.identity_pub);
+    let new_record =
+        message::group_record_add_member(&record, &friend_identity_b64).map_err(|e| e.to_string())?;
+    let admin_sig = b64.encode(ident.signing.sign(new_record.as_bytes()).to_bytes());
+    relay.group_state_put(&signing, &group_id, &new_record, &admin_sig).await?;
+
+    // 2. Hand the friend the group key via a DM-sealed group-invite.
+    let invite = serde_json::json!({
+        "groupId": group_id, "groupKey": b64.encode(&group_key), "name": group_name,
+    })
+    .to_string();
+    let sealing: [u8; 32] = addressing
+        .sealing_pub
+        .clone()
+        .try_into()
+        .map_err(|_| "friend has a malformed sealing key".to_string())?;
+    let envelope = envelope::seal(
+        &sealing,
+        &ident,
+        message::KIND_GROUP_INVITE,
+        invite.as_bytes(),
+        now_ms(),
+    )
+    .map_err(|e| e.to_string())?;
+    relay
+        .mailbox_send(&addressing.handle, &addressing.delivery_token, envelope)
+        .await?;
+    Ok(())
+}
+
 /// Groups I'm a member of (D14) — for the group list.
 #[tauri::command]
 fn group_list(vault: VaultState) -> Result<Vec<store::GroupSummary>, String> {
@@ -1262,6 +1331,7 @@ pub fn run() {
             dm_mark_read,
             dm_unread,
             group_create,
+            group_add_member,
             group_list,
             relay_send_group_message,
             relay_directory_publish,
