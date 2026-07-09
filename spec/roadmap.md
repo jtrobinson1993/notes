@@ -1055,6 +1055,19 @@ is random; the per-relay identity keys derive from it).
    as the automatic default **plus** SAS fingerprint verification as the
    server-trust-free anchor; **both in v8**.
 
+### Implementation status (v8 branch)
+
+Design decisions closed (D1–D15, UI-1–5) and the core is **built on the v8
+branch**: the Tauri Rust-core + SQLCipher local store (D1/D2), key hierarchy +
+escrow/restore (D13/D15), the full relay surface (auth/directory/KT, sealed
+mailbox + live delivery, DM + group blobs, group state — D4/D5/D6/D11/D14), the
+friend invite→mutual-friend handshake (D4b), and **complete DM + group messaging
+with full parity** (send/edit/delete/react/unread/live) behind a native chat UI.
+**Remaining:** attachments-in-messages (blob store is built, unwired), blob
+chunked/resumable transfer, voice under v8 (D7 device-token auth), content-free
+push (D7), KT inclusion proofs/auditor (phase 6), and the legacy→v8 cutover
+(D12). Running detail: `LOCAL-FIRST-LOG.md`.
+
 ### Remaining pre-implementation spec work
 
 The design decisions are closed (D1–D15, UI-1–5). **All items below are now

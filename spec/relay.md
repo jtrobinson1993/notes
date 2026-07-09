@@ -1,11 +1,13 @@
-# Relay — wire protocol & state inventory (v8 design)
+# Relay — wire protocol & state inventory (v8)
 
-> **Status: v8 design — not yet built.** This is the concrete protocol behind
-> the v8 decisions in [roadmap.md](roadmap.md) (D4, D4b, D5, D6, D7, D11, D14,
-> D15). It is a *lean retention profile* of today's server — same Node/Fastify
-> codebase, same `/api` conventions — not a new service. Endpoint shapes here
-> are the design intent; exact payloads get finalized at build and this file
-> becomes the as-built reference.
+> **Status: largely built (v8 branch).** The relay surface here is implemented
+> on the v8 branch — device auth + directory + KT roots (D4/D5), sealed-sender
+> mailbox + live-delivery WS (D6/D11), account escrow (D15), friend invite
+> redeem (D4b), DM + group blobs (D6), group state + fan-out send (D14) — and
+> the endpoint shapes below are as-built (routes under `/api/relay/…`). Still
+> **design-only**: content-free push (D7) and the satellite-link session (D12).
+> A *lean retention profile* of today's server — same Node/Fastify codebase, not
+> a new service. Detailed per-feature status lives in `LOCAL-FIRST-LOG.md`.
 
 ## Posture
 
