@@ -1088,8 +1088,13 @@ Playwright version (currently 1.60.0).
   - **Group messaging — client half progress:** (a) [DONE iter 60] group
     envelope. (a2) [DONE iter 61] **group key storage** — migration v10
     (`groups`: group_id/group_key/name) + `upsert_group`/`group_key`/
-    `list_groups` (cargo 57). Next: derive group token from group key
-    (`keys::INFO_GROUP_TOKEN`). (b) **group creation** — genesis D14 record (me=owner) + set group
+    `list_groups` (cargo 57). (a3) [DONE iter 62] **group token derivation** —
+    `keys::group_token_verifier(group_key)` → (token, verifier) matching the D6
+    delivery-token convention (cargo 58). Next: `group_create` IPC (genesis D14
+    record signed by me + register verifier + store key + ensure conv), needing
+    RelayClient `group_state_put`/`group_verifier_put` + directory publish
+    prerequisite. Then group send (`seal_group` → group send-group endpoint),
+    inbound drain (`open_group`), key distribution to members + membership, UI. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
