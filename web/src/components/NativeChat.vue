@@ -1,13 +1,23 @@
 <script setup lang="ts">
-// v8 native DM surface (D4b/D6/D11): a self-contained friends + DM experience
-// built on the native layers (nativeDm / nativeFriends) — no server, no seq. A
-// DM's messages live in the local encrypted log; its identity derives from the
-// two friends' keys. Kept separate from the legacy server-sourced chat UI.
-import { onMounted, onUnmounted, ref } from 'vue';
+// v8 native chat surface (D4b/D6/D11/D14): a self-contained DMs + groups
+// experience on the native layers (nativeDm / nativeGroup / nativeFriends) — no
+// server, no seq. Conversations' messages live in the local encrypted log.
+// Message actions (edit/delete/react) are DM-only for now (group edit/react
+// fan-out is a follow-up); groups support create / send / receive / add-member.
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import IconAdd from '~icons/mynaui/message-plus';
 import IconSend from '~icons/mynaui/send-solid';
 import IconBack from '~icons/mynaui/chevron-left';
+import IconUsers from '~icons/mynaui/users';
 import { listDms, openDm, sendDm, type DmSummary } from '../lib/nativeDm';
+import {
+  addGroupMember,
+  createGroup,
+  listGroups,
+  openGroup,
+  sendGroup,
+  type GroupItem,
+} from '../lib/nativeGroup';
 import { createInvite, redeemInvite } from '../lib/nativeFriends';
 import {
   conversationReactions,
@@ -21,45 +31,85 @@ import type { ChatMessageView } from '../stores/chat';
 
 const PAGE = 50;
 
+type Conv = { kind: 'dm' | 'group'; id: string; name: string; conversationId: string };
+
 const dms = ref<DmSummary[]>([]);
-const active = ref<DmSummary | null>(null);
+const groups = ref<GroupItem[]>([]);
+const active = ref<Conv | null>(null);
 const messages = ref<ChatMessageView[]>([]);
 const reactions = ref<ReactionRow[]>([]);
 const draft = ref('');
 const panel = ref<'list' | 'add'>('list');
 const createdInvite = ref<string | null>(null);
 const redeemText = ref('');
+const newGroupName = ref('');
+const addingMember = ref(false);
 const error = ref('');
 const busy = ref(false);
 
-async function refreshDms(): Promise<void> {
-  dms.value = await listDms();
+const isDm = computed(() => active.value?.kind === 'dm');
+
+async function refreshLists(): Promise<void> {
+  [dms.value, groups.value] = await Promise.all([listDms(), listGroups()]);
 }
 
 async function loadReactions(): Promise<void> {
-  if (active.value) reactions.value = await conversationReactions(active.value.conversationId);
+  reactions.value = active.value ? await conversationReactions(active.value.conversationId) : [];
 }
 
-/** Reactions on one message, grouped by emoji with counts + whether I reacted. */
 function groupedReactions(msgKey: string | undefined): { emoji: string; count: number; mine: boolean }[] {
   if (!msgKey) return [];
-  const groups = new Map<string, { count: number; mine: boolean }>();
+  const g = new Map<string, { count: number; mine: boolean }>();
   for (const r of reactions.value) {
     if (r.message_id !== msgKey) continue;
-    const g = groups.get(r.emoji) ?? { count: 0, mine: false };
-    g.count += 1;
-    if (r.reactor_id === 'self') g.mine = true;
-    groups.set(r.emoji, g);
+    const e = g.get(r.emoji) ?? { count: 0, mine: false };
+    e.count += 1;
+    if (r.reactor_id === 'self') e.mine = true;
+    g.set(r.emoji, e);
   }
-  return [...groups.entries()].map(([emoji, g]) => ({ emoji, ...g }));
+  return [...g.entries()].map(([emoji, v]) => ({ emoji, ...v }));
+}
+
+async function loadMessages(): Promise<void> {
+  if (!active.value) return;
+  const res =
+    active.value.kind === 'dm'
+      ? await openDm(active.value.id, PAGE)
+      : await openGroup(active.value.id, PAGE);
+  messages.value = res.messages;
+  await loadReactions();
+}
+
+async function open(conv: Conv): Promise<void> {
+  error.value = '';
+  addingMember.value = false;
+  active.value = conv;
+  await loadMessages();
+  await refreshLists(); // opening marked it read → clear its unread badge
+}
+
+async function send(): Promise<void> {
+  const text = draft.value.trim();
+  if (!text || !active.value || busy.value) return;
+  busy.value = true;
+  try {
+    if (active.value.kind === 'dm') await sendDm(active.value.id, text);
+    else await sendGroup(active.value.id, text);
+    draft.value = '';
+    await loadMessages();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
+  }
 }
 
 async function toggleReaction(msgKey: string, emoji: string): Promise<void> {
-  if (!active.value || busy.value) return;
-  const mine = groupedReactions(msgKey).find((g) => g.emoji === emoji)?.mine ?? false;
+  if (!active.value || active.value.kind !== 'dm' || busy.value) return;
+  const mine = groupedReactions(msgKey).find((x) => x.emoji === emoji)?.mine ?? false;
   busy.value = true;
   try {
-    await relayReact(active.value.contactId, msgKey, emoji, !mine);
+    await relayReact(active.value.id, msgKey, emoji, !mine);
     await loadReactions();
   } catch (e) {
     error.value = String(e);
@@ -68,42 +118,12 @@ async function toggleReaction(msgKey: string, emoji: string): Promise<void> {
   }
 }
 
-async function open(dm: DmSummary): Promise<void> {
-  error.value = '';
-  active.value = dm;
-  const res = await openDm(dm.contactId, PAGE);
-  messages.value = res.messages;
-  await loadReactions();
-  await refreshDms(); // opening marked it read → clear its unread badge
-}
-
-async function reloadActive(): Promise<void> {
-  if (!active.value) return;
-  messages.value = (await openDm(active.value.contactId, PAGE)).messages;
-  await loadReactions();
-}
-
-async function send(): Promise<void> {
-  const text = draft.value.trim();
-  if (!text || !active.value || busy.value) return;
-  busy.value = true;
-  try {
-    await sendDm(active.value.contactId, text);
-    draft.value = '';
-    await reloadActive();
-  } catch (e) {
-    error.value = String(e);
-  } finally {
-    busy.value = false;
-  }
-}
-
 async function remove(messageId: string): Promise<void> {
-  if (!active.value || busy.value) return;
+  if (!active.value || active.value.kind !== 'dm' || busy.value) return;
   busy.value = true;
   try {
-    await relayDeleteMessage(active.value.contactId, messageId);
-    await reloadActive();
+    await relayDeleteMessage(active.value.id, messageId);
+    await loadMessages();
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -122,12 +142,12 @@ function cancelEdit(): void {
 }
 async function saveEdit(messageId: string): Promise<void> {
   const text = editDraft.value.trim();
-  if (!text || !active.value || busy.value) return;
+  if (!text || !active.value || active.value.kind !== 'dm' || busy.value) return;
   busy.value = true;
   try {
-    await relayEditMessage(active.value.contactId, messageId, text);
+    await relayEditMessage(active.value.id, messageId, text);
     editingId.value = null;
-    await reloadActive();
+    await loadMessages();
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -155,8 +175,37 @@ async function doRedeem(): Promise<void> {
   try {
     await redeemInvite(invite);
     redeemText.value = '';
-    await refreshDms();
+    await refreshLists();
     panel.value = 'list';
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function makeGroup(): Promise<void> {
+  const name = newGroupName.value.trim();
+  if (!name || busy.value) return;
+  error.value = '';
+  busy.value = true;
+  try {
+    await createGroup(name);
+    newGroupName.value = '';
+    await refreshLists();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function addMember(contactId: string): Promise<void> {
+  if (!active.value || active.value.kind !== 'group' || busy.value) return;
+  busy.value = true;
+  try {
+    await addGroupMember(active.value.id, contactId);
+    addingMember.value = false;
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -166,11 +215,10 @@ async function doRedeem(): Promise<void> {
 
 let unsub: (() => void) | null = null;
 onMounted(() => {
-  void refreshDms();
-  // Live inbound: a drain that stored rows refreshes the open DM + the list.
+  void refreshLists();
   unsub = onMailIngested(() => {
-    void reloadActive();
-    void refreshDms();
+    void loadMessages();
+    void refreshLists();
   });
 });
 onUnmounted(() => unsub?.());
@@ -178,38 +226,53 @@ onUnmounted(() => unsub?.());
 
 <template>
   <div class="flex h-full">
-    <!-- DM list -->
+    <!-- Conversation list -->
     <aside class="flex w-64 shrink-0 flex-col border-r border-neutral-500/20">
       <header class="flex items-center justify-between p-3">
-        <h2 class="text-sm font-semibold">Direct messages</h2>
+        <h2 class="text-sm font-semibold">Chats</h2>
         <button
           data-testid="add-friend"
           class="rounded p-1 hover:bg-neutral-500/10"
-          title="Add a friend"
+          title="Add a friend / group"
           @click="((panel = 'add'), (createdInvite = null), (error = ''))"
         >
           <IconAdd class="h-5 w-5" />
         </button>
       </header>
       <ul class="flex-1 overflow-y-auto">
-        <li v-for="dm in dms" :key="dm.contactId">
+        <li v-if="!dms.length && !groups.length" class="px-3 py-6 text-center text-xs opacity-60">
+          No chats yet — add a friend or create a group.
+        </li>
+        <li v-for="dm in dms" :key="'dm:' + dm.contactId">
           <button
+            data-testid="dm-row"
             class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-neutral-500/10"
-            :class="{ 'bg-neutral-500/10': active?.contactId === dm.contactId }"
-            @click="open(dm)"
+            :class="{ 'bg-neutral-500/10': active?.kind === 'dm' && active.id === dm.contactId }"
+            @click="open({ kind: 'dm', id: dm.contactId, name: dm.displayName || dm.handle, conversationId: dm.conversationId })"
           >
             <span class="flex-1 truncate">{{ dm.displayName || dm.handle }}</span>
-            <span
-              v-if="dm.unread > 0"
-              data-testid="unread-badge"
-              class="shrink-0 rounded-full bg-blue-600 px-1.5 text-xs text-white"
-            >{{ dm.unread > 99 ? '99+' : dm.unread }}</span>
+            <span v-if="dm.unread > 0" data-testid="unread-badge" class="shrink-0 rounded-full bg-blue-600 px-1.5 text-xs text-white">{{ dm.unread > 99 ? '99+' : dm.unread }}</span>
           </button>
         </li>
-        <li v-if="!dms.length" class="px-3 py-6 text-center text-xs opacity-60">
-          No friends yet — add one to start a DM.
+        <li v-for="g in groups" :key="'grp:' + g.groupId">
+          <button
+            data-testid="group-row"
+            class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-neutral-500/10"
+            :class="{ 'bg-neutral-500/10': active?.kind === 'group' && active.id === g.groupId }"
+            @click="open({ kind: 'group', id: g.groupId, name: g.name || 'Group', conversationId: g.conversationId })"
+          >
+            <IconUsers class="h-4 w-4 shrink-0 opacity-70" />
+            <span class="flex-1 truncate">{{ g.name || 'Group' }}</span>
+            <span v-if="g.unread > 0" class="shrink-0 rounded-full bg-blue-600 px-1.5 text-xs text-white">{{ g.unread > 99 ? '99+' : g.unread }}</span>
+          </button>
         </li>
       </ul>
+      <footer class="border-t border-neutral-500/20 p-2">
+        <form data-testid="new-group-form" class="flex items-center gap-1" @submit.prevent="makeGroup">
+          <input v-model="newGroupName" data-testid="new-group" placeholder="New group name" class="min-w-0 flex-1 rounded border border-neutral-500/30 bg-transparent px-2 py-1 text-xs" />
+          <button type="submit" data-testid="create-group" :disabled="busy || !newGroupName.trim()" class="rounded bg-blue-600 px-2 py-1 text-xs text-white disabled:opacity-50">Create</button>
+        </form>
+      </footer>
     </aside>
 
     <!-- Add-friend panel -->
@@ -218,130 +281,68 @@ onUnmounted(() => unsub?.());
         <IconBack class="h-4 w-4" /> Back
       </button>
       <h3 class="text-base font-semibold">Add a friend</h3>
-
       <div class="mt-4 space-y-2">
         <p class="text-sm opacity-70">Share an invite link:</p>
-        <button
-          data-testid="make-invite"
-          :disabled="busy"
-          class="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-          @click="makeInvite"
-        >
-          Create invite link
-        </button>
-        <p
-          v-if="createdInvite"
-          data-testid="invite-link"
-          class="select-all break-all rounded border border-neutral-500/30 p-2 font-mono text-xs"
-        >
-          {{ createdInvite }}
-        </p>
+        <button data-testid="make-invite" :disabled="busy" class="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50" @click="makeInvite">Create invite link</button>
+        <p v-if="createdInvite" data-testid="invite-link" class="select-all break-all rounded border border-neutral-500/30 p-2 font-mono text-xs">{{ createdInvite }}</p>
       </div>
-
       <div class="mt-6 space-y-2">
         <p class="text-sm opacity-70">Or redeem one you were sent:</p>
-        <textarea
-          v-model="redeemText"
-          rows="2"
-          placeholder="Paste an invite link"
-          class="w-full rounded border border-neutral-500/30 bg-transparent p-2 font-mono text-xs"
-        />
-        <button
-          data-testid="redeem"
-          :disabled="busy || !redeemText.trim()"
-          class="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-          @click="doRedeem"
-        >
-          Redeem
-        </button>
+        <textarea v-model="redeemText" rows="2" placeholder="Paste an invite link" class="w-full rounded border border-neutral-500/30 bg-transparent p-2 font-mono text-xs" />
+        <button data-testid="redeem" :disabled="busy || !redeemText.trim()" class="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50" @click="doRedeem">Redeem</button>
       </div>
       <p v-if="error" class="mt-4 text-sm text-red-500">{{ error }}</p>
     </section>
 
-    <!-- DM view -->
+    <!-- Conversation view -->
     <section v-else-if="active" class="flex flex-1 flex-col">
-      <header class="border-b border-neutral-500/20 p-3 text-sm font-semibold">
-        {{ active.displayName || active.handle }}
+      <header class="flex items-center justify-between border-b border-neutral-500/20 p-3 text-sm font-semibold">
+        <span>{{ active.name }}</span>
+        <button v-if="active.kind === 'group'" data-testid="add-member-toggle" class="text-xs font-normal text-blue-500" @click="addingMember = !addingMember">Add member</button>
       </header>
+      <!-- add-member picker (friends) -->
+      <ul v-if="addingMember && active.kind === 'group'" class="border-b border-neutral-500/20 p-2 text-sm">
+        <li v-for="dm in dms" :key="dm.contactId">
+          <button data-testid="add-member-pick" class="w-full rounded px-2 py-1 text-left hover:bg-neutral-500/10" @click="addMember(dm.contactId)">{{ dm.displayName || dm.handle }}</button>
+        </li>
+        <li v-if="!dms.length" class="px-2 py-1 text-xs opacity-60">Add friends first.</li>
+      </ul>
       <ul class="flex-1 space-y-2 overflow-y-auto p-3">
-        <li
-          v-for="m in messages"
-          :key="m.key ?? String(m.seq)"
-          class="flex flex-col"
-          :class="m.senderId === 'self' ? 'items-end' : 'items-start'"
-        >
+        <li v-for="m in messages" :key="m.key ?? String(m.seq)" class="flex flex-col" :class="m.senderId === 'self' ? 'items-end' : 'items-start'">
           <div class="group flex items-center gap-1">
-            <!-- inline edit -->
-            <form
-              v-if="editingId === m.key"
-              class="flex items-center gap-1"
-              @submit.prevent="saveEdit(m.key!)"
-            >
-              <input
-                v-model="editDraft"
-                data-testid="edit-input"
-                class="rounded border border-neutral-500/30 bg-transparent px-2 py-1 text-sm"
-              />
+            <form v-if="editingId === m.key" data-testid="edit-form" class="flex items-center gap-1" @submit.prevent="saveEdit(m.key!)">
+              <input v-model="editDraft" data-testid="edit-input" class="rounded border border-neutral-500/30 bg-transparent px-2 py-1 text-sm" />
               <button type="submit" class="text-xs text-blue-500">Save</button>
               <button type="button" class="text-xs opacity-60" @click="cancelEdit">Cancel</button>
             </form>
             <template v-else>
-              <span
-                v-if="m.text !== null && m.key"
-                class="flex gap-1 opacity-0 group-hover:opacity-100"
-              >
+              <span v-if="isDm && m.text !== null && m.key" class="flex gap-1 opacity-0 group-hover:opacity-100">
                 <button data-testid="react-msg" class="text-xs" title="React 👍" @click="toggleReaction(m.key, '👍')">👍</button>
                 <template v-if="m.senderId === 'self'">
                   <button data-testid="edit-msg" class="text-xs text-blue-500" @click="startEdit(m)">Edit</button>
                   <button data-testid="delete-msg" class="text-xs text-red-500" @click="remove(m.key)">Delete</button>
                 </template>
               </span>
-              <span
-                v-if="m.text === null"
-                class="max-w-[75%] rounded-2xl bg-neutral-500/10 px-3 py-1.5 text-sm italic opacity-60"
-              >Message deleted</span>
-              <span
-                v-else
-                class="max-w-[75%] break-words rounded-2xl px-3 py-1.5 text-sm"
-                :class="m.senderId === 'self' ? 'bg-blue-600 text-white' : 'bg-neutral-500/15'"
-              >{{ m.text }}<span v-if="m.editedAt" class="ml-1 text-[10px] opacity-60">(edited)</span></span>
+              <span v-if="m.text === null" class="max-w-[75%] rounded-2xl bg-neutral-500/10 px-3 py-1.5 text-sm italic opacity-60">Message deleted</span>
+              <span v-else class="max-w-[75%] break-words rounded-2xl px-3 py-1.5 text-sm" :class="m.senderId === 'self' ? 'bg-blue-600 text-white' : 'bg-neutral-500/15'">{{ m.text }}<span v-if="m.editedAt" class="ml-1 text-[10px] opacity-60">(edited)</span></span>
             </template>
           </div>
-          <!-- reaction chips -->
           <div v-if="groupedReactions(m.key).length" class="mt-0.5 flex gap-1">
-            <button
-              v-for="g in groupedReactions(m.key)"
-              :key="g.emoji"
-              data-testid="reaction-chip"
-              class="rounded-full px-1.5 text-xs"
-              :class="g.mine ? 'bg-blue-600/25' : 'bg-neutral-500/15'"
-              @click="toggleReaction(m.key!, g.emoji)"
-            >{{ g.emoji }} {{ g.count }}</button>
+            <button v-for="rg in groupedReactions(m.key)" :key="rg.emoji" data-testid="reaction-chip" class="rounded-full px-1.5 text-xs" :class="rg.mine ? 'bg-blue-600/25' : 'bg-neutral-500/15'" @click="toggleReaction(m.key!, rg.emoji)">{{ rg.emoji }} {{ rg.count }}</button>
           </div>
         </li>
       </ul>
-      <form class="flex items-center gap-2 border-t border-neutral-500/20 p-3" @submit.prevent="send">
-        <input
-          v-model="draft"
-          data-testid="draft"
-          placeholder="Message"
-          class="flex-1 rounded-full border border-neutral-500/30 bg-transparent px-4 py-2 text-sm"
-        />
-        <button
-          type="submit"
-          data-testid="send"
-          :disabled="busy || !draft.trim()"
-          class="rounded-full bg-blue-600 p-2 text-white disabled:opacity-50"
-        >
+      <form data-testid="composer" class="flex items-center gap-2 border-t border-neutral-500/20 p-3" @submit.prevent="send">
+        <input v-model="draft" data-testid="draft" placeholder="Message" class="flex-1 rounded-full border border-neutral-500/30 bg-transparent px-4 py-2 text-sm" />
+        <button type="submit" data-testid="send" :disabled="busy || !draft.trim()" class="rounded-full bg-blue-600 p-2 text-white disabled:opacity-50">
           <IconSend class="h-5 w-5" />
         </button>
       </form>
       <p v-if="error" class="p-3 text-sm text-red-500">{{ error }}</p>
     </section>
 
-    <!-- Empty state -->
     <section v-else class="flex flex-1 items-center justify-center text-sm opacity-60">
-      Select a DM, or add a friend to start one.
+      Select a chat, or add a friend / create a group.
     </section>
   </div>
 </template>

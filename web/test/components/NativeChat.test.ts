@@ -8,6 +8,15 @@ const dm = vi.hoisted(() => ({
 }));
 vi.mock('../../src/lib/nativeDm', () => dm);
 
+const grp = vi.hoisted(() => ({
+  listGroups: vi.fn(),
+  openGroup: vi.fn(),
+  sendGroup: vi.fn(),
+  createGroup: vi.fn(),
+  addGroupMember: vi.fn(),
+}));
+vi.mock('../../src/lib/nativeGroup', () => grp);
+
 const friends = vi.hoisted(() => ({
   createInvite: vi.fn(),
   redeemInvite: vi.fn(),
@@ -35,6 +44,8 @@ beforeEach(() => {
     { contactId: 'idA', handle: 'A#1', displayName: 'Alice', conversationId: 'dm:A', unread: 0 },
   ]);
   dm.openDm.mockResolvedValue({ conversationId: 'dm:A', messages: [] });
+  grp.listGroups.mockResolvedValue([]);
+  grp.openGroup.mockResolvedValue({ conversationId: 'grp:x', messages: [] });
   relay.onMailIngested.mockReturnValue(() => {});
   nativeMod.conversationReactions.mockResolvedValue([]);
 });
@@ -58,7 +69,7 @@ describe('NativeChat', () => {
     });
     const w = mount(NativeChat);
     await flushPromises();
-    await w.findAll('aside button')[1].trigger('click'); // the DM row (0 = add)
+    await w.find('[data-testid="dm-row"]').trigger('click'); // the DM row (0 = add)
     await flushPromises();
     expect(dm.openDm).toHaveBeenCalledWith('idA', 50);
     expect(w.text()).toContain('hi there');
@@ -71,11 +82,11 @@ describe('NativeChat', () => {
     dm.sendDm.mockResolvedValue('msg-1');
     const w = mount(NativeChat);
     await flushPromises();
-    await w.findAll('aside button')[1].trigger('click');
+    await w.find('[data-testid="dm-row"]').trigger('click');
     await flushPromises();
 
     await w.find('[data-testid="draft"]').setValue('hello');
-    await w.find('form').trigger('submit');
+    await w.find('[data-testid="composer"]').trigger('submit');
     await flushPromises();
     expect(dm.sendDm).toHaveBeenCalledWith('idA', 'hello');
     expect((w.find('[data-testid="draft"]').element as HTMLInputElement).value).toBe('');
@@ -104,7 +115,7 @@ describe('NativeChat', () => {
 
     const w = mount(NativeChat);
     await flushPromises();
-    await w.findAll('aside button')[1].trigger('click');
+    await w.find('[data-testid="dm-row"]').trigger('click');
     await flushPromises();
 
     await w.find('[data-testid="react-msg"]').trigger('click');
@@ -137,7 +148,7 @@ describe('NativeChat', () => {
       });
     const w = mount(NativeChat);
     await flushPromises();
-    await w.findAll('aside button')[1].trigger('click');
+    await w.find('[data-testid="dm-row"]').trigger('click');
     await flushPromises();
 
     await w.find('[data-testid="delete-msg"]').trigger('click');
@@ -159,16 +170,60 @@ describe('NativeChat', () => {
       });
     const w = mount(NativeChat);
     await flushPromises();
-    await w.findAll('aside button')[1].trigger('click');
+    await w.find('[data-testid="dm-row"]').trigger('click');
     await flushPromises();
 
     await w.find('[data-testid="edit-msg"]').trigger('click');
     await w.find('[data-testid="edit-input"]').setValue('fixed');
-    await w.findAll('form')[0].trigger('submit'); // inline edit form (before composer)
+    await w.find('[data-testid="edit-form"]').trigger('submit');
     await flushPromises();
     expect(nativeMod.relayEditMessage).toHaveBeenCalledWith('idA', 'm2', 'fixed');
     expect(w.text()).toContain('fixed');
     expect(w.text()).toContain('(edited)');
+  });
+
+  it('lists groups and opens/sends to one', async () => {
+    grp.listGroups.mockResolvedValue([{ groupId: 'grp:x', name: 'Team', conversationId: 'grp:x', unread: 0 }]);
+    grp.openGroup.mockResolvedValue({ conversationId: 'grp:x', messages: [view({ key: 'gm1', senderId: 'idA', text: 'group hi' })] });
+    grp.sendGroup.mockResolvedValue('gm2');
+    const w = mount(NativeChat);
+    await flushPromises();
+    expect(w.text()).toContain('Team');
+
+    await w.find('[data-testid="group-row"]').trigger('click');
+    await flushPromises();
+    expect(grp.openGroup).toHaveBeenCalledWith('grp:x', 50);
+    expect(w.text()).toContain('group hi');
+    // group messages have no DM-only react/edit/delete actions
+    expect(w.find('[data-testid="react-msg"]').exists()).toBe(false);
+
+    await w.find('[data-testid="draft"]').setValue('yo');
+    await w.find('[data-testid="composer"]').trigger('submit');
+    await flushPromises();
+    expect(grp.sendGroup).toHaveBeenCalledWith('grp:x', 'yo');
+  });
+
+  it('creates a group', async () => {
+    grp.createGroup.mockResolvedValue('grp:new');
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="new-group"]').setValue('Squad');
+    await w.find('[data-testid="new-group-form"]').trigger('submit');
+    await flushPromises();
+    expect(grp.createGroup).toHaveBeenCalledWith('Squad');
+  });
+
+  it('adds a friend to a group', async () => {
+    grp.listGroups.mockResolvedValue([{ groupId: 'grp:x', name: 'Team', conversationId: 'grp:x', unread: 0 }]);
+    grp.addGroupMember.mockResolvedValue(undefined);
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="group-row"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-testid="add-member-toggle"]').trigger('click');
+    await w.find('[data-testid="add-member-pick"]').trigger('click'); // the one DM friend (Alice)
+    await flushPromises();
+    expect(grp.addGroupMember).toHaveBeenCalledWith('grp:x', 'idA');
   });
 
   it('redeems an invite then refreshes the DM list', async () => {
