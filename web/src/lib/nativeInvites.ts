@@ -47,8 +47,17 @@ export async function redeemFriendInvite(
   me: { handle: string; deliveryToken: string },
 ): Promise<{ inviterHandle: string; relayTs: number }> {
   const inv = parseInvite(inviteStr);
+  // Include my sealing key so the inviter can reciprocate (seal a friend-confirm
+  // back to me); the whole payload is signed by the envelope.
+  const keys = await relayMyDirectoryKeys();
   const payload = Array.from(
-    new TextEncoder().encode(JSON.stringify({ handle: me.handle, deliveryToken: me.deliveryToken })),
+    new TextEncoder().encode(
+      JSON.stringify({
+        handle: me.handle,
+        deliveryToken: me.deliveryToken,
+        sealingPub: keys.sealing_pub,
+      }),
+    ),
   );
   const envelope = await envelopeSeal(inv.sealingPub, FRIEND_ACCEPT_KIND, payload);
   const relayTs = await relayInviteRedeem(inv.token, envelope);

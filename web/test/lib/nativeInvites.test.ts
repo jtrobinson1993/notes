@@ -58,13 +58,15 @@ describe('redeemFriendInvite', () => {
       identityPub: 'IDPUB',
       sealingPub: 'SEALPUB',
     });
+    native.relayMyDirectoryKeys.mockResolvedValue({ identity_pub: 'MYID', sealing_pub: 'MYSEAL' });
     native.envelopeSeal.mockResolvedValue([9, 9, 9]);
     native.relayInviteRedeem.mockResolvedValue(42);
 
     const res = await redeemFriendInvite(invite, { handle: 'Me#0002', deliveryToken: 'MYDELIV' });
     expect(res).toEqual({ inviterHandle: 'Inviter#0001', relayTs: 42 });
 
-    // Sealed to the inviter's pinned sealing key, kind = friend-accept.
+    // Sealed to the inviter's pinned sealing key, kind = friend-accept, and the
+    // payload carries my handle + delivery token + sealing key (for reciprocity).
     expect(native.envelopeSeal).toHaveBeenCalledTimes(1);
     const [sealTo, kind, payload] = native.envelopeSeal.mock.calls[0];
     expect(sealTo).toBe('SEALPUB');
@@ -72,6 +74,7 @@ describe('redeemFriendInvite', () => {
     expect(JSON.parse(new TextDecoder().decode(new Uint8Array(payload as number[])))).toEqual({
       handle: 'Me#0002',
       deliveryToken: 'MYDELIV',
+      sealingPub: 'MYSEAL',
     });
     // Dropped via the one-time token + the sealed envelope.
     expect(native.relayInviteRedeem).toHaveBeenCalledWith('TOK', [9, 9, 9]);

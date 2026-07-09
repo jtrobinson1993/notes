@@ -233,19 +233,22 @@ async fn relay_mailbox_drain(
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<message::DrainReport, String> {
-    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
-    // Take the device key (for fetch/ack) and the sealing secret (to open
-    // envelopes) before any await — the vault mutex must not cross it.
-    let (signing, sealing) = {
+    let (base_url, relay_fp) = relay.session_info().ok_or("not connected to a relay")?;
+    // Take the device key (for fetch/ack), the sealing secret (to open
+    // envelopes), and my identity pub (to persist the relay row) before any
+    // await — the vault mutex must not cross it.
+    let (signing, sealing, my_identity_pub) = {
         let vault = vault.lock().unwrap();
         let signing = vault.device_signing_key().map_err(|e| e.to_string())?;
         let mk = vault.mk().map_err(|e| e.to_string())?;
         let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
-        (signing, ident.sealing)
+        let my_identity_pub = ident.signing_public().to_vec();
+        (signing, ident.sealing, my_identity_pub)
     };
 
     let rows = relay.mailbox_fetch(&signing).await?;
     let mut imports = Vec::new();
+    let mut friends = Vec::new();
     let mut ack_ids = Vec::new();
     let mut buffered = 0usize;
     for row in rows {
@@ -254,15 +257,40 @@ async fn relay_mailbox_drain(
                 imports.push(*m);
                 ack_ids.push(row.queue_id);
             }
+            message::Disposition::Friend(f) => {
+                friends.push(*f);
+                ack_ids.push(row.queue_id);
+            }
             message::Disposition::Discard => ack_ids.push(row.queue_id),
             message::Disposition::Buffer => buffered += 1,
         }
     }
 
-    // Ingest first; only ack once the rows are durably stored (hold-until-ack).
+    // Persist first; only ack once durably stored (hold-until-ack). Friends
+    // (D4b): record the verified sender's addressing so we can reach them.
+    // Reciprocation (replying a friend-confirm to an accept) is a follow-up.
+    let friend_count = friends.len();
     let ingested = {
         let vault = vault.lock().unwrap();
         let store = vault.store().map_err(|e| e.to_string())?;
+        if !friends.is_empty() {
+            store
+                .upsert_relay(&relay_fp, &base_url, &relay_fp, &my_identity_pub)
+                .map_err(|e| e.to_string())?;
+            for f in friends {
+                store
+                    .record_friend(&store::FriendRecord {
+                        contact_id: f.contact_id,
+                        display_name: None,
+                        relay_id: relay_fp.clone(),
+                        handle: f.handle,
+                        identity_pub: f.identity_pub,
+                        sealing_pub: f.sealing_pub,
+                        delivery_token: f.delivery_token,
+                    })
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         store.import_messages(imports).map_err(|e| e.to_string())?
     };
     let acked = if ack_ids.is_empty() {
@@ -270,7 +298,7 @@ async fn relay_mailbox_drain(
     } else {
         relay.mailbox_ack(&signing, ack_ids).await? as usize
     };
-    Ok(message::DrainReport { ingested, acked, buffered })
+    Ok(message::DrainReport { ingested, acked, buffered, friends: friend_count })
 }
 
 /// Mint a friend invite (D4b): the client hashes its own random token and this

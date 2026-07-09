@@ -159,6 +159,8 @@ export interface DrainReport {
   acked: number;
   /** Queue entries left in place for a post-update retry (version skew). */
   buffered: number;
+  /** Friends recorded from verified friend-accept/confirm envelopes (D4b). */
+  friends: number;
 }
 
 /**

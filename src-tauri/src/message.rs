@@ -17,8 +17,61 @@ use crate::store::ImportMessage;
 /// Envelope `kind` that carries a chat message payload (distinct from the
 /// message's own `kind`, which is text/system/…).
 pub const KIND_MSG: &str = "msg";
+/// Friend establishment (D4b): the invitee's accept (via the invite capability,
+/// triggers reciprocation) and the inviter's confirm (via the normal mailbox,
+/// no reply). Both carry the sender's addressing and record the sender a friend.
+pub const KIND_FRIEND_ACCEPT: &str = "friend-accept";
+pub const KIND_FRIEND_CONFIRM: &str = "friend-confirm";
 
 const CURRENT_VERSION: u32 = 1;
+
+/// A friend to record, extracted from a verified friend-accept/confirm envelope.
+/// `identity_pub`/`contact_id` come from the VERIFIED envelope sender; the rest
+/// from the signed payload.
+pub struct FriendAcceptData {
+    /// Stable local id for the friend = their identity key (base64).
+    pub contact_id: String,
+    pub handle: String,
+    /// Friend's Ed25519 identity (raw), from the verified envelope sender.
+    pub identity_pub: Vec<u8>,
+    /// Friend's X25519 sealing key (raw), from the signed payload.
+    pub sealing_pub: Vec<u8>,
+    pub delivery_token: String,
+    /// True for a friend-accept (we should reciprocate a confirm); false for a
+    /// confirm (terminal — no reply, so the handshake can't loop).
+    pub reciprocate: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct FriendPayload {
+    handle: String,
+    #[serde(rename = "deliveryToken")]
+    delivery_token: String,
+    #[serde(rename = "sealingPub")]
+    sealing_pub: String,
+}
+
+impl FriendAcceptData {
+    /// Parse a verified friend-accept/confirm envelope, or None if malformed.
+    fn parse(opened: &Opened, reciprocate: bool) -> Option<Self> {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let p: FriendPayload = serde_json::from_slice(&opened.payload).ok()?;
+        let sealing_pub = b64.decode(&p.sealing_pub).ok()?;
+        if sealing_pub.len() != 32 {
+            return None;
+        }
+        let identity_pub = b64.decode(&opened.sender_identity_pub).ok()?;
+        Some(FriendAcceptData {
+            contact_id: opened.sender_identity_pub.clone(),
+            handle: p.handle,
+            identity_pub,
+            sealing_pub,
+            delivery_token: p.delivery_token,
+            reciprocate,
+        })
+    }
+}
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum MessageError {
@@ -97,6 +150,9 @@ pub enum Disposition {
     /// but garbage payload): ack to drop it. Buffering these would let a single
     /// malformed/forged inject wedge the queue forever, so they are discarded.
     Discard,
+    /// A verified friend-accept/confirm (D4b): record the sender a friend, then
+    /// ack. `reciprocate` distinguishes accept (reply a confirm) from confirm.
+    Friend(Box<FriendAcceptData>),
 }
 
 /// Decide the fate of one delivered envelope from the `open` result and its
@@ -104,17 +160,26 @@ pub enum Disposition {
 /// network or live crypto.
 pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) -> Disposition {
     match open_result {
-        Ok(opened) if opened.kind == KIND_MSG => match ChatMessagePayload::decode(&opened.payload) {
-            Ok(p) => Disposition::Ingest(Box::new(
-                p.into_import(relay_ts, Some(opened.sender_identity_pub)),
-            )),
-            // Authenticated sender, unknown payload version → wait for update.
-            Err(MessageError::UnknownVersion(_)) => Disposition::Buffer,
-            // Authenticated sender, unrecoverable garbage → drop.
-            Err(MessageError::Malformed) => Disposition::Discard,
+        Ok(opened) => match opened.kind.as_str() {
+            KIND_MSG => match ChatMessagePayload::decode(&opened.payload) {
+                Ok(p) => Disposition::Ingest(Box::new(
+                    p.into_import(relay_ts, Some(opened.sender_identity_pub)),
+                )),
+                // Authenticated sender, unknown payload version → wait for update.
+                Err(MessageError::UnknownVersion(_)) => Disposition::Buffer,
+                // Authenticated sender, unrecoverable garbage → drop.
+                Err(MessageError::Malformed) => Disposition::Discard,
+            },
+            KIND_FRIEND_ACCEPT | KIND_FRIEND_CONFIRM => {
+                let reciprocate = opened.kind == KIND_FRIEND_ACCEPT;
+                match FriendAcceptData::parse(&opened, reciprocate) {
+                    Some(f) => Disposition::Friend(Box::new(f)),
+                    None => Disposition::Discard, // authed but garbage → drop
+                }
+            }
+            // A known-good envelope of a kind we don't handle yet → wait for update.
+            _ => Disposition::Buffer,
         },
-        // A known-good envelope of a kind we don't handle yet → wait for update.
-        Ok(_) => Disposition::Buffer,
         // Future envelope version → buffer and re-decode after update.
         Err(EnvelopeError::UnknownVersion(_)) => Disposition::Buffer,
         // Undecryptable / forged / malformed → never becomes valid → drop.
@@ -131,6 +196,8 @@ pub struct DrainReport {
     pub acked: usize,
     /// Queue entries left in place for a post-update retry.
     pub buffered: usize,
+    /// Friends recorded from verified friend-accept/confirm envelopes (D4b).
+    pub friends: usize,
 }
 
 #[cfg(test)]
@@ -243,5 +310,64 @@ mod tests {
             disposition(Ok(opened(KIND_MSG, b"not json".to_vec())), 1),
             Disposition::Discard
         ));
+    }
+
+    fn friend_envelope(kind: &str, handle: &str, token: &str, sealing: [u8; 32], sender: [u8; 32]) -> Opened {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "handle": handle,
+            "deliveryToken": token,
+            "sealingPub": b64.encode(sealing),
+        }))
+        .unwrap();
+        Opened { kind: kind.into(), payload, sender_identity_pub: b64.encode(sender), sent_at: 0 }
+    }
+
+    #[test]
+    fn friend_accept_records_the_verified_sender() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let env = friend_envelope(KIND_FRIEND_ACCEPT, "Bob#0002", "bob-deliv", [8u8; 32], [7u8; 32]);
+        match disposition(Ok(env), 5) {
+            Disposition::Friend(f) => {
+                assert!(f.reciprocate); // accept → reply a confirm
+                assert_eq!(f.contact_id, b64.encode([7u8; 32]));
+                assert_eq!(f.handle, "Bob#0002");
+                assert_eq!(f.identity_pub, vec![7u8; 32]); // from the VERIFIED sender
+                assert_eq!(f.sealing_pub, vec![8u8; 32]); // from the signed payload
+                assert_eq!(f.delivery_token, "bob-deliv");
+            }
+            _ => panic!("expected Friend"),
+        }
+    }
+
+    #[test]
+    fn friend_confirm_is_terminal() {
+        let env = friend_envelope(KIND_FRIEND_CONFIRM, "A#1", "t", [1u8; 32], [2u8; 32]);
+        match disposition(Ok(env), 1) {
+            Disposition::Friend(f) => assert!(!f.reciprocate), // confirm → no reply (no loop)
+            _ => panic!("expected Friend"),
+        }
+    }
+
+    #[test]
+    fn friend_accept_garbage_is_discarded() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        // Not JSON.
+        let env = Opened {
+            kind: KIND_FRIEND_ACCEPT.into(),
+            payload: b"not json".to_vec(),
+            sender_identity_pub: b64.encode([1u8; 32]),
+            sent_at: 0,
+        };
+        assert!(matches!(disposition(Ok(env), 1), Disposition::Discard));
+        // Wrong-length sealing key.
+        let env = friend_envelope(KIND_FRIEND_ACCEPT, "h", "t", [0u8; 32], [1u8; 32]);
+        let mut v: serde_json::Value = serde_json::from_slice(&env.payload).unwrap();
+        v["sealingPub"] = serde_json::json!(b64.encode([1u8; 10])); // 10 bytes ≠ 32
+        let env = Opened { payload: serde_json::to_vec(&v).unwrap(), ..env };
+        assert!(matches!(disposition(Ok(env), 1), Disposition::Discard));
     }
 }
