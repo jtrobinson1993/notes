@@ -30,6 +30,9 @@ const nativeMod = vi.hoisted(() => ({
   relayDeleteMessage: vi.fn(),
   relayEditMessage: vi.fn(),
   relayReact: vi.fn(),
+  relayGroupDeleteMessage: vi.fn(),
+  relayGroupEditMessage: vi.fn(),
+  relayGroupReact: vi.fn(),
   conversationReactions: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../../src/lib/native', () => nativeMod);
@@ -194,13 +197,24 @@ describe('NativeChat', () => {
     await flushPromises();
     expect(grp.openGroup).toHaveBeenCalledWith('grp:x', 50);
     expect(w.text()).toContain('group hi');
-    // group messages have no DM-only react/edit/delete actions
-    expect(w.find('[data-testid="react-msg"]').exists()).toBe(false);
 
     await w.find('[data-testid="draft"]').setValue('yo');
     await w.find('[data-testid="composer"]').trigger('submit');
     await flushPromises();
     expect(grp.sendGroup).toHaveBeenCalledWith('grp:x', 'yo');
+  });
+
+  it('reacts to a group message via the group fan-out', async () => {
+    grp.listGroups.mockResolvedValue([{ groupId: 'grp:x', name: 'Team', conversationId: 'grp:x', unread: 0 }]);
+    grp.openGroup.mockResolvedValue({ conversationId: 'grp:x', messages: [view({ key: 'gm1', senderId: 'idA', text: 'hi' })] });
+    nativeMod.relayGroupReact.mockResolvedValue(undefined);
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="group-row"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-testid="react-msg"]').trigger('click');
+    await flushPromises();
+    expect(nativeMod.relayGroupReact).toHaveBeenCalledWith('grp:x', 'gm1', '👍', true);
   });
 
   it('creates a group', async () => {

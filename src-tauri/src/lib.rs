@@ -649,6 +649,99 @@ async fn group_create(
     Ok(group_id)
 }
 
+/// Seal an envelope under a group's key and fan it out to all members
+/// (D6/D14). Shared by the group edit/delete/react commands.
+async fn group_seal_fanout(
+    vault: &VaultState<'_>,
+    relay: &tauri::State<'_, relay_client::RelayClient>,
+    group_id: &str,
+    kind: &str,
+    payload: &[u8],
+) -> Result<(), String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let (ident, group_key) = {
+        let vault = vault.lock().unwrap();
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        let store = vault.store().map_err(|e| e.to_string())?;
+        let group_key = store
+            .group_key(group_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("not a member of this group")?;
+        (ident, group_key)
+    };
+    let (token, _v) = keys::group_token_verifier(&group_key).map_err(|e| e.to_string())?;
+    let key32: [u8; 32] = group_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| "stored group key is malformed".to_string())?;
+    let env = envelope::seal_group(&key32, &ident, kind, payload, now_ms()).map_err(|e| e.to_string())?;
+    relay.group_send(group_id, &token, env).await?;
+    Ok(())
+}
+
+/// Delete a message I sent in a group (D11): fan out a delete + tombstone local.
+#[tauri::command]
+async fn relay_group_delete_message(
+    group_id: String,
+    message_id: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let payload = serde_json::to_vec(&serde_json::json!({ "id": message_id }))
+        .map_err(|e| e.to_string())?;
+    group_seal_fanout(&vault, &relay, &group_id, message::KIND_DELETE, &payload).await?;
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.message_apply_delete(&message_id).map_err(|e| e.to_string())
+}
+
+/// Edit a message I sent in a group (D11): fan out an edit + update local.
+#[tauri::command]
+async fn relay_group_edit_message(
+    group_id: String,
+    message_id: String,
+    content: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let edited_at = now_ms();
+    let payload = serde_json::to_vec(
+        &serde_json::json!({ "id": message_id, "content": content, "editedAt": edited_at }),
+    )
+    .map_err(|e| e.to_string())?;
+    group_seal_fanout(&vault, &relay, &group_id, message::KIND_EDIT, &payload).await?;
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store
+        .message_apply_edit(&message_id, Some(&content), edited_at)
+        .map_err(|e| e.to_string())
+}
+
+/// React to a group message (D11): fan out the reaction + apply local (self).
+#[tauri::command]
+async fn relay_group_react(
+    group_id: String,
+    message_id: String,
+    emoji: String,
+    add: bool,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "id": message_id, "emoji": emoji, "op": if add { "add" } else { "remove" },
+    }))
+    .map_err(|e| e.to_string())?;
+    group_seal_fanout(&vault, &relay, &group_id, message::KIND_REACT, &payload).await?;
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    if add {
+        store.add_reaction(&message_id, "self", &emoji).map_err(|e| e.to_string())
+    } else {
+        store.remove_reaction(&message_id, "self", &emoji).map_err(|e| e.to_string())
+    }
+}
+
 /// Add a friend to a group I administer (D14): add them to the signed group
 /// record (version bump, re-signed by me) and hand them the group key via a
 /// DM-sealed group-invite. Requires the vault unlocked + the group key locally.
@@ -1334,6 +1427,9 @@ pub fn run() {
             group_add_member,
             group_list,
             relay_send_group_message,
+            relay_group_delete_message,
+            relay_group_edit_message,
+            relay_group_react,
             relay_directory_publish,
             relay_register_verifier,
             relay_send,

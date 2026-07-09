@@ -4,7 +4,7 @@
 // server, no seq. Conversations' messages live in the local encrypted log.
 // Message actions (edit/delete/react) are DM-only for now (group edit/react
 // fan-out is a follow-up); groups support create / send / receive / add-member.
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { onMounted, onUnmounted, ref } from 'vue';
 import IconAdd from '~icons/mynaui/message-plus';
 import IconSend from '~icons/mynaui/send-solid';
 import IconBack from '~icons/mynaui/chevron-left';
@@ -24,6 +24,9 @@ import {
   relayDeleteMessage,
   relayEditMessage,
   relayReact,
+  relayGroupDeleteMessage,
+  relayGroupEditMessage,
+  relayGroupReact,
   type ReactionRow,
 } from '../lib/native';
 import { onMailIngested } from '../lib/nativeRelay';
@@ -46,8 +49,6 @@ const newGroupName = ref('');
 const addingMember = ref(false);
 const error = ref('');
 const busy = ref(false);
-
-const isDm = computed(() => active.value?.kind === 'dm');
 
 async function refreshLists(): Promise<void> {
   [dms.value, groups.value] = await Promise.all([listDms(), listGroups()]);
@@ -105,11 +106,13 @@ async function send(): Promise<void> {
 }
 
 async function toggleReaction(msgKey: string, emoji: string): Promise<void> {
-  if (!active.value || active.value.kind !== 'dm' || busy.value) return;
+  if (!active.value || busy.value) return;
   const mine = groupedReactions(msgKey).find((x) => x.emoji === emoji)?.mine ?? false;
+  const a = active.value;
   busy.value = true;
   try {
-    await relayReact(active.value.id, msgKey, emoji, !mine);
+    if (a.kind === 'dm') await relayReact(a.id, msgKey, emoji, !mine);
+    else await relayGroupReact(a.id, msgKey, emoji, !mine);
     await loadReactions();
   } catch (e) {
     error.value = String(e);
@@ -119,10 +122,12 @@ async function toggleReaction(msgKey: string, emoji: string): Promise<void> {
 }
 
 async function remove(messageId: string): Promise<void> {
-  if (!active.value || active.value.kind !== 'dm' || busy.value) return;
+  if (!active.value || busy.value) return;
+  const a = active.value;
   busy.value = true;
   try {
-    await relayDeleteMessage(active.value.id, messageId);
+    if (a.kind === 'dm') await relayDeleteMessage(a.id, messageId);
+    else await relayGroupDeleteMessage(a.id, messageId);
     await loadMessages();
   } catch (e) {
     error.value = String(e);
@@ -142,10 +147,12 @@ function cancelEdit(): void {
 }
 async function saveEdit(messageId: string): Promise<void> {
   const text = editDraft.value.trim();
-  if (!text || !active.value || active.value.kind !== 'dm' || busy.value) return;
+  if (!text || !active.value || busy.value) return;
+  const a = active.value;
   busy.value = true;
   try {
-    await relayEditMessage(active.value.id, messageId, text);
+    if (a.kind === 'dm') await relayEditMessage(a.id, messageId, text);
+    else await relayGroupEditMessage(a.id, messageId, text);
     editingId.value = null;
     await loadMessages();
   } catch (e) {
@@ -316,7 +323,7 @@ onUnmounted(() => unsub?.());
               <button type="button" class="text-xs opacity-60" @click="cancelEdit">Cancel</button>
             </form>
             <template v-else>
-              <span v-if="isDm && m.text !== null && m.key" class="flex gap-1 opacity-0 group-hover:opacity-100">
+              <span v-if="m.text !== null && m.key" class="flex gap-1 opacity-0 group-hover:opacity-100">
                 <button data-testid="react-msg" class="text-xs" title="React 👍" @click="toggleReaction(m.key, '👍')">👍</button>
                 <template v-if="m.senderId === 'self'">
                   <button data-testid="edit-msg" class="text-xs text-blue-500" @click="startEdit(m)">Edit</button>

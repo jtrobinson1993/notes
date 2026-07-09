@@ -187,9 +187,29 @@ export function relayReact(
   return invoke('relay_react', { contactId, messageId, emoji, add });
 }
 
-/** All reactions on a DM conversation's messages (the UI groups by emoji). */
+/** All reactions on a conversation's messages (the UI groups by emoji). */
 export function conversationReactions(conversationId: string): Promise<ReactionRow[]> {
   return invoke<ReactionRow[]>('conversation_reactions', { conversationId });
+}
+
+/** Delete a message I sent in a group (D11): fans out a delete + tombstones local. */
+export function relayGroupDeleteMessage(groupId: string, messageId: string): Promise<void> {
+  return invoke('relay_group_delete_message', { groupId, messageId });
+}
+
+/** Edit a message I sent in a group (D11): fans out an edit + updates local. */
+export function relayGroupEditMessage(groupId: string, messageId: string, content: string): Promise<void> {
+  return invoke('relay_group_edit_message', { groupId, messageId, content });
+}
+
+/** React to a group message (D11): fans out the reaction + applies local. */
+export function relayGroupReact(
+  groupId: string,
+  messageId: string,
+  emoji: string,
+  add: boolean,
+): Promise<void> {
+  return invoke('relay_group_react', { groupId, messageId, emoji, add });
 }
 
 /** The deterministic v8 DM conversation id for a friend (both sides agree). */
