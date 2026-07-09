@@ -1073,13 +1073,23 @@ Playwright version (currently 1.60.0).
     add/remove). Message rows → columns (bubble + chips). web 480. **v8 DM
     messaging is now feature-complete: send / edit / delete / react / unread /
     live, all authenticated E2E.**
-  - **Remaining spec work (larger, continuing):** (1) **group messaging** —
-    send/fan-out on the D14 group-state record + consume group blobs (biggest
-    remaining gap); (2) blob chunked/resumable transfer; (3) voice under v8
-    (device-token auth); (4) KT inclusion proofs / auditor (phase 6);
-    (5) README/spec currency for the v8 native surface. NOTE: reciprocal
-    friend-confirm best-effort; edits/deletes/reactions of a not-yet-seen
-    message dropped (FIFO rare); live WS task no stop signal; unsigned commits.
+  - **DONE (iter 59) — group send fan-out, server foundation (D6/D14).**
+    `POST /api/relay/groups/:id/send {groupToken, envelope}`: one group-key-
+    sealed envelope (group-token authed, sender-anonymous) fanned to every
+    current member's device queues (members by identity key in the D14 record →
+    account via new `db.userIdByRelayIdentity` → devices). Uniform 401;
+    live-nudge. Tests (server 350, +2). relay.md updated.
+  - **Group messaging — client half (next, multi-step):** (a) **group key** — a
+    symmetric group key; group content = ONE envelope symmetric-sealed under it
+    (new group-envelope path, vs the per-recipient X25519 DM seal), sender cert
+    inside. (b) **group creation** — genesis D14 record (me=owner) + set group
+    verifier (hash of group token derived from group key) + distribute the group
+    key to members (seal per-member, like a friend-accept). (c) **membership** —
+    add member (re-key or share current key) + version bump. (d) inbound: drain
+    handles group envelopes (decrypt with group key, ingest under groupId).
+    (e) group UI. NOTE: this is a large sub-feature; the DM path stays the model
+    for auth/routing. Deferred smaller: blob chunked/resumable; voice-v8; KT
+    proofs; README currency. Best-effort caveats as before; unsigned commits.
   - **v8 MESSAGING CORE COMPLETE** (iters 42–50): unified msg identity/order,
     live-render wiring, friend store + full invite→mutual-friend handshake,
     outbound send, spoof-proof DM identity, native DM API. Remaining v8 work is
