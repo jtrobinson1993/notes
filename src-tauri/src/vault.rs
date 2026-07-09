@@ -85,6 +85,14 @@ struct EscrowMeta {
     recovery_auth_hash: String,
 }
 
+/// What the client uploads to the relay for escrow (D15).
+pub struct EscrowUploadBundle {
+    pub payload: String,
+    pub kdf_params: String,
+    pub password_auth_hash: String,
+    pub recovery_auth_hash: String,
+}
+
 /// The relay escrow payload — mirror of what `escrow_bundle()` serializes.
 #[derive(serde::Deserialize)]
 struct EscrowPayload {
@@ -366,9 +374,11 @@ impl Vault {
     }
 
     /// The escrow bundle for the relay (D15): opaque payload (wrapped blobs
-    /// + public KDF params) and the auth-key hashes. Everything here is safe
-    /// to hand to the relay — MK only appears wrapped under user secrets.
-    pub fn escrow_bundle(&self) -> Result<(String, String, String), VaultError> {
+    /// + public KDF params), the **public KDF params** (served pre-auth so a
+    /// cold-start device can derive its fetch key), and the auth-key hashes.
+    /// Everything here is safe to hand to the relay — MK only appears wrapped
+    /// under user secrets.
+    pub fn escrow_bundle(&self) -> Result<EscrowUploadBundle, VaultError> {
         let meta = self.load_meta()?;
         let escrow = meta.escrow.clone().ok_or(VaultError::NotInitialized)?;
         let payload = serde_json::json!({
@@ -381,7 +391,36 @@ impl Vault {
             "wrappedMkRecovery": serde_json::to_value(&meta.wrapped_mk_recovery)?,
         })
         .to_string();
-        Ok((payload, escrow.password_auth_hash, escrow.recovery_auth_hash))
+        let kdf_params = serde_json::json!({
+            "kdfSalt": meta.kdf_salt,
+            "kdfMKib": meta.kdf_m_kib,
+            "kdfT": meta.kdf_t,
+            "kdfP": meta.kdf_p,
+        })
+        .to_string();
+        Ok(EscrowUploadBundle {
+            payload,
+            kdf_params,
+            password_auth_hash: escrow.password_auth_hash,
+            recovery_auth_hash: escrow.recovery_auth_hash,
+        })
+    }
+
+    /// Derive the base64 escrow **fetch auth key** from the password + the
+    /// relay-served public KDF params (cold-start step 2). Pure — no vault
+    /// state, runs before any vault exists. Matches the create-time
+    /// derivation exactly, so the relay's stored hash compares equal.
+    pub fn derive_escrow_auth_key_b64(
+        password: &str,
+        salt: &[u8],
+        m_kib: u32,
+        t: u32,
+        p: u32,
+    ) -> Result<String, VaultError> {
+        use base64::Engine as _;
+        let secret = derive_password_secret_with(password, salt, m_kib, t, p)?;
+        let auth = keys::derive_auth_key(secret.as_ref(), keys::INFO_AUTH_PASSWORD)?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(auth.as_ref()))
     }
 
     /// D6 delivery token + verifier, derived from the profile key (which the
@@ -553,14 +592,44 @@ mod tests {
     fn escrow_bundle_is_present_and_opaque() {
         let (_dir, mut vault) = new_vault();
         vault.create("a long enough password").unwrap();
-        let (payload, pw_hash, rc_hash) = vault.escrow_bundle().unwrap();
-        assert_ne!(pw_hash, rc_hash); // separate auth domains
-        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let bundle = vault.escrow_bundle().unwrap();
+        assert_ne!(bundle.password_auth_hash, bundle.recovery_auth_hash); // separate domains
+        let parsed: serde_json::Value = serde_json::from_str(&bundle.payload).unwrap();
         assert_eq!(parsed["v"], 1);
         assert!(parsed["wrappedMkPassword"]["ciphertext"].is_array());
         // The payload never carries the vault-key wrap (that one never
         // leaves the device) nor any raw key material.
         assert!(parsed.get("wrappedMkVault").is_none());
+        // KDF params are exposed for the pre-auth cold-start fetch.
+        let kdf: serde_json::Value = serde_json::from_str(&bundle.kdf_params).unwrap();
+        assert!(kdf["kdfSalt"].is_array());
+    }
+
+    #[test]
+    fn escrow_fetch_auth_key_matches_the_stored_hash() {
+        // The cold-start fetch derivation must reproduce the create-time
+        // auth key exactly, so the relay's stored hash compares equal.
+        let (_dir, mut vault) = new_vault();
+        vault.create("a long enough password").unwrap();
+        let bundle = vault.escrow_bundle().unwrap();
+        let kdf: serde_json::Value = serde_json::from_str(&bundle.kdf_params).unwrap();
+        let salt: Vec<u8> = kdf["kdfSalt"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u8)
+            .collect();
+        let m = kdf["kdfMKib"].as_u64().unwrap() as u32;
+        let t = kdf["kdfT"].as_u64().unwrap() as u32;
+        let p = kdf["kdfP"].as_u64().unwrap() as u32;
+
+        use base64::Engine as _;
+        let auth_b64 =
+            Vault::derive_escrow_auth_key_b64("a long enough password", &salt, m, t, p).unwrap();
+        let auth_raw = base64::engine::general_purpose::STANDARD.decode(auth_b64).unwrap();
+        // Server stores b64url(sha256(raw auth key)); it must equal the hash
+        // captured at create time.
+        assert_eq!(keys::sha256_b64url(&auth_raw), bundle.password_auth_hash);
     }
 
     #[test]
@@ -569,7 +638,7 @@ mod tests {
         let (_d1, mut v1) = new_vault();
         let recovery = v1.create("a long enough password").unwrap();
         v1.store().unwrap().set_setting("marker", "hello").unwrap();
-        let (payload, _pw, _rc) = v1.escrow_bundle().unwrap();
+        let payload = v1.escrow_bundle().unwrap().payload;
 
         // Device 2 (fresh keychain + data dir): restore from escrow + password.
         let (_d2, mut v2) = new_vault();
@@ -584,7 +653,7 @@ mod tests {
         // Wrong password is rejected.
         let (_d3, mut v3) = new_vault();
         assert!(matches!(
-            v3.restore_from_escrow(&payload, "the wrong password!!"),
+            v3.restore_from_escrow(&payload, "the wrong password"),
             Err(VaultError::WrongPassword)
         ));
 

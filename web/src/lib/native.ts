@@ -40,6 +40,19 @@ export function vaultUnlockRecovery(code: string): Promise<void> {
   return invoke('vault_unlock_recovery', { code });
 }
 
+/**
+ * Cold-start restore on a fresh, unpaired device (D15/D3a): fetch the
+ * wrapped-MK escrow from a relay by handle + password and rebuild the vault.
+ * Restores identity, not history (pair a device or import a backup for that).
+ */
+export function vaultRestoreFromEscrow(
+  url: string,
+  handle: string,
+  password: string,
+): Promise<void> {
+  return invoke('vault_restore_from_escrow', { url, handle, password });
+}
+
 export function vaultLock(): Promise<void> {
   return invoke('vault_lock');
 }

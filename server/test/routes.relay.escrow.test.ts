@@ -93,6 +93,49 @@ describe('escrow (D15)', () => {
     expect(wrongKey.json()).toEqual(noUser.json());
   });
 
+  it('serves real KDF params for an escrow, pseudo-params otherwise (no enumeration)', async () => {
+    ctx = await makeApp();
+    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice.cookie);
+    const authKey = randomBytes(32);
+    const kdfParams = { kdfSalt: [...randomBytes(16)], kdfMKib: 19456, kdfT: 2, kdfP: 1 };
+    await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/relay/escrow',
+      headers: { authorization: bearer },
+      payload: {
+        payload: '{}',
+        kdfParams,
+        passwordAuthHash: createHash('sha256').update(authKey).digest('base64url'),
+      },
+    });
+
+    const real = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/relay/escrow/kdf',
+      payload: { handle: 'Alice#0001' },
+    });
+    expect(real.statusCode).toBe(200);
+    expect(real.json()).toEqual(kdfParams);
+
+    // Unknown handle → well-formed pseudo-params, deterministic across probes,
+    // and shaped identically so it can't be told apart from a real one.
+    const ghost1 = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/relay/escrow/kdf',
+      payload: { handle: 'Ghost#0000' },
+    });
+    const ghost2 = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/relay/escrow/kdf',
+      payload: { handle: 'Ghost#0000' },
+    });
+    expect(ghost1.statusCode).toBe(200);
+    expect(ghost1.json().kdfSalt).toHaveLength(16);
+    expect(ghost1.json()).toEqual(ghost2.json());
+    expect(ghost1.json().kdfSalt).not.toEqual(real.json().kdfSalt);
+  });
+
   it('re-upload replaces the bundle', async () => {
     ctx = await makeApp();
     const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });

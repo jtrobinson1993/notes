@@ -746,25 +746,29 @@ Playwright version (currently 1.60.0).
     Test proves: fresh device recovers the SAME MK (⇒ per-relay identities
     re-derive), wrong password rejected, original recovery code still works,
     store is empty. `RelayClient::escrow_fetch` (static, no session) also in.
-  - **⚠ OPEN DESIGN DECISION — escrow-fetch salt chicken-and-egg (caught &
-    NOT papered over):** the fetch auth key = HKDF(argon2id(password,
-    **kdf_salt**)), but kdf_salt lives *inside* the escrow payload you're
-    fetching. Deadlock. I pulled back a half-baked IPC command that hand-
-    waved this. **Standard resolution (every password-vault system does
-    this — Bitwarden/Signal-PIN):** expose per-account KDF salt/params by
-    handle *before* auth. To keep the D6 uniform-401 anti-enumeration
-    posture, the params endpoint should return a **deterministic pseudo-salt
-    (HMAC(relaySecret, handle)) for unknown/escrow-less handles** so probing
-    can't distinguish. Needs: store kdf_salt in the escrow row (or parse the
-    public field out of the payload), add POST /api/relay/escrow/kdf, derive
-    client-side, then the existing uniform fetch. **Do this as the very next
-    iteration** before wiring the restore UI.
-  - **Next iterations (phase 3):** (1) escrow KDF-params endpoint +
-    pseudo-salt + client fetch wiring + restore UI in NativeGate; (2) WS
-    live delivery for device queues; (3) security.md relay-state inventory
-    fold-in; (4) phase-3 review vs relay.md (still unbuilt: transient blob
-    store, group-state record, invite redeem, push registration). Desk
-    queue unchanged.
+  - **RESOLVED (iter 28) — escrow-fetch salt chicken-and-egg:** exactly the
+    logged plan. Server: `relay_escrow.kdf_params` column (idempotent
+    migration) + **POST /api/relay/escrow/kdf** {handle} → public KDF params
+    (salt not secret). **Anti-enumeration: escrow-less/unknown handles get a
+    deterministic pseudo-salt** `sha256("escrow-pseudo"|relayFp|handle)[..16]`
+    with real Argon2 cost params — indistinguishable shape, stable across
+    probes; the subsequent fetch still 401s uniformly. Rate-limited 10/min.
+    Rust: `escrow_bundle()` now returns `EscrowUploadBundle{payload,
+    kdf_params, hashes}` (kdf params emitted for upload);
+    `Vault::derive_escrow_auth_key_b64(password, salt, m,t,p)` (pure,
+    pre-vault); `RelayClient::escrow_kdf` (sessionless);
+    **`vault_restore_from_escrow(url, handle, password)`** IPC does the full
+    flow (kdf → derive → fetch → restore) + native.ts wrapper. Tests:
+    server real-vs-pseudo params (no enumeration), rust
+    **auth-key-matches-stored-hash** (fetch derivation reproduces create-time
+    key exactly). cargo 30/30, server 320, tc clean.
+  - **Next iterations (phase 3):** (1) restore UI in NativeGate (wire
+    `vaultRestoreFromEscrow` into UI-3's "existing user, new device" path —
+    "Use recovery code" is really the escrow path now); (2) WS live delivery
+    for device queues; (3) security.md relay-state inventory fold-in;
+    (4) phase-3 review vs relay.md (still unbuilt: transient blob store,
+    group-state record, invite redeem, push registration). Desk queue
+    unchanged (mobile init, tauri smoke, biometric ACLs).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
