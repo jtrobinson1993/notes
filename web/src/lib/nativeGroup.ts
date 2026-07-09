@@ -46,8 +46,8 @@ export async function openGroup(
 }
 
 /** Send a text to a group (relay fans it out under the group key). */
-export function sendGroup(groupId: string, text: string): Promise<string> {
-  return relaySendGroupMessage(groupId, text);
+export function sendGroup(groupId: string, text: string, attachmentsJson?: string): Promise<string> {
+  return relaySendGroupMessage(groupId, text, attachmentsJson);
 }
 
 /** Create a group I own; resolves with its id. */

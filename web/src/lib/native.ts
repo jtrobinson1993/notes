@@ -151,8 +151,16 @@ export function relayRegisterVerifier(): Promise<string> {
  * payload, delivers it via the friend's delivery token, and tees the same id
  * into the local log so it renders immediately. Resolves with the message id.
  */
-export function relaySendMessage(contactId: string, content: string): Promise<string> {
-  return invoke<string>('relay_send_message', { contactId, content });
+export function relaySendMessage(
+  contactId: string,
+  content: string,
+  attachmentsJson?: string,
+): Promise<string> {
+  return invoke<string>('relay_send_message', {
+    contactId,
+    content,
+    attachmentsJson: attachmentsJson ?? null,
+  });
 }
 
 /** Delete a v8 message I sent (D11 tombstone): seals a delete to the friend and
@@ -286,8 +294,16 @@ export function groupAddMember(groupId: string, contactId: string): Promise<void
 /** Send a text to a group (D6/D14): the core seals one envelope under the group
  *  key, the relay fans it to all members, and it tees locally. Resolves with the
  *  message id. */
-export function relaySendGroupMessage(groupId: string, content: string): Promise<string> {
-  return invoke<string>('relay_send_group_message', { groupId, content });
+export function relaySendGroupMessage(
+  groupId: string,
+  content: string,
+  attachmentsJson?: string,
+): Promise<string> {
+  return invoke<string>('relay_send_group_message', {
+    groupId,
+    content,
+    attachmentsJson: attachmentsJson ?? null,
+  });
 }
 
 /** Sealed send: the recipient's delivery token is the only credential. */

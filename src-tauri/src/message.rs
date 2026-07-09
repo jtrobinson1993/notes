@@ -223,6 +223,7 @@ impl ChatMessagePayload {
         channel_id: Option<String>,
         content: String,
         sent_at: i64,
+        attachments_json: Option<String>,
     ) -> Self {
         ChatMessagePayload {
             v: CURRENT_VERSION,
@@ -233,7 +234,7 @@ impl ChatMessagePayload {
             kind: "text".into(),
             content: Some(content),
             reply_ref_json: None,
-            attachments_json: None,
+            attachments_json,
         }
     }
 
@@ -422,9 +423,11 @@ mod tests {
             Some("chan1".into()),
             "hello".into(),
             111,
+            Some("[{\"blobId\":\"b1\"}]".into()),
         );
         assert_eq!(p.v, 1);
         assert_eq!(p.kind, "text");
+        assert_eq!(p.attachments_json.as_deref(), Some("[{\"blobId\":\"b1\"}]"));
         // The sealed payload (sent) and the local tee row must agree on id +
         // content so both sides dedup; the tee's relay_ts is the send stamp.
         let bytes = p.encode().unwrap();

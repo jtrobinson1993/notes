@@ -930,6 +930,7 @@ fn group_list(vault: VaultState) -> Result<Vec<store::GroupSummary>, String> {
 async fn relay_send_group_message(
     group_id: String,
     content: String,
+    attachments_json: Option<String>,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<String, String> {
@@ -961,7 +962,7 @@ async fn relay_send_group_message(
     };
     let sent_at = now_ms();
     let payload =
-        message::ChatMessagePayload::new_text(msg_id.clone(), group_id, None, content, sent_at);
+        message::ChatMessagePayload::new_text(msg_id.clone(), group_id, None, content, sent_at, attachments_json);
     let bytes = payload.encode().map_err(|e| e.to_string())?;
     let envelope = envelope::seal_group(&key32, &ident, message::KIND_MSG, &bytes, sent_at)
         .map_err(|e| e.to_string())?;
@@ -1002,6 +1003,7 @@ fn friend_remove(
 async fn relay_send_message(
     contact_id: String,
     content: String,
+    attachments_json: Option<String>,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<String, String> {
@@ -1043,6 +1045,7 @@ async fn relay_send_message(
         None,
         content,
         sent_at,
+        attachments_json,
     );
     let bytes = payload.encode().map_err(|e| e.to_string())?;
     let sealing: [u8; 32] = addressing

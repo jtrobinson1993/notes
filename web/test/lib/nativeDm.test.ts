@@ -47,6 +47,6 @@ describe('nativeDm', () => {
   it('sends a text to a friend by contact id', async () => {
     native.relaySendMessage.mockResolvedValue('msg-9');
     await expect(sendDm('idA', 'hi')).resolves.toBe('msg-9');
-    expect(native.relaySendMessage).toHaveBeenCalledWith('idA', 'hi');
+    expect(native.relaySendMessage).toHaveBeenCalledWith('idA', 'hi', undefined);
   });
 });

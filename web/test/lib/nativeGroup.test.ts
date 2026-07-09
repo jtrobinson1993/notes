@@ -50,7 +50,7 @@ describe('nativeGroup', () => {
     native.groupAddMember.mockResolvedValue(undefined);
 
     expect(await sendGroup('grp:a', 'hi')).toBe('m9');
-    expect(native.relaySendGroupMessage).toHaveBeenCalledWith('grp:a', 'hi');
+    expect(native.relaySendGroupMessage).toHaveBeenCalledWith('grp:a', 'hi', undefined);
     expect(await createGroup('Team')).toBe('grp:new');
     expect(native.groupCreate).toHaveBeenCalledWith('Team');
     await addGroupMember('grp:a', 'contactX');

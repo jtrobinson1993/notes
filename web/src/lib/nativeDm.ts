@@ -53,6 +53,6 @@ export async function openDm(
 /** Send a text to a friend. The core seals + delivers it and tees the same id
  *  into the local log; resolves with the message id (re-read via openDm to show
  *  it, or reloadActiveFromLog if the conversation is the active one). */
-export function sendDm(contactId: string, text: string): Promise<string> {
-  return relaySendMessage(contactId, text);
+export function sendDm(contactId: string, text: string, attachmentsJson?: string): Promise<string> {
+  return relaySendMessage(contactId, text, attachmentsJson);
 }
