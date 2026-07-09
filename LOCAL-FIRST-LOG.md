@@ -979,15 +979,22 @@ Playwright version (currently 1.60.0).
     Drain: on Friend → `upsert_relay` + `record_friend` → ack. `redeemFriendInvite`
     now includes my `sealingPub` (for reciprocity). Tests: cargo 46 (+3), web 463.
     **Reciprocation deferred** (drain replying a friend-confirm to an accept).
-  - **Next (friends cutover):** (a) **reciprocation** — on a friend-accept
-    (`f.reciprocate`), the drain seals a friend-confirm (my handle/token/sealing)
-    to the new friend's sealing key + sends via their delivery token (now known),
-    so the invitee records me too → mutual. (b) IPC `list_friends`/
-    `friend_addressing`/`remove_friend` + native.ts + friends UI (invite
-    create/redeem, list). (c) v8 DMs: create a `conversations` row per friend →
-    outbound send (compose `ChatMessagePayload` → seal to friend's sealing key →
-    `relay_send` w/ their delivery token) → chat cutover steps 3–5 reachable
-    end-to-end.
+  - **DONE (iter 46) — friend reciprocation (D4b).** On a friend-accept the drain
+    seals `KIND_FRIEND_CONFIRM` (my `friend_payload` = handle/token/sealing) to
+    the new friend's sealing key and `mailbox_send`s via their now-known delivery
+    token → mutual; confirm is terminal (no loop). Drain keeps full ident, reads
+    my delivery token (vault) + my handle (`identity.handle` setting, persisted by
+    `createFriendInvite`). Tests: cargo 47 (+1) `friend_payload` round-trips
+    through `parse`; web 463. **Invite→friend handshake is now complete E2E**
+    (create invite → redeem → accept recorded + reciprocated → confirm recorded).
+  - **Next (friends cutover):** (a) IPC `list_friends`/`friend_addressing`/
+    `remove_friend` + native.ts + friends UI (invite create/redeem, list). (b)
+    v8 DMs: create a `conversations` row per friend → outbound send (compose
+    `ChatMessagePayload` → seal to friend's sealing key → `relay_send` w/ their
+    delivery token) → chat cutover steps 3–5 reachable end-to-end. NOTE: the
+    reciprocal send happens inside the drain (best-effort); a dropped confirm
+    isn't yet retried automatically — a re-invite recovers it. Consider a
+    pending-reciprocation record later.
   - **Other open threads:** OPEN FOLLOW-UPS: live WS stop signal;
     sender→contact interim; blob chunked/resumable + group per-member-ack GC.
     Desk queue: mobile init, tauri smoke, biometric ACLs. iters 31–42 committed
