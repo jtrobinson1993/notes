@@ -12,7 +12,27 @@
 // `(relay_ts, id)` — surfacing them live waits on the v8 chat store model.
 
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { isNative, relayMailboxDrain, type DrainReport } from './native';
+import {
+  isNative,
+  relayConnect,
+  relayMailboxDrain,
+  relayStatus,
+  settingsGet,
+  settingsSet,
+  type DrainReport,
+} from './native';
+
+/** Device-only setting: the relay URL to reconnect to on a later boot. In the
+ *  native shell `window.location.origin` is `tauri://…`, not the relay, so the
+ *  URL is captured here at connect time and read back on unlock. */
+const RELAY_URL_KEY = 'relay.url';
+
+/** Persist the relay URL so a future cold start can reconnect. Call right after
+ *  a successful `relayConnect` (vault is unlocked then, so settings are writable). */
+export async function rememberRelayUrl(url: string): Promise<void> {
+  if (!isNative) return;
+  await settingsSet(RELAY_URL_KEY, url);
+}
 
 let onIngested: (report: DrainReport) => void = () => {};
 
@@ -68,5 +88,29 @@ export function stopRelayDelivery(): void {
   if (unlisten) {
     unlisten();
     unlisten = null;
+  }
+}
+
+/**
+ * Reconnect to the remembered relay and (re)start live delivery. Called after
+ * the vault unlocks — the relay session lives only in this process, so a cold
+ * start has to redial before nudges/drains can flow. Requires the vault
+ * unlocked because the drain opens envelopes with the MK-derived sealing key.
+ * Idempotent + best-effort: skips the redial if already connected, and a failed
+ * connect just leaves delivery off until the next unlock.
+ */
+export async function reconnectRelay(): Promise<void> {
+  if (!isNative) return;
+  try {
+    const status = await relayStatus();
+    if (!status.connected) {
+      const url = await settingsGet(RELAY_URL_KEY);
+      if (!url) return; // never connected a relay on this device yet
+      await relayConnect(url);
+    }
+    await startRelayDelivery();
+  } catch {
+    // Offline / relay down / not yet enrolled — leave delivery off; the next
+    // unlock retries. Never throws into the unlock path.
   }
 }

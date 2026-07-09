@@ -11,6 +11,7 @@
 
 import { ref } from 'vue';
 import { isNative, settingsGet, vaultLock, vaultStatus, vaultUnlockKeychain } from './native';
+import { reconnectRelay, stopRelayDelivery } from './nativeRelay';
 
 export type GateState = 'checking' | 'setup' | 'recovery' | 'locked' | 'ready';
 
@@ -37,15 +38,21 @@ export async function initGate(): Promise<void> {
   }
 }
 
-/** Call after any successful unlock/create: opens the gate + arms re-lock. */
+/** Call after any successful unlock/create: opens the gate + arms re-lock, and
+ *  (native) reconnects the relay so live delivery resumes after a cold start. */
 export function markUnlocked(): void {
   gateState.value = 'ready';
   void applyRelockPolicy();
+  void reconnectRelay();
 }
 
 /** Lock the core vault and drop back to the lock wall. */
 export async function lockVault(): Promise<void> {
   teardownIdleRelock();
+  // Stop the mail listener: while locked the MK is gone, so drains (which open
+  // envelopes with the MK-derived sealing key) would only fail. reconnectRelay
+  // on the next unlock restarts it. The Rust WS task keeps running by design.
+  stopRelayDelivery();
   await vaultLock();
   gateState.value = 'locked';
 }

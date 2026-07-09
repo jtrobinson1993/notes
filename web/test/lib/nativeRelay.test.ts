@@ -4,6 +4,10 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 const native = vi.hoisted(() => ({
   isNative: true,
   relayMailboxDrain: vi.fn(),
+  relayConnect: vi.fn(),
+  relayStatus: vi.fn(),
+  settingsGet: vi.fn(),
+  settingsSet: vi.fn(),
 }));
 vi.mock('../../src/lib/native', () => native);
 
@@ -24,6 +28,8 @@ import {
   startRelayDelivery,
   stopRelayDelivery,
   setOnMailIngested,
+  reconnectRelay,
+  rememberRelayUrl,
 } from '../../src/lib/nativeRelay';
 
 const report = (ingested: number) => ({ ingested, acked: ingested, buffered: 0 });
@@ -107,5 +113,56 @@ describe('nativeRelay live delivery', () => {
     // after stop, a fresh start re-subscribes
     await startRelayDelivery();
     expect(evt.listen).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('nativeRelay reconnect-on-boot', () => {
+  it('redials the remembered relay then starts delivery when not connected', async () => {
+    native.relayStatus.mockResolvedValue({ connected: false, base_url: null, relay_fp: null });
+    native.settingsGet.mockResolvedValue('https://relay.example');
+    native.relayConnect.mockResolvedValue(undefined);
+    native.relayMailboxDrain.mockResolvedValue(report(0));
+
+    await reconnectRelay();
+    expect(native.relayConnect).toHaveBeenCalledWith('https://relay.example');
+    expect(evt.listen).toHaveBeenCalledTimes(1); // delivery started
+  });
+
+  it('skips the redial but still ensures delivery when already connected', async () => {
+    native.relayStatus.mockResolvedValue({
+      connected: true,
+      base_url: 'https://relay.example',
+      relay_fp: 'fp',
+    });
+    native.relayMailboxDrain.mockResolvedValue(report(0));
+
+    await reconnectRelay();
+    expect(native.relayConnect).not.toHaveBeenCalled();
+    expect(native.settingsGet).not.toHaveBeenCalled();
+    expect(evt.listen).toHaveBeenCalledTimes(1);
+  });
+
+  it('no-ops when no relay was ever remembered', async () => {
+    native.relayStatus.mockResolvedValue({ connected: false, base_url: null, relay_fp: null });
+    native.settingsGet.mockResolvedValue(null);
+
+    await reconnectRelay();
+    expect(native.relayConnect).not.toHaveBeenCalled();
+    expect(evt.listen).not.toHaveBeenCalled();
+  });
+
+  it('swallows a failed redial (retries on the next unlock)', async () => {
+    native.relayStatus.mockResolvedValue({ connected: false, base_url: null, relay_fp: null });
+    native.settingsGet.mockResolvedValue('https://relay.example');
+    native.relayConnect.mockRejectedValue(new Error('offline'));
+
+    await expect(reconnectRelay()).resolves.toBeUndefined();
+    expect(evt.listen).not.toHaveBeenCalled(); // delivery not started
+  });
+
+  it('rememberRelayUrl persists the url', async () => {
+    native.settingsSet.mockResolvedValue(undefined);
+    await rememberRelayUrl('https://relay.example');
+    expect(native.settingsSet).toHaveBeenCalledWith('relay.url', 'https://relay.example');
   });
 });

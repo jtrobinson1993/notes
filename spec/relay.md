@@ -99,6 +99,10 @@ correlation is documented there).
   reconnect drains the queue). The nudge reveals nothing beyond "you have mail,"
   which the owning device already learns by polling. A content-free push (D7)
   fires for queued envelopes when the device is fully offline.
+- **Client lifecycle:** the relay session lives only in the client process, so a
+  cold start redials the remembered relay URL on **vault unlock** (drains need
+  the MK-derived sealing key) and re-arms the `relay:mail` listener; re-lock
+  stops the listener (the Rust WS task keeps running by design).
 
 ## Blob store (D6)
 
