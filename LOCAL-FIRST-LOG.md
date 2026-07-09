@@ -1206,9 +1206,21 @@ Playwright version (currently 1.60.0).
     malformed call id. server 371, tsc clean. voice.md §v8 → partially built.
     NOTE `/api/relay/ws` was already the live-nudge hub → signaling is at
     `/api/relay/voice`.
+  - **DONE (iter 80) — voice ring primitive (native, single-relay).** Message
+    layer: `KIND_CALL_OFFER` + `Disposition::CallOffer(CallOfferData{call_id,
+    caller_id=verified sender})` — parses `{callId}`, discards empty/garbage
+    (never buffers: a ring is ephemeral). Drain surfaces fresh rings via new
+    `DrainReport.calls: Vec<CallRing{callId,callerId,relayTs}>` and always acks
+    them. Outbound `relay_call_offer(contact_id)->call_id` IPC: mints a 256-bit
+    base64url call id (matches signaling `CALL_ID_RE`), seals `{callId}` to the
+    friend's sealing key, mailbox-sends; returns the id to `join`. native.ts:
+    `relayCallOffer` + `CallRing` type + `DrainReport.calls?`. cargo 63 (+1
+    call_offer disposition test: verified caller, empty/garbage→discard), web
+    488, tsc clean. voice.md ring bullet → single-relay built.
   - **Remaining v8 spec:** voice follow-ups: (a) native client — relay_client
-    voice WS + call-offer envelope via mailbox (ring) + WebRTC/mediasoup wiring
-    under device-token; (b) D4c cross-relay fan-out + call-id dedup. Then:
+    voice-WS client (connect /api/relay/voice, join/signal/leave) + WebRTC/
+    mediasoup media wiring under device-token + ring UI (consume
+    DrainReport.calls); (b) D4c cross-relay fan-out + call-id dedup. Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).

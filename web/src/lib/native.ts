@@ -227,6 +227,12 @@ export function relayReact(
   return invoke('relay_react', { contactId, messageId, emoji, add });
 }
 
+/** Place a voice call ring (v8 voice): seals a call-offer into the friend's
+ *  mailbox and returns the fresh call id to `join` on the signaling socket. */
+export function relayCallOffer(contactId: string): Promise<string> {
+  return invoke<string>('relay_call_offer', { contactId });
+}
+
 /** All reactions on a conversation's messages (the UI groups by emoji). */
 export function conversationReactions(conversationId: string): Promise<ReactionRow[]> {
   return invoke<ReactionRow[]>('conversation_reactions', { conversationId });
@@ -355,6 +361,18 @@ export interface DrainReport {
   buffered: number;
   /** Friends recorded from verified friend-accept/confirm envelopes (D4b). */
   friends: number;
+  /** Incoming voice call rings from verified call-offer envelopes (v8 voice). */
+  calls?: CallRing[];
+}
+
+/** An incoming voice call ring surfaced by the drain (v8 voice). */
+export interface CallRing {
+  /** The call id to `join` on the signaling socket to answer. */
+  callId: string;
+  /** The verified caller's identity pubkey (map to a contact for display). */
+  callerId: string;
+  /** Relay delivery stamp — drop a ring too old to still be live. */
+  relayTs: number;
 }
 
 /**

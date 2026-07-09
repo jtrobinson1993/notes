@@ -34,6 +34,27 @@ pub const KIND_REACT: &str = "react";
 /// A DM-sealed group invite (D14): a friend hands me a group's shared key so I
 /// can decrypt its messages. Payload `{ groupId, groupKey, name }`.
 pub const KIND_GROUP_INVITE: &str = "group-invite";
+/// A voice call ring (v8 voice, single-relay): the caller seals `{ callId }`
+/// into the callee's mailbox so the callee can `join` that call id on the
+/// signaling socket (/api/relay/voice) and answer. The caller is the verified
+/// envelope sender (spoof-proof); the SDP/ICE exchange then happens live over
+/// the signaling socket, not in this envelope. Time-sensitive: a stale ring
+/// (redelivered long after the caller gave up) is dropped at the drain, not
+/// re-rung — voice does not honour the "buffer, never drop" message invariant.
+pub const KIND_CALL_OFFER: &str = "call-offer";
+
+/// A verified incoming call: ring for `call_id` from `caller_id` (the verified
+/// envelope sender). The drain judges staleness from the envelope's relay_ts.
+pub struct CallOfferData {
+    pub call_id: String,
+    pub caller_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CallOfferPayload {
+    #[serde(rename = "callId")]
+    call_id: String,
+}
 
 /// A verified group invite: store `group_key` for `group_id` so I become a
 /// member locally.
@@ -295,6 +316,9 @@ pub enum Disposition {
     React(Box<ReactData>),
     /// A verified group invite (D14): store the group key → I'm a member.
     GroupInvite(Box<GroupInviteData>),
+    /// A verified voice call ring: surface an incoming call, then ack (a ring is
+    /// ephemeral — always removed from the queue, never re-buffered).
+    CallOffer(Box<CallOfferData>),
 }
 
 /// Decide the fate of one delivered envelope from the `open` result and its
@@ -358,6 +382,14 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
                 }
                 Err(_) => Disposition::Discard,
             },
+            KIND_CALL_OFFER => match serde_json::from_slice::<CallOfferPayload>(&opened.payload) {
+                // A non-empty call id is required to join the signaling room.
+                Ok(p) if !p.call_id.is_empty() => Disposition::CallOffer(Box::new(CallOfferData {
+                    call_id: p.call_id,
+                    caller_id: opened.sender_identity_pub,
+                })),
+                _ => Disposition::Discard,
+            },
             // A known-good envelope of a kind we don't handle yet → wait for update.
             _ => Disposition::Buffer,
         },
@@ -366,6 +398,19 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
         // Undecryptable / forged / malformed → never becomes valid → drop.
         Err(_) => Disposition::Discard,
     }
+}
+
+/// An incoming call ring surfaced to the UI from a drained call-offer envelope
+/// (v8 voice). `relay_ts` lets the UI drop a stale ring (redelivered long after
+/// the caller gave up) rather than ring for a call that's already over.
+#[derive(serde::Serialize)]
+pub struct CallRing {
+    #[serde(rename = "callId")]
+    pub call_id: String,
+    #[serde(rename = "callerId")]
+    pub caller_id: String,
+    #[serde(rename = "relayTs")]
+    pub relay_ts: i64,
 }
 
 /// Result of a drain pass (for logs/UI + tests).
@@ -379,6 +424,9 @@ pub struct DrainReport {
     pub buffered: usize,
     /// Friends recorded from verified friend-accept/confirm envelopes (D4b).
     pub friends: usize,
+    /// Incoming voice call rings from verified call-offer envelopes (v8 voice).
+    #[serde(default)]
+    pub calls: Vec<CallRing>,
 }
 
 #[cfg(test)]
@@ -713,6 +761,37 @@ mod tests {
         }))
         .unwrap();
         let opened = Opened { kind: KIND_GROUP_INVITE.into(), payload: bad, sender_identity_pub: "x".into(), sent_at: 0 };
+        assert!(matches!(disposition(Ok(opened), 1), Disposition::Discard));
+    }
+
+    #[test]
+    fn call_offer_rings_with_the_verified_caller_and_call_id() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let caller = b64.encode([9u8; 32]);
+        let payload = serde_json::to_vec(&serde_json::json!({ "callId": "call-abc123" })).unwrap();
+        let opened = Opened {
+            kind: KIND_CALL_OFFER.into(),
+            payload,
+            sender_identity_pub: caller.clone(),
+            sent_at: 0,
+        };
+        match disposition(Ok(opened), 42) {
+            Disposition::CallOffer(c) => {
+                assert_eq!(c.call_id, "call-abc123");
+                // The caller is the verified envelope sender, never a payload claim.
+                assert_eq!(c.caller_id, caller);
+            }
+            _ => panic!("expected CallOffer"),
+        }
+
+        // An empty call id is unusable (can't join a room) → discard, not buffer.
+        let empty = serde_json::to_vec(&serde_json::json!({ "callId": "" })).unwrap();
+        let opened = Opened { kind: KIND_CALL_OFFER.into(), payload: empty, sender_identity_pub: caller.clone(), sent_at: 0 };
+        assert!(matches!(disposition(Ok(opened), 1), Disposition::Discard));
+
+        // Garbage payload → discard (authenticated but unusable).
+        let opened = Opened { kind: KIND_CALL_OFFER.into(), payload: b"not json".to_vec(), sender_identity_pub: caller, sent_at: 0 };
         assert!(matches!(disposition(Ok(opened), 1), Disposition::Discard));
     }
 

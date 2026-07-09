@@ -268,6 +268,7 @@ async fn relay_mailbox_drain(
     let mut edits = Vec::new();
     let mut reacts = Vec::new();
     let mut group_invites = Vec::new();
+    let mut call_rings = Vec::new();
     let mut ack_ids = Vec::new();
     let mut buffered = 0usize;
     for row in rows {
@@ -338,6 +339,16 @@ async fn relay_mailbox_drain(
             }
             message::Disposition::GroupInvite(g) => {
                 group_invites.push(*g);
+                ack_ids.push(row.queue_id);
+            }
+            message::Disposition::CallOffer(c) => {
+                // A ring is ephemeral — always ack (never re-buffer). The UI
+                // decides whether it's still fresh enough to ring, from relay_ts.
+                call_rings.push(message::CallRing {
+                    call_id: c.call_id,
+                    caller_id: c.caller_id,
+                    relay_ts: row.relay_ts,
+                });
                 ack_ids.push(row.queue_id);
             }
             message::Disposition::Discard => ack_ids.push(row.queue_id),
@@ -452,7 +463,7 @@ async fn relay_mailbox_drain(
     } else {
         relay.mailbox_ack(&signing, ack_ids).await? as usize
     };
-    Ok(message::DrainReport { ingested, acked, buffered, friends: friend_count })
+    Ok(message::DrainReport { ingested, acked, buffered, friends: friend_count, calls: call_rings })
 }
 
 /// Mint a friend invite (D4b): the client hashes its own random token and this
@@ -1210,6 +1221,51 @@ async fn relay_react(
     Ok(())
 }
 
+/// Place a voice call ring (v8 voice, single-relay). Mint a fresh 256-bit call
+/// id, seal a call-offer `{callId}` into the friend's mailbox, and return the
+/// call id so the caller can `join` it on the signaling socket (/api/relay/voice)
+/// and exchange SDP/ICE. The callee drains the ring, joins the same id, answers.
+#[tauri::command]
+async fn relay_call_offer(
+    contact_id: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<String, String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let (ident, addressing) = {
+        let vault = vault.lock().unwrap();
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        let store = vault.store().map_err(|e| e.to_string())?;
+        let addressing = store
+            .friend_addressing(&contact_id, &relay_fp)
+            .map_err(|e| e.to_string())?
+            .ok_or("not a friend on this relay")?;
+        (ident, addressing)
+    };
+    // Fresh, unguessable call id — the routing capability, base64url so it
+    // matches the signaling socket's call-id charset.
+    use base64::Engine as _;
+    use rand::RngCore as _;
+    let mut raw = [0u8; 24];
+    rand::rng().fill_bytes(&mut raw);
+    let call_id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+    let payload = serde_json::to_vec(&serde_json::json!({ "callId": call_id }))
+        .map_err(|e| e.to_string())?;
+    let sealing: [u8; 32] = addressing
+        .sealing_pub
+        .clone()
+        .try_into()
+        .map_err(|_| "friend has a malformed sealing key".to_string())?;
+    let envelope =
+        envelope::seal(&sealing, &ident, message::KIND_CALL_OFFER, &payload, now_ms())
+            .map_err(|e| e.to_string())?;
+    relay
+        .mailbox_send(&addressing.handle, &addressing.delivery_token, envelope)
+        .await?;
+    Ok(call_id)
+}
+
 /// All reactions on a conversation's messages (the UI groups by emoji, D11).
 #[tauri::command]
 fn conversation_reactions(
@@ -1550,6 +1606,7 @@ pub fn run() {
             relay_delete_message,
             relay_edit_message,
             relay_react,
+            relay_call_offer,
             conversation_reactions,
             messages_page,
             messages_ingest,

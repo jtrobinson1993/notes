@@ -350,14 +350,18 @@ are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
   sealed to the peer's key) and can't pack unlimited listeners into a room. The
   relay learns only *which authenticated devices share a call id* — the same
   fact the SFU already exposes.
-- **Ringing across relays (D4c) — follow-up (not built).** A 1:1 call offer will
-  be an envelope fanned out over **every relay the contact is linked on**
-  (deduped by call id, like any D11 message); devices ring on the first copy;
-  media runs on the SFU of whichever relay carried the *accepted* offer. First
-  cut is single-relay: the initial ring (call id + sealed offer) rides the
-  existing sealed-sender **mailbox**, then both parties `join` that call id on
-  the signaling socket. Fan-out is deferred deliberately — simultaneous
-  multi-relay delivery is a recognizable call-setup signature and gives
-  colluding relays a timing linkage, so the multi-relay path needs independent
-  per-relay sealing (call id inside the ciphertext) + sized/jittered delivery.
+- **Ringing — single-relay built; cross-relay (D4c) follow-up.** *Built:* the
+  caller mints a fresh unguessable **call id** and seals a `call-offer {callId}`
+  envelope (`KIND_CALL_OFFER`) into the callee's **mailbox** (`relay_call_offer`
+  IPC → returns the call id to the caller so it can `join`). The drain verifies
+  it like any envelope — caller = the verified sender (spoof-proof) — and
+  surfaces a ring in `DrainReport.calls` (a ring is *ephemeral*: always acked,
+  never re-buffered; the UI drops one too stale by `relayTs`). Both parties then
+  `join` that call id on the signaling socket and exchange SDP/ICE. *Follow-up:*
+  the D4c multi-relay **fan-out** (offer to every relay the contact is linked on,
+  ring on the first copy, media on the SFU that carried the accepted offer).
+  Deferred deliberately — simultaneous multi-relay delivery is a recognizable
+  call-setup signature and gives colluding relays a timing linkage, so it needs
+  independent per-relay sealing (call id inside the ciphertext) + sized/jittered
+  delivery.
 - **Web satellite** (D12) can join voice — live media only, nothing at rest.
