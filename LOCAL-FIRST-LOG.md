@@ -1085,9 +1085,11 @@ Playwright version (currently 1.60.0).
     Factored `verify_inner` shared with the DM open path. cargo 56 (+2:
     roundtrip+wrong-key, tamper+version). Warns dead until group send/drain wire
     it (next).
-  - **Group messaging — client half (next, multi-step):** (a) [DONE] group
-    envelope. (a2) **group key storage** — a `groups` local table with the
-    symmetric group key + group token; derive group token from group key. (b) **group creation** — genesis D14 record (me=owner) + set group
+  - **Group messaging — client half progress:** (a) [DONE iter 60] group
+    envelope. (a2) [DONE iter 61] **group key storage** — migration v10
+    (`groups`: group_id/group_key/name) + `upsert_group`/`group_key`/
+    `list_groups` (cargo 57). Next: derive group token from group key
+    (`keys::INFO_GROUP_TOKEN`). (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
