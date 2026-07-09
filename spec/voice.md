@@ -349,7 +349,12 @@ are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
   are defense-in-depth: a *leaked* call id still can't eavesdrop (payloads are
   sealed to the peer's key) and can't pack unlimited listeners into a room. The
   relay learns only *which authenticated devices share a call id* — the same
-  fact the SFU already exposes.
+  fact the SFU already exposes. **Native client half — built:**
+  `src-tauri/src/voice_live.rs` holds the WS (device-bearer, backoff-supervised)
+  and pumps it both ways — `voice_join`/`voice_signal`/`voice_leave` IPC frames
+  up, inbound peer frames out as the `voice:frame` Tauri event (web
+  `nativeVoice.ts` fans them to the call UI). *Not yet built:* the WebRTC/media
+  layer (getUserMedia + RTCPeerConnection + mediasoup) that consumes these.
 - **Ringing — single-relay built; cross-relay (D4c) follow-up.** *Built:* the
   caller mints a fresh unguessable **call id** and seals a `call-offer {callId}`
   envelope (`KIND_CALL_OFFER`) into the callee's **mailbox** (`relay_call_offer`

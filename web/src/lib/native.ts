@@ -233,6 +233,21 @@ export function relayCallOffer(contactId: string): Promise<string> {
   return invoke<string>('relay_call_offer', { contactId });
 }
 
+/** Join a call's signaling room so the relay starts relaying peer frames. */
+export function voiceJoin(callId: string): Promise<void> {
+  return invoke('voice_join', { callId });
+}
+
+/** Send an opaque (E2E-sealed) SDP/ICE payload to the call's peers. */
+export function voiceSignal(callId: string, payload: unknown): Promise<void> {
+  return invoke('voice_signal', { callId, payload });
+}
+
+/** Leave a call's signaling room (hangup). */
+export function voiceLeave(callId: string): Promise<void> {
+  return invoke('voice_leave', { callId });
+}
+
 /** All reactions on a conversation's messages (the UI groups by emoji). */
 export function conversationReactions(conversationId: string): Promise<ReactionRow[]> {
   return invoke<ReactionRow[]>('conversation_reactions', { conversationId });

@@ -8,6 +8,7 @@ mod relay_client;
 mod relay_live;
 mod store;
 mod vault;
+mod voice_live;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -91,6 +92,7 @@ async fn relay_connect(
     app: tauri::AppHandle,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
+    voice: tauri::State<'_, voice_live::VoiceSignal>,
 ) -> Result<(), String> {
     // Take the key before any await: the vault mutex must not cross it.
     let signing = {
@@ -103,7 +105,20 @@ async fn relay_connect(
     // REST fetch stays authoritative).
     if relay.try_begin_live() {
         if let Some((base, fp)) = relay.session_info() {
-            tauri::async_runtime::spawn(relay_live::run_forever(base, fp, signing, app));
+            tauri::async_runtime::spawn(relay_live::run_forever(
+                base,
+                fp,
+                signing.clone(),
+                app.clone(),
+            ));
+        }
+    }
+    // Start the voice signaling link once (same device-token auth), holding a WS
+    // to /api/relay/voice that pumps join/signal/leave up and emits `voice:frame`
+    // for inbound peer signaling.
+    if let Some(rx) = voice.begin() {
+        if let Some((base, fp)) = relay.session_info() {
+            tauri::async_runtime::spawn(voice_live::run_forever(base, fp, signing, app, rx));
         }
     }
     Ok(())
@@ -1266,6 +1281,32 @@ async fn relay_call_offer(
     Ok(call_id)
 }
 
+/// Join a call's signaling room (v8 voice): enqueue a `join` on the voice link
+/// so the relay puts this device in the call and starts relaying peer frames.
+#[tauri::command]
+fn voice_join(call_id: String, voice: tauri::State<'_, voice_live::VoiceSignal>) -> Result<(), String> {
+    voice.enqueue(voice_live::join_frame(&call_id));
+    Ok(())
+}
+
+/// Send an opaque (E2E-sealed) SDP/ICE payload to the call's peers.
+#[tauri::command]
+fn voice_signal(
+    call_id: String,
+    payload: serde_json::Value,
+    voice: tauri::State<'_, voice_live::VoiceSignal>,
+) -> Result<(), String> {
+    voice.enqueue(voice_live::signal_frame(&call_id, payload));
+    Ok(())
+}
+
+/// Leave a call's signaling room (hangup); peers get a `peer-leave`.
+#[tauri::command]
+fn voice_leave(call_id: String, voice: tauri::State<'_, voice_live::VoiceSignal>) -> Result<(), String> {
+    voice.enqueue(voice_live::leave_frame(&call_id));
+    Ok(())
+}
+
 /// All reactions on a conversation's messages (the UI groups by emoji, D11).
 #[tauri::command]
 fn conversation_reactions(
@@ -1560,6 +1601,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             app.manage(Mutex::new(Vault::new(data_dir)));
             app.manage(relay_client::RelayClient::default());
+            app.manage(voice_live::VoiceSignal::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1607,6 +1649,9 @@ pub fn run() {
             relay_edit_message,
             relay_react,
             relay_call_offer,
+            voice_join,
+            voice_signal,
+            voice_leave,
             conversation_reactions,
             messages_page,
             messages_ingest,

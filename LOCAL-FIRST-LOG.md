@@ -1217,10 +1217,27 @@ Playwright version (currently 1.60.0).
     `relayCallOffer` + `CallRing` type + `DrainReport.calls?`. cargo 63 (+1
     call_offer disposition test: verified caller, empty/garbage→discard), web
     488, tsc clean. voice.md ring bullet → single-relay built.
-  - **Remaining v8 spec:** voice follow-ups: (a) native client — relay_client
-    voice-WS client (connect /api/relay/voice, join/signal/leave) + WebRTC/
-    mediasoup media wiring under device-token + ring UI (consume
-    DrainReport.calls); (b) D4c cross-relay fan-out + call-id dedup. Then:
+  - **DONE (iter 81) — native voice signaling client + IPC.** New
+    `src-tauri/src/voice_live.rs` (mirrors relay_live): bidirectional WS to
+    `/api/relay/voice`, device-bearer authed. Pure helpers `voice_ws_url_from_base`,
+    `join_frame`/`leave_frame`/`signal_frame`, `inbound_kind`, `is_forwardable`
+    (forwards only relay frames: hello/joined/peer-join/peer-leave/signal/error).
+    `connect_and_run` = tokio::select! pumping an mpsc outbound (UI frames) ↑ +
+    inbound → `voice:frame` Tauri emit, ping/pong, close-aware; `run_forever`
+    supervises w/ backoff (reused from relay_live). Managed `VoiceSignal` handle
+    (outbound mpsc, one-time `begin()` for the receiver, non-blocking `enqueue`).
+    Spawned in `relay_connect` alongside relay_live. Commands `voice_join`/
+    `voice_signal`/`voice_leave` enqueue frames. Frontend: native.ts
+    `voiceJoin/voiceSignal/voiceLeave` + new `nativeVoice.ts` (`onVoiceFrame`
+    fan-out, `startVoiceSignaling`/`stop` listener). cargo 67 (+4 voice_live:
+    url→/voice, frame builders/classifier, forwardable set, live pump-up/
+    forward-inbound integration), web 492 (+4 nativeVoice), tsc clean.
+  - **Remaining v8 spec:** voice follow-ups: (a) **WebRTC/media wiring + call UI**
+    — consume DrainReport.calls (ring), getUserMedia + RTCPeerConnection,
+    exchange SDP/ICE as `signal` frames, media via mediasoup SFU. ARCH FORK to
+    surface first: WebRTC in the webview (getUserMedia/RTCPeerConnection, natural)
+    vs the Rust core — spec says core=networking/webview=UI, but media capture is
+    a browser API. (b) D4c cross-relay fan-out + call-id dedup. Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).
