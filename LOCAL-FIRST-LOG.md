@@ -1090,11 +1090,14 @@ Playwright version (currently 1.60.0).
     (`groups`: group_id/group_key/name) + `upsert_group`/`group_key`/
     `list_groups` (cargo 57). (a3) [DONE iter 62] **group token derivation** —
     `keys::group_token_verifier(group_key)` → (token, verifier) matching the D6
-    delivery-token convention (cargo 58). Next: `group_create` IPC (genesis D14
-    record signed by me + register verifier + store key + ensure conv), needing
-    RelayClient `group_state_put`/`group_verifier_put` + directory publish
-    prerequisite. Then group send (`seal_group` → group send-group endpoint),
-    inbound drain (`open_group`), key distribution to members + membership, UI. (b) **group creation** — genesis D14 record (me=owner) + set group
+    delivery-token convention (cargo 58). (a4) [DONE iter 63] **group creation**
+    — RelayClient `group_state_put`/`group_verifier_put`/`group_send`;
+    `group_create` IPC (publish directory → PUT genesis record signed by me →
+    register verifier from a fresh group key → store key + group conv);
+    `group_list` IPC + native.ts `groupCreate`/`groupList`. Next: **group send**
+    (`seal_group` → `group_send` + tee), **inbound drain** (relay-native group
+    messages: `open_group` with the stored group key when conv is a group),
+    **key distribution to members** (seal group key + a group-add record), UI. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
