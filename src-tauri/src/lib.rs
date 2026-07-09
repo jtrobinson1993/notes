@@ -240,13 +240,23 @@ async fn relay_mailbox_drain(
     // Take, before any await (the vault mutex must not cross it): the device
     // key (fetch/ack), my full relay identity (open + reciprocal seal), my
     // delivery token (to hand to new friends), and my identity pub (relay row).
-    let (signing, ident, my_delivery_token) = {
+    let (signing, ident, my_delivery_token, group_keys) = {
         let vault = vault.lock().unwrap();
         let signing = vault.device_signing_key().map_err(|e| e.to_string())?;
         let mk = vault.mk().map_err(|e| e.to_string())?;
         let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
         let (token, _verifier) = vault.delivery_token().map_err(|e| e.to_string())?;
-        (signing, ident, token)
+        let store = vault.store().map_err(|e| e.to_string())?;
+        // My group keys (to open group envelopes, which the DM open can't).
+        let mut group_keys: Vec<(String, [u8; 32])> = Vec::new();
+        for g in store.list_groups().map_err(|e| e.to_string())? {
+            if let Some(k) = store.group_key(&g.group_id).map_err(|e| e.to_string())? {
+                if let Ok(k32) = <[u8; 32]>::try_from(k.as_slice()) {
+                    group_keys.push((g.group_id, k32));
+                }
+            }
+        }
+        (signing, ident, token, group_keys)
     };
     let my_identity_pub = ident.signing_public().to_vec();
 
@@ -259,14 +269,44 @@ async fn relay_mailbox_drain(
     let mut ack_ids = Vec::new();
     let mut buffered = 0usize;
     for row in rows {
-        match message::disposition(envelope::open(&ident.sealing, &row.envelope), row.relay_ts) {
+        // A v8 envelope is either a DM (per-recipient X25519 seal) or a group
+        // envelope (symmetric under a shared group key). Try the DM open first;
+        // on failure, try each of my group keys — a hit means it's a group
+        // message for that group. `group_id` is Some for group envelopes.
+        let opened_result: Result<envelope::Opened, envelope::EnvelopeError>;
+        let mut group_id: Option<String> = None;
+        match envelope::open(&ident.sealing, &row.envelope) {
+            Ok(o) => opened_result = Ok(o),
+            Err(envelope::EnvelopeError::UnknownVersion(v)) => {
+                opened_result = Err(envelope::EnvelopeError::UnknownVersion(v));
+            }
+            Err(e) => {
+                let mut found = None;
+                for (gid, gkey) in &group_keys {
+                    if let Ok(o) = envelope::open_group(gkey, &row.envelope) {
+                        found = Some((o, gid.clone()));
+                        break;
+                    }
+                }
+                match found {
+                    Some((o, gid)) => {
+                        opened_result = Ok(o);
+                        group_id = Some(gid);
+                    }
+                    None => opened_result = Err(e),
+                }
+            }
+        }
+        match message::disposition(opened_result, row.relay_ts) {
             message::Disposition::Ingest(m) => {
-                // DM (v8): route by the sender, not the payload's claimed
-                // conversation_id — a message from a given sender always lands in
-                // *my DM with that sender* (spoof-proof). Groups (payload id +
-                // membership check) come with group messaging.
                 let mut m = *m;
-                if let Some(sender_b64) = m.sender_contact_id.clone() {
+                if let Some(gid) = group_id {
+                    // Group: the key that opened it identifies the conversation.
+                    m.conversation_id = gid;
+                } else if let Some(sender_b64) = m.sender_contact_id.clone() {
+                    // DM: route by the verified sender, not the payload's claimed
+                    // conversation_id — a message from a sender always lands in
+                    // *my DM with that sender* (spoof-proof).
                     use base64::Engine as _;
                     if let Ok(sender_raw) =
                         base64::engine::general_purpose::STANDARD.decode(&sender_b64)
