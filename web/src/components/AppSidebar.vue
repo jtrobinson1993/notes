@@ -11,6 +11,8 @@ import NewChatModal from './NewChatModal.vue';
 import SidebarTooltip from './SidebarTooltip.vue';
 import ActiveBar from './ActiveBar.vue';
 import { conversationInitial, conversationTitle, dmPeerId } from '../lib/convName';
+import { isNative } from '../lib/native';
+import IconChatDots from '~icons/mynaui/chat-dots';
 import { chatPane, closeNote, isMobile, noteOpen, showChannels } from '../lib/mobileNav';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
 import IconPanelLeftClose from '~icons/mynaui/panel-left-close';
@@ -241,6 +243,18 @@ const navClass = computed(() => {
           >
             <IconUsers class="h-5 w-5 shrink-0" />
             <span v-if="expanded" class="truncate">Friends</span>
+          </RouterLink>
+        </SidebarTooltip>
+        <!-- v8 local-first DMs (native shell only). -->
+        <SidebarTooltip v-if="isNative" label="Direct messages" :disabled="expanded">
+          <RouterLink
+            to="/dm"
+            aria-label="Direct messages"
+            class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
+            :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
+          >
+            <IconChatDots class="h-5 w-5 shrink-0" />
+            <span v-if="expanded" class="truncate">Direct messages</span>
           </RouterLink>
         </SidebarTooltip>
         <SidebarTooltip label="Settings" :disabled="expanded">
