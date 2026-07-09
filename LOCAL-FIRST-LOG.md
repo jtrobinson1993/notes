@@ -770,8 +770,23 @@ Playwright version (currently 1.60.0).
     happy path opens gate with right args, missing-field guard short-circuits
     before the core, failed restore surfaces error + keeps gate closed. tc
     clean.
-  - **Next iterations (phase 3):** (1) WS live delivery for device queues
-    (mailbox is poll-only today); (2) security.md relay-state inventory
+  - **DONE (iter 30) — relay live-delivery WS (server half, D6).** New
+    `server/src/relayLive.ts` device-scoped hub + **GET /api/relay/ws**
+    (device bearer token in the handshake `Authorization` header; native
+    client so **no cookie/Origin check** — bearer has no CSRF surface).
+    Carries a single **content-free `{type:'mail'}` nudge** to a recipient's
+    connected devices the instant a sealed send enqueues; the device then runs
+    its normal REST fetch→ack loop. REST stays authoritative (hold-until-ack),
+    so a dropped nudge is harmless; nudge leaks nothing beyond "you have mail"
+    and never touches the sealed-sender send path. Per-device cap (4) +
+    heartbeat. Wired in `app.ts` (`createRelayLive`) + `relayRoutes(...,
+    live, config)`; send route calls `live.notifyDevices(devices)`. Tests
+    (server 325): greet/reject-no-token/reject-revoked/nudge-on-send/cap.
+    relay.md corrected (content-free nudge, not envelope framing).
+  - **Next iterations (phase 3):** (1) **Rust client WS consumer** — connect
+    to `/api/relay/ws` with the device bearer, on `{type:'mail'}` trigger the
+    existing mailbox fetch→ack; reconnect w/ backoff (new dep:
+    tokio-tungstenite or similar); (2) security.md relay-state inventory
     fold-in; (3) phase-3 review vs relay.md (still unbuilt: transient blob
     store, group-state record, invite redeem, push registration). Desk queue
     unchanged (mobile init, tauri smoke, biometric ACLs).
