@@ -28,6 +28,24 @@ pub const KIND_DELETE: &str = "delete";
 /// Edit a previously-sent message. Payload `{ id, content, editedAt }`; only the
 /// original sender may edit it (checked on apply).
 pub const KIND_EDIT: &str = "edit";
+/// Add/remove a reaction. Payload `{ id, emoji, op:"add"|"remove" }`; the
+/// reactor is the verified sender (anyone may react to a message they can see).
+pub const KIND_REACT: &str = "react";
+
+/// A verified reaction: add or remove `emoji` on `target_id` by `reactor_id`.
+pub struct ReactData {
+    pub target_id: String,
+    pub reactor_id: String,
+    pub emoji: String,
+    pub add: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct ReactPayload {
+    id: String,
+    emoji: String,
+    op: String,
+}
 
 /// A verified delete request: drop `target_id` iff its recorded sender equals
 /// `editor_id` (the verified envelope sender).
@@ -230,6 +248,8 @@ pub enum Disposition {
     /// A verified edit (D11): replace the target's content iff the verified
     /// sender is its original author, then ack.
     Edit(Box<EditData>),
+    /// A verified reaction (D11): add/remove the emoji by the verified reactor.
+    React(Box<ReactData>),
 }
 
 /// Decide the fate of one delivered envelope from the `open` result and its
@@ -269,6 +289,15 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
                     edited_at: p.edited_at,
                 })),
                 Err(_) => Disposition::Discard,
+            },
+            KIND_REACT => match serde_json::from_slice::<ReactPayload>(&opened.payload) {
+                Ok(p) if p.op == "add" || p.op == "remove" => Disposition::React(Box::new(ReactData {
+                    target_id: p.id,
+                    reactor_id: opened.sender_identity_pub,
+                    emoji: p.emoji,
+                    add: p.op == "add",
+                })),
+                _ => Disposition::Discard,
             },
             // A known-good envelope of a kind we don't handle yet → wait for update.
             _ => Disposition::Buffer,
@@ -544,6 +573,34 @@ mod tests {
             sent_at: 0,
         };
         assert!(matches!(disposition(Ok(bad), 1), Disposition::Discard));
+    }
+
+    #[test]
+    fn react_carries_target_emoji_op_and_verified_reactor() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mk = |op: &str| {
+            let payload =
+                serde_json::to_vec(&serde_json::json!({ "id": "m7", "emoji": "👍", "op": op })).unwrap();
+            Opened {
+                kind: KIND_REACT.into(),
+                payload,
+                sender_identity_pub: b64.encode([9u8; 32]),
+                sent_at: 0,
+            }
+        };
+        match disposition(Ok(mk("add")), 1) {
+            Disposition::React(r) => {
+                assert_eq!(r.target_id, "m7");
+                assert_eq!(r.emoji, "👍");
+                assert!(r.add);
+                assert_eq!(r.reactor_id, b64.encode([9u8; 32]));
+            }
+            _ => panic!("expected React"),
+        }
+        assert!(matches!(disposition(Ok(mk("remove")), 1), Disposition::React(r) if !r.add));
+        // Unknown op → discard.
+        assert!(matches!(disposition(Ok(mk("nope")), 1), Disposition::Discard));
     }
 
     #[test]

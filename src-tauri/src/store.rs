@@ -172,6 +172,13 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE contact_relays ADD COLUMN delivery_token TEXT;",
     // v8 — per-conversation read marker (local unread tracking, D11).
     "ALTER TABLE conversations ADD COLUMN last_read_ts INTEGER NOT NULL DEFAULT 0;",
+    // v9 — message reactions (D11 overlay): one row per (message, reactor,
+    // emoji). reactor_id is 'self' for mine, else the reactor's identity key.
+    "CREATE TABLE message_reactions(
+       message_id TEXT NOT NULL, reactor_id TEXT NOT NULL, emoji TEXT NOT NULL,
+       created_at INTEGER NOT NULL,
+       PRIMARY KEY(message_id, reactor_id, emoji)
+     );",
 ];
 
 #[derive(serde::Deserialize)]
@@ -248,6 +255,15 @@ pub struct FriendSummary {
     pub contact_id: String,
     pub handle: String,
     pub display_name: Option<String>,
+}
+
+/// One reaction on a message (the UI groups by emoji + flags mine).
+#[derive(serde::Serialize)]
+pub struct ReactionRow {
+    pub message_id: String,
+    pub emoji: String,
+    /// `self` for mine, else the reactor's identity key.
+    pub reactor_id: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -678,6 +694,45 @@ impl Store {
             [id],
         )?;
         Ok(())
+    }
+
+    /// Add a reaction (idempotent by (message, reactor, emoji)).
+    pub fn add_reaction(&self, message_id: &str, reactor_id: &str, emoji: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO message_reactions(message_id, reactor_id, emoji, created_at)
+               VALUES (?1, ?2, ?3, ?4)",
+            (message_id, reactor_id, emoji, now_ms()),
+        )?;
+        Ok(())
+    }
+
+    /// Remove a reaction.
+    pub fn remove_reaction(&self, message_id: &str, reactor_id: &str, emoji: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM message_reactions WHERE message_id = ?1 AND reactor_id = ?2 AND emoji = ?3",
+            (message_id, reactor_id, emoji),
+        )?;
+        Ok(())
+    }
+
+    /// All reactions on a conversation's messages (the UI groups by emoji).
+    pub fn conversation_reactions(&self, conversation_id: &str) -> Result<Vec<ReactionRow>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.message_id, r.emoji, r.reactor_id
+               FROM message_reactions r JOIN messages m ON m.id = r.message_id
+              WHERE m.conversation_id = ?1
+              ORDER BY r.created_at",
+        )?;
+        let rows = stmt
+            .query_map((conversation_id,), |r| {
+                Ok(ReactionRow {
+                    message_id: r.get(0)?,
+                    emoji: r.get(1)?,
+                    reactor_id: r.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Mark a conversation read up to its newest message (local unread, D11).
@@ -1293,6 +1348,39 @@ mod tests {
         // A newer inbound message becomes unread again.
         store.import_messages(vec![msg("m4", 40, "friend")]).unwrap();
         assert_eq!(store.conversation_unread("c1").unwrap(), 1);
+    }
+
+    #[test]
+    fn reactions_add_dedup_remove_and_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[13u8; 32]).unwrap();
+        store.upsert_relay("r1", "u", "fp", &[1u8; 32]).unwrap();
+        store.ensure_conversation("c1", "dm", "r1").unwrap();
+        store
+            .import_messages(vec![ImportMessage {
+                id: "m1".into(),
+                conversation_id: "c1".into(),
+                channel_id: None,
+                sender_contact_id: Some("self".into()),
+                relay_ts: 1,
+                content: Some("hi".into()),
+                kind: "text".into(),
+                reply_ref_json: None,
+                attachments_json: None,
+                edited_at: None,
+            }])
+            .unwrap();
+
+        store.add_reaction("m1", "self", "👍").unwrap();
+        store.add_reaction("m1", "self", "👍").unwrap(); // idempotent
+        store.add_reaction("m1", "friend", "👍").unwrap();
+        assert_eq!(store.conversation_reactions("c1").unwrap().len(), 2);
+
+        store.remove_reaction("m1", "self", "👍").unwrap();
+        let rows = store.conversation_reactions("c1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reactor_id, "friend");
+        assert_eq!(rows[0].emoji, "👍");
     }
 
     #[test]

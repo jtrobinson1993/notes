@@ -169,6 +169,29 @@ export function relayEditMessage(contactId: string, messageId: string, content: 
   return invoke('relay_edit_message', { contactId, messageId, content });
 }
 
+export interface ReactionRow {
+  message_id: string;
+  emoji: string;
+  /** `self` for mine, else the reactor's identity key. */
+  reactor_id: string;
+}
+
+/** React to a v8 message (D11): seals the reaction to the friend + applies it
+ *  locally. `add` toggles add vs remove. */
+export function relayReact(
+  contactId: string,
+  messageId: string,
+  emoji: string,
+  add: boolean,
+): Promise<void> {
+  return invoke('relay_react', { contactId, messageId, emoji, add });
+}
+
+/** All reactions on a DM conversation's messages (the UI groups by emoji). */
+export function conversationReactions(conversationId: string): Promise<ReactionRow[]> {
+  return invoke<ReactionRow[]>('conversation_reactions', { conversationId });
+}
+
 /** The deterministic v8 DM conversation id for a friend (both sides agree). */
 export function dmConversationId(contactId: string): Promise<string> {
   return invoke<string>('dm_conversation_id_for', { contactId });

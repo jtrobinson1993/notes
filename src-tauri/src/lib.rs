@@ -255,6 +255,7 @@ async fn relay_mailbox_drain(
     let mut friends = Vec::new();
     let mut deletes = Vec::new();
     let mut edits = Vec::new();
+    let mut reacts = Vec::new();
     let mut ack_ids = Vec::new();
     let mut buffered = 0usize;
     for row in rows {
@@ -287,6 +288,10 @@ async fn relay_mailbox_drain(
             }
             message::Disposition::Edit(e) => {
                 edits.push(*e);
+                ack_ids.push(row.queue_id);
+            }
+            message::Disposition::React(r) => {
+                reacts.push(*r);
                 ack_ids.push(row.queue_id);
             }
             message::Disposition::Discard => ack_ids.push(row.queue_id),
@@ -344,6 +349,19 @@ async fn relay_mailbox_drain(
             if author.as_deref() == Some(e.editor_id.as_str()) {
                 store
                     .message_apply_edit(&e.target_id, Some(&e.content), e.edited_at)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        // Reactions (D11): any friend may react to a message they can see; the
+        // reactor is the verified sender.
+        for r in &reacts {
+            if r.add {
+                store
+                    .add_reaction(&r.target_id, &r.reactor_id, &r.emoji)
+                    .map_err(|e| e.to_string())?;
+            } else {
+                store
+                    .remove_reaction(&r.target_id, &r.reactor_id, &r.emoji)
                     .map_err(|e| e.to_string())?;
             }
         }
@@ -691,6 +709,68 @@ async fn relay_edit_message(
     Ok(())
 }
 
+/// React to a v8 message (D11): seal a reaction to the friend, deliver it, and
+/// apply it locally (reactor = self). `add` toggles add vs remove.
+#[tauri::command]
+async fn relay_react(
+    contact_id: String,
+    message_id: String,
+    emoji: String,
+    add: bool,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let (ident, addressing) = {
+        let vault = vault.lock().unwrap();
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        let store = vault.store().map_err(|e| e.to_string())?;
+        let addressing = store
+            .friend_addressing(&contact_id, &relay_fp)
+            .map_err(|e| e.to_string())?
+            .ok_or("not a friend on this relay")?;
+        (ident, addressing)
+    };
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "id": message_id, "emoji": emoji, "op": if add { "add" } else { "remove" },
+    }))
+    .map_err(|e| e.to_string())?;
+    let sealing: [u8; 32] = addressing
+        .sealing_pub
+        .clone()
+        .try_into()
+        .map_err(|_| "friend has a malformed sealing key".to_string())?;
+    let envelope =
+        envelope::seal(&sealing, &ident, message::KIND_REACT, &payload, now_ms()).map_err(|e| e.to_string())?;
+    relay
+        .mailbox_send(&addressing.handle, &addressing.delivery_token, envelope)
+        .await?;
+    {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        if add {
+            store.add_reaction(&message_id, "self", &emoji).map_err(|e| e.to_string())?;
+        } else {
+            store.remove_reaction(&message_id, "self", &emoji).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// All reactions on a conversation's messages (the UI groups by emoji, D11).
+#[tauri::command]
+fn conversation_reactions(
+    conversation_id: String,
+    vault: VaultState,
+) -> Result<Vec<store::ReactionRow>, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store
+        .conversation_reactions(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
 /// Register the wrapped-MK escrow with the connected relay (D15).
 #[tauri::command]
 async fn relay_escrow_upload(
@@ -1008,6 +1088,8 @@ pub fn run() {
             relay_send_message,
             relay_delete_message,
             relay_edit_message,
+            relay_react,
+            conversation_reactions,
             messages_page,
             messages_ingest,
             message_edit,
