@@ -6,7 +6,12 @@
 // Gate state is shared via nativeVault.ts so the idle re-locker (D4 layer A)
 // and manual Lock actions can flip the app back to this wall.
 import { onMounted, ref } from 'vue';
-import { vaultCreate, vaultUnlock, vaultUnlockRecovery } from '../lib/native';
+import {
+  vaultCreate,
+  vaultRestoreFromEscrow,
+  vaultUnlock,
+  vaultUnlockRecovery,
+} from '../lib/native';
 import { gateState as state, initGate, markUnlocked } from '../lib/nativeVault';
 
 const password = ref('');
@@ -16,6 +21,13 @@ const recoveryCode = ref('');
 const useRecovery = ref(false);
 const error = ref('');
 const busy = ref(false);
+
+// "Existing user, new device" restore (D15/D3a): pull the wrapped-MK escrow
+// from a relay by handle + account password and rebuild the vault here.
+const useRestore = ref(false);
+const restoreUrl = ref('');
+const restoreHandle = ref('');
+const restorePassword = ref('');
 
 const MIN_PASSWORD = 16; // matches the web client's enforced minimum
 
@@ -60,6 +72,29 @@ async function unlock() {
   }
 }
 
+async function restore() {
+  error.value = '';
+  if (!restoreUrl.value.trim() || !restoreHandle.value.trim() || !restorePassword.value) {
+    error.value = 'Relay address, handle, and password are all required.';
+    return;
+  }
+  busy.value = true;
+  try {
+    await vaultRestoreFromEscrow(
+      restoreUrl.value.trim(),
+      restoreHandle.value.trim(),
+      restorePassword.value,
+    );
+    restorePassword.value = '';
+    // Restore rebuilds identity only; history arrives by pairing/backup later.
+    markUnlocked();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
 function confirmRecoverySaved() {
   recoveryCode.value = '';
   markUnlocked();
@@ -70,7 +105,7 @@ function confirmRecoverySaved() {
   <slot v-if="state === 'ready'" />
   <div v-else class="flex h-full items-center justify-center p-6">
     <div class="w-full max-w-sm space-y-4">
-      <template v-if="state === 'setup'">
+      <template v-if="state === 'setup' && !useRestore">
         <h1 class="text-xl font-semibold">Set up this device</h1>
         <p class="text-sm opacity-70">
           Your data is stored encrypted on this device. Choose the password
@@ -99,6 +134,57 @@ function confirmRecoverySaved() {
             {{ busy ? 'Creating…' : 'Create vault' }}
           </button>
         </form>
+        <button
+          class="text-sm underline opacity-70"
+          @click="((error = ''), (useRestore = true))"
+        >
+          Already have an account? Restore on this device
+        </button>
+      </template>
+
+      <template v-else-if="state === 'setup' && useRestore">
+        <h1 class="text-xl font-semibold">Restore this device</h1>
+        <p class="text-sm opacity-70">
+          Sign in with your handle and account password to restore your identity
+          from your relay. Your notes and message history come across when you
+          pair an existing device or import a backup.
+        </p>
+        <form class="space-y-3" @submit.prevent="restore">
+          <input
+            v-model="restoreUrl"
+            type="url"
+            autocomplete="off"
+            placeholder="Relay address (https://…)"
+            class="w-full rounded border border-neutral-500/40 bg-transparent px-3 py-2"
+          />
+          <input
+            v-model="restoreHandle"
+            type="text"
+            autocomplete="username"
+            placeholder="Handle (e.g. Word#1234)"
+            class="w-full rounded border border-neutral-500/40 bg-transparent px-3 py-2"
+          />
+          <input
+            v-model="restorePassword"
+            type="password"
+            autocomplete="current-password"
+            placeholder="Account password"
+            class="w-full rounded border border-neutral-500/40 bg-transparent px-3 py-2"
+          />
+          <button
+            type="submit"
+            :disabled="busy"
+            class="w-full rounded bg-blue-600 px-3 py-2 font-medium text-white disabled:opacity-50"
+          >
+            {{ busy ? 'Restoring…' : 'Restore' }}
+          </button>
+        </form>
+        <button
+          class="text-sm underline opacity-70"
+          @click="((error = ''), (useRestore = false))"
+        >
+          Set up a new account instead
+        </button>
       </template>
 
       <template v-else-if="state === 'recovery'">

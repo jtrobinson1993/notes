@@ -8,6 +8,7 @@ const native = vi.hoisted(() => ({
   vaultUnlock: vi.fn(),
   vaultUnlockKeychain: vi.fn(),
   vaultUnlockRecovery: vi.fn(),
+  vaultRestoreFromEscrow: vi.fn(),
   vaultLock: vi.fn(),
   // markUnlocked() kicks the re-lock policy read; default = stay unlocked.
   settingsGet: vi.fn().mockResolvedValue(null),
@@ -72,6 +73,59 @@ describe('NativeGate', () => {
     expect(w.find('[data-testid="recovery-code"]').text()).toContain('AAAA-BBBB');
     await w.find('button').trigger('click');
     expect(w.find('[data-testid="app"]').exists()).toBe(true);
+  });
+
+  it('restores an existing account on a fresh device via escrow', async () => {
+    native.vaultStatus.mockResolvedValue('uninitialized');
+    native.vaultRestoreFromEscrow.mockResolvedValue(undefined);
+    const w = mountGate();
+    await flushPromises();
+
+    await w.find('button.underline').trigger('click');
+    expect(w.text()).toContain('Restore this device');
+
+    await w.find('input[type="url"]').setValue('https://relay.example');
+    await w.find('input[type="text"]').setValue('Word#1234');
+    await w.find('input[type="password"]').setValue('a sixteen char password');
+    await w.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(native.vaultRestoreFromEscrow).toHaveBeenCalledWith(
+      'https://relay.example',
+      'Word#1234',
+      'a sixteen char password',
+    );
+    expect(w.find('[data-testid="app"]').exists()).toBe(true);
+  });
+
+  it('requires all restore fields before calling the core', async () => {
+    native.vaultStatus.mockResolvedValue('uninitialized');
+    const w = mountGate();
+    await flushPromises();
+    await w.find('button.underline').trigger('click');
+
+    await w.find('input[type="url"]').setValue('https://relay.example');
+    // handle + password left blank
+    await w.find('form').trigger('submit');
+    await flushPromises();
+    expect(native.vaultRestoreFromEscrow).not.toHaveBeenCalled();
+    expect(w.text()).toContain('required');
+  });
+
+  it('surfaces a restore failure without opening the gate', async () => {
+    native.vaultStatus.mockResolvedValue('uninitialized');
+    native.vaultRestoreFromEscrow.mockRejectedValue(new Error('no escrow for handle'));
+    const w = mountGate();
+    await flushPromises();
+    await w.find('button.underline').trigger('click');
+
+    await w.find('input[type="url"]').setValue('https://relay.example');
+    await w.find('input[type="text"]').setValue('Word#1234');
+    await w.find('input[type="password"]').setValue('a sixteen char password');
+    await w.find('form').trigger('submit');
+    await flushPromises();
+    expect(w.find('[data-testid="app"]').exists()).toBe(false);
+    expect(w.text()).toContain('no escrow for handle');
   });
 
   it('rejects a short password client-side', async () => {
