@@ -987,14 +987,22 @@ Playwright version (currently 1.60.0).
     `createFriendInvite`). Tests: cargo 47 (+1) `friend_payload` round-trips
     through `parse`; web 463. **Invite→friend handshake is now complete E2E**
     (create invite → redeem → accept recorded + reciprocated → confirm recorded).
-  - **Next (friends cutover):** (a) IPC `list_friends`/`friend_addressing`/
-    `remove_friend` + native.ts + friends UI (invite create/redeem, list). (b)
-    v8 DMs: create a `conversations` row per friend → outbound send (compose
-    `ChatMessagePayload` → seal to friend's sealing key → `relay_send` w/ their
-    delivery token) → chat cutover steps 3–5 reachable end-to-end. NOTE: the
-    reciprocal send happens inside the drain (best-effort); a dropped confirm
-    isn't yet retried automatically — a re-invite recovers it. Consider a
-    pending-reciprocation record later.
+  - **DONE (iter 47) — friends IPC + native.ts (D4b).** IPC `friends_list`/
+    `friend_addressing`/`friend_remove` (relay-fp-scoped; error when not
+    connected) + native.ts wrappers + `FriendSummary`/`FriendAddressing` types
+    (keys as raw byte arrays). Clears the store dead-code warnings. cargo 47,
+    web 463. `friend_remove` = local half of unfriend (profile-key rotation +
+    token re-issue is a follow-up).
+  - **Next (friends cutover):** (a) **outbound v8 send** — Rust: build a
+    `ChatMessagePayload` (`message::encode`, currently the only remaining
+    warning) → `envelope::seal` to friend's sealing key → `relay.mailbox_send`
+    w/ their delivery token; tee into the local log so it renders immediately;
+    IPC + wire the chat store's native send path. This makes v8 DMs work E2E
+    (send → relay → recipient drain → live render). (b) v8 DM conversation
+    identity: create a local `conversations` row per friend so there's
+    something to open. (c) friends UI (invite create/redeem, list). NOTE: the
+    reciprocal friend-confirm send is best-effort inside the drain; a dropped
+    one is recovered by a re-invite (pending-reciprocation record = later).
   - **Other open threads:** OPEN FOLLOW-UPS: live WS stop signal;
     sender→contact interim; blob chunked/resumable + group per-member-ack GC.
     Desk queue: mobile init, tauri smoke, biometric ACLs. iters 31–42 committed
