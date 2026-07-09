@@ -1105,8 +1105,15 @@ Playwright version (currently 1.60.0).
     conv → I'm a member (cargo 59). Next: **add-member admin side** —
     `group_add_member(group_id, contact_id)`: RelayClient `group_state_get` →
     add friend to record + version bump + re-sign + PUT → seal a group-invite to
-    the friend + `mailbox_send`. Then **group UI** (create/list/open/send +
-    add-member, reuse DM bubbles). (b) **group creation** — genesis D14 record (me=owner) + set group
+    the friend + `mailbox_send`. (a8) [DONE iter 67] **add-member admin side** —
+    `group_add_member` (RelayClient `group_state_get` → `message::
+    group_record_add_member` [pure, tested] → re-sign + PUT → seal group-invite
+    → send); native.ts `groupAddMember`. **GROUP MESSAGING NOW END-TO-END**:
+    create → add members → send/receive (cargo 60). Next: **group UI** — extend
+    NativeChat (or a groups panel) with create-group, group list, open group →
+    render `ChatMessageView[]` (reuse bubbles) + `relaySendGroupMessage`,
+    add-member picker. Remaining after: blob chunked/resumable, voice-v8, KT
+    proofs, README/spec currency. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
