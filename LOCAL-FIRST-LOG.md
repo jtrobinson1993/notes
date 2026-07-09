@@ -1130,13 +1130,14 @@ Playwright version (currently 1.60.0).
     (built core + remaining). Docs only.
   - **Attachments in messages (in progress):** (a) [DONE iter 72] **file crypto**
     — `attachment::encrypt_file`/`decrypt_file` (fresh per-file AES-GCM key+IV,
-    key rides in the E2E payload; cargo 62). Next: (b) RelayClient `blob_upload`
-    (delivery-token, `POST /api/relay/blobs` octet-stream + headers) /
-    `blob_download` (device-token `GET`); (c) IPC `attachment_upload(contact/
-    group, bytes, mime, name)` → {blobId, key, iv, ...} + `attachment_fetch`
-    (download+decrypt); (d) thread an attachments arg through send (payload
-    `attachments_json`); (e) UI file picker + image render. Group attachments use
-    `POST /api/relay/groups/:id/blobs` (group token) — server built.
+    key rides in the E2E payload; cargo 62). (b) [DONE iter 73] **blob transport**
+    — RelayClient `blob_upload`/`blob_download` (DM) + `group_blob_upload`/
+    `group_blob_download`; IPC `attachment_upload`(encrypt→upload→`AttachmentRef`)
+    + `attachment_fetch`(download→decrypt); native.ts `attachmentUpload`/
+    `attachmentFetch` + `MessageAttachment`. Next: (c) thread an attachments arg
+    through `relay_send_message`/`relay_send_group_message` (payload
+    `attachments_json` carries the refs); (d) UI file picker + image render
+    (fetch on demand, object URL).
   - **Remaining v8 spec (larger, phase 3/5/6):** blob chunked/resumable transfer. (3) voice under v8
     (device-token auth, multipath ring). (4) content-free push (D7). (5) KT
     inclusion proofs / auditor (phase 6). (6) D12 legacy→v8 cutover. NOTE:
