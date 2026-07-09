@@ -244,6 +244,11 @@ async function migrateOwnProfile(mk: Uint8Array): Promise<boolean> {
   await settingsSet('profile.own', JSON.stringify(data));
   await settingsSet('profile.key', b64(profileKey));
   await settingsSet('profile.epoch', String(profile.epoch));
+  // Persist my own public handle (server-assigned, not in the E2E profile blob)
+  // as the single native source for it — the friends UI names me in invites and
+  // the drain reads it to reciprocate a friend-confirm (D4b).
+  const me = await api.me();
+  await settingsSet('identity.handle', me.user.handle);
   return true;
 }
 
