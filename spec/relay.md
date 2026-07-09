@@ -89,9 +89,16 @@ correlation is documented there).
 - `GET /api/mailbox` (device token) → batch of `{ queueId, relayTs, envelope }`.
 - `POST /api/mailbox/ack` `{ queueIds[] }` → delete. Delivery is
   **at-least-once**; clients dedupe by the sender-assigned message id (D11).
-- **WebSocket** (device token) for live delivery, same envelope framing as
-  today's hub; a content-free push (D7) fires for queued envelopes when the
-  device is offline.
+- **WebSocket** `GET /api/relay/ws` (device token in the `Authorization`
+  handshake header — native client, so no cookie/Origin dance; a bearer token
+  has no CSRF surface) for **live delivery**. It carries a single content-free
+  nudge `{type:'mail'}` sent to a recipient's connected devices the moment a send
+  enqueues — the connected device then runs its normal REST `fetch → ack` loop.
+  The socket only removes poll latency: the REST mailbox stays authoritative
+  (hold-until-ack), so a dropped/missed nudge is harmless (the next poll or
+  reconnect drains the queue). The nudge reveals nothing beyond "you have mail,"
+  which the owning device already learns by polling. A content-free push (D7)
+  fires for queued envelopes when the device is fully offline.
 
 ## Blob store (D6)
 

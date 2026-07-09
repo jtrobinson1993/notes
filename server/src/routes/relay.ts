@@ -4,7 +4,9 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, createPrivateKey, randomBytes, sign as edSign } from 'node:crypto';
+import type { Config } from '../config.js';
 import type { DB } from '../db.js';
+import type { RelayLive } from '../relayLive.js';
 import { requireAuth } from '../session.js';
 import {
   fingerprintB64url,
@@ -28,9 +30,21 @@ function rawKey(b64: string): Buffer | null {
   }
 }
 
-export function relayRoutes(app: FastifyInstance, db: DB): void {
+export function relayRoutes(
+  app: FastifyInstance,
+  db: DB,
+  live?: RelayLive,
+  config?: Config,
+): void {
   const identity = db.ensureRelayIdentity(generateRelayIdentity);
   const relayFp = fingerprintB64url(Buffer.from(identity.pubkey, 'base64'));
+
+  /** Resolve a bearer token to a live, non-revoked device id (or null). */
+  function deviceIdForToken(token: string | null): string | null {
+    const deviceId = token ? verifyDeviceToken(token) : null;
+    const device = deviceId ? db.getRelayDeviceById(deviceId) : undefined;
+    return device && !device.revoked ? device.id : null;
+  }
 
   /** Device-token auth for fetch-side routes (send is deliberately not
    *  device-authenticated — the delivery token is the only credential). */
@@ -47,6 +61,13 @@ export function relayRoutes(app: FastifyInstance, db: DB): void {
       return null;
     }
     return { id: device.id, userId: device.userId };
+  }
+
+  // Live-delivery nudge socket (device-token authed). Optional so tests that
+  // construct routes without the hub still work; when present, sends nudge the
+  // recipient's connected devices to fetch immediately.
+  if (live) {
+    live.register(app, deviceIdForToken, config?.rateLimitMax ?? 600);
   }
 
   // Relay timestamps are non-decreasing within this process (D11 ordering).
@@ -193,6 +214,8 @@ export function relayRoutes(app: FastifyInstance, db: DB): void {
     const relayTs = stampTs();
     if (devices.length) {
       db.enqueueRelayEnvelope(devices, relayTs, Buffer.from(b.envelope, 'base64'));
+      // Nudge any connected recipient devices to fetch now (poll otherwise).
+      live?.notifyDevices(devices);
     }
     db.pruneRelayMailbox(MAILBOX_TTL_MS); // opportunistic TTL sweep
     return { relayTs };

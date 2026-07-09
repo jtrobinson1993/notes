@@ -23,6 +23,7 @@ import { ogRoutes } from './routes/og.js';
 import { pushRoutes } from './routes/push.js';
 import { relayRoutes } from './routes/relay.js';
 import { createRealtime, WS_MAX_PAYLOAD } from './realtime.js';
+import { createRelayLive } from './relayLive.js';
 import { createPush } from './push.js';
 import { createVoice } from './voice.js';
 
@@ -55,6 +56,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   registerSessionHooks(app, db, config);
 
   const realtime = createRealtime(db, config);
+  const relayLive = createRelayLive();
   const push = createPush(db, config, realtime);
   const voice = createVoice(db, config, realtime, push);
   // Tear down a fully-offline user's calls (mediasoup worker is lazy — no cost
@@ -74,7 +76,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   emojiRoutes(app, config);
   ogRoutes(app);
   pushRoutes(app, db, push);
-  relayRoutes(app, db);
+  relayRoutes(app, db, relayLive, config);
   voice.register(app);
   realtime.register(app);
 
