@@ -69,13 +69,20 @@ surface.
 
 ## Reference auditor
 
-A small open-source CLI (ships in this repo), doing exactly two jobs:
+A small open-source CLI (ships in this repo — `server/src/ktAuditCli.ts`, run
+`npm run kt-audit -w server -- <relay-url> [--watch]`; verification core in
+`ktAudit.ts`), doing exactly two jobs:
 
 1. **Chain verification:** fetch all roots since genesis (or a saved
-   checkpoint), verify each signature and each consistency proof — proving the
-   log is append-only and was never rewritten.
-2. **Watch mode:** poll the roots endpoint, persist checkpoints, and alarm
-   loudly on any fork/rewrite/stall (missing heartbeat epochs).
+   checkpoint), verify each signature and the hash-chain linkage + strictly
+   increasing epochs — proving the *published* history was never silently
+   rewritten. **Built.** (Cryptographic *consistency/extension* proofs — that
+   epoch n+1's tree provably append-only-extends epoch n — await the AKD
+   history-tree structure; the current per-epoch snapshot Merkle root does not
+   admit them.)
+2. **Watch mode:** poll the roots endpoint, keep seen roots, and alarm loudly on
+   a **rewrite** (a prior epoch's rootHash changed) or a **stall** (no fresh
+   heartbeat epoch within a max gap). **Built.**
 
 **Independence is the point:** an auditor run by the relay operator proves
 nothing. The root `README.md` gets a "Verifying this relay's key transparency"

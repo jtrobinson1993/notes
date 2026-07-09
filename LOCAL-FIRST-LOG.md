@@ -1170,11 +1170,27 @@ Playwright version (currently 1.60.0).
     self-audit history, reference auditor, and client-side verify wiring (no v8
     directory-*fetch* path in the Rust client yet — publish-only). specs updated
     (key-transparency.md status → partially built; relay.md directory doc).
+  - **DONE (iter 78) — KT reference auditor (D5, phase 6).** New pure
+    `server/src/ktAudit.ts` (verifyRootSignature / verifyRootChain [sig + hash-
+    chain linkage + strictly-increasing epochs, optional checkpoint prev] /
+    detectRewrite [prior epoch's rootHash changed] / detectStall [no heartbeat
+    within gap]) + thin CLI `ktAuditCli.ts` (`npm run kt-audit -w server --
+    <url> [--watch]`; one-shot exits non-zero on failure, watch polls +
+    alarms). Tests drive the verifier against genuine live-relay roots (real
+    multi-epoch chain verifies; forged sig / broken link / wrong checkpoint
+    rejected; rewrite + stall detected). server 365, tsc clean. HONEST LIMIT
+    (documented in module + spec): verifies the *published* chain was never
+    silently rewritten (linkage + signatures), but NOT cryptographic
+    consistency/extension (append-only tree proof) — that needs the AKD
+    history-tree structure, which the per-epoch snapshot Merkle root can't
+    provide. key-transparency.md auditor section → built.
   - **Remaining v8 spec (larger, phase 3/5/6):** (3) voice under v8
     (device-token auth, multipath ring) — entangled w/ legacy cookie realtime
     auth; needs a coexistence design call. (4) content-free push (D7,
-    deprioritized). (5) KT: VRF blinding + consistency proofs + auditor (rest of
-    phase 6). (6) D12 legacy→v8 cutover. NOTE:
+    deprioritized). (5) KT full AKD: VRF label blinding + consistency proofs
+    (large — the `akd` crate + napi binding per spec; a genuine dependency/
+    architecture lift). (6) D12 legacy→v8 cutover (the production migration —
+    needs the user). NOTE:
     best-effort caveats as before; unsigned commits (1Password) — re-sign via
     `git rebase --exec 'git commit --amend --no-edit -S' 38dacc7`. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
