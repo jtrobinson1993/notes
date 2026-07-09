@@ -34,12 +34,16 @@ export async function rememberRelayUrl(url: string): Promise<void> {
   await settingsSet(RELAY_URL_KEY, url);
 }
 
-let onIngested: (report: DrainReport) => void = () => {};
+const ingestedListeners = new Set<(report: DrainReport) => void>();
 
-/** Register a hook fired after a drain that stored new rows — the seam the v8
- *  chat store will use to refresh live. Replaces any previous hook. */
-export function setOnMailIngested(cb: (report: DrainReport) => void): void {
-  onIngested = cb;
+/** Subscribe to drains that stored new rows — the seam views (the chat store,
+ *  the native DM surface) use to refresh live. Returns an unsubscribe fn.
+ *  Multiple subscribers are fanned out. */
+export function onMailIngested(cb: (report: DrainReport) => void): () => void {
+  ingestedListeners.add(cb);
+  return () => {
+    ingestedListeners.delete(cb);
+  };
 }
 
 // Single-flight with coalescing: a nudge arriving mid-drain schedules exactly
@@ -60,7 +64,7 @@ export async function drainMailbox(): Promise<void> {
     do {
       rerun = false;
       const report = await relayMailboxDrain();
-      if (report.ingested > 0) onIngested(report);
+      if (report.ingested > 0) for (const l of ingestedListeners) l(report);
     } while (rerun);
   } catch {
     // Best-effort: the REST path stays authoritative, and the next nudge,

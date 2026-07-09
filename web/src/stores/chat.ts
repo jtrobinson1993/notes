@@ -40,7 +40,7 @@ import { loadEmojiUsage, resetEmojiUsage } from '../lib/emoji/usage';
 import { b64 } from '../lib/b64';
 import { isNative } from '../lib/native';
 import { loadHistoryLocal, teeEdit, teeMessage } from '../lib/nativeChat';
-import { setOnMailIngested } from '../lib/nativeRelay';
+import { onMailIngested } from '../lib/nativeRelay';
 import { useSessionStore } from './session';
 import { useFriendsStore } from './friends';
 import { useProfileStore } from './profile';
@@ -608,7 +608,7 @@ export const useChatStore = defineStore('chat', () => {
   // Live inbound (D6/D11): a mailbox drain that stored new rows nudges the open
   // conversation to re-read the local log. The drain + hook are already the
   // authoritative capture path; this only refreshes what's on screen.
-  if (isNative) setOnMailIngested(() => void reloadActiveFromLog());
+  if (isNative) onMailIngested(() => void reloadActiveFromLog());
 
   async function sendMessage(
     convId: string,

@@ -27,12 +27,12 @@ import {
   drainMailbox,
   startRelayDelivery,
   stopRelayDelivery,
-  setOnMailIngested,
+  onMailIngested,
   reconnectRelay,
   rememberRelayUrl,
 } from '../../src/lib/nativeRelay';
 
-const report = (ingested: number) => ({ ingested, acked: ingested, buffered: 0 });
+const report = (ingested: number) => ({ ingested, acked: ingested, buffered: 0, friends: 0 });
 
 beforeEach(() => {
   stopRelayDelivery(); // clear any listener leaked from a prior test
@@ -40,7 +40,6 @@ beforeEach(() => {
   native.isNative = true;
   evt.handler = null;
   evt.listen.mockResolvedValue(evt.unlisten);
-  setOnMailIngested(() => {});
 });
 
 describe('nativeRelay live delivery', () => {
@@ -71,9 +70,9 @@ describe('nativeRelay live delivery', () => {
     await vi.waitFor(() => expect(native.relayMailboxDrain).toHaveBeenCalledTimes(1));
   });
 
-  it('fires the ingested hook only when rows were stored', async () => {
+  it('fires ingested subscribers only when rows were stored', async () => {
     const hook = vi.fn();
-    setOnMailIngested(hook);
+    const unsub = onMailIngested(hook);
     native.relayMailboxDrain.mockResolvedValueOnce(report(0));
     await drainMailbox();
     expect(hook).not.toHaveBeenCalled();
@@ -81,6 +80,12 @@ describe('nativeRelay live delivery', () => {
     native.relayMailboxDrain.mockResolvedValueOnce(report(3));
     await drainMailbox();
     expect(hook).toHaveBeenCalledWith(report(3));
+
+    // Unsubscribe stops further deliveries.
+    unsub();
+    native.relayMailboxDrain.mockResolvedValueOnce(report(2));
+    await drainMailbox();
+    expect(hook).toHaveBeenCalledTimes(1);
   });
 
   it('coalesces concurrent drains into one extra pass (no re-entrancy)', async () => {

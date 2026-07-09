@@ -13,6 +13,7 @@ export const router = createRouter({
     { path: '/', component: () => import('./pages/NotesPage.vue') },
     { path: '/chat/:id/:channelId?', component: () => import('./pages/ConversationPage.vue') },
     { path: '/friends', component: () => import('./pages/FriendsPage.vue') },
+    { path: '/dm', component: () => import('./pages/NativeChatPage.vue') },
     { path: '/settings', component: () => import('./pages/SettingsPage.vue') },
     { path: '/setup', component: () => import('./pages/SetupPage.vue'), meta: { public: true } },
     { path: '/login', component: () => import('./pages/LoginPage.vue'), meta: { public: true } },
