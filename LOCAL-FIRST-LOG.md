@@ -961,8 +961,25 @@ Playwright version (currently 1.60.0).
       interdepend with the **friends cutover** (friends → delivery tokens → v8
       DMs → v8 messages) — likely need a friends/contacts store with
       {handle, identity_pub, sealing_pub, delivery_token} in the Rust core.
-  - **Other open threads:** friends-store cutover (process `friend-accept` on
-    drain + reciprocate + friends UI); OPEN FOLLOW-UPS: live WS stop signal;
+  - **DONE (iter 44) — friend/contacts store foundation (Rust core, D4b/D6).**
+    The keystone unblocking friends+chat cutovers. Migration **v7**:
+    `contact_relays` += `sealing_pub` (seal to friend) + `delivery_token` (send
+    via mailbox), beside existing handle+identity_pub. Accessors: `upsert_relay`
+    (persist joined relay for FKs), `record_friend` (idempotent — mark friend +
+    record/refresh addressing incl. rotated token), `friend_addressing` (all to
+    reach a friend, or None), `list_friends`, `remove_friend` (unfriend). Test
+    (cargo 43, +1): full lifecycle. Accessors have transient dead-code warnings
+    until the IPC + friend-accept drain wire them (next).
+  - **Next (friends cutover, on the foundation):** (a) IPC `record_friend`/
+    `list_friends`/`friend_addressing`/`remove_friend` + native.ts; (b)
+    **friend-accept drain handling** — add a `friend-accept` branch to
+    `message::disposition`/drain that extracts `{handle, deliveryToken}` from the
+    verified envelope, records the friend (their identity=verified sender,
+    sealing from directory), and reciprocates my delivery token via a sealed
+    send; (c) friends UI (invite create/redeem, list). Then v8 DMs (create a
+    `conversations` row per friend) → outbound send → chat cutover steps 3–5
+    become reachable end-to-end.
+  - **Other open threads:** OPEN FOLLOW-UPS: live WS stop signal;
     sender→contact interim; blob chunked/resumable + group per-member-ack GC.
     Desk queue: mobile init, tauri smoke, biometric ACLs. iters 31–42 committed
     unsigned (1Password locked) — re-sign via `git rebase --exec 'git commit
