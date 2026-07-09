@@ -32,6 +32,7 @@ import {
   type ImportNote,
   type ImportNoteVersion,
 } from './native';
+import { startRelayDelivery } from './nativeRelay';
 import { ub64 } from './b64';
 import type {
   AttachmentRef,
@@ -226,6 +227,9 @@ export async function enrollThisDevice(): Promise<void> {
   const name = `${navigator.platform || 'desktop'}`.slice(0, 64);
   await api.relayEnrollDevice(pubKey, name);
   await relayConnect(window.location.origin);
+  // Connected: start live inbound delivery (listen for `relay:mail` nudges +
+  // drain any backlog). Best-effort — never blocks enrollment.
+  void startRelayDelivery();
 }
 
 /** Own profile (bio/avatar/display name) + the profile key. The key matters
