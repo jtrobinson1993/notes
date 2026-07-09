@@ -1096,11 +1096,14 @@ Playwright version (currently 1.60.0).
     register verifier from a fresh group key → store key + group conv);
     `group_list` IPC + native.ts `groupCreate`/`groupList`. (a5) [DONE iter 64]
     **group send** — `relay_send_group_message` (group key → token → seal_group
-    → `group_send` fan-out → tee same id). Next: **inbound group drain** — the
-    drain tries the DM `open` first, then `open_group` against each stored group
-    key; a hit routes the message to that group_id (not `dm_conversation_id`).
-    Then **key distribution to members** (add-member: seal the group key to a
-    friend + bump the D14 record) and **group UI** (create/list/open/send). (b) **group creation** — genesis D14 record (me=owner) + set group
+    → `group_send` fan-out → tee same id). (a6) [DONE iter 65] **inbound group
+    drain** — tries DM `open`, then `open_group` per stored group key; a hit
+    routes to that group_id. **v8 group round-trip complete core-side** (create
+    → send → receive), edit/delete/react reuse the author check. Next: **key
+    distribution to members** (add-member: seal the group key + token to a
+    friend via a `group-invite` envelope; recipient stores key + ensures the
+    group conv; admin bumps the D14 record adding them) and **group UI**
+    (create/list/open/send, reuse the DM bubble rendering). (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
