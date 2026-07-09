@@ -154,6 +154,89 @@ describe('transient blob store (D6)', () => {
     expect(unknown.statusCode).toBe(404);
   });
 
+  it('serves a byte range (resumable download) with 206 + content-range', async () => {
+    ctx = await makeApp();
+    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice.cookie);
+    await setVerifier(bearer);
+
+    const ciphertext = Buffer.from('0123456789abcdef'); // 16 bytes
+    const up = await upload(
+      { 'x-delivery-token': DELIVERY, 'x-recipient-handle': 'Alice#0001' },
+      ciphertext,
+    );
+    const blobId = up.json().blobId as string;
+
+    // Resume from byte 10 to the end.
+    const tail = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/relay/blobs/${blobId}`,
+      headers: { authorization: bearer, range: 'bytes=10-' },
+    });
+    expect(tail.statusCode).toBe(206);
+    expect(tail.headers['content-range']).toBe('bytes 10-15/16');
+    expect(tail.headers['content-length']).toBe('6');
+    expect(tail.headers['accept-ranges']).toBe('bytes');
+    expect(tail.rawPayload.equals(ciphertext.subarray(10))).toBe(true);
+
+    // Explicit closed range.
+    const mid = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/relay/blobs/${blobId}`,
+      headers: { authorization: bearer, range: 'bytes=4-7' },
+    });
+    expect(mid.statusCode).toBe(206);
+    expect(mid.headers['content-range']).toBe('bytes 4-7/16');
+    expect(mid.rawPayload.equals(ciphertext.subarray(4, 8))).toBe(true);
+
+    // Suffix range: last 3 bytes.
+    const suf = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/relay/blobs/${blobId}`,
+      headers: { authorization: bearer, range: 'bytes=-3' },
+    });
+    expect(suf.statusCode).toBe(206);
+    expect(suf.headers['content-range']).toBe('bytes 13-15/16');
+    expect(suf.rawPayload.equals(ciphertext.subarray(13))).toBe(true);
+  });
+
+  it('advertises accept-ranges on a whole-blob GET and 416s an unsatisfiable range', async () => {
+    ctx = await makeApp();
+    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice.cookie);
+    await setVerifier(bearer);
+    const ciphertext = Buffer.from('short');
+    const up = await upload(
+      { 'x-delivery-token': DELIVERY, 'x-recipient-handle': 'Alice#0001' },
+      ciphertext,
+    );
+    const blobId = up.json().blobId as string;
+
+    const whole = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/relay/blobs/${blobId}`,
+      headers: { authorization: bearer },
+    });
+    expect(whole.statusCode).toBe(200);
+    expect(whole.headers['accept-ranges']).toBe('bytes');
+    expect(whole.rawPayload.equals(ciphertext)).toBe(true);
+
+    const past = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/relay/blobs/${blobId}`,
+      headers: { authorization: bearer, range: 'bytes=99-200' },
+    });
+    expect(past.statusCode).toBe(416);
+    expect(past.headers['content-range']).toBe(`bytes */${ciphertext.length}`);
+
+    const garbage = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/relay/blobs/${blobId}`,
+      headers: { authorization: bearer, range: 'rows=1-2' },
+    });
+    expect(garbage.statusCode).toBe(416);
+  });
+
   it('ack deletes the blob (recipient only)', async () => {
     ctx = await makeApp();
     const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });

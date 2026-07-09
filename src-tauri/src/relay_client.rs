@@ -30,6 +30,64 @@ pub fn token_needs_refresh(expires_at: Instant, now: Instant) -> bool {
     now + REFRESH_MARGIN >= expires_at
 }
 
+/// Cap on consecutive *no-progress* reconnects before a resumable download
+/// gives up — a stream that keeps advancing between drops is never capped.
+const RESUME_MAX_STALLS: u32 = 5;
+
+/// Download a blob body, resuming across transport drops. On the first request
+/// we ask for the whole object; if the stream dies part-way we reconnect with
+/// `Range: bytes=<have>-` and the relay answers `206` continuing from that
+/// offset (it advertises `accept-ranges: bytes`). A `200` on a resume means the
+/// server ignored the range, so we restart the buffer to stay correct. Bounded
+/// only against *stalls* (a reconnect that yields no new bytes); genuine
+/// progress resets the counter, so a large file over a flaky link still lands.
+async fn download_resumable(url: &str, bearer: &str) -> Result<Vec<u8>, String> {
+    use futures_util::StreamExt as _;
+    let client = reqwest::Client::new();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut stalls = 0u32;
+    loop {
+        let mut req = client.get(url).bearer_auth(bearer);
+        if !buf.is_empty() {
+            req = req.header("range", format!("bytes={}-", buf.len()));
+        }
+        let res = req
+            .send()
+            .await
+            .map_err(|e| format!("blob download failed: {e}"))?;
+        let status = res.status();
+        if !buf.is_empty() && status == reqwest::StatusCode::OK {
+            // Range ignored — the body is the whole object again.
+            buf.clear();
+        } else if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(format!("blob download refused (HTTP {status})"));
+        }
+        let before = buf.len();
+        let mut stream = res.bytes_stream();
+        let mut interrupted = false;
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => buf.extend_from_slice(&bytes),
+                Err(_) => {
+                    interrupted = true;
+                    break;
+                }
+            }
+        }
+        if !interrupted {
+            return Ok(buf);
+        }
+        if buf.len() > before {
+            stalls = 0; // made progress this attempt
+        } else {
+            stalls += 1;
+            if stalls >= RESUME_MAX_STALLS {
+                return Err("blob download failed: too many interruptions".into());
+            }
+        }
+    }
+}
+
 struct Session {
     base_url: String,
     relay_fp: String,
@@ -490,19 +548,12 @@ impl RelayClient {
     }
 
     /// Download attachment ciphertext (device-authed; only the recipient).
+    /// Resumable: if the transport drops mid-body it reconnects from where it
+    /// left off (D6 large-media follow-up — see `download_resumable`).
     pub async fn blob_download(&self, signing: &SigningKey, blob_id: &str) -> Result<Vec<u8>, String> {
         let bearer = self.bearer(signing).await?;
         let base = self.base_url()?;
-        let res = reqwest::Client::new()
-            .get(format!("{base}/api/relay/blobs/{blob_id}"))
-            .bearer_auth(bearer)
-            .send()
-            .await
-            .map_err(|e| format!("blob download failed: {e}"))?;
-        if !res.status().is_success() {
-            return Err(format!("blob download refused (HTTP {})", res.status()));
-        }
-        Ok(res.bytes().await.map_err(|e| format!("blob read failed: {e}"))?.to_vec())
+        download_resumable(&format!("{base}/api/relay/blobs/{blob_id}"), &bearer).await
     }
 
     /// Upload a group attachment blob (group-token authed, D6/D14).
@@ -541,16 +592,11 @@ impl RelayClient {
     ) -> Result<Vec<u8>, String> {
         let bearer = self.bearer(signing).await?;
         let base = self.base_url()?;
-        let res = reqwest::Client::new()
-            .get(format!("{base}/api/relay/groups/{group_id}/blobs/{blob_id}"))
-            .bearer_auth(bearer)
-            .send()
-            .await
-            .map_err(|e| format!("group blob download failed: {e}"))?;
-        if !res.status().is_success() {
-            return Err(format!("group blob download refused (HTTP {})", res.status()));
-        }
-        Ok(res.bytes().await.map_err(|e| format!("group blob read failed: {e}"))?.to_vec())
+        download_resumable(
+            &format!("{base}/api/relay/groups/{group_id}/blobs/{blob_id}"),
+            &bearer,
+        )
+        .await
     }
 
     /// Sealed send (D6): deliberately NO device token — the recipient's

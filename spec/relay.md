@@ -121,7 +121,11 @@ group-state record (D14) for the member set.
   stays sender-anonymous. Uniform 401 for a bad handle/token. → `{ blobId, size }`.
 - `GET /api/relay/blobs/:id` — **download, device-token gated to the recipient**
   (`recipientUserId == device.userId`) plus the unguessable id; unknown/not-yours/
-  malformed id → uniform 404. Streams the ciphertext.
+  malformed id → uniform 404. Streams the ciphertext. **Ranged/resumable:**
+  advertises `accept-ranges: bytes`; honours a single `Range: bytes=start-end`
+  (also `start-` and `-suffix`) with `206` + `content-range`, or `416` +
+  `bytes */<size>` for an unsatisfiable/garbage range. Clients resume an
+  interrupted download from the last received byte (`download_resumable`).
 - `POST /api/relay/blobs/:id/ack` (device token, recipient only) — delete now;
   otherwise swept at **TTL 14 days**.
 
@@ -136,10 +140,11 @@ member (a device token would leak the sender within the group).
   → `{ blobId, size }`; uniform 401 on a bad token.
 - `GET /api/relay/groups/:id/blobs/:blobId` (device token + **current
   membership** per the group-state record) → ciphertext; non-member/wrong-group/
-  unknown → uniform 404.
+  unknown → uniform 404. Same ranged/resumable support as the DM download above.
 
-*Follow-ups:* chunked/resumable + ranged transfer for large media (first cut is
-whole-blob); per-member-ack GC for group blobs (first cut is TTL-only).
+*Follow-ups:* per-member-ack GC for group blobs (first cut is TTL-only).
+(Ranged/resumable transfer for large media — **built**: `Range`/`206` serving +
+client resume across drops.)
 
 ## Directory & key transparency (D5)
 

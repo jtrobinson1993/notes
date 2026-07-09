@@ -1143,7 +1143,18 @@ Playwright version (currently 1.60.0).
     chips → upload each on send → refs to `sendDm`/`sendGroup`; text optional).
     web 488. **ATTACHMENTS-IN-MESSAGES COMPLETE** (crypto→transport→send→UI,
     DM+group).
-  - **Remaining v8 spec (larger, phase 3/5/6):** blob chunked/resumable transfer. (3) voice under v8
+  - **DONE (iter 76) — blob ranged/resumable transfer (D6 follow-up).** Server
+    DM + group blob GET now advertise `accept-ranges: bytes` and honour a single
+    `Range: bytes=start-end` (+ `start-` / `-suffix`) → `206`/`content-range`, or
+    `416` + `bytes */size` for garbage/unsatisfiable (shared `sendBlobFile`
+    helper; 416 resets content-type to json so Fastify serializes the error).
+    Rust client `blob_download`/`group_blob_download` route through
+    `download_resumable` (reqwest `stream` feature): streams the body, on a
+    mid-body drop reconnects `Range: bytes=<have>-` (200-on-resume ⇒ range
+    ignored ⇒ restart buffer), bounded only against *no-progress* stalls
+    (RESUME_MAX_STALLS=5; progress resets). server 352 (+2 blob range tests),
+    cargo 62, tsc clean. relay.md follow-ups updated (ranged = built).
+  - **Remaining v8 spec (larger, phase 3/5/6):** (3) voice under v8
     (device-token auth, multipath ring). (4) content-free push (D7). (5) KT
     inclusion proofs / auditor (phase 6). (6) D12 legacy→v8 cutover. NOTE:
     best-effort caveats as before; unsigned commits (1Password) — re-sign via

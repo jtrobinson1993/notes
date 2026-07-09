@@ -399,6 +399,55 @@ export function relayRoutes(
 
     const blobRate = { rateLimit: { max: config.rateLimitMax, timeWindow: '1 minute' } };
 
+    // Serve a blob file with optional HTTP Range support — resumable / ranged
+    // transfer for large media (D6 follow-up; first cut had been whole-blob
+    // only). A download interrupted at byte N is resumed with `Range: bytes=N-`,
+    // which we answer with 206 + the remaining bytes; a malformed or
+    // unsatisfiable range gets 416. The relay only ever holds ciphertext, so
+    // range serving leaks nothing beyond the already-known blob size.
+    const sendBlobFile = async (
+      reply: FastifyReply,
+      path: string,
+      rangeHeader: string | string[] | undefined,
+    ): Promise<unknown> => {
+      const { size } = await stat(path);
+      reply.header('content-type', 'application/octet-stream');
+      reply.header('accept-ranges', 'bytes');
+      reply.header('cache-control', 'private, max-age=31536000, immutable');
+
+      const raw = Array.isArray(rangeHeader) ? rangeHeader[0] : rangeHeader;
+      if (!raw) {
+        reply.header('content-length', size);
+        return reply.send(createReadStream(path));
+      }
+      const unsatisfiable = (): unknown => {
+        reply.header('content-type', 'application/json; charset=utf-8');
+        reply.header('content-range', `bytes */${size}`);
+        return reply.code(416).send({ error: 'range not satisfiable' });
+      };
+      // Single range only: "bytes=start-end", "bytes=start-", or "bytes=-suffix".
+      const m = /^bytes=(\d*)-(\d*)$/.exec(raw.trim());
+      if (!m) return unsatisfiable();
+      const [, startStr, endStr] = m;
+      let start: number;
+      let end: number;
+      if (startStr === '' && endStr === '') return unsatisfiable();
+      if (startStr === '') {
+        const n = Number(endStr); // suffix: last N bytes
+        if (n === 0) return unsatisfiable();
+        start = Math.max(0, size - n);
+        end = size - 1;
+      } else {
+        start = Number(startStr);
+        end = endStr === '' ? size - 1 : Math.min(Number(endStr), size - 1);
+      }
+      if (start > end || start >= size) return unsatisfiable();
+      reply.code(206);
+      reply.header('content-range', `bytes ${start}-${end}/${size}`);
+      reply.header('content-length', end - start + 1);
+      return reply.send(createReadStream(path, { start, end }));
+    };
+
     // Upload (delivery-token capability, NOT device-authed). Credentials ride
     // in headers since the body is the raw ciphertext. Uniform 401 for a bad
     // handle/token (no enumeration), matching mailbox/send.
@@ -444,11 +493,7 @@ export function relayRoutes(
         return reply.code(404).send({ error: 'not found' });
       }
       try {
-        const info = await stat(path);
-        reply.header('content-type', 'application/octet-stream');
-        reply.header('content-length', info.size);
-        reply.header('cache-control', 'private, max-age=31536000, immutable');
-        return reply.send(createReadStream(path));
+        return await sendBlobFile(reply, path, request.headers.range);
       } catch {
         return reply.code(404).send({ error: 'not found' });
       }
@@ -516,11 +561,7 @@ export function relayRoutes(
         return reply.code(404).send({ error: 'not found' });
       }
       try {
-        const info = await stat(path);
-        reply.header('content-type', 'application/octet-stream');
-        reply.header('content-length', info.size);
-        reply.header('cache-control', 'private, max-age=31536000, immutable');
-        return reply.send(createReadStream(path));
+        return await sendBlobFile(reply, path, request.headers.range);
       } catch {
         return reply.code(404).send({ error: 'not found' });
       }
