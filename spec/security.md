@@ -121,7 +121,9 @@ encrypted synced blob, like tag colors); display names (distributed E2E to
 friends); sender identity (sealed-sender). What's structurally visible to the
 routing/storing server and **not** worth hand-rolling around: the social graph /
 conversation membership, message timing and size, and the friend-code → account
-lookup. Hiding those needs mixnets / PIR / enclaves — out of scope.
+lookup. Hiding those needs mixnets / PIR / enclaves — out of scope. (**v8's
+relay realizes several of these "encrypt later" wins** and shrinks the retained
+set — see "v8 relay — retention & metadata posture" below.)
 
 ## Untrusted server vs. malicious host (the served-code limit)
 
@@ -157,3 +159,34 @@ the published build), **Subresource Integrity / pinned reproducible builds**, an
 the **PWA cache** (an installed client resists per-session swapping until it
 updates). A **signed native / desktop client** is the strongest answer and is
 out of scope today.
+
+## v8 relay — retention & metadata posture (design)
+
+v8 replaces the content-storing server with a **zero-at-rest relay**: it holds
+ciphertext only until a device acks delivery and never learns message senders
+(sealed-sender, D6). The authoritative, exhaustive list of what it persists is
+the state inventory in [relay.md](relay.md) — nothing may be added there without
+updating this section too. In summary:
+
+- **Durable, and why it's safe:** the key directory + KT log (public keys only),
+  device *public* keys, **delivery-token verifiers** (`hash(token)`, never the
+  tokens), signed group-state records, invites (token *hashes*), and **escrow
+  blobs** — MK wrapped under password/recovery secrets the relay never sees, the
+  same "can't unwrap MK" property as device linking above (the domain-separated
+  fetch auth-key can't unwrap the payload, D15).
+- **Transient:** per-device mailbox envelopes (opaque; deleted on ack, ~30-day
+  TTL) and attachment blob chunks (deleted when all recipients ack, TTL-capped).
+- **Never stored:** plaintext or post-ack ciphertext, **sender identity on any
+  envelope**, the friendship graph (verifiers are per-recipient, not per-edge),
+  profile contents, read state, and raw tokens.
+
+**Improvements over the v1–v7 server** (realizing the "encrypt later" wins
+above): sender identity is now hidden (sealed-sender), content is not retained
+after delivery, and read state never reaches the relay. **What remains
+structurally visible** to a curious/compromised relay operator: message *timing
+and size*; group membership (the relay fans out per the signed group-state
+record); a recipient's *device count*; and — because delivery rides plain HTTPS
+— the **sender's IP** at send time, a network-position correlate of the social
+graph that sealed-sender does *not* erase (mitigated only by the operator not
+logging, or users fronting with a VPN/Tor — not by protocol). Hiding those needs
+mixnets / PIR / enclaves — out of scope, as above.
