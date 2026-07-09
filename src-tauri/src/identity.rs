@@ -44,6 +44,24 @@ pub fn derive_relay_identity(mk: &[u8; 32], relay_fp: &str) -> Result<RelayIdent
     })
 }
 
+/// Deterministic 1:1 conversation id for a DM between two per-relay identities,
+/// derived from the pair (order-independent) so BOTH sides compute the same id
+/// with no exchange. Spoof-proof: a message from a given sender always maps to
+/// *my DM with that sender* — the recipient recomputes this from `(me, sender)`
+/// rather than trusting a `conversation_id` in the payload.
+pub fn dm_conversation_id(a: &[u8], b: &[u8]) -> String {
+    use base64::Engine as _;
+    use sha2::Digest;
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    let mut h = Sha256::new();
+    h.update(lo);
+    h.update(hi);
+    format!(
+        "dm:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(h.finalize())
+    )
+}
+
 fn derive_seed(
     mk: &[u8; 32],
     domain: &[u8],
@@ -69,6 +87,18 @@ mod tests {
         let a2 = derive_relay_identity(&MK, "relay-a-fp").unwrap();
         assert_eq!(a1.signing_public(), a2.signing_public());
         assert_eq!(a1.sealing_public(), a2.sealing_public());
+    }
+
+    #[test]
+    fn dm_conversation_id_is_order_independent_and_distinct() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let carol = [3u8; 32];
+        // Both participants derive the same id regardless of argument order.
+        assert_eq!(dm_conversation_id(&alice, &bob), dm_conversation_id(&bob, &alice));
+        assert!(dm_conversation_id(&alice, &bob).starts_with("dm:"));
+        // A different pair → a different conversation.
+        assert_ne!(dm_conversation_id(&alice, &bob), dm_conversation_id(&alice, &carol));
     }
 
     #[test]

@@ -146,22 +146,18 @@ export function relayRegisterVerifier(): Promise<string> {
 }
 
 /**
- * Send a v8 text message to a friend (D6/D11): the core composes + seals the
+ * Send a v8 text message to a friend (D6/D11): the core derives the DM
+ * conversation id (both sides compute the same one), composes + seals the
  * payload, delivers it via the friend's delivery token, and tees the same id
  * into the local log so it renders immediately. Resolves with the message id.
  */
-export function relaySendMessage(
-  contactId: string,
-  conversationId: string,
-  channelId: string | null,
-  content: string,
-): Promise<string> {
-  return invoke<string>('relay_send_message', {
-    contactId,
-    conversationId,
-    channelId,
-    content,
-  });
+export function relaySendMessage(contactId: string, content: string): Promise<string> {
+  return invoke<string>('relay_send_message', { contactId, content });
+}
+
+/** The deterministic v8 DM conversation id for a friend (both sides agree). */
+export function dmConversationId(contactId: string): Promise<string> {
+  return invoke<string>('dm_conversation_id_for', { contactId });
 }
 
 /** Sealed send: the recipient's delivery token is the only credential. */

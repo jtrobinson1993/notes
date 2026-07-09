@@ -258,7 +258,21 @@ async fn relay_mailbox_drain(
     for row in rows {
         match message::disposition(envelope::open(&ident.sealing, &row.envelope), row.relay_ts) {
             message::Disposition::Ingest(m) => {
-                imports.push(*m);
+                // DM (v8): route by the sender, not the payload's claimed
+                // conversation_id — a message from a given sender always lands in
+                // *my DM with that sender* (spoof-proof). Groups (payload id +
+                // membership check) come with group messaging.
+                let mut m = *m;
+                if let Some(sender_b64) = m.sender_contact_id.clone() {
+                    use base64::Engine as _;
+                    if let Ok(sender_raw) =
+                        base64::engine::general_purpose::STANDARD.decode(&sender_b64)
+                    {
+                        m.conversation_id =
+                            identity::dm_conversation_id(&my_identity_pub, &sender_raw);
+                    }
+                }
+                imports.push(m);
                 ack_ids.push(row.queue_id);
             }
             message::Disposition::Friend(f) => {
@@ -295,6 +309,12 @@ async fn relay_mailbox_drain(
                     })
                     .map_err(|e| e.to_string())?;
             }
+        }
+        // Messages FK to a conversation row — ensure each exists first (v8 DMs).
+        for m in &imports {
+            store
+                .ensure_conversation(&m.conversation_id, "dm", &relay_fp)
+                .map_err(|e| e.to_string())?;
         }
         (
             store.import_messages(imports).map_err(|e| e.to_string())?,
@@ -413,6 +433,30 @@ fn friend_addressing(
         .map_err(|e| e.to_string())
 }
 
+/// The deterministic v8 DM conversation id for a friend (both sides compute the
+/// same one), ensuring the local conversation row exists so it can be opened.
+#[tauri::command]
+fn dm_conversation_id_for(
+    contact_id: String,
+    vault: VaultState,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<String, String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let vault = vault.lock().unwrap();
+    let mk = vault.mk().map_err(|e| e.to_string())?;
+    let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+    let store = vault.store().map_err(|e| e.to_string())?;
+    let addressing = store
+        .friend_addressing(&contact_id, &relay_fp)
+        .map_err(|e| e.to_string())?
+        .ok_or("not a friend on this relay")?;
+    let conv_id = identity::dm_conversation_id(&ident.signing_public(), &addressing.identity_pub);
+    store
+        .ensure_conversation(&conv_id, "dm", &relay_fp)
+        .map_err(|e| e.to_string())?;
+    Ok(conv_id)
+}
+
 /// Unfriend, local half (D4b): drop the friend flag + their addressing so we can
 /// no longer reach them. The caller also rotates the profile key + re-issues
 /// tokens to remaining friends (a follow-up flow).
@@ -437,16 +481,15 @@ fn friend_remove(
 #[tauri::command]
 async fn relay_send_message(
     contact_id: String,
-    conversation_id: String,
-    channel_id: Option<String>,
     content: String,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<String, String> {
     use base64::Engine as _;
     let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
-    // Identity (to seal) + the friend's addressing, before any await.
-    let (ident, addressing) = {
+    // Identity (to seal), the friend's addressing, and the derived DM
+    // conversation id (both sides compute the same one) — before any await.
+    let (ident, addressing, conversation_id) = {
         let vault = vault.lock().unwrap();
         let mk = vault.mk().map_err(|e| e.to_string())?;
         let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
@@ -455,7 +498,12 @@ async fn relay_send_message(
             .friend_addressing(&contact_id, &relay_fp)
             .map_err(|e| e.to_string())?
             .ok_or("not a friend on this relay")?;
-        (ident, addressing)
+        let conversation_id =
+            identity::dm_conversation_id(&ident.signing_public(), &addressing.identity_pub);
+        store
+            .ensure_conversation(&conversation_id, "dm", &relay_fp)
+            .map_err(|e| e.to_string())?;
+        (ident, addressing, conversation_id)
     };
 
     let msg_id = {
@@ -467,7 +515,7 @@ async fn relay_send_message(
     let payload = message::ChatMessagePayload::new_text(
         msg_id.clone(),
         conversation_id,
-        channel_id,
+        None,
         content,
         sent_at,
     );
@@ -798,6 +846,7 @@ pub fn run() {
             friends_list,
             friend_addressing,
             friend_remove,
+            dm_conversation_id_for,
             relay_directory_publish,
             relay_register_verifier,
             relay_send,

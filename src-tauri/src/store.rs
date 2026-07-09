@@ -466,6 +466,21 @@ impl Store {
         Ok(())
     }
 
+    /// Ensure a conversation row exists (idempotent), so messages — which FK to
+    /// it — can be inserted. For a v8 DM the id is `identity::dm_conversation_id`.
+    pub fn ensure_conversation(
+        &self,
+        id: &str,
+        conv_type: &str,
+        relay_id: &str,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO conversations(id, type, relay_id) VALUES (?1, ?2, ?3)",
+            (id, conv_type, relay_id),
+        )?;
+        Ok(())
+    }
+
     /// Record (or refresh) a v8 friend's per-relay addressing (D4b/D6): the
     /// contact is marked a friend and gains everything needed to reach them —
     /// handle, identity key, sealing key, and delivery token. Idempotent; the
