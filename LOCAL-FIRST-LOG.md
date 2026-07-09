@@ -762,12 +762,18 @@ Playwright version (currently 1.60.0).
     server real-vs-pseudo params (no enumeration), rust
     **auth-key-matches-stored-hash** (fetch derivation reproduces create-time
     key exactly). cargo 30/30, server 320, tc clean.
-  - **Next iterations (phase 3):** (1) restore UI in NativeGate (wire
-    `vaultRestoreFromEscrow` into UI-3's "existing user, new device" path —
-    "Use recovery code" is really the escrow path now); (2) WS live delivery
-    for device queues; (3) security.md relay-state inventory fold-in;
-    (4) phase-3 review vs relay.md (still unbuilt: transient blob store,
-    group-state record, invite redeem, push registration). Desk queue
+  - **DONE (iter 29) — restore-on-new-device UI (UI-3).** NativeGate `setup`
+    state now branches new-vault vs restore: "Already have an account? Restore
+    on this device" collects relay address + handle + account password →
+    `vaultRestoreFromEscrow` → `markUnlocked`. Copy is explicit that restore
+    rebuilds *identity only* (history via pairing/backup). Tests (web 437):
+    happy path opens gate with right args, missing-field guard short-circuits
+    before the core, failed restore surfaces error + keeps gate closed. tc
+    clean.
+  - **Next iterations (phase 3):** (1) WS live delivery for device queues
+    (mailbox is poll-only today); (2) security.md relay-state inventory
+    fold-in; (3) phase-3 review vs relay.md (still unbuilt: transient blob
+    store, group-state record, invite redeem, push registration). Desk queue
     unchanged (mobile init, tauri smoke, biometric ACLs).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
