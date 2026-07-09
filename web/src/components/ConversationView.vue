@@ -321,7 +321,8 @@ const rows = computed<MessageRow[]>(() => {
     // A system notice renders on its own and also breaks the avatar grouping of
     // the messages around it.
     const isStart = !prev || prev.senderId !== m.senderId || !!prev.system || m.createdAt - prev.createdAt > GROUP_GAP_MS;
-    out.push({ key: String(m.seq), msg: m, senderId: m.senderId, name: memberName(m.senderId), isStart });
+    // Stable render key: the v8 message id when present, else legacy seq.
+    out.push({ key: m.key ?? String(m.seq), msg: m, senderId: m.senderId, name: memberName(m.senderId), isStart });
     prev = m;
   }
   return out;

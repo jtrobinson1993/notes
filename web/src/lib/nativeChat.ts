@@ -72,6 +72,11 @@ export function rowToView(row: MessageRow): ChatMessageView {
     replyTo: row.reply_ref_json ? JSON.parse(row.reply_ref_json) : undefined,
     linkPreview: extras.linkPreview ?? undefined,
     system: extras.system ?? undefined,
+    // v8 relay-native identity/order (D11): the local-log row id is globally
+    // unique and `relay_ts` is the ordering stamp — so v8 rows (whose id has no
+    // legacy `seq`) render in the right place and dedup by id.
+    key: row.id,
+    sortKey: row.relay_ts,
   };
 }
 

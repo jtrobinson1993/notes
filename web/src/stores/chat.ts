@@ -54,6 +54,32 @@ export interface ChatMessageView extends ChatMessage {
   linkPreview?: LinkPreview;
   /** an inline system notice (member joined, …) rendered instead of a bubble */
   system?: SystemEvent;
+  /** v8 relay-native identity/order (D11): a globally-unique message id and the
+   *  relay delivery stamp. Absent for legacy WS messages, which fall back to
+   *  `(channelId, seq)` identity and `seq` ordering. During the cutover both
+   *  coexist; the local log is uniformly `(relay_ts, id)`-ordered. */
+  key?: string;
+  sortKey?: number;
+}
+
+/** Stable dedup identity: the v8 message id, else legacy `(channelId, seq)`. */
+function messageKey(v: ChatMessageView): string {
+  return v.key ?? `${v.channelId}:${v.seq}`;
+}
+/** Sort position: the relay delivery stamp (D11), else legacy `seq`. */
+function messageSort(v: ChatMessageView): number {
+  return v.sortKey ?? v.seq;
+}
+
+/** Dedup by stable identity + order by `(sortKey, key)` (D11 relay-native, with
+ *  legacy `seq` as the fallback so WS messages keep their exact prior order).
+ *  Exported for tests. */
+export function orderMessages(views: ChatMessageView[]): ChatMessageView[] {
+  const byKey = new Map<string, ChatMessageView>();
+  for (const v of views) byKey.set(messageKey(v), v);
+  return [...byKey.values()].sort(
+    (a, b) => messageSort(a) - messageSort(b) || (messageKey(a) < messageKey(b) ? -1 : 1),
+  );
 }
 
 /** A reaction with its decrypted emoji (null if it couldn't be decrypted). */
@@ -199,12 +225,9 @@ export const useChatStore = defineStore('chat', () => {
    *  deduping. Keyed by channel id (== conversation id for the general channel). */
   function mergeMessages(channelId: string, views: ChatMessageView[]): void {
     const existing = messages.value[channelId] ?? [];
-    const bySeq = new Map<number, ChatMessageView>();
-    for (const v of existing) bySeq.set(v.seq, v);
-    for (const v of views) bySeq.set(v.seq, v);
     messages.value = {
       ...messages.value,
-      [channelId]: [...bySeq.values()].sort((a, b) => a.seq - b.seq),
+      [channelId]: orderMessages([...existing, ...views]),
     };
   }
 

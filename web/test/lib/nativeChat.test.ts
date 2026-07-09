@@ -53,6 +53,9 @@ describe('viewToRow / rowToView', () => {
     expect(back.gif).toMatchObject({ id: 'g' });
     expect(back.system).toMatchObject({ kind: 'member-added' });
     expect(back.replyTo).toMatchObject({ seq: 3 });
+    // v8 relay-native identity/order: id → key, relay_ts → sortKey.
+    expect(back.key).toBe('legacy:c1:7');
+    expect(back.sortKey).toBe(row.relay_ts);
   });
 
   it('renders deleted rows as text: null (tombstone placeholder)', () => {
