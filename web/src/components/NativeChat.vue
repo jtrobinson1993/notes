@@ -9,6 +9,8 @@ import IconAdd from '~icons/mynaui/message-plus';
 import IconSend from '~icons/mynaui/send-solid';
 import IconBack from '~icons/mynaui/chevron-left';
 import IconUsers from '~icons/mynaui/users';
+import IconPaperclip from '~icons/mynaui/paperclip';
+import NativeAttachment from './NativeAttachment.vue';
 import { listDms, openDm, sendDm, type DmSummary } from '../lib/nativeDm';
 import {
   addGroupMember,
@@ -20,6 +22,7 @@ import {
 } from '../lib/nativeGroup';
 import { createInvite, redeemInvite } from '../lib/nativeFriends';
 import {
+  attachmentUpload,
   conversationReactions,
   relayDeleteMessage,
   relayEditMessage,
@@ -27,6 +30,7 @@ import {
   relayGroupDeleteMessage,
   relayGroupEditMessage,
   relayGroupReact,
+  type MessageAttachment,
   type ReactionRow,
 } from '../lib/native';
 import { onMailIngested } from '../lib/nativeRelay';
@@ -42,6 +46,7 @@ const active = ref<Conv | null>(null);
 const messages = ref<ChatMessageView[]>([]);
 const reactions = ref<ReactionRow[]>([]);
 const draft = ref('');
+const pendingFiles = ref<File[]>([]);
 const panel = ref<'list' | 'add'>('list');
 const createdInvite = ref<string | null>(null);
 const redeemText = ref('');
@@ -89,14 +94,36 @@ async function open(conv: Conv): Promise<void> {
   await refreshLists(); // opening marked it read → clear its unread badge
 }
 
+/** A message's attachments (the payload's attachments_json, parsed in rowToView). */
+function msgAttachments(m: ChatMessageView): MessageAttachment[] {
+  return (m.attachments ?? []) as unknown as MessageAttachment[];
+}
+
+function onFilePick(e: Event): void {
+  const files = (e.target as HTMLInputElement).files;
+  if (files) pendingFiles.value = [...pendingFiles.value, ...files];
+  (e.target as HTMLInputElement).value = ''; // allow re-picking the same file
+}
+
 async function send(): Promise<void> {
   const text = draft.value.trim();
-  if (!text || !active.value || busy.value) return;
+  const a = active.value;
+  if ((!text && !pendingFiles.value.length) || !a || busy.value) return;
   busy.value = true;
   try {
-    if (active.value.kind === 'dm') await sendDm(active.value.id, text);
-    else await sendGroup(active.value.id, text);
+    let attachmentsJson: string | undefined;
+    if (pendingFiles.value.length) {
+      const refs: MessageAttachment[] = [];
+      for (const f of pendingFiles.value) {
+        const bytes = Array.from(new Uint8Array(await f.arrayBuffer()));
+        refs.push(await attachmentUpload(a.kind, a.id, bytes, f.type || 'application/octet-stream', f.name));
+      }
+      attachmentsJson = JSON.stringify(refs);
+    }
+    if (a.kind === 'dm') await sendDm(a.id, text, attachmentsJson);
+    else await sendGroup(a.id, text, attachmentsJson);
     draft.value = '';
+    pendingFiles.value = [];
     await loadMessages();
   } catch (e) {
     error.value = String(e);
@@ -334,14 +361,37 @@ onUnmounted(() => unsub?.());
               <span v-else class="max-w-[75%] break-words rounded-2xl px-3 py-1.5 text-sm" :class="m.senderId === 'self' ? 'bg-blue-600 text-white' : 'bg-neutral-500/15'">{{ m.text }}<span v-if="m.editedAt" class="ml-1 text-[10px] opacity-60">(edited)</span></span>
             </template>
           </div>
+          <div
+            v-if="msgAttachments(m).length"
+            class="mt-1 flex flex-col gap-1"
+            :class="m.senderId === 'self' ? 'items-end' : 'items-start'"
+          >
+            <NativeAttachment
+              v-for="(a, i) in msgAttachments(m)"
+              :key="a.blobId + i"
+              :attachment="a"
+              :kind="active?.kind ?? 'dm'"
+              :target-id="active?.id ?? ''"
+            />
+          </div>
           <div v-if="groupedReactions(m.key).length" class="mt-0.5 flex gap-1">
             <button v-for="rg in groupedReactions(m.key)" :key="rg.emoji" data-testid="reaction-chip" class="rounded-full px-1.5 text-xs" :class="rg.mine ? 'bg-blue-600/25' : 'bg-neutral-500/15'" @click="toggleReaction(m.key!, rg.emoji)">{{ rg.emoji }} {{ rg.count }}</button>
           </div>
         </li>
       </ul>
+      <div v-if="pendingFiles.length" class="flex flex-wrap gap-1 border-t border-neutral-500/20 px-3 pt-2">
+        <span v-for="(f, i) in pendingFiles" :key="i" data-testid="pending-file" class="flex items-center gap-1 rounded bg-neutral-500/15 px-2 py-0.5 text-xs">
+          <span class="max-w-[140px] truncate">{{ f.name }}</span>
+          <button class="opacity-60" @click="pendingFiles.splice(i, 1)">✕</button>
+        </span>
+      </div>
       <form data-testid="composer" class="flex items-center gap-2 border-t border-neutral-500/20 p-3" @submit.prevent="send">
+        <label class="cursor-pointer rounded-full p-2 hover:bg-neutral-500/10" title="Attach a file">
+          <IconPaperclip class="h-5 w-5 opacity-70" />
+          <input type="file" multiple data-testid="file-input" class="hidden" @change="onFilePick" />
+        </label>
         <input v-model="draft" data-testid="draft" placeholder="Message" class="flex-1 rounded-full border border-neutral-500/30 bg-transparent px-4 py-2 text-sm" />
-        <button type="submit" data-testid="send" :disabled="busy || !draft.trim()" class="rounded-full bg-blue-600 p-2 text-white disabled:opacity-50">
+        <button type="submit" data-testid="send" :disabled="busy || (!draft.trim() && !pendingFiles.length)" class="rounded-full bg-blue-600 p-2 text-white disabled:opacity-50">
           <IconSend class="h-5 w-5" />
         </button>
       </form>

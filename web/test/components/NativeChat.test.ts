@@ -34,6 +34,8 @@ const nativeMod = vi.hoisted(() => ({
   relayGroupEditMessage: vi.fn(),
   relayGroupReact: vi.fn(),
   conversationReactions: vi.fn().mockResolvedValue([]),
+  attachmentUpload: vi.fn(),
+  attachmentFetch: vi.fn().mockResolvedValue([1, 2, 3]),
 }));
 vi.mock('../../src/lib/native', () => nativeMod);
 
@@ -91,7 +93,7 @@ describe('NativeChat', () => {
     await w.find('[data-testid="draft"]').setValue('hello');
     await w.find('[data-testid="composer"]').trigger('submit');
     await flushPromises();
-    expect(dm.sendDm).toHaveBeenCalledWith('idA', 'hello');
+    expect(dm.sendDm).toHaveBeenCalledWith('idA', 'hello', undefined);
     expect((w.find('[data-testid="draft"]').element as HTMLInputElement).value).toBe('');
   });
 
@@ -127,6 +129,25 @@ describe('NativeChat', () => {
     const chip = w.find('[data-testid="reaction-chip"]');
     expect(chip.text()).toContain('👍');
     expect(chip.text()).toContain('1');
+  });
+
+  it('renders a non-image attachment as a download chip', async () => {
+    dm.openDm.mockResolvedValue({
+      conversationId: 'dm:A',
+      messages: [
+        view({
+          key: 'm1',
+          senderId: 'idA',
+          text: '',
+          attachments: [{ blobId: 'b1', key: 'k', iv: 'v', mime: 'application/pdf', name: 'doc.pdf', size: 9 }],
+        }),
+      ],
+    });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="attach-download"]').text()).toContain('doc.pdf');
   });
 
   it('shows an unread badge from the DM list', async () => {
@@ -201,7 +222,7 @@ describe('NativeChat', () => {
     await w.find('[data-testid="draft"]').setValue('yo');
     await w.find('[data-testid="composer"]').trigger('submit');
     await flushPromises();
-    expect(grp.sendGroup).toHaveBeenCalledWith('grp:x', 'yo');
+    expect(grp.sendGroup).toHaveBeenCalledWith('grp:x', 'yo', undefined);
   });
 
   it('reacts to a group message via the group fan-out', async () => {
