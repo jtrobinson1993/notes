@@ -1002,17 +1002,26 @@ Playwright version (currently 1.60.0).
     warning (`encode` now used). Tests: cargo 48 (+1) new_text↔tee agree; web 463.
     **v8 send↔drain loop closed core-side** (send → relay → recipient drain →
     live render).
-  - **Next (make it reachable from the UI):** (a) **v8 DM conversation identity**
-    — create a local `conversations` row per friend (id = deterministic from the
-    two identities, or a uuid stored in `contact_relays`), so there's a
-    conversation to open + a `conversation_id` for `relay_send_message`. (b) wire
-    the chat store native path: `openDm(friend)` → ensure conv row; `sendMessage`
-    native branch → `relaySendMessage(contact_id, conv, chan, text)` +
-    `reloadActiveFromLog`. (c) friends UI (invite create/redeem, friends list →
-    open DM). Then v8 DM messaging is usable end-to-end from the UI.
-    Chat-cutover steps 3–5 largely fall out of this. NOTE: reciprocal
-    friend-confirm send is best-effort in the drain; dropped → re-invite
-    recovers (pending-reciprocation record = later).
+  - **DONE (iter 49) — v8 DM conversation identity (D11), spoof-proof.**
+    `identity::dm_conversation_id(a,b)` = order-independent sha256 of the pair →
+    `"dm:<b64url>"` (both sides compute the same, no exchange). `ensure_conversation`
+    (messages FK to it, `foreign_keys=ON`). `relay_send_message` derives the id +
+    ensures the row (dropped conv/channel params). **Drain routes inbound by the
+    VERIFIED sender**, not the payload's claimed conversation_id → a message
+    always lands in *my DM with that sender* (no cross-DM injection). Groups
+    (payload id + membership) come later. `dm_conversation_id_for` IPC +
+    native.ts (`relaySendMessage(contactId, content)`, `dmConversationId`).
+    Tests: cargo 49 (+1), web 463. **v8 DM messaging is fully functional
+    core-side** (both directions, correct routing, live render wiring).
+  - **Next (UI reachability):** (a) wire the chat store native path — `openDm`
+    (native) → `dmConversationId(contact)` → set active + `loadHistory`;
+    `sendMessage` native branch → `relaySendMessage(contactId, text)` +
+    `reloadActiveFromLog`; the friend↔conversation mapping (contact_id ↔ dm
+    conv). (b) **friends UI** — invite create (`createFriendInvite` → show
+    QR/link), redeem (`redeemFriendInvite`), friends list (`friendsList`) → open
+    DM. (c) conversation-list population from `friendsList`/local convs.
+    Chat-cutover steps 3–5 largely fall out. NOTE: reciprocal friend-confirm is
+    best-effort in the drain; dropped → re-invite recovers.
   - **Other open threads:** OPEN FOLLOW-UPS: live WS stop signal;
     sender→contact interim; blob chunked/resumable + group per-member-ack GC.
     Desk queue: mobile init, tauri smoke, biometric ACLs. iters 31–42 committed
