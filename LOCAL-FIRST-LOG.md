@@ -1273,15 +1273,31 @@ Playwright version (currently 1.60.0).
     peer-leave, wrong-callId ignore). web (voiceCall 9), tsc clean. NOTE: the
     generic `signal` relay capability (server + voiceSignal IPC) stays in place
     but the engine no longer uses it.
-  - **Remaining v8 spec:** voice follow-ups (all SFU now): (a) **device-token
-    auth on the mediasoup endpoints** — v6 voice.ts transport/produce/consume are
-    session-cookie (`requireAuth`) authed; v8 native needs a device-token path
-    (dedicated v8 voice REST, per the earlier dedicated-socket decision, or
-    dual-auth). (b) **mediasoup-client CallMedia impl** (webview) behind the
-    `join(callId)`/`close()` interface + frame E2EE via insertable streams.
-    (c) **call UI** — incoming-call panel from DrainReport.calls →
-    VoiceCall.onIncomingRing; wire onVoiceFrame→onFrame. (d) D4c cross-relay
-    fan-out + call-id dedup (deliberately deferred). Then:
+  - **DONE (iter 84) — voice control-plane wiring (native).** New
+    `web/src/lib/nativeVoiceCall.ts`: `createNativeCall(media, onState?, now?)`
+    builds a `VoiceCall` with CallEffects = the voice IPCs (placeRing→
+    relayCallOffer, join/leave→voiceJoin/voiceLeave) and, on `start()`,
+    subscribes `onVoiceFrame`→`call.onFrame` + `onMailIngested`→ per fresh
+    `report.calls` ring → `call.onIncomingRing` (staleness `RING_TTL_MS`=60s,
+    injectable `now`). `stop()` unsubscribes both + stops signaling. Media stays
+    injected (mediasoup impl later). 5 tests (subscribe/unsub, place-call IPC
+    path, fresh-ring→ring→accept-joins-SFU, stale-ring dropped, peer-leave ends).
+    web 506, tsc clean.
+  - **DESIGN NOTE (v8 SFU auth ≠ v6):** v6 `voice.ts` authorizes rooms by the
+    **server-side social graph** (`resolveRoom`→conversation/channel membership +
+    friendship) — incompatible with v8's graph-hiding relay. The v8 SFU must
+    authorize by **device-token + call-id capability** (like the voiceSignal
+    socket), no graph lookups. So the v8 SFU server is a **parallel module**
+    (reusing the mediasoup worker/router/transport machinery but capability-
+    authed, room = call id), NOT a tweak to voice.ts.
+  - **Remaining v8 spec:** voice follow-ups (all SFU): (a) **v8 SFU server**
+    (parallel module: device-token + call-id-capability room auth, mediasoup
+    transport/produce/consume, member cap) — large, mediasoup-worker-backed.
+    (b) **mediasoup-client CallMedia impl** (webview) behind `join(callId)`/
+    `close()` + frame E2EE via insertable streams. (c) **call UI** — incoming-
+    call panel + in-call controls, driven by createNativeCall (state via
+    onState). (d) D4c cross-relay fan-out + call-id dedup (deliberately deferred).
+    Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).
