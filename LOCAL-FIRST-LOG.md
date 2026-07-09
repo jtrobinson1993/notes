@@ -1062,13 +1062,17 @@ Playwright version (currently 1.60.0).
     upserted in the drain's friend branch — a send/open before any friend-accept
     drain hit a 787. Now upserted before every `ensure_conversation`. cargo 52,
     web 479.
-  - **Remaining spec work (continuing):** (1) reactions for v8 DMs; (2) read
-    *receipts* (networked — show the peer you read); (3) group messaging
-    (send/fan-out on D14 + group blobs); (4) blob chunked/resumable; (5) voice
-    under v8; (6) KT inclusion proofs / auditor (phase 6); (7) README/spec
-    currency. NOTE: reciprocal friend-confirm best-effort; edits/deletes of a
-    not-yet-seen message dropped (FIFO makes rare); live WS task no stop signal;
-    unsigned commits — re-sign later.
+  - **DONE (iter 57) — v8 DM reactions, backend (D11).** Migration v9
+    (`message_reactions`), add/remove/list accessors; `KIND_REACT` + `ReactData`
+    disposition (reactor = verified sender); drain applies add/remove;
+    `relay_react` + `conversation_reactions` IPC + native.ts. cargo 54, web 479.
+    **UI (chips + picker) next.**
+  - **Remaining spec work (continuing):** (1) reactions **UI** (chips grouped by
+    emoji, quick-react, mine highlighted); (2) group messaging (send/fan-out on
+    D14 + group blobs); (3) blob chunked/resumable; (4) voice under v8; (5) KT
+    inclusion proofs / auditor (phase 6); (6) README/spec currency. NOTE:
+    reciprocal friend-confirm best-effort; edits/deletes of a not-yet-seen
+    message dropped (FIFO rare); live WS task no stop signal; unsigned commits.
   - **v8 MESSAGING CORE COMPLETE** (iters 42–50): unified msg identity/order,
     live-render wiring, friend store + full invite→mutual-friend handshake,
     outbound send, spoof-proof DM identity, native DM API. Remaining v8 work is
