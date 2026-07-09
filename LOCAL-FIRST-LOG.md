@@ -918,17 +918,30 @@ Playwright version (currently 1.60.0).
     agree), `buildInvite`/`parseInvite` (versioned self-describing `{relayUrl,
     relayFp, token, handle, identityPub, sealingPub}`; inviter keys pinned in
     the invite = TOFU vs a key-swapping relay). Tests (web 456, +7).
-  - **Next iterations — mostly phase-4 / legacy-touching (need direction):**
-    (1) invite network layer: Rust IPC `relay_invite_mint`/`relay_invite_redeem`
-    + native.ts wrappers + `relay_my_directory_keys` getter (my handle/keys, to
-    assemble/seal) — thin transport, then the friend-accept seal + drain
-    handling. (2) **chat-store cutover** (order by `(relay_ts,id)`, live render
-    via `onIngested`) = keystone for usable v8 messaging; reworks live
-    legacy-seq chat (RISK — recommend a user check before starting). (3) friends
-    cutover / outbound send (gated on delivery tokens). OPEN FOLLOW-UPS: live WS
-    stop signal; sender→contact interim; blob chunked/resumable + group
+  - **DONE (iter 41) — friend invite network layer (D4b, additive).** Rust:
+    `RelayClient::invite_mint` (device-authed) + `invite_redeem` (**capability
+    only, no device token** → relay can't link redeemer↔inviter). IPC
+    `relay_invite_mint`/`relay_invite_redeem`/`relay_my_directory_keys` (derive
+    my per-relay id+sealing pubkeys). Web: native.ts wrappers +
+    **`nativeInvites.ts`** orchestration — `createFriendInvite` (mint
+    hash(token) + assemble invite w/ my pinned keys), `redeemFriendInvite`
+    (seal friend-accept {handle, deliveryToken} to inviter's pinned sealing key
+    → drop via one-time capability). Tests (web 460 +4, cargo 42): end-to-end
+    token↔hash agreement, seal target/kind, malformed-invite guard.
+  - **STILL DEFERRED — legacy friends-store cutover (needs direction):**
+    recording the friend both sides, processing the inbound **`friend-accept`**
+    envelope on drain (add a kind handler in `message::disposition`/drain +
+    reciprocate my delivery token), friends UI. This is where invite-redeem
+    becomes end-to-end usable.
+  - **Next iterations (need direction — phase-4 / legacy cutovers):**
+    (1) **chat-store cutover** (order by `(relay_ts,id)`, live render via
+    `onIngested`) = keystone for usable v8 messaging; reworks live legacy-seq
+    chat (**RISK — recommend a user check before starting**). (2) friends-store
+    cutover (above). (3) outbound v8 send path (compose ChatMessagePayload →
+    seal → relay_send) — gated on friend delivery tokens. OPEN FOLLOW-UPS: live
+    WS stop signal; sender→contact interim; blob chunked/resumable + group
     per-member-ack GC. Desk queue: mobile init, tauri smoke, biometric ACLs.
-    iters 31–40 committed unsigned (1Password locked) — re-sign via `git rebase
+    iters 31–41 committed unsigned (1Password locked) — re-sign via `git rebase
     --exec 'git commit --amend --no-edit -S' 38dacc7`.
   - **NOTE — unsigned commits:** iters 31–32 (`a9460bb`, `7399261`, `fc4e143`)
     committed with `-c commit.gpgsign=false` because the 1Password op-ssh-sign
