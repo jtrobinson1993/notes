@@ -266,6 +266,7 @@ async fn relay_mailbox_drain(
     let mut deletes = Vec::new();
     let mut edits = Vec::new();
     let mut reacts = Vec::new();
+    let mut group_invites = Vec::new();
     let mut ack_ids = Vec::new();
     let mut buffered = 0usize;
     for row in rows {
@@ -332,6 +333,10 @@ async fn relay_mailbox_drain(
             }
             message::Disposition::React(r) => {
                 reacts.push(*r);
+                ack_ids.push(row.queue_id);
+            }
+            message::Disposition::GroupInvite(g) => {
+                group_invites.push(*g);
                 ack_ids.push(row.queue_id);
             }
             message::Disposition::Discard => ack_ids.push(row.queue_id),
@@ -404,6 +409,15 @@ async fn relay_mailbox_drain(
                     .remove_reaction(&r.target_id, &r.reactor_id, &r.emoji)
                     .map_err(|e| e.to_string())?;
             }
+        }
+        // Group invites (D14): a friend handed me a group key → I'm a member.
+        for g in &group_invites {
+            store
+                .upsert_group(&g.group_id, &g.group_key, g.name.as_deref())
+                .map_err(|e| e.to_string())?;
+            store
+                .ensure_conversation(&g.group_id, "group", &relay_fp)
+                .map_err(|e| e.to_string())?;
         }
         (ingested, my_handle)
     };

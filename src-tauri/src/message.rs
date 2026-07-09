@@ -31,6 +31,27 @@ pub const KIND_EDIT: &str = "edit";
 /// Add/remove a reaction. Payload `{ id, emoji, op:"add"|"remove" }`; the
 /// reactor is the verified sender (anyone may react to a message they can see).
 pub const KIND_REACT: &str = "react";
+/// A DM-sealed group invite (D14): a friend hands me a group's shared key so I
+/// can decrypt its messages. Payload `{ groupId, groupKey, name }`.
+pub const KIND_GROUP_INVITE: &str = "group-invite";
+
+/// A verified group invite: store `group_key` for `group_id` so I become a
+/// member locally.
+pub struct GroupInviteData {
+    pub group_id: String,
+    pub group_key: Vec<u8>,
+    pub name: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GroupInvitePayload {
+    #[serde(rename = "groupId")]
+    group_id: String,
+    #[serde(rename = "groupKey")]
+    group_key: String,
+    #[serde(default)]
+    name: Option<String>,
+}
 
 /// A verified reaction: add or remove `emoji` on `target_id` by `reactor_id`.
 pub struct ReactData {
@@ -250,6 +271,8 @@ pub enum Disposition {
     Edit(Box<EditData>),
     /// A verified reaction (D11): add/remove the emoji by the verified reactor.
     React(Box<ReactData>),
+    /// A verified group invite (D14): store the group key → I'm a member.
+    GroupInvite(Box<GroupInviteData>),
 }
 
 /// Decide the fate of one delivered envelope from the `open` result and its
@@ -298,6 +321,20 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
                     add: p.op == "add",
                 })),
                 _ => Disposition::Discard,
+            },
+            KIND_GROUP_INVITE => match serde_json::from_slice::<GroupInvitePayload>(&opened.payload) {
+                Ok(p) => {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(&p.group_key) {
+                        Ok(key) if key.len() == 32 => Disposition::GroupInvite(Box::new(GroupInviteData {
+                            group_id: p.group_id,
+                            group_key: key,
+                            name: p.name,
+                        })),
+                        _ => Disposition::Discard,
+                    }
+                }
+                Err(_) => Disposition::Discard,
             },
             // A known-good envelope of a kind we don't handle yet → wait for update.
             _ => Disposition::Buffer,
@@ -601,6 +638,37 @@ mod tests {
         assert!(matches!(disposition(Ok(mk("remove")), 1), Disposition::React(r) if !r.add));
         // Unknown op → discard.
         assert!(matches!(disposition(Ok(mk("nope")), 1), Disposition::Discard));
+    }
+
+    #[test]
+    fn group_invite_carries_the_group_key() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "groupId": "grp:abc", "groupKey": b64.encode([4u8; 32]), "name": "Team",
+        }))
+        .unwrap();
+        let opened = Opened {
+            kind: KIND_GROUP_INVITE.into(),
+            payload,
+            sender_identity_pub: b64.encode([1u8; 32]),
+            sent_at: 0,
+        };
+        match disposition(Ok(opened), 1) {
+            Disposition::GroupInvite(g) => {
+                assert_eq!(g.group_id, "grp:abc");
+                assert_eq!(g.group_key, vec![4u8; 32]);
+                assert_eq!(g.name.as_deref(), Some("Team"));
+            }
+            _ => panic!("expected GroupInvite"),
+        }
+        // Wrong-length key → discard.
+        let bad = serde_json::to_vec(&serde_json::json!({
+            "groupId": "g", "groupKey": b64.encode([1u8; 10]),
+        }))
+        .unwrap();
+        let opened = Opened { kind: KIND_GROUP_INVITE.into(), payload: bad, sender_identity_pub: "x".into(), sent_at: 0 };
+        assert!(matches!(disposition(Ok(opened), 1), Disposition::Discard));
     }
 
     #[test]
