@@ -1125,11 +1125,18 @@ Playwright version (currently 1.60.0).
     already handled. NativeChat routes actions by `active.kind`, un-gated for
     groups. web 487. **v8 DM + group messaging now full parity
     (send/edit/delete/react/unread/live).**
-  - **Remaining v8 spec (larger/optional, phase 3/5/6):** blob chunked/resumable
-    transfer; voice under v8 (device-token auth, multipath ring); KT inclusion
-    proofs / auditor (phase 6); README/spec currency for the native surface.
-    NOTE: best-effort caveats as before; unsigned commits (1Password) — re-sign
-    via `git rebase --exec 'git commit --amend --no-edit -S' 38dacc7`. (b) **group creation** — genesis D14 record (me=owner) + set group
+  - **DONE (iter 71) — spec currency.** relay.md header "not yet built" →
+    "largely built (v8 branch)"; roadmap.md new "Implementation status" section
+    (built core + remaining). Docs only.
+  - **Remaining v8 spec (larger, phase 3/5/6):** (1) **attachments in messages**
+    (highest value — wires the built-but-unused blob store: send with file →
+    encrypt + `PUT /api/relay/blobs` (or group) → per-file key + blobId in the
+    payload → recipient `GET`s + decrypts + renders; store in `attachments`
+    table + blobs.rs). (2) blob chunked/resumable transfer. (3) voice under v8
+    (device-token auth, multipath ring). (4) content-free push (D7). (5) KT
+    inclusion proofs / auditor (phase 6). (6) D12 legacy→v8 cutover. NOTE:
+    best-effort caveats as before; unsigned commits (1Password) — re-sign via
+    `git rebase --exec 'git commit --amend --no-edit -S' 38dacc7`. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
