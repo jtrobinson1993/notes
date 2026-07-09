@@ -624,6 +624,41 @@ export function relayRoutes(
     return { ok: true };
   });
 
+  // Group send (D6/D14): one group-key-sealed envelope, authorized by the group
+  // token (sender-anonymous like DM send), fanned out by the relay to every
+  // current member's device queues per the signed group-state record. The relay
+  // never decrypts — members share the group key.
+  app.post('/api/relay/groups/:id/send', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const b = request.body as { groupToken?: string; envelope?: string } | null;
+    if (!b?.groupToken || !b?.envelope) {
+      return reply.code(400).send({ error: 'groupToken and envelope required' });
+    }
+    if (b.envelope.length > MAX_ENVELOPE_B64) {
+      return reply.code(413).send({ error: 'envelope too large' });
+    }
+    const verifier = db.getRelayGroupVerifier(id);
+    const presented = createHash('sha256').update(b.groupToken).digest('base64url');
+    if (!verifier || presented !== verifier) {
+      return reply.code(401).send({ error: 'send refused' });
+    }
+    // Fan out to every current member's devices (members are listed by identity
+    // key in the D14 record → user → devices).
+    const deviceIds = new Set<string>();
+    for (const identityPub of groupMemberPubkeys(id)) {
+      const userId = db.userIdByRelayIdentity(identityPub);
+      if (userId) for (const d of db.activeRelayDeviceIds(userId)) deviceIds.add(d);
+    }
+    const relayTs = stampTs();
+    const devices = [...deviceIds];
+    if (devices.length) {
+      db.enqueueRelayEnvelope(devices, relayTs, Buffer.from(b.envelope, 'base64'));
+      live?.notifyDevices(devices);
+    }
+    db.pruneRelayMailbox(MAILBOX_TTL_MS);
+    return { relayTs };
+  });
+
   // ---- account escrow (D15) ----
 
   // Upload/refresh the wrapped-MK escrow bundle. The payload is opaque to

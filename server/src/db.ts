@@ -1026,6 +1026,14 @@ CREATE TABLE IF NOT EXISTS relay_group_blobs (
            sealing_pubkey = excluded.sealing_pubkey, updated_at = excluded.updated_at`,
       ).run(userId, identityPubkey, sealingPubkey, Date.now());
     },
+    /** Reverse lookup: the account owning a per-relay identity key (for group
+     *  fan-out — the group record lists members by identity key). */
+    userIdByRelayIdentity(identityPubkey: string): string | undefined {
+      const r = db
+        .prepare('SELECT user_id FROM relay_directory WHERE identity_pubkey = ?')
+        .get(identityPubkey) as { user_id: string } | undefined;
+      return r?.user_id;
+    },
     getRelayDirectoryByHandle(
       handle: string,
     ): { identityPubkey: string; sealingPubkey: string } | undefined {

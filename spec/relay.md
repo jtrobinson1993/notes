@@ -176,6 +176,13 @@ Clients independently verify the full signature chain. **Fine-grained role rules
 relay only guarantees monotonic, admin-signed versions. `groupId`s must be
 unguessable (a genesis PUT for an unknown id just creates that group).
 
+- `POST /api/relay/groups/:id/send` `{ groupToken, envelope }` (built) — one
+  **group-key-sealed** envelope, authorized by the group token (sender-anonymous
+  like DM send). The relay fans it out to **every current member's device
+  queues** — members are listed by identity key in the D14 record → account →
+  devices — and never decrypts (members share the group key). Uniform 401 on a
+  bad token; live-nudges recipients.
+
 ## Invites (D4b)
 
 The friend-invite token is a **one-time delivery capability** (built). Redeeming
