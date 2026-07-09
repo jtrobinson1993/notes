@@ -847,14 +847,24 @@ Playwright version (currently 1.60.0).
     regress working legacy-WS chat. Live inbound *capture* is done (iter 33);
     live *render* waits on this cutover. Flagged for deliberate scoping (worth a
     user check-in before starting).
-  - **Next iterations (phase 3, chat-store-independent):** (1) security.md
-    relay-state inventory fold-in (doc/hardening, low-risk); (2) phase-3 review
-    vs relay.md — still unbuilt: **transient blob store** (D6; note its
-    up/download auth model + blobId anti-enumeration needs careful design, not
-    just mechanical build), group-state record (D14), invite redeem (D4b), push
-    registration (D7). OPEN FOLLOW-UPS: live WS task has no stop signal
-    (reconnects until process exit); sender→contact resolution interim (identity
-    key as id). Desk queue unchanged (mobile init, tauri smoke, biometric ACLs).
+  - **DONE (iter 35) — security.md relay retention/metadata fold-in
+    (doc).** New "v8 relay — retention & metadata posture" section: zero-at-rest
+    posture, concise durable/transient/never-stored summary (relay.md stays
+    canonical — no table dup), why the durable set is safe (public keys, hashes,
+    MK wrapped under secrets the relay never sees), what v8 improves over v1–v7
+    (sender identity hidden, content not retained, read state never reaches
+    relay), and what stays visible (timing/size, group membership, device count,
+    **sender IP** — sealed-sender doesn't erase it). Forward-ref from the
+    existing metadata para. Doc-only (no code/tests).
+  - **Next iterations (phase 3, chat-store-independent):** phase-3 review vs
+    relay.md — still unbuilt: **transient blob store** (D6; its up/download auth
+    model + blobId anti-enumeration needs careful DESIGN first, not a mechanical
+    build — flag for design pass), group-state record (D14), invite redeem
+    (D4b), push registration (D7). OPEN FOLLOW-UPS: live WS task has no stop
+    signal (reconnects until process exit); sender→contact resolution interim
+    (identity key as id). DEFERRED (needs user call): v8 chat store model
+    rework = phase-4/5 chat cutover. Desk queue unchanged (mobile init, tauri
+    smoke, biometric ACLs).
   - **NOTE — unsigned commits:** iters 31–32 (`a9460bb`, `7399261`, `fc4e143`)
     committed with `-c commit.gpgsign=false` because the 1Password op-ssh-sign
     agent was locked (user approved "unsigned this once"). Re-sign later once
