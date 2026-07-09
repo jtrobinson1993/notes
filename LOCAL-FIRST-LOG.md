@@ -1013,15 +1013,25 @@ Playwright version (currently 1.60.0).
     native.ts (`relaySendMessage(contactId, content)`, `dmConversationId`).
     Tests: cargo 49 (+1), web 463. **v8 DM messaging is fully functional
     core-side** (both directions, correct routing, live render wiring).
-  - **Next (UI reachability):** (a) wire the chat store native path — `openDm`
-    (native) → `dmConversationId(contact)` → set active + `loadHistory`;
-    `sendMessage` native branch → `relaySendMessage(contactId, text)` +
-    `reloadActiveFromLog`; the friend↔conversation mapping (contact_id ↔ dm
-    conv). (b) **friends UI** — invite create (`createFriendInvite` → show
-    QR/link), redeem (`redeemFriendInvite`), friends list (`friendsList`) → open
-    DM. (c) conversation-list population from `friendsList`/local convs.
-    Chat-cutover steps 3–5 largely fall out. NOTE: reciprocal friend-confirm is
+  - **DONE (iter 50) — native DM API layer (`web/src/lib/nativeDm.ts`).** The
+    clean seam the UI builds on: `listDms()` (one DM per friend → resolved conv
+    ids), `openDm(contactId, limit)` (resolve id + load newest local page),
+    `sendDm(contactId, text)` (→ `relaySendMessage`). No server, no seq. Tests
+    (web 466, +3). Deliberately separate from the legacy server-sourced chat
+    store (which stays for the browser path).
+  - **Next (UI — the remaining piece; UI-heavy, wants the browser harness):**
+    (a) **friends UI** — invite create (`createFriendInvite` → QR/link), redeem
+    (`redeemFriendInvite` — paste/scan), friends list (`listDms`). (b) **DM view**
+    — `openDm` → render `ChatMessageView[]` (reuse message bubbles), input →
+    `sendDm` → `reloadActiveFromLog`/re-open. (c) native conversation-list
+    population from `listDms`. This is a focused UI build (native-only surface);
+    the legacy chat store/UI is untouched. NOTE: reciprocal friend-confirm is
     best-effort in the drain; dropped → re-invite recovers.
+  - **v8 MESSAGING CORE COMPLETE** (iters 42–50): unified msg identity/order,
+    live-render wiring, friend store + full invite→mutual-friend handshake,
+    outbound send, spoof-proof DM identity, native DM API. Remaining v8 work is
+    **UI** + the deferred bits (edits/reactions/read-state off seq; groups; blob
+    chunking; KT proofs; voice-v8; mobile/desktop shell smoke). 
   - **Other open threads:** OPEN FOLLOW-UPS: live WS stop signal;
     sender→contact interim; blob chunked/resumable + group per-member-ack GC.
     Desk queue: mobile init, tauri smoke, biometric ACLs. iters 31–42 committed
