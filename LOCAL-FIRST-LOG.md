@@ -1079,10 +1079,15 @@ Playwright version (currently 1.60.0).
     current member's device queues (members by identity key in the D14 record →
     account via new `db.userIdByRelayIdentity` → devices). Uniform 401;
     live-nudge. Tests (server 350, +2). relay.md updated.
-  - **Group messaging — client half (next, multi-step):** (a) **group key** — a
-    symmetric group key; group content = ONE envelope symmetric-sealed under it
-    (new group-envelope path, vs the per-recipient X25519 DM seal), sender cert
-    inside. (b) **group creation** — genesis D14 record (me=owner) + set group
+  - **DONE (iter 60) — group envelope primitive (D6/D14).** `envelope::
+    seal_group`/`open_group`: AES-256-GCM under the shared group key (HKDF
+    domain-separated), signed sender cert inside (members verify who sent, D11).
+    Factored `verify_inner` shared with the DM open path. cargo 56 (+2:
+    roundtrip+wrong-key, tamper+version). Warns dead until group send/drain wire
+    it (next).
+  - **Group messaging — client half (next, multi-step):** (a) [DONE] group
+    envelope. (a2) **group key storage** — a `groups` local table with the
+    symmetric group key + group token; derive group token from group key. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
