@@ -119,6 +119,29 @@ pub struct ChatMessagePayload {
 }
 
 impl ChatMessagePayload {
+    /// A v1 outbound text message. The caller assigns a globally-unique `id` and
+    /// puts the same id in both the sealed payload and the local-log tee (via
+    /// `into_import`), so the sender's copy and the recipient's ingest dedup.
+    pub fn new_text(
+        id: String,
+        conversation_id: String,
+        channel_id: Option<String>,
+        content: String,
+        sent_at: i64,
+    ) -> Self {
+        ChatMessagePayload {
+            v: CURRENT_VERSION,
+            id,
+            conversation_id,
+            channel_id,
+            sent_at,
+            kind: "text".into(),
+            content: Some(content),
+            reply_ref_json: None,
+            attachments_json: None,
+        }
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>, MessageError> {
         serde_json::to_vec(self).map_err(|_| MessageError::Malformed)
     }
@@ -245,6 +268,28 @@ mod tests {
         let p = payload("m1");
         let bytes = p.encode().unwrap();
         assert_eq!(ChatMessagePayload::decode(&bytes).unwrap(), p);
+    }
+
+    #[test]
+    fn new_text_and_its_tee_share_id_and_content() {
+        let p = ChatMessagePayload::new_text(
+            "m9".into(),
+            "conv1".into(),
+            Some("chan1".into()),
+            "hello".into(),
+            111,
+        );
+        assert_eq!(p.v, 1);
+        assert_eq!(p.kind, "text");
+        // The sealed payload (sent) and the local tee row must agree on id +
+        // content so both sides dedup; the tee's relay_ts is the send stamp.
+        let bytes = p.encode().unwrap();
+        let sent = ChatMessagePayload::decode(&bytes).unwrap();
+        let tee = p.into_import(999, Some("self".into()));
+        assert_eq!(sent.id, tee.id);
+        assert_eq!(tee.content.as_deref(), Some("hello"));
+        assert_eq!(tee.relay_ts, 999);
+        assert_eq!(tee.sender_contact_id.as_deref(), Some("self"));
     }
 
     #[test]

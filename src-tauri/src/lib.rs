@@ -430,6 +430,71 @@ fn friend_remove(
         .map_err(|e| e.to_string())
 }
 
+/// Send a v8 text message to a friend (D6/D11): compose a ChatMessagePayload,
+/// seal it to the friend's sealing key, deliver it via their delivery token, and
+/// tee the same id into the local log so it renders immediately. Returns the
+/// message id. The recipient's drain ingests the same payload (idempotent by id).
+#[tauri::command]
+async fn relay_send_message(
+    contact_id: String,
+    conversation_id: String,
+    channel_id: Option<String>,
+    content: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    // Identity (to seal) + the friend's addressing, before any await.
+    let (ident, addressing) = {
+        let vault = vault.lock().unwrap();
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        let store = vault.store().map_err(|e| e.to_string())?;
+        let addressing = store
+            .friend_addressing(&contact_id, &relay_fp)
+            .map_err(|e| e.to_string())?
+            .ok_or("not a friend on this relay")?;
+        (ident, addressing)
+    };
+
+    let msg_id = {
+        let mut b = [0u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut b);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+    };
+    let sent_at = now_ms();
+    let payload = message::ChatMessagePayload::new_text(
+        msg_id.clone(),
+        conversation_id,
+        channel_id,
+        content,
+        sent_at,
+    );
+    let bytes = payload.encode().map_err(|e| e.to_string())?;
+    let sealing: [u8; 32] = addressing
+        .sealing_pub
+        .clone()
+        .try_into()
+        .map_err(|_| "friend has a malformed sealing key".to_string())?;
+    let envelope =
+        envelope::seal(&sealing, &ident, message::KIND_MSG, &bytes, sent_at).map_err(|e| e.to_string())?;
+    let relay_ts = relay
+        .mailbox_send(&addressing.handle, &addressing.delivery_token, envelope)
+        .await?;
+
+    // Tee the same message into the local log (sender = self marker) so it shows
+    // instantly; keyed by the same id, so a later drain of our own copy dedups.
+    {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store
+            .import_messages(vec![payload.into_import(relay_ts, Some("self".into()))])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(msg_id)
+}
+
 /// Register the wrapped-MK escrow with the connected relay (D15).
 #[tauri::command]
 async fn relay_escrow_upload(
@@ -741,6 +806,7 @@ pub fn run() {
             relay_mailbox_fetch,
             relay_mailbox_ack,
             relay_mailbox_drain,
+            relay_send_message,
             messages_page,
             messages_ingest,
             message_edit,

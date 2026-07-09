@@ -145,6 +145,25 @@ export function relayRegisterVerifier(): Promise<string> {
   return invoke<string>('relay_register_verifier');
 }
 
+/**
+ * Send a v8 text message to a friend (D6/D11): the core composes + seals the
+ * payload, delivers it via the friend's delivery token, and tees the same id
+ * into the local log so it renders immediately. Resolves with the message id.
+ */
+export function relaySendMessage(
+  contactId: string,
+  conversationId: string,
+  channelId: string | null,
+  content: string,
+): Promise<string> {
+  return invoke<string>('relay_send_message', {
+    contactId,
+    conversationId,
+    channelId,
+    content,
+  });
+}
+
 /** Sealed send: the recipient's delivery token is the only credential. */
 export function relaySend(
   recipientHandle: string,
