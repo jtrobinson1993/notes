@@ -179,6 +179,13 @@ const MIGRATIONS: &[&str] = &[
        created_at INTEGER NOT NULL,
        PRIMARY KEY(message_id, reactor_id, emoji)
      );",
+    // v10 — groups (D14): the shared symmetric group key (content encryption +
+    // group-token derivation) per group I'm a member of. The group-state record
+    // + membership live on the relay; this is the local key material.
+    "CREATE TABLE groups(
+       group_id TEXT PRIMARY KEY, group_key BLOB NOT NULL, name TEXT,
+       created_at INTEGER NOT NULL
+     );",
 ];
 
 #[derive(serde::Deserialize)]
@@ -264,6 +271,13 @@ pub struct ReactionRow {
     pub emoji: String,
     /// `self` for mine, else the reactor's identity key.
     pub reactor_id: String,
+}
+
+/// A group I'm a member of (for the group list).
+#[derive(serde::Serialize)]
+pub struct GroupSummary {
+    pub group_id: String,
+    pub name: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -694,6 +708,44 @@ impl Store {
             [id],
         )?;
         Ok(())
+    }
+
+    /// Store (or refresh) a group's shared key + name (D14). The group key
+    /// encrypts content and derives the group token.
+    pub fn upsert_group(&self, group_id: &str, group_key: &[u8], name: Option<&str>) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO groups(group_id, group_key, name, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(group_id) DO UPDATE SET group_key = excluded.group_key,
+               name = COALESCE(excluded.name, groups.name)",
+            (group_id, group_key, name, now_ms()),
+        )?;
+        Ok(())
+    }
+
+    /// A group's shared key, or None if I'm not a member (no key stored).
+    pub fn group_key(&self, group_id: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self
+            .conn
+            .query_row("SELECT group_key FROM groups WHERE group_id = ?1", [group_id], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .optional()?)
+    }
+
+    /// The groups I'm a member of (for the group list).
+    pub fn list_groups(&self) -> Result<Vec<GroupSummary>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT group_id, name FROM groups ORDER BY created_at")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(GroupSummary {
+                    group_id: r.get(0)?,
+                    name: r.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Add a reaction (idempotent by (message, reactor, emoji)).
@@ -1381,6 +1433,24 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].reactor_id, "friend");
         assert_eq!(rows[0].emoji, "👍");
+    }
+
+    #[test]
+    fn group_key_upsert_get_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[14u8; 32]).unwrap();
+        assert!(store.group_key("g1").unwrap().is_none());
+
+        store.upsert_group("g1", &[5u8; 32], Some("Team")).unwrap();
+        assert_eq!(store.group_key("g1").unwrap(), Some(vec![5u8; 32]));
+
+        // Re-key keeps the name when the update omits it.
+        store.upsert_group("g1", &[6u8; 32], None).unwrap();
+        assert_eq!(store.group_key("g1").unwrap(), Some(vec![6u8; 32]));
+        let groups = store.list_groups().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_id, "g1");
+        assert_eq!(groups[0].name.as_deref(), Some("Team"));
     }
 
     #[test]
