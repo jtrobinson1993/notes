@@ -40,6 +40,7 @@ struct Session {
 #[derive(Default)]
 pub struct RelayClient {
     session: Mutex<Option<Session>>,
+    live_started: std::sync::atomic::AtomicBool,
 }
 
 #[derive(serde::Deserialize)]
@@ -134,6 +135,32 @@ impl RelayClient {
             token.token,
             Instant::now() + Duration::from_secs(token.expires_in_sec),
         ))
+    }
+
+    /// Mint a fresh device bearer without touching the shared session — used by
+    /// the live-delivery task, which keeps its own independent WS token so it
+    /// never contends with REST calls on the session mutex (D4 B).
+    pub async fn issue_bearer_static(
+        base_url: &str,
+        relay_fp: &str,
+        signing: &SigningKey,
+    ) -> Result<String, String> {
+        let http = reqwest::Client::new();
+        let (token, _expires_at) =
+            Self::fetch_token(&http, base_url.trim_end_matches('/'), relay_fp, signing).await?;
+        Ok(token)
+    }
+
+    /// `(base_url, relay_fp)` of the live session, or None if not connected.
+    pub fn session_info(&self) -> Option<(String, String)> {
+        let guard = self.session.lock().unwrap();
+        guard.as_ref().map(|s| (s.base_url.clone(), s.relay_fp.clone()))
+    }
+
+    /// Begin the live-delivery task at most once per process (idempotent).
+    /// Returns true for the caller that wins the race, false afterwards.
+    pub fn try_begin_live(&self) -> bool {
+        !self.live_started.swap(true, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// A valid bearer token, silently refreshed when near expiry (D4 B).

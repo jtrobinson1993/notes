@@ -3,6 +3,7 @@ mod envelope;
 mod identity;
 mod keys;
 mod relay_client;
+mod relay_live;
 mod store;
 mod vault;
 
@@ -85,6 +86,7 @@ fn device_public_key(vault: VaultState) -> Result<String, String> {
 #[tauri::command]
 async fn relay_connect(
     url: String,
+    app: tauri::AppHandle,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<(), String> {
@@ -93,7 +95,16 @@ async fn relay_connect(
         let vault = vault.lock().unwrap();
         vault.device_signing_key().map_err(|e| e.to_string())?
     };
-    relay.connect(&url, &signing).await
+    relay.connect(&url, &signing).await?;
+    // Start the live-delivery link once: it holds a WS and emits `relay:mail`
+    // nudges so the webview drains its mailbox without polling (best-effort;
+    // REST fetch stays authoritative).
+    if relay.try_begin_live() {
+        if let Some((base, fp)) = relay.session_info() {
+            tauri::async_runtime::spawn(relay_live::run_forever(base, fp, signing, app));
+        }
+    }
+    Ok(())
 }
 
 /// Derive this account's per-relay identity (D4b) and publish it to the
