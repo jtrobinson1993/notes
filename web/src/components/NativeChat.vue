@@ -9,7 +9,13 @@ import IconSend from '~icons/mynaui/send-solid';
 import IconBack from '~icons/mynaui/chevron-left';
 import { listDms, openDm, sendDm, type DmSummary } from '../lib/nativeDm';
 import { createInvite, redeemInvite } from '../lib/nativeFriends';
-import { relayDeleteMessage, relayEditMessage } from '../lib/native';
+import {
+  conversationReactions,
+  relayDeleteMessage,
+  relayEditMessage,
+  relayReact,
+  type ReactionRow,
+} from '../lib/native';
 import { onMailIngested } from '../lib/nativeRelay';
 import type { ChatMessageView } from '../stores/chat';
 
@@ -18,6 +24,7 @@ const PAGE = 50;
 const dms = ref<DmSummary[]>([]);
 const active = ref<DmSummary | null>(null);
 const messages = ref<ChatMessageView[]>([]);
+const reactions = ref<ReactionRow[]>([]);
 const draft = ref('');
 const panel = ref<'list' | 'add'>('list');
 const createdInvite = ref<string | null>(null);
@@ -29,16 +36,51 @@ async function refreshDms(): Promise<void> {
   dms.value = await listDms();
 }
 
+async function loadReactions(): Promise<void> {
+  if (active.value) reactions.value = await conversationReactions(active.value.conversationId);
+}
+
+/** Reactions on one message, grouped by emoji with counts + whether I reacted. */
+function groupedReactions(msgKey: string | undefined): { emoji: string; count: number; mine: boolean }[] {
+  if (!msgKey) return [];
+  const groups = new Map<string, { count: number; mine: boolean }>();
+  for (const r of reactions.value) {
+    if (r.message_id !== msgKey) continue;
+    const g = groups.get(r.emoji) ?? { count: 0, mine: false };
+    g.count += 1;
+    if (r.reactor_id === 'self') g.mine = true;
+    groups.set(r.emoji, g);
+  }
+  return [...groups.entries()].map(([emoji, g]) => ({ emoji, ...g }));
+}
+
+async function toggleReaction(msgKey: string, emoji: string): Promise<void> {
+  if (!active.value || busy.value) return;
+  const mine = groupedReactions(msgKey).find((g) => g.emoji === emoji)?.mine ?? false;
+  busy.value = true;
+  try {
+    await relayReact(active.value.contactId, msgKey, emoji, !mine);
+    await loadReactions();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function open(dm: DmSummary): Promise<void> {
   error.value = '';
   active.value = dm;
   const res = await openDm(dm.contactId, PAGE);
   messages.value = res.messages;
+  await loadReactions();
   await refreshDms(); // opening marked it read → clear its unread badge
 }
 
 async function reloadActive(): Promise<void> {
-  if (active.value) messages.value = (await openDm(active.value.contactId, PAGE)).messages;
+  if (!active.value) return;
+  messages.value = (await openDm(active.value.contactId, PAGE)).messages;
+  await loadReactions();
 }
 
 async function send(): Promise<void> {
@@ -225,41 +267,57 @@ onUnmounted(() => unsub?.());
         <li
           v-for="m in messages"
           :key="m.key ?? String(m.seq)"
-          class="group flex items-center gap-1"
-          :class="m.senderId === 'self' ? 'justify-end' : 'justify-start'"
+          class="flex flex-col"
+          :class="m.senderId === 'self' ? 'items-end' : 'items-start'"
         >
-          <!-- inline edit -->
-          <form
-            v-if="editingId === m.key"
-            class="flex flex-1 items-center gap-1"
-            @submit.prevent="saveEdit(m.key!)"
-          >
-            <input
-              v-model="editDraft"
-              data-testid="edit-input"
-              class="flex-1 rounded border border-neutral-500/30 bg-transparent px-2 py-1 text-sm"
-            />
-            <button type="submit" class="text-xs text-blue-500">Save</button>
-            <button type="button" class="text-xs opacity-60" @click="cancelEdit">Cancel</button>
-          </form>
-          <template v-else>
-            <span
-              v-if="m.senderId === 'self' && m.text !== null && m.key"
-              class="flex gap-1 opacity-0 group-hover:opacity-100"
+          <div class="group flex items-center gap-1">
+            <!-- inline edit -->
+            <form
+              v-if="editingId === m.key"
+              class="flex items-center gap-1"
+              @submit.prevent="saveEdit(m.key!)"
             >
-              <button data-testid="edit-msg" class="text-xs text-blue-500" @click="startEdit(m)">Edit</button>
-              <button data-testid="delete-msg" class="text-xs text-red-500" @click="remove(m.key)">Delete</button>
-            </span>
-            <span
-              v-if="m.text === null"
-              class="max-w-[75%] rounded-2xl bg-neutral-500/10 px-3 py-1.5 text-sm italic opacity-60"
-            >Message deleted</span>
-            <span
-              v-else
-              class="max-w-[75%] break-words rounded-2xl px-3 py-1.5 text-sm"
-              :class="m.senderId === 'self' ? 'bg-blue-600 text-white' : 'bg-neutral-500/15'"
-            >{{ m.text }}<span v-if="m.editedAt" class="ml-1 text-[10px] opacity-60">(edited)</span></span>
-          </template>
+              <input
+                v-model="editDraft"
+                data-testid="edit-input"
+                class="rounded border border-neutral-500/30 bg-transparent px-2 py-1 text-sm"
+              />
+              <button type="submit" class="text-xs text-blue-500">Save</button>
+              <button type="button" class="text-xs opacity-60" @click="cancelEdit">Cancel</button>
+            </form>
+            <template v-else>
+              <span
+                v-if="m.text !== null && m.key"
+                class="flex gap-1 opacity-0 group-hover:opacity-100"
+              >
+                <button data-testid="react-msg" class="text-xs" title="React 👍" @click="toggleReaction(m.key, '👍')">👍</button>
+                <template v-if="m.senderId === 'self'">
+                  <button data-testid="edit-msg" class="text-xs text-blue-500" @click="startEdit(m)">Edit</button>
+                  <button data-testid="delete-msg" class="text-xs text-red-500" @click="remove(m.key)">Delete</button>
+                </template>
+              </span>
+              <span
+                v-if="m.text === null"
+                class="max-w-[75%] rounded-2xl bg-neutral-500/10 px-3 py-1.5 text-sm italic opacity-60"
+              >Message deleted</span>
+              <span
+                v-else
+                class="max-w-[75%] break-words rounded-2xl px-3 py-1.5 text-sm"
+                :class="m.senderId === 'self' ? 'bg-blue-600 text-white' : 'bg-neutral-500/15'"
+              >{{ m.text }}<span v-if="m.editedAt" class="ml-1 text-[10px] opacity-60">(edited)</span></span>
+            </template>
+          </div>
+          <!-- reaction chips -->
+          <div v-if="groupedReactions(m.key).length" class="mt-0.5 flex gap-1">
+            <button
+              v-for="g in groupedReactions(m.key)"
+              :key="g.emoji"
+              data-testid="reaction-chip"
+              class="rounded-full px-1.5 text-xs"
+              :class="g.mine ? 'bg-blue-600/25' : 'bg-neutral-500/15'"
+              @click="toggleReaction(m.key!, g.emoji)"
+            >{{ g.emoji }} {{ g.count }}</button>
+          </div>
         </li>
       </ul>
       <form class="flex items-center gap-2 border-t border-neutral-500/20 p-3" @submit.prevent="send">

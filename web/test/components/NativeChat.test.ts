@@ -17,7 +17,12 @@ vi.mock('../../src/lib/nativeFriends', () => friends);
 const relay = vi.hoisted(() => ({ onMailIngested: vi.fn(() => () => {}) }));
 vi.mock('../../src/lib/nativeRelay', () => relay);
 
-const nativeMod = vi.hoisted(() => ({ relayDeleteMessage: vi.fn(), relayEditMessage: vi.fn() }));
+const nativeMod = vi.hoisted(() => ({
+  relayDeleteMessage: vi.fn(),
+  relayEditMessage: vi.fn(),
+  relayReact: vi.fn(),
+  conversationReactions: vi.fn().mockResolvedValue([]),
+}));
 vi.mock('../../src/lib/native', () => nativeMod);
 
 import NativeChat from '../../src/components/NativeChat.vue';
@@ -31,6 +36,7 @@ beforeEach(() => {
   ]);
   dm.openDm.mockResolvedValue({ conversationId: 'dm:A', messages: [] });
   relay.onMailIngested.mockReturnValue(() => {});
+  nativeMod.conversationReactions.mockResolvedValue([]);
 });
 
 describe('NativeChat', () => {
@@ -56,9 +62,9 @@ describe('NativeChat', () => {
     await flushPromises();
     expect(dm.openDm).toHaveBeenCalledWith('idA', 50);
     expect(w.text()).toContain('hi there');
-    // own message row is right-aligned (contains the bubble + a delete action)
+    // own message row is right-aligned (column: actions + bubble, then chips)
     const own = w.findAll('li').find((li) => li.text().includes('hey'));
-    expect(own?.classes()).toContain('justify-end');
+    expect(own?.classes()).toContain('items-end');
   });
 
   it('sends a draft via sendDm and reloads', async () => {
@@ -83,6 +89,30 @@ describe('NativeChat', () => {
     await w.find('[data-testid="make-invite"]').trigger('click');
     await flushPromises();
     expect(w.find('[data-testid="invite-link"]').text()).toContain('accord://friend?i=abc');
+  });
+
+  it('reacts to a message and renders the reaction chip', async () => {
+    nativeMod.relayReact.mockResolvedValue(undefined);
+    dm.openDm.mockResolvedValue({
+      conversationId: 'dm:A',
+      messages: [view({ key: 'm1', senderId: 'idA', text: 'hi there' })],
+    });
+    // After reacting, the reaction is present in the store.
+    nativeMod.conversationReactions
+      .mockResolvedValueOnce([]) // initial open
+      .mockResolvedValueOnce([{ message_id: 'm1', emoji: '👍', reactor_id: 'self' }]);
+
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.findAll('aside button')[1].trigger('click');
+    await flushPromises();
+
+    await w.find('[data-testid="react-msg"]').trigger('click');
+    await flushPromises();
+    expect(nativeMod.relayReact).toHaveBeenCalledWith('idA', 'm1', '👍', true);
+    const chip = w.find('[data-testid="reaction-chip"]');
+    expect(chip.text()).toContain('👍');
+    expect(chip.text()).toContain('1');
   });
 
   it('shows an unread badge from the DM list', async () => {
