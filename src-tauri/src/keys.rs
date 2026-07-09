@@ -26,6 +26,7 @@ pub const INFO_AUTH_RECOVERY: &[u8] = b"accord/auth/recovery/v1";
 // D6: delivery token = KDF(profile key, "delivery") — the sealed-sender
 // capability friends present to the relay.
 pub const INFO_DELIVERY: &[u8] = b"accord/delivery/v1";
+pub const INFO_GROUP_TOKEN: &[u8] = b"accord/group-token/v1";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
@@ -73,6 +74,19 @@ pub fn derive_auth_key(secret: &[u8], info: &[u8]) -> Result<Secret32, KeyError>
 pub fn sha256_b64url(bytes: &[u8]) -> String {
     use sha2::Digest;
     data_encoding::BASE64URL_NOPAD.encode(&sha2::Sha256::digest(bytes))
+}
+
+/// From a group key: `(token, verifier)` for group send/blobs (D6/D14). The
+/// token (base64, derived under a group-token domain) is what members present to
+/// the relay; the verifier — `sha256(token)` base64url, matching the server's
+/// hashing — is what an admin registers. All members derive the same pair from
+/// the shared group key, mirroring the D6 delivery-token convention.
+pub fn group_token_verifier(group_key: &[u8]) -> Result<(String, String), KeyError> {
+    use base64::Engine as _;
+    let raw = derive_auth_key(group_key, INFO_GROUP_TOKEN)?;
+    let token = base64::engine::general_purpose::STANDARD.encode(raw.as_ref());
+    let verifier = sha256_b64url(token.as_bytes());
+    Ok((token, verifier))
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -128,6 +142,18 @@ mod tests {
         assert!(unwrap(secret, INFO_MK_WRAP_RECOVERY, &wrapped).is_err());
         // Wrong secret → must not unwrap.
         assert!(unwrap(b"other secret", INFO_MK_WRAP_PASSWORD, &wrapped).is_err());
+    }
+
+    #[test]
+    fn group_token_is_deterministic_and_verifier_matches_convention() {
+        let group_key = [5u8; 32];
+        let (token, verifier) = group_token_verifier(&group_key).unwrap();
+        // Deterministic: every member derives the same pair.
+        assert_eq!(group_token_verifier(&group_key).unwrap(), (token.clone(), verifier.clone()));
+        // Verifier = sha256(token) base64url, as the relay stores/compares it.
+        assert_eq!(verifier, sha256_b64url(token.as_bytes()));
+        // A different group key → a different token.
+        assert_ne!(group_token_verifier(&[6u8; 32]).unwrap().0, token);
     }
 
     #[test]
