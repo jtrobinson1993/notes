@@ -40,6 +40,7 @@ import { loadEmojiUsage, resetEmojiUsage } from '../lib/emoji/usage';
 import { b64 } from '../lib/b64';
 import { isNative } from '../lib/native';
 import { loadHistoryLocal, teeEdit, teeMessage } from '../lib/nativeChat';
+import { setOnMailIngested } from '../lib/nativeRelay';
 import { useSessionStore } from './session';
 import { useFriendsStore } from './friends';
 import { useProfileStore } from './profile';
@@ -595,6 +596,20 @@ export const useChatStore = defineStore('chat', () => {
     return raw.length;
   }
 
+  /** Re-pull the active conversation's newest page from the local log so v8
+   *  rows a mailbox drain just ingested render live (native only). Merges
+   *  idempotently — orderMessages dedups by id, so already-shown rows are
+   *  unaffected. No-op when nothing is open. */
+  async function reloadActiveFromLog(): Promise<void> {
+    if (!isNative || !activeId.value) return;
+    await loadHistory(activeId.value, activeChannelId.value ?? undefined);
+  }
+
+  // Live inbound (D6/D11): a mailbox drain that stored new rows nudges the open
+  // conversation to re-read the local log. The drain + hook are already the
+  // authoritative capture path; this only refreshes what's on screen.
+  if (isNative) setOnMailIngested(() => void reloadActiveFromLog());
+
   async function sendMessage(
     convId: string,
     channelId: string,
@@ -843,6 +858,7 @@ export const useChatStore = defineStore('chat', () => {
     reorderChannels,
     deleteChannel,
     loadHistory,
+    reloadActiveFromLog,
     sendMessage,
     editMessage,
     loadReactions,
