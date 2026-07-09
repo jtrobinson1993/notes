@@ -253,6 +253,7 @@ async fn relay_mailbox_drain(
     let rows = relay.mailbox_fetch(&signing).await?;
     let mut imports = Vec::new();
     let mut friends = Vec::new();
+    let mut deletes = Vec::new();
     let mut ack_ids = Vec::new();
     let mut buffered = 0usize;
     for row in rows {
@@ -277,6 +278,10 @@ async fn relay_mailbox_drain(
             }
             message::Disposition::Friend(f) => {
                 friends.push(*f);
+                ack_ids.push(row.queue_id);
+            }
+            message::Disposition::Delete(d) => {
+                deletes.push(*d);
                 ack_ids.push(row.queue_id);
             }
             message::Disposition::Discard => ack_ids.push(row.queue_id),
@@ -316,10 +321,18 @@ async fn relay_mailbox_drain(
                 .ensure_conversation(&m.conversation_id, "dm", &relay_fp)
                 .map_err(|e| e.to_string())?;
         }
-        (
-            store.import_messages(imports).map_err(|e| e.to_string())?,
-            my_handle,
-        )
+        let ingested = store.import_messages(imports).map_err(|e| e.to_string())?;
+        // Deletes (D11): tombstone only if the verified sender is the message's
+        // original author (a friend can't delete my messages). Unknown target →
+        // skip (edit/delete of a not-yet-seen message is dropped; sends precede
+        // their deletes in FIFO delivery).
+        for d in &deletes {
+            let author = store.message_sender(&d.target_id).map_err(|e| e.to_string())?;
+            if author.as_deref() == Some(d.editor_id.as_str()) {
+                store.message_apply_delete(&d.target_id).map_err(|e| e.to_string())?;
+            }
+        }
+        (ingested, my_handle)
     };
 
     // Reciprocate: on a friend-accept (not a confirm), seal a friend-confirm
@@ -541,6 +554,48 @@ async fn relay_send_message(
             .map_err(|e| e.to_string())?;
     }
     Ok(msg_id)
+}
+
+/// Delete a v8 message I sent (D11): seal a delete envelope to the friend,
+/// deliver it, and tombstone my local copy. The recipient's drain applies it
+/// only because the delete's verified sender matches the message's author.
+#[tauri::command]
+async fn relay_delete_message(
+    contact_id: String,
+    message_id: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let (ident, addressing) = {
+        let vault = vault.lock().unwrap();
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        let store = vault.store().map_err(|e| e.to_string())?;
+        let addressing = store
+            .friend_addressing(&contact_id, &relay_fp)
+            .map_err(|e| e.to_string())?
+            .ok_or("not a friend on this relay")?;
+        (ident, addressing)
+    };
+    let payload = serde_json::to_vec(&serde_json::json!({ "id": message_id }))
+        .map_err(|e| e.to_string())?;
+    let sealing: [u8; 32] = addressing
+        .sealing_pub
+        .clone()
+        .try_into()
+        .map_err(|_| "friend has a malformed sealing key".to_string())?;
+    let envelope =
+        envelope::seal(&sealing, &ident, message::KIND_DELETE, &payload, now_ms()).map_err(|e| e.to_string())?;
+    relay
+        .mailbox_send(&addressing.handle, &addressing.delivery_token, envelope)
+        .await?;
+    {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store.message_apply_delete(&message_id).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Register the wrapped-MK escrow with the connected relay (D15).
@@ -856,6 +911,7 @@ pub fn run() {
             relay_mailbox_ack,
             relay_mailbox_drain,
             relay_send_message,
+            relay_delete_message,
             messages_page,
             messages_ingest,
             message_edit,

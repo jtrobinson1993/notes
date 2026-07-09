@@ -678,6 +678,20 @@ impl Store {
         Ok(())
     }
 
+    /// The `sender_contact_id` of a message, or None if unknown — the authority
+    /// check for an inbound edit/delete (only the original sender may change it).
+    pub fn message_sender(&self, id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT sender_contact_id FROM messages WHERE id = ?1",
+                [id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     // ---- notes CRUD (the local-first read/write path, D2) ----
 
     pub fn list_notes(&self) -> Result<Vec<NoteMeta>, StoreError> {

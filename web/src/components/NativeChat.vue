@@ -9,6 +9,7 @@ import IconSend from '~icons/mynaui/send-solid';
 import IconBack from '~icons/mynaui/chevron-left';
 import { listDms, openDm, sendDm, type DmSummary } from '../lib/nativeDm';
 import { createInvite, redeemInvite } from '../lib/nativeFriends';
+import { relayDeleteMessage } from '../lib/native';
 import { onMailIngested } from '../lib/nativeRelay';
 import type { ChatMessageView } from '../stores/chat';
 
@@ -46,6 +47,19 @@ async function send(): Promise<void> {
   try {
     await sendDm(active.value.contactId, text);
     draft.value = '';
+    await reloadActive();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function remove(messageId: string): Promise<void> {
+  if (!active.value || busy.value) return;
+  busy.value = true;
+  try {
+    await relayDeleteMessage(active.value.contactId, messageId);
     await reloadActive();
   } catch (e) {
     error.value = String(e);
@@ -181,10 +195,23 @@ onUnmounted(() => unsub?.());
         <li
           v-for="m in messages"
           :key="m.key ?? String(m.seq)"
-          class="flex"
+          class="group flex items-center gap-1"
           :class="m.senderId === 'self' ? 'justify-end' : 'justify-start'"
         >
+          <button
+            v-if="m.senderId === 'self' && m.text !== null && m.key"
+            data-testid="delete-msg"
+            class="text-xs text-red-500 opacity-0 group-hover:opacity-100"
+            @click="remove(m.key)"
+          >
+            Delete
+          </button>
           <span
+            v-if="m.text === null"
+            class="max-w-[75%] rounded-2xl bg-neutral-500/10 px-3 py-1.5 text-sm italic opacity-60"
+          >Message deleted</span>
+          <span
+            v-else
             class="max-w-[75%] break-words rounded-2xl px-3 py-1.5 text-sm"
             :class="m.senderId === 'self' ? 'bg-blue-600 text-white' : 'bg-neutral-500/15'"
           >{{ m.text }}</span>

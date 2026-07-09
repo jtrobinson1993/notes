@@ -22,6 +22,21 @@ pub const KIND_MSG: &str = "msg";
 /// no reply). Both carry the sender's addressing and record the sender a friend.
 pub const KIND_FRIEND_ACCEPT: &str = "friend-accept";
 pub const KIND_FRIEND_CONFIRM: &str = "friend-confirm";
+/// Delete a previously-sent message (D11 tombstone). Payload `{ id }` targets
+/// the message; only the original sender may delete it (checked on apply).
+pub const KIND_DELETE: &str = "delete";
+
+/// A verified delete request: drop `target_id` iff its recorded sender equals
+/// `editor_id` (the verified envelope sender).
+pub struct DeleteData {
+    pub target_id: String,
+    pub editor_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct DeletePayload {
+    id: String,
+}
 
 const CURRENT_VERSION: u32 = 1;
 
@@ -189,6 +204,9 @@ pub enum Disposition {
     /// A verified friend-accept/confirm (D4b): record the sender a friend, then
     /// ack. `reciprocate` distinguishes accept (reply a confirm) from confirm.
     Friend(Box<FriendAcceptData>),
+    /// A verified delete (D11): tombstone the target iff the verified sender is
+    /// its original author, then ack.
+    Delete(Box<DeleteData>),
 }
 
 /// Decide the fate of one delivered envelope from the `open` result and its
@@ -213,6 +231,13 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
                     None => Disposition::Discard, // authed but garbage → drop
                 }
             }
+            KIND_DELETE => match serde_json::from_slice::<DeletePayload>(&opened.payload) {
+                Ok(p) => Disposition::Delete(Box::new(DeleteData {
+                    target_id: p.id,
+                    editor_id: opened.sender_identity_pub,
+                })),
+                Err(_) => Disposition::Discard,
+            },
             // A known-good envelope of a kind we don't handle yet → wait for update.
             _ => Disposition::Buffer,
         },
@@ -427,6 +452,34 @@ mod tests {
             Disposition::Friend(f) => assert!(!f.reciprocate), // confirm → no reply (no loop)
             _ => panic!("expected Friend"),
         }
+    }
+
+    #[test]
+    fn delete_carries_target_and_verified_editor() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let payload = serde_json::to_vec(&serde_json::json!({ "id": "m7" })).unwrap();
+        let opened = Opened {
+            kind: KIND_DELETE.into(),
+            payload,
+            sender_identity_pub: b64.encode([3u8; 32]),
+            sent_at: 0,
+        };
+        match disposition(Ok(opened), 1) {
+            Disposition::Delete(d) => {
+                assert_eq!(d.target_id, "m7");
+                assert_eq!(d.editor_id, b64.encode([3u8; 32])); // verified sender
+            }
+            _ => panic!("expected Delete"),
+        }
+        // Garbage delete payload → discard.
+        let bad = Opened {
+            kind: KIND_DELETE.into(),
+            payload: b"nope".to_vec(),
+            sender_identity_pub: "x".into(),
+            sent_at: 0,
+        };
+        assert!(matches!(disposition(Ok(bad), 1), Disposition::Discard));
     }
 
     #[test]

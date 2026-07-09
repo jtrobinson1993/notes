@@ -155,6 +155,13 @@ export function relaySendMessage(contactId: string, content: string): Promise<st
   return invoke<string>('relay_send_message', { contactId, content });
 }
 
+/** Delete a v8 message I sent (D11 tombstone): seals a delete to the friend and
+ *  tombstones my local copy. The recipient applies it only because the delete's
+ *  verified sender matches the message's author. */
+export function relayDeleteMessage(contactId: string, messageId: string): Promise<void> {
+  return invoke('relay_delete_message', { contactId, messageId });
+}
+
 /** The deterministic v8 DM conversation id for a friend (both sides agree). */
 export function dmConversationId(contactId: string): Promise<string> {
   return invoke<string>('dm_conversation_id_for', { contactId });
