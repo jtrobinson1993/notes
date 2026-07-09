@@ -353,8 +353,15 @@ are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
   `src-tauri/src/voice_live.rs` holds the WS (device-bearer, backoff-supervised)
   and pumps it both ways — `voice_join`/`voice_signal`/`voice_leave` IPC frames
   up, inbound peer frames out as the `voice:frame` Tauri event (web
-  `nativeVoice.ts` fans them to the call UI). *Not yet built:* the WebRTC/media
-  layer (getUserMedia + RTCPeerConnection + mediasoup) that consumes these.
+  `nativeVoice.ts` fans them to the call UI). The **call engine** —
+  `web/src/lib/voiceCall.ts`, a framework-agnostic `VoiceCall` state machine
+  (idle→dialing/ringing→connecting→connected→ended; role-aware offer/answer/ICE
+  over opaque tagged `signal` payloads) — is **built** and unit-tested against an
+  injected media interface. *Not yet built:* the media layer behind that
+  interface — **decided: webview WebRTC** (getUserMedia + RTCPeerConnection +
+  mediasoup client, frame E2EE via insertable streams), reusing the hardened
+  browser stack rather than a Rust-core WebRTC reimplementation — plus the call
+  UI (incoming-call panel from `DrainReport.calls`).
 - **Ringing — single-relay built; cross-relay (D4c) follow-up.** *Built:* the
   caller mints a fresh unguessable **call id** and seals a `call-offer {callId}`
   envelope (`KIND_CALL_OFFER`) into the callee's **mailbox** (`relay_call_offer`

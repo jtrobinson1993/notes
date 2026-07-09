@@ -1232,12 +1232,34 @@ Playwright version (currently 1.60.0).
     fan-out, `startVoiceSignaling`/`stop` listener). cargo 67 (+4 voice_live:
     url→/voice, frame builders/classifier, forwardable set, live pump-up/
     forward-inbound integration), web 492 (+4 nativeVoice), tsc clean.
-  - **Remaining v8 spec:** voice follow-ups: (a) **WebRTC/media wiring + call UI**
-    — consume DrainReport.calls (ring), getUserMedia + RTCPeerConnection,
-    exchange SDP/ICE as `signal` frames, media via mediasoup SFU. ARCH FORK to
-    surface first: WebRTC in the webview (getUserMedia/RTCPeerConnection, natural)
-    vs the Rust core — spec says core=networking/webview=UI, but media capture is
-    a browser API. (b) D4c cross-relay fan-out + call-id dedup. Then:
+  - **USER DECISION (this session) — media layer = webview WebRTC (option 1).**
+    User: "if #2 [Rust-core WebRTC] is more secure, do that, otherwise #1." My
+    security call = **#1**: #2's trust-boundary gain is *marginal* (durable
+    identity/storage keys stay in Rust either way; #2 only additionally shields
+    the ephemeral per-call media key + live audio, and only vs a webview XSS —
+    already catastrophic in an E2EE app), while its cost is real (replaces
+    hardened, patched libwebrtc — the actual source of WebRTC CVEs — with
+    webrtc-rs + a hand-rolled native audio/DSP pipeline = a large, less-audited
+    new attack surface that could net *reduce* security). So #2 isn't a clear
+    win → per the conditional, **#1**: browser WebRTC + insertable-streams frame
+    E2EE, driven by the nativeVoice seam. (Override available if the user wants
+    the stronger boundary regardless of maturity.)
+  - **DONE (iter 82) — voice call engine (state machine).** New
+    `web/src/lib/voiceCall.ts`: framework-agnostic `VoiceCall` lifecycle brain
+    between the signaling seam and an injected `CallMedia` (RTCPeerConnection
+    wrapper — no WebRTC types in the engine, fully unit-testable). States
+    idle→dialing/ringing→connecting→connected→ended; caller mints ring+joins and
+    offers on `peer-join` (never into an empty room); callee answers an inbound
+    ring; SDP/ICE ride opaque tagged `signal` payloads; guards: busy-reject,
+    decline (no join/leave), idempotent hangup, peer-leave ends, wrong-callId
+    frames ignored. 10 tests (both roles, full negotiation, guards). web 502,
+    tsc clean.
+  - **Remaining v8 spec:** voice follow-ups: (a) **call UI + RTCPeerConnection
+    CallMedia impl** — an incoming-call panel (consume DrainReport.calls →
+    VoiceCall.onIncomingRing), getUserMedia + RTCPeerConnection behind the
+    CallMedia interface, wire VoiceCall to nativeVoice (onVoiceFrame→onFrame,
+    localIce, join/leave/sendSignal) + frame E2EE via insertable streams.
+    (b) D4c cross-relay fan-out + call-id dedup (deliberately deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).
