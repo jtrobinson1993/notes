@@ -889,3 +889,39 @@ v8 (roadmap D4b/D6) **supersedes the friend-request-by-handle flow above**:
   remaining friends — the relay then refuses the removed person's sends;
   in-group blocking stays a client-side hide. Friend requests, the pending
   list, and `POST /api/friends/request`-style routes are removed at cutover.
+
+### Message-envelope payload (v1, built)
+
+A chat message travels as a `kind = "msg"` envelope (spec/relay.md § Envelope
+versioning). The sealed **inner payload** is versioned JSON:
+
+```
+{ v:1, id, conversation_id, channel_id?, sent_at, kind, content?,
+  reply_ref_json?, attachments_json? }
+```
+
+(snake_case JSON — like the sibling sealed `Inner` cert, this payload is
+encoded/decoded only in the Rust core and never crosses the JS/HTTP boundary,
+so it skips the camelCase API convention.)
+
+Two things are deliberately **absent** because trusting them would be a
+vulnerability:
+
+- **No sender field.** The sender is the signed cert *inside the envelope
+  ciphertext* (D6); the receiver stamps `sender_contact_id` from that
+  **verified** `sender_identity_pub`, never from the payload (interim: the
+  identity key itself is the contact id until contacts move to v8).
+- **No ordering field.** `sent_at` is a display hint; the ordering key is the
+  **relay's delivery `relay_ts`** (D11), applied by the receiver on drain.
+
+`id` is sender-assigned and globally unique — the idempotency key for ingest
+and for dedup across at-least-once delivery and history backfill.
+
+**Inbound drain** (`relay_mailbox_drain`, triggered by the `relay:mail` nudge
+or on reconnect): fetch → `open`/verify → decode → ingest → ack. Ack policy is
+security-shaped: **buffer (leave queued)** only on version skew or a
+not-yet-handled kind, so nothing is dropped across an app update; **discard
+(ack)** anything permanently invalid — undecryptable, forged signature, or an
+authenticated-but-garbage payload — so a single malformed/forged inject can't
+wedge the queue. Rows are acked only after they are durably stored
+(hold-until-ack).

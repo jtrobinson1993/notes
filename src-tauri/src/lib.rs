@@ -2,6 +2,7 @@ mod blobs;
 mod envelope;
 mod identity;
 mod keys;
+mod message;
 mod relay_client;
 mod relay_live;
 mod store;
@@ -218,6 +219,58 @@ async fn relay_mailbox_ack(
         vault.device_signing_key().map_err(|e| e.to_string())?
     };
     relay.mailbox_ack(&signing, queue_ids).await
+}
+
+/// Drain the sealed-sender mailbox into the local log (D6/D11): fetch queued
+/// envelopes, open+verify each, decode `msg` payloads, ingest idempotently
+/// (ordering = the relay delivery stamp; sender = the verified envelope cert),
+/// then ack what we durably stored or permanently can't use. Version-skew and
+/// not-yet-handled kinds are left queued to redeliver after an app update
+/// ("buffer, never drop"). Triggered by the `relay:mail` live nudge or on
+/// reconnect; safe to call repeatedly.
+#[tauri::command]
+async fn relay_mailbox_drain(
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<message::DrainReport, String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    // Take the device key (for fetch/ack) and the sealing secret (to open
+    // envelopes) before any await — the vault mutex must not cross it.
+    let (signing, sealing) = {
+        let vault = vault.lock().unwrap();
+        let signing = vault.device_signing_key().map_err(|e| e.to_string())?;
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        (signing, ident.sealing)
+    };
+
+    let rows = relay.mailbox_fetch(&signing).await?;
+    let mut imports = Vec::new();
+    let mut ack_ids = Vec::new();
+    let mut buffered = 0usize;
+    for row in rows {
+        match message::disposition(envelope::open(&sealing, &row.envelope), row.relay_ts) {
+            message::Disposition::Ingest(m) => {
+                imports.push(*m);
+                ack_ids.push(row.queue_id);
+            }
+            message::Disposition::Discard => ack_ids.push(row.queue_id),
+            message::Disposition::Buffer => buffered += 1,
+        }
+    }
+
+    // Ingest first; only ack once the rows are durably stored (hold-until-ack).
+    let ingested = {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store.import_messages(imports).map_err(|e| e.to_string())?
+    };
+    let acked = if ack_ids.is_empty() {
+        0
+    } else {
+        relay.mailbox_ack(&signing, ack_ids).await? as usize
+    };
+    Ok(message::DrainReport { ingested, acked, buffered })
 }
 
 /// Register the wrapped-MK escrow with the connected relay (D15).
@@ -524,6 +577,7 @@ pub fn run() {
             envelope_open,
             relay_mailbox_fetch,
             relay_mailbox_ack,
+            relay_mailbox_drain,
             messages_page,
             messages_ingest,
             message_edit,

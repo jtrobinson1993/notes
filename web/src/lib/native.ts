@@ -135,6 +135,27 @@ export function relayMailboxAck(queueIds: number[]): Promise<number> {
   return invoke<number>('relay_mailbox_ack', { queueIds });
 }
 
+export interface DrainReport {
+  /** Rows newly inserted into the local log (idempotent — dupes not counted). */
+  ingested: number;
+  /** Queue entries removed (ingested + permanently-invalid discards). */
+  acked: number;
+  /** Queue entries left in place for a post-update retry (version skew). */
+  buffered: number;
+}
+
+/**
+ * One-shot mailbox drain (D6/D11): fetch queued envelopes, open+verify each,
+ * decode `msg` payloads, ingest idempotently into the local log (ordering =
+ * relay delivery stamp; sender = the verified envelope cert), then ack what was
+ * stored or is permanently unusable. Version-skew / unhandled kinds are left
+ * queued to redeliver after an update. Safe to call repeatedly — triggered by
+ * the `relay:mail` live nudge and on reconnect.
+ */
+export function relayMailboxDrain(): Promise<DrainReport> {
+  return invoke<DrainReport>('relay_mailbox_drain');
+}
+
 export function relayStatus(): Promise<{
   connected: boolean;
   base_url: string | null;
