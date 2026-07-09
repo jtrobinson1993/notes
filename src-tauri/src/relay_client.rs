@@ -460,6 +460,99 @@ impl RelayClient {
         Ok(body.relay_ts)
     }
 
+    /// Upload attachment ciphertext to a friend's DM blob store (D6): authorized
+    /// by the recipient's delivery token (sender-anonymous). Returns the blobId.
+    pub async fn blob_upload(
+        &self,
+        recipient_handle: &str,
+        delivery_token: &str,
+        ciphertext: Vec<u8>,
+    ) -> Result<String, String> {
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/blobs"))
+            .header("content-type", "application/octet-stream")
+            .header("x-delivery-token", delivery_token)
+            .header("x-recipient-handle", recipient_handle)
+            .body(ciphertext)
+            .send()
+            .await
+            .map_err(|e| format!("blob upload failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("blob upload refused (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            #[serde(rename = "blobId")]
+            blob_id: String,
+        }
+        Ok(res.json::<Resp>().await.map_err(|e| format!("bad blob resp: {e}"))?.blob_id)
+    }
+
+    /// Download attachment ciphertext (device-authed; only the recipient).
+    pub async fn blob_download(&self, signing: &SigningKey, blob_id: &str) -> Result<Vec<u8>, String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .get(format!("{base}/api/relay/blobs/{blob_id}"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .map_err(|e| format!("blob download failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("blob download refused (HTTP {})", res.status()));
+        }
+        Ok(res.bytes().await.map_err(|e| format!("blob read failed: {e}"))?.to_vec())
+    }
+
+    /// Upload a group attachment blob (group-token authed, D6/D14).
+    pub async fn group_blob_upload(
+        &self,
+        group_id: &str,
+        group_token: &str,
+        ciphertext: Vec<u8>,
+    ) -> Result<String, String> {
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/groups/{group_id}/blobs"))
+            .header("content-type", "application/octet-stream")
+            .header("x-group-token", group_token)
+            .body(ciphertext)
+            .send()
+            .await
+            .map_err(|e| format!("group blob upload failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("group blob upload refused (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            #[serde(rename = "blobId")]
+            blob_id: String,
+        }
+        Ok(res.json::<Resp>().await.map_err(|e| format!("bad group blob resp: {e}"))?.blob_id)
+    }
+
+    /// Download a group attachment blob (device-authed member, D6/D14).
+    pub async fn group_blob_download(
+        &self,
+        signing: &SigningKey,
+        group_id: &str,
+        blob_id: &str,
+    ) -> Result<Vec<u8>, String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .get(format!("{base}/api/relay/groups/{group_id}/blobs/{blob_id}"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .map_err(|e| format!("group blob download failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("group blob download refused (HTTP {})", res.status()));
+        }
+        Ok(res.bytes().await.map_err(|e| format!("group blob read failed: {e}"))?.to_vec())
+    }
+
     /// Sealed send (D6): deliberately NO device token — the recipient's
     /// delivery token is the only credential, so the relay never learns who
     /// sent the envelope.

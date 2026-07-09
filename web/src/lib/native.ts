@@ -162,6 +162,38 @@ export function relayDeleteMessage(contactId: string, messageId: string): Promis
   return invoke('relay_delete_message', { contactId, messageId });
 }
 
+/** An attachment ref embedded in a message payload: the relay blobId + the
+ *  per-file key/iv (never seen by the relay) + display metadata. */
+export interface MessageAttachment {
+  blobId: string;
+  key: string;
+  iv: string;
+  mime: string;
+  name: string;
+  size: number;
+}
+
+/** Encrypt + upload a file to the blob store (D6). `kind` picks DM (friend's
+ *  delivery token) vs group (group token). Resolves with the ref to attach. */
+export function attachmentUpload(
+  kind: 'dm' | 'group',
+  targetId: string,
+  bytes: number[],
+  mime: string,
+  name: string,
+): Promise<MessageAttachment> {
+  return invoke<MessageAttachment>('attachment_upload', { kind, targetId, bytes, mime, name });
+}
+
+/** Download + decrypt an attachment (D6); resolves with the plaintext bytes. */
+export function attachmentFetch(
+  kind: 'dm' | 'group',
+  targetId: string,
+  attachment: MessageAttachment,
+): Promise<number[]> {
+  return invoke<number[]>('attachment_fetch', { kind, targetId, attachment });
+}
+
 /** Edit a v8 message I sent (D11): seals an edit to the friend and updates my
  *  local copy. The recipient applies it only if my verified identity is the
  *  message's author. */

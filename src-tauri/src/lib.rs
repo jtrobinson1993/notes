@@ -743,6 +743,108 @@ async fn relay_group_react(
     }
 }
 
+/// An attachment reference embedded in a message payload (D6): the blobId at the
+/// relay + the per-file key/iv (which never reach the relay) + display metadata.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AttachmentRef {
+    #[serde(rename = "blobId")]
+    blob_id: String,
+    /// base64 per-file AES key.
+    key: String,
+    /// base64 AES-GCM IV.
+    iv: String,
+    mime: String,
+    name: String,
+    size: usize,
+}
+
+/// Encrypt a file with a fresh per-file key and upload the ciphertext to the
+/// blob store (D6). `kind` = "dm" (uploads with the friend's delivery token) or
+/// "group" (uploads with the group token). Returns the ref to embed in a message.
+#[tauri::command]
+async fn attachment_upload(
+    kind: String,
+    target_id: String,
+    bytes: Vec<u8>,
+    mime: String,
+    name: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<AttachmentRef, String> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let size = bytes.len();
+    let enc = attachment::encrypt_file(&bytes)?;
+
+    let blob_id = if kind == "group" {
+        let group_key = {
+            let vault = vault.lock().unwrap();
+            let store = vault.store().map_err(|e| e.to_string())?;
+            store
+                .group_key(&target_id)
+                .map_err(|e| e.to_string())?
+                .ok_or("not a member of this group")?
+        };
+        let (token, _v) = keys::group_token_verifier(&group_key).map_err(|e| e.to_string())?;
+        relay.group_blob_upload(&target_id, &token, enc.ciphertext).await?
+    } else {
+        let (handle, delivery_token) = {
+            let vault = vault.lock().unwrap();
+            let store = vault.store().map_err(|e| e.to_string())?;
+            let a = store
+                .friend_addressing(&target_id, &relay_fp)
+                .map_err(|e| e.to_string())?
+                .ok_or("not a friend on this relay")?;
+            (a.handle, a.delivery_token)
+        };
+        relay.blob_upload(&handle, &delivery_token, enc.ciphertext).await?
+    };
+
+    Ok(AttachmentRef {
+        blob_id,
+        key: b64.encode(enc.key),
+        iv: b64.encode(enc.iv),
+        mime,
+        name,
+        size,
+    })
+}
+
+/// Download + decrypt an attachment (D6). `kind` "dm"/"group" selects the blob
+/// route; the per-file key/iv come from the message's AttachmentRef.
+#[tauri::command]
+async fn attachment_fetch(
+    kind: String,
+    target_id: String,
+    attachment: AttachmentRef,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    let ciphertext = if kind == "group" {
+        relay.group_blob_download(&signing, &target_id, &attachment.blob_id).await?
+    } else {
+        relay.blob_download(&signing, &attachment.blob_id).await?
+    };
+    let key: [u8; 32] = b64
+        .decode(&attachment.key)
+        .ok()
+        .and_then(|k| k.try_into().ok())
+        .ok_or("bad attachment key")?;
+    let iv: [u8; 12] = b64
+        .decode(&attachment.iv)
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or("bad attachment iv")?;
+    attachment::decrypt_file(&ciphertext, &key, &iv)
+}
+
 /// Add a friend to a group I administer (D14): add them to the signed group
 /// record (version bump, re-signed by me) and hand them the group key via a
 /// DM-sealed group-invite. Requires the vault unlocked + the group key locally.
@@ -1431,6 +1533,8 @@ pub fn run() {
             relay_group_delete_message,
             relay_group_edit_message,
             relay_group_react,
+            attachment_upload,
+            attachment_fetch,
             relay_directory_publish,
             relay_register_verifier,
             relay_send,
