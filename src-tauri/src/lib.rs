@@ -603,6 +603,61 @@ fn group_list(vault: VaultState) -> Result<Vec<store::GroupSummary>, String> {
     store.list_groups().map_err(|e| e.to_string())
 }
 
+/// Send a text message to a group (D6/D14): seal one envelope under the shared
+/// group key, deliver via the group token (relay fans out to all members), and
+/// tee the same id locally. Returns the message id. My own fanned-out copy
+/// dedups against the tee by id.
+#[tauri::command]
+async fn relay_send_group_message(
+    group_id: String,
+    content: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    use rand::RngCore as _;
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let (ident, group_key) = {
+        let vault = vault.lock().unwrap();
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        let store = vault.store().map_err(|e| e.to_string())?;
+        let group_key = store
+            .group_key(&group_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("not a member of this group")?;
+        (ident, group_key)
+    };
+    let (group_token, _verifier) =
+        keys::group_token_verifier(&group_key).map_err(|e| e.to_string())?;
+    let key32: [u8; 32] = group_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| "stored group key is malformed".to_string())?;
+
+    let msg_id = {
+        let mut b = [0u8; 16];
+        rand::rng().fill_bytes(&mut b);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+    };
+    let sent_at = now_ms();
+    let payload =
+        message::ChatMessagePayload::new_text(msg_id.clone(), group_id, None, content, sent_at);
+    let bytes = payload.encode().map_err(|e| e.to_string())?;
+    let envelope = envelope::seal_group(&key32, &ident, message::KIND_MSG, &bytes, sent_at)
+        .map_err(|e| e.to_string())?;
+    let relay_ts = relay.group_send(&payload.conversation_id, &group_token, envelope).await?;
+
+    {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store
+            .import_messages(vec![payload.into_import(relay_ts, Some("self".into()))])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(msg_id)
+}
+
 /// Unfriend, local half (D4b): drop the friend flag + their addressing so we can
 /// no longer reach them. The caller also rotates the profile key + re-issues
 /// tokens to remaining friends (a follow-up flow).
@@ -1154,6 +1209,7 @@ pub fn run() {
             dm_unread,
             group_create,
             group_list,
+            relay_send_group_message,
             relay_directory_publish,
             relay_register_verifier,
             relay_send,

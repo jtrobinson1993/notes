@@ -225,6 +225,13 @@ export function groupList(): Promise<GroupSummary[]> {
   return invoke<GroupSummary[]>('group_list');
 }
 
+/** Send a text to a group (D6/D14): the core seals one envelope under the group
+ *  key, the relay fans it to all members, and it tees locally. Resolves with the
+ *  message id. */
+export function relaySendGroupMessage(groupId: string, content: string): Promise<string> {
+  return invoke<string>('relay_send_group_message', { groupId, content });
+}
+
 /** Sealed send: the recipient's delivery token is the only credential. */
 export function relaySend(
   recipientHandle: string,
