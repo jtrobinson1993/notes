@@ -1031,15 +1031,23 @@ Playwright version (currently 1.60.0).
     missing handle / disconnected relay. Tests (web 471, +5). The full native
     friend + DM API is now assembled below the UI: `nativeFriends.{createInvite,
     redeemInvite}`, `nativeDm.{listDms, openDm, sendDm}`, `friendRemove`.
-  - **Next (UI — the remaining piece; UI-heavy, wants the browser harness):**
-    (a) **friends UI** — `createInvite` → show QR/link, `redeemInvite` (paste),
-    `listDms` list. (b) **DM view** — `openDm` → render `ChatMessageView[]`
-    (reuse message bubbles), input → `sendDm` → re-open/`reloadActiveFromLog`.
-    (c) native conversation-list from `listDms`. Focused native-only surface;
-    legacy chat store/UI untouched. All the orchestration/logic is now built +
-    tested — the UI is a thin, visual layer (component-testable in jsdom; visual
-    polish wants a real browser). NOTE: reciprocal friend-confirm is best-effort
-    in the drain; dropped → re-invite recovers.
+  - **DONE (iter 53) — native friends/DM UI.** `NativeChat.vue`: DM list
+    (`listDms`) + DM view (`openDm` → bubbles, own=right via `sender="self"`) +
+    composer (`sendDm`) + add-friend panel (`createInvite` link / `redeemInvite`
+    paste). Live inbound via `onMailIngested`. `nativeRelay`: single hook →
+    **`onMailIngested` multi-subscriber** (unsub fn) so chat store + DM surface
+    both refresh. `NativeChatPage.vue` + `/dm` route (native-only) + AppSidebar
+    link (isNative-gated). Myna icons, tests (web 476). **v8 local-first DM
+    messaging is now usable end-to-end from the UI** (add friend via invite →
+    DM → send/receive live). User directive: keep implementing the spec
+    continuously (no long heartbeats).
+  - **Remaining spec work (continuing):** (1) edits/reactions/read-state for v8
+    DMs (currently read-only render); (2) group messaging (send/fan-out on the
+    D14 group-state record + group blobs); (3) blob chunked/resumable transfer;
+    (4) voice under v8 (device-token auth); (5) KT inclusion proofs / auditor
+    (phase 6); (6) README/spec currency for the v8 native surface. NOTE:
+    reciprocal friend-confirm best-effort in drain; live WS task no stop signal;
+    unsigned commits (1Password) — re-sign later.
   - **v8 MESSAGING CORE COMPLETE** (iters 42–50): unified msg identity/order,
     live-render wiring, friend store + full invite→mutual-friend handshake,
     outbound send, spoof-proof DM identity, native DM API. Remaining v8 work is
