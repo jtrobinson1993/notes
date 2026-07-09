@@ -783,13 +783,33 @@ Playwright version (currently 1.60.0).
     live, config)`; send route calls `live.notifyDevices(devices)`. Tests
     (server 325): greet/reject-no-token/reject-revoked/nudge-on-send/cap.
     relay.md corrected (content-free nudge, not envelope framing).
-  - **Next iterations (phase 3):** (1) **Rust client WS consumer** — connect
-    to `/api/relay/ws` with the device bearer, on `{type:'mail'}` trigger the
-    existing mailbox fetch→ack; reconnect w/ backoff (new dep:
-    tokio-tungstenite or similar); (2) security.md relay-state inventory
-    fold-in; (3) phase-3 review vs relay.md (still unbuilt: transient blob
-    store, group-state record, invite redeem, push registration). Desk queue
-    unchanged (mobile init, tauri smoke, biometric ACLs).
+  - **DONE (iter 31) — relay live-delivery WS consumer (client half, D6).**
+    New `src-tauri/src/relay_live.rs`: pure helpers `ws_url_from_base`
+    (https→wss, **never a silent downgrade** — non-http rejected),
+    `is_mail_frame` (strict `{type:'mail'}` only), `backoff_delay` (capped
+    exp, shift-overflow safe) + `connect_and_listen` (bearer on the handshake
+    `Authorization` header, **replies to pings** so the 30s heartbeat holds) +
+    `run_forever` supervisor (refresh bearer → connect → backoff; best-effort
+    since REST fetch stays authoritative). Emits a **`relay:mail`** Tauri event
+    per nudge. Independent WS bearer via `RelayClient::issue_bearer_static`
+    (device key only → survives locked vault; no session-mutex contention);
+    `try_begin_live()` spawns the task at most once/process. `relay_connect`
+    now takes `AppHandle` and spawns it. Deps: tokio (rt/time/net),
+    tokio-tungstenite (rustls-webpki, **no OpenSSL**), futures-util. Tests
+    (cargo 35): url map/reject, frame strictness, backoff cap+overflow, and a
+    **local WS server** asserting the bearer rides the handshake + only mail
+    frames fire (hello ignored). clippy-clean.
+  - **Next iterations (phase 3):** (1) **frontend `relay:mail` listener +
+    inbound drain** — but the drain (fetch → `envelope_open` → map → ingest →
+    ack) needs the **v8 chat message-envelope payload schema** defined first
+    (what rides inside a message envelope: conv id, content, reply refs,
+    attachments); that's the real next design+build unit. (2) security.md
+    relay-state inventory fold-in; (3) phase-3 review vs relay.md (still
+    unbuilt: transient blob store, group-state record, invite redeem, push
+    registration). NOTE: live task has no explicit stop signal yet (reconnects
+    forever until process exit) — lifecycle refinement (stop on disconnect/
+    relay switch) is a follow-up. Desk queue unchanged (mobile init, tauri
+    smoke, biometric ACLs).
 
 - **App typeface: Geist (Sans + Mono), self-hosted.** Added
   `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (bundled, no
