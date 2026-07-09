@@ -164,22 +164,20 @@ impl RelayClient {
     pub async fn escrow_upload(
         &self,
         signing: &SigningKey,
-        payload: String,
-        password_auth_hash: String,
-        recovery_auth_hash: String,
+        bundle: crate::vault::EscrowUploadBundle,
     ) -> Result<(), String> {
         let bearer = self.bearer(signing).await?;
-        let base = {
-            let guard = self.session.lock().unwrap();
-            guard.as_ref().ok_or("not connected to a relay")?.base_url.clone()
-        };
+        let base = self.base_url()?;
+        let kdf_params: serde_json::Value =
+            serde_json::from_str(&bundle.kdf_params).map_err(|e| format!("bad kdf params: {e}"))?;
         let res = reqwest::Client::new()
             .put(format!("{base}/api/relay/escrow"))
             .bearer_auth(bearer)
             .json(&serde_json::json!({
-                "payload": payload,
-                "passwordAuthHash": password_auth_hash,
-                "recoveryAuthHash": recovery_auth_hash,
+                "payload": bundle.payload,
+                "kdfParams": kdf_params,
+                "passwordAuthHash": bundle.password_auth_hash,
+                "recoveryAuthHash": bundle.recovery_auth_hash,
             }))
             .send()
             .await
@@ -188,6 +186,37 @@ impl RelayClient {
             return Err(format!("relay refused escrow (HTTP {})", res.status()));
         }
         Ok(())
+    }
+
+    /// Cold-start step 1 (sessionless): fetch the public KDF params by handle
+    /// so the fresh device can derive its escrow fetch auth key.
+    pub async fn escrow_kdf(
+        base_url: &str,
+        handle: &str,
+    ) -> Result<(Vec<u8>, u32, u32, u32), String> {
+        let base = base_url.trim_end_matches('/');
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/escrow/kdf"))
+            .json(&serde_json::json!({ "handle": handle }))
+            .send()
+            .await
+            .map_err(|e| format!("kdf fetch failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("kdf fetch refused (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct KdfResponse {
+            #[serde(rename = "kdfSalt")]
+            kdf_salt: Vec<u8>,
+            #[serde(rename = "kdfMKib")]
+            kdf_m_kib: u32,
+            #[serde(rename = "kdfT")]
+            kdf_t: u32,
+            #[serde(rename = "kdfP")]
+            kdf_p: u32,
+        }
+        let k: KdfResponse = res.json().await.map_err(|e| format!("bad kdf response: {e}"))?;
+        Ok((k.kdf_salt, k.kdf_m_kib, k.kdf_t, k.kdf_p))
     }
 
     /// Publish this account's per-relay public keys to the directory (D5).

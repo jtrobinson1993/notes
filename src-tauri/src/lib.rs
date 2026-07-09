@@ -215,13 +215,35 @@ async fn relay_escrow_upload(
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<(), String> {
-    let (signing, payload, pw_hash, rc_hash) = {
+    let (signing, bundle) = {
         let vault = vault.lock().unwrap();
         let signing = vault.device_signing_key().map_err(|e| e.to_string())?;
-        let (payload, pw, rc) = vault.escrow_bundle().map_err(|e| e.to_string())?;
-        (signing, payload, pw, rc)
+        let bundle = vault.escrow_bundle().map_err(|e| e.to_string())?;
+        (signing, bundle)
     };
-    relay.escrow_upload(&signing, payload, pw_hash, rc_hash).await
+    relay.escrow_upload(&signing, bundle).await
+}
+
+/// Cold-start restore on a fresh device (D15/D3a): fetch public KDF params by
+/// handle, derive the escrow fetch auth key from the password, fetch the
+/// escrow, then rebuild the vault. No session/device key needed — this runs
+/// before any local vault exists.
+#[tauri::command]
+async fn vault_restore_from_escrow(
+    url: String,
+    handle: String,
+    password: String,
+    vault: VaultState<'_>,
+) -> Result<(), String> {
+    let (salt, m, t, p) = relay_client::RelayClient::escrow_kdf(&url, &handle).await?;
+    let auth_key_b64 = Vault::derive_escrow_auth_key_b64(&password, &salt, m, t, p)
+        .map_err(|e| e.to_string())?;
+    let payload =
+        relay_client::RelayClient::escrow_fetch(&url, &handle, "password", &auth_key_b64).await?;
+    let mut vault = vault.lock().unwrap();
+    vault
+        .restore_from_escrow(&payload, &password)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -476,6 +498,7 @@ pub fn run() {
             vault_unlock_keychain,
             vault_unlock,
             vault_unlock_recovery,
+            vault_restore_from_escrow,
             vault_lock,
             settings_get,
             settings_set,
