@@ -494,6 +494,12 @@ CREATE TABLE IF NOT EXISTS relay_invites (
   used INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS relay_blobs (
+  blob_id TEXT PRIMARY KEY,
+  recipient_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `);
 
   // Idempotent v8 migration: relay_escrow.kdf_params (added after the table).
@@ -840,6 +846,36 @@ CREATE TABLE IF NOT EXISTS relay_invites (
       return db
         .prepare('DELETE FROM relay_invites WHERE expires_at < ? OR (used = 1 AND created_at < ?)')
         .run(Date.now(), Date.now() - maxAgeMs).changes;
+    },
+
+    /** D6 transient blob store (metadata only — ciphertext lives on disk). The
+     *  per-file key + which message/note it belongs to never reach the relay. */
+    createRelayBlob(blobId: string, recipientUserId: string, size: number): void {
+      db.prepare(
+        'INSERT INTO relay_blobs (blob_id, recipient_user_id, size, created_at) VALUES (?, ?, ?, ?)',
+      ).run(blobId, recipientUserId, size, Date.now());
+    },
+    getRelayBlob(blobId: string): { recipientUserId: string; size: number } | undefined {
+      const r = db
+        .prepare('SELECT recipient_user_id, size FROM relay_blobs WHERE blob_id = ?')
+        .get(blobId) as { recipient_user_id: string; size: number } | undefined;
+      return r ? { recipientUserId: r.recipient_user_id, size: r.size } : undefined;
+    },
+    deleteRelayBlob(blobId: string): void {
+      db.prepare('DELETE FROM relay_blobs WHERE blob_id = ?').run(blobId);
+    },
+    /** TTL sweep: delete expired rows and return their ids so the caller can
+     *  unlink the on-disk ciphertext. */
+    pruneRelayBlobs(maxAgeMs: number): string[] {
+      const cutoff = Date.now() - maxAgeMs;
+      const sweep = db.transaction((): string[] => {
+        const rows = db
+          .prepare('SELECT blob_id FROM relay_blobs WHERE created_at < ?')
+          .all(cutoff) as { blob_id: string }[];
+        db.prepare('DELETE FROM relay_blobs WHERE created_at < ?').run(cutoff);
+        return rows.map((r) => r.blob_id);
+      });
+      return sweep();
     },
 
     /** D15 escrow: opaque wrapped-key payload + auth-key hashes. The blobs

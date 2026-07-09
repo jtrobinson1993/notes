@@ -4,10 +4,14 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, createPrivateKey, randomBytes, sign as edSign } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
 import type { Config } from '../config.js';
 import type { DB } from '../db.js';
 import type { RelayLive } from '../relayLive.js';
 import { requireAuth } from '../session.js';
+import { newToken } from '../util.js';
 import {
   fingerprintB64url,
   generateRelayIdentity,
@@ -311,6 +315,113 @@ export function relayRoutes(
       return { valid };
     },
   );
+
+  // ---- transient blob store (D6) ----
+  // Attachment ciphertext travels through the relay. Upload is authorized by
+  // the recipient's DELIVERY TOKEN (sealed-sender-compatible — the uploader
+  // proves it may send to the recipient but stays sender-anonymous, exactly
+  // like mailbox/send); download is DEVICE-TOKEN gated to that recipient plus
+  // the unguessable 256-bit blobId (capability). The per-file key + which
+  // message the blob belongs to ride inside the E2E envelope and never reach
+  // the relay. First cut is DM-scoped: group blobs (one blob, many recipients,
+  // GC on all-ack) wait on the group-state record (D14) for the member set.
+  if (config) {
+    const blobDir = join(config.dataDir, 'relay-blobs');
+    const BLOB_TTL_MS = 14 * 24 * 60 * 60_000; // D6
+    const MAX_BLOB_BYTES = 32 * 1024 * 1024;
+    const BLOB_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+    // Contain the id to blobDir (the allowlist already forbids separators; this
+    // is defense-in-depth + the explicit barrier CodeQL path-injection needs).
+    const blobPathFor = (id: string): string | null => {
+      if (!BLOB_ID_RE.test(id)) return null;
+      const root = resolve(blobDir);
+      const path = resolve(root, id);
+      return path === join(root, id) && path.startsWith(root + sep) ? path : null;
+    };
+
+    // Reuse the octet-stream buffer parser (attachments may already register
+    // it; register only if absent so route order can't cause a double-add).
+    if (!app.hasContentTypeParser('application/octet-stream')) {
+      app.addContentTypeParser(
+        'application/octet-stream',
+        { parseAs: 'buffer', bodyLimit: MAX_BLOB_BYTES },
+        (_req, body, done) => done(null, body),
+      );
+    }
+
+    const blobRate = { rateLimit: { max: config.rateLimitMax, timeWindow: '1 minute' } };
+
+    // Upload (delivery-token capability, NOT device-authed). Credentials ride
+    // in headers since the body is the raw ciphertext. Uniform 401 for a bad
+    // handle/token (no enumeration), matching mailbox/send.
+    app.post(
+      '/api/relay/blobs',
+      { bodyLimit: MAX_BLOB_BYTES, config: blobRate },
+      async (request, reply) => {
+        const deliveryToken = request.headers['x-delivery-token'];
+        const recipientHandle = request.headers['x-recipient-handle'];
+        if (typeof deliveryToken !== 'string' || typeof recipientHandle !== 'string') {
+          return reply.code(400).send({ error: 'x-delivery-token and x-recipient-handle required' });
+        }
+        const body = request.body;
+        if (!Buffer.isBuffer(body) || body.length === 0) {
+          return reply.code(400).send({ error: 'expected application/octet-stream body' });
+        }
+        const user = db.getUserByHandle(recipientHandle);
+        const verifier = user ? db.getRelayVerifier(user.id) : undefined;
+        const presented = createHash('sha256').update(deliveryToken).digest('base64url');
+        if (!user || !verifier || presented !== verifier) {
+          return reply.code(401).send({ error: 'upload refused' });
+        }
+        const blobId = newToken();
+        await mkdir(blobDir, { recursive: true });
+        await writeFile(join(blobDir, blobId), body);
+        db.createRelayBlob(blobId, user.id, body.length);
+        for (const id of db.pruneRelayBlobs(BLOB_TTL_MS)) {
+          await unlink(join(blobDir, id)).catch(() => {});
+        }
+        return { blobId, size: body.length };
+      },
+    );
+
+    // Download (device token; only the intended recipient's devices). Unknown
+    // or not-yours id → uniform 404.
+    app.get('/api/relay/blobs/:id', { config: blobRate }, async (request, reply) => {
+      const device = requireDevice(request, reply);
+      if (!device) return;
+      const { id } = request.params as { id: string };
+      const path = blobPathFor(id);
+      const blob = path ? db.getRelayBlob(id) : undefined;
+      if (!path || !blob || blob.recipientUserId !== device.userId) {
+        return reply.code(404).send({ error: 'not found' });
+      }
+      try {
+        const info = await stat(path);
+        reply.header('content-type', 'application/octet-stream');
+        reply.header('content-length', info.size);
+        reply.header('cache-control', 'private, max-age=31536000, immutable');
+        return reply.send(createReadStream(path));
+      } catch {
+        return reply.code(404).send({ error: 'not found' });
+      }
+    });
+
+    // Per-recipient ack → delete (DM: one recipient, so ack = done).
+    app.post('/api/relay/blobs/:id/ack', { config: blobRate }, async (request, reply) => {
+      const device = requireDevice(request, reply);
+      if (!device) return;
+      const { id } = request.params as { id: string };
+      const path = blobPathFor(id);
+      const blob = path ? db.getRelayBlob(id) : undefined;
+      if (!path || !blob || blob.recipientUserId !== device.userId) {
+        return reply.code(404).send({ error: 'not found' });
+      }
+      db.deleteRelayBlob(id);
+      await unlink(path).catch(() => {});
+      return { ok: true };
+    });
+  }
 
   // ---- account escrow (D15) ----
 

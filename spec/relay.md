@@ -106,12 +106,25 @@ correlation is documented there).
 
 ## Blob store (D6)
 
-- `POST /api/blobs` (delivery/group token) — chunked + resumable upload of
-  ciphertext → `{ blobId }`. Per-file key + metadata never touch the relay
-  (they ride inside the E2E message).
-- `GET /api/blobs/:id` (delivery/group token) — ranged/resumable download.
-- `POST /api/blobs/:id/ack` (device token) — per-recipient; deleted when all
-  recipients ack or at TTL.
+Attachment ciphertext travels through the relay; the per-file key + which
+message it belongs to ride inside the E2E envelope and never reach the relay.
+Filesystem-backed with a high-entropy 256-bit blobId (capability). **DM-first as
+built** — group blobs (one blob, many recipients, GC on all-ack) wait on the
+group-state record (D14) for the member set.
+
+- `POST /api/relay/blobs` — **upload authorized by the recipient's delivery
+  token** (`x-delivery-token` + `x-recipient-handle` headers; body is raw
+  `application/octet-stream` ciphertext, 32 MB cap). Like mailbox/send this is
+  sealed-sender-compatible: the uploader proves it may send to the recipient but
+  stays sender-anonymous. Uniform 401 for a bad handle/token. → `{ blobId, size }`.
+- `GET /api/relay/blobs/:id` — **download, device-token gated to the recipient**
+  (`recipientUserId == device.userId`) plus the unguessable id; unknown/not-yours/
+  malformed id → uniform 404. Streams the ciphertext.
+- `POST /api/relay/blobs/:id/ack` (device token, recipient only) — delete now;
+  otherwise swept at **TTL 14 days**.
+
+*Follow-ups:* chunked/resumable + ranged transfer for large media (first cut is
+whole-blob); group blobs on D14.
 
 ## Directory & key transparency (D5)
 
