@@ -1109,11 +1109,14 @@ Playwright version (currently 1.60.0).
     `group_add_member` (RelayClient `group_state_get` → `message::
     group_record_add_member` [pure, tested] → re-sign + PUT → seal group-invite
     → send); native.ts `groupAddMember`. **GROUP MESSAGING NOW END-TO-END**:
-    create → add members → send/receive (cargo 60). Next: **group UI** — extend
-    NativeChat (or a groups panel) with create-group, group list, open group →
-    render `ChatMessageView[]` (reuse bubbles) + `relaySendGroupMessage`,
-    add-member picker. Remaining after: blob chunked/resumable, voice-v8, KT
-    proofs, README/spec currency. (b) **group creation** — genesis D14 record (me=owner) + set group
+    create → add members → send/receive (cargo 60). (a9) [DONE iter 68]
+    **native group API** — `nativeGroup.ts` (`listGroups`/`openGroup`/`sendGroup`/
+    `createGroup`/`addGroupMember`, mirrors nativeDm; group conv id == group id;
+    unread reuses dm_unread). web +3. Next: **integrate into NativeChat** — a
+    combined DM+group list (active can be either), create-group button,
+    add-member picker (friends), route send to `sendDm`/`sendGroup`. Remaining
+    after group UI: blob chunked/resumable, voice-v8, KT proofs, README/spec
+    currency. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
