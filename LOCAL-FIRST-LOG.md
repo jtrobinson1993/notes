@@ -1024,14 +1024,22 @@ Playwright version (currently 1.60.0).
     from `api.me()` into the `identity.handle` setting = one native source (friends
     UI reads it to name me in invites/seal accepts; drain reads it to
     reciprocate). Unblocks the friends UI. web 466, tc clean.
+  - **DONE (iter 52, autonomous) — friend flow orchestration
+    (`web/src/lib/nativeFriends.ts`).** `createInvite()` (register verifier →
+    assemble invite from `identity.handle` + relay url/fp) and `redeemInvite()`
+    (register verifier + get my delivery token → `redeemFriendInvite`), guarding
+    missing handle / disconnected relay. Tests (web 471, +5). The full native
+    friend + DM API is now assembled below the UI: `nativeFriends.{createInvite,
+    redeemInvite}`, `nativeDm.{listDms, openDm, sendDm}`, `friendRemove`.
   - **Next (UI — the remaining piece; UI-heavy, wants the browser harness):**
-    (a) **friends UI** — invite create (`createFriendInvite` → QR/link), redeem
-    (`redeemFriendInvite` — paste/scan), friends list (`listDms`). (b) **DM view**
-    — `openDm` → render `ChatMessageView[]` (reuse message bubbles), input →
-    `sendDm` → `reloadActiveFromLog`/re-open. (c) native conversation-list
-    population from `listDms`. This is a focused UI build (native-only surface);
-    the legacy chat store/UI is untouched. NOTE: reciprocal friend-confirm is
-    best-effort in the drain; dropped → re-invite recovers.
+    (a) **friends UI** — `createInvite` → show QR/link, `redeemInvite` (paste),
+    `listDms` list. (b) **DM view** — `openDm` → render `ChatMessageView[]`
+    (reuse message bubbles), input → `sendDm` → re-open/`reloadActiveFromLog`.
+    (c) native conversation-list from `listDms`. Focused native-only surface;
+    legacy chat store/UI untouched. All the orchestration/logic is now built +
+    tested — the UI is a thin, visual layer (component-testable in jsdom; visual
+    polish wants a real browser). NOTE: reciprocal friend-confirm is best-effort
+    in the drain; dropped → re-invite recovers.
   - **v8 MESSAGING CORE COMPLETE** (iters 42–50): unified msg identity/order,
     live-render wiring, friend store + full invite→mutual-friend handshake,
     outbound send, spoof-proof DM identity, native DM API. Remaining v8 work is
