@@ -487,6 +487,13 @@ CREATE TABLE IF NOT EXISTS relay_kt_roots (
   signature TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS relay_invites (
+  token_hash TEXT PRIMARY KEY,
+  inviter_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
 `);
 
   // Idempotent v8 migration: relay_escrow.kdf_params (added after the table).
@@ -792,6 +799,47 @@ CREATE TABLE IF NOT EXISTS relay_kt_roots (
     pruneRelayMailbox(maxAgeMs: number): number {
       return db.prepare('DELETE FROM relay_mailbox WHERE created_at < ?').run(Date.now() - maxAgeMs)
         .changes;
+    },
+
+    /** D4b friend invite: store only `hash(token)` (the token is a client-held
+     *  bearer capability; the relay never sees it). */
+    mintRelayInvite(tokenHash: string, inviterUserId: string, expiresAt: number): void {
+      db.prepare(
+        'INSERT OR REPLACE INTO relay_invites (token_hash, inviter_user_id, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)',
+      ).run(tokenHash, inviterUserId, expiresAt, Date.now());
+    },
+    /** Non-consuming validity check by token hash. */
+    getRelayInvite(
+      tokenHash: string,
+    ): { inviterUserId: string; expiresAt: number; used: number } | undefined {
+      const r = db
+        .prepare('SELECT inviter_user_id, expires_at, used FROM relay_invites WHERE token_hash = ?')
+        .get(tokenHash) as
+        | { inviter_user_id: string; expires_at: number; used: number }
+        | undefined;
+      return r ? { inviterUserId: r.inviter_user_id, expiresAt: r.expires_at, used: r.used } : undefined;
+    },
+    /** One-time redeem: atomically claim an unused, unexpired invite and return
+     *  the inviter's id. Returns undefined if it was already used, expired, or
+     *  unknown — so double-redeem races resolve to exactly one winner. */
+    redeemRelayInvite(tokenHash: string, now: number): string | undefined {
+      const claim = db.transaction((): string | undefined => {
+        const r = db
+          .prepare('SELECT inviter_user_id, expires_at, used FROM relay_invites WHERE token_hash = ?')
+          .get(tokenHash) as
+          | { inviter_user_id: string; expires_at: number; used: number }
+          | undefined;
+        if (!r || r.used || r.expires_at < now) return undefined;
+        db.prepare('UPDATE relay_invites SET used = 1 WHERE token_hash = ?').run(tokenHash);
+        return r.inviter_user_id;
+      });
+      return claim();
+    },
+    /** Housekeeping: drop expired/used invites past a grace window. */
+    pruneRelayInvites(maxAgeMs: number): number {
+      return db
+        .prepare('DELETE FROM relay_invites WHERE expires_at < ? OR (used = 1 AND created_at < ?)')
+        .run(Date.now(), Date.now() - maxAgeMs).changes;
     },
 
     /** D15 escrow: opaque wrapped-key payload + auth-key hashes. The blobs

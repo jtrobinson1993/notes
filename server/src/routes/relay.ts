@@ -242,6 +242,76 @@ export function relayRoutes(
     return { acked: db.ackRelayMailbox(device.id, b.queueIds) };
   });
 
+  // ---- friend invites (D4b) ----
+  // The invite token is a one-time delivery capability: redeeming it drops
+  // exactly one sealed "friend-accept" envelope (carrying the invitee's own
+  // delivery token, sealed E2E to the inviter) into the inviter's mailbox;
+  // reciprocation is then an ordinary sealed send. The relay stores only
+  // hash(token) — the token itself is shared out-of-band (QR / link) and never
+  // seen here. Redeem is deliberately NOT device-authenticated: requiring the
+  // invitee's device token would let the relay link "X redeemed Y's invite" =
+  // a social-graph edge, defeating sealed-sender (D6).
+
+  const INVITE_MAX_TTL_MS = 14 * 24 * 60 * 60_000;
+  const INVITE_DEFAULT_TTL_MS = 7 * 24 * 60 * 60_000;
+
+  // Mint (device token): store hash(token) + expiry for one of the caller's
+  // own future friends.
+  app.post('/api/relay/invites', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const b = request.body as { tokenHash?: string; expiresInSec?: number } | null;
+    if (!b?.tokenHash || typeof b.tokenHash !== 'string' || b.tokenHash.length > 128) {
+      return reply.code(400).send({ error: 'tokenHash required' });
+    }
+    const ttlMs =
+      typeof b.expiresInSec === 'number' && b.expiresInSec > 0
+        ? Math.min(b.expiresInSec * 1000, INVITE_MAX_TTL_MS)
+        : INVITE_DEFAULT_TTL_MS;
+    const expiresAt = Date.now() + ttlMs;
+    db.mintRelayInvite(b.tokenHash, device.userId, expiresAt);
+    return { expiresAt };
+  });
+
+  // Redeem (capability only — no device token). Uniform 401 for
+  // unknown/expired/used so a probe can't tell them apart (the token is
+  // high-entropy, so this leaks nothing about real accounts).
+  app.post('/api/relay/invites/redeem', async (request, reply) => {
+    const b = request.body as { token?: string; envelope?: string } | null;
+    if (!b?.token || !b?.envelope) {
+      return reply.code(400).send({ error: 'token and envelope required' });
+    }
+    if (b.envelope.length > MAX_ENVELOPE_B64) {
+      return reply.code(413).send({ error: 'envelope too large' });
+    }
+    const tokenHash = createHash('sha256').update(b.token).digest('base64url');
+    const inviterUserId = db.redeemRelayInvite(tokenHash, Date.now());
+    if (!inviterUserId) return reply.code(401).send({ error: 'invite invalid' });
+    const devices = db.activeRelayDeviceIds(inviterUserId);
+    const relayTs = stampTs();
+    if (devices.length) {
+      db.enqueueRelayEnvelope(devices, relayTs, Buffer.from(b.envelope, 'base64'));
+      live?.notifyDevices(devices);
+    }
+    db.pruneRelayInvites(MAILBOX_TTL_MS); // opportunistic sweep
+    return { relayTs };
+  });
+
+  // Non-consuming validity check (rate-limited: cheap oracle guard even though
+  // tokens are unguessable).
+  app.post(
+    '/api/relay/invites/check',
+    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const b = request.body as { token?: string } | null;
+      if (!b?.token) return reply.code(400).send({ error: 'token required' });
+      const tokenHash = createHash('sha256').update(b.token).digest('base64url');
+      const invite = db.getRelayInvite(tokenHash);
+      const valid = !!invite && !invite.used && invite.expiresAt >= Date.now();
+      return { valid };
+    },
+  );
+
   // ---- account escrow (D15) ----
 
   // Upload/refresh the wrapped-MK escrow bundle. The payload is opaque to

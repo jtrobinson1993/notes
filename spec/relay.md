@@ -135,13 +135,28 @@ correlation is documented there).
 
 ## Invites (D4b)
 
-- `POST /api/invites` (device token) — mint friend invite `{ tokenHash,
-  expiry }`; the self-describing invite payload (relay hint + relay key
-  fingerprint + token) is assembled client-side.
-- `POST /api/invites/redeem` `{ token, ... }` — the identified one-time channel:
-  exchanges verifiers/sealed material between the two parties and (for a
-  relay-join invite) creates the account + claims the handle.
-- `GET /api/invite/:token` stays non-consuming (validity check), as today.
+The friend-invite token is a **one-time delivery capability** (built). Redeeming
+it drops exactly one sealed "friend-accept" envelope — carrying the invitee's
+own delivery token, sealed E2E to the inviter (whose identity/sealing pubkeys the
+invitee reads from the directory) — into the inviter's mailbox; reciprocation is
+then an ordinary sealed send. The relay stores only `hash(token)`; the token
+itself is shared out-of-band (QR / link) and never seen by the relay.
+
+- `POST /api/relay/invites` (device token) — mint `{ tokenHash, expiresInSec? }`
+  → `{ expiresAt }`. The self-describing invite payload (relay hint + relay key
+  fingerprint + token) is assembled client-side. TTL capped at 14 days.
+- `POST /api/relay/invites/redeem` `{ token, envelope }` — **capability only, no
+  device token**: requiring the invitee's device token would let the relay link
+  "X redeemed Y's invite" = a social-graph edge, defeating sealed-sender (D6).
+  Atomically claims the unused, unexpired invite (one-time; double-redeem races
+  resolve to one winner), enqueues `envelope` to the inviter's device queues +
+  live-nudges, and returns `{ relayTs }`. Uniform 401 for unknown/expired/used
+  (tokens are high-entropy, so this leaks nothing).
+- `POST /api/relay/invites/check` `{ token }` → `{ valid }` — non-consuming
+  validity check, rate-limited as a cheap oracle guard.
+
+*Relay-join invites* (redeem creates the account + claims the handle) remain a
+future variant layered on this same one-time-token mechanism.
 
 ## Push (D7)
 
