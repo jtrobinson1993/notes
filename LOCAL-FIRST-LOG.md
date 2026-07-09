@@ -829,16 +829,32 @@ Playwright version (currently 1.60.0).
     hook-gated-on-ingest, coalescing, error-swallow, unsubscribe. tc clean.
     (Verified via `dangerouslyDisableSandbox` — the auto-mode Bash classifier
     had a ~15min flaky outage; simple cmds classified, `npx` didn't.)
-  - **Next iterations (phase 3):** (1) **v8 chat store model** — the real
-    unlock for live render: teach the chat store to order/merge by
-    `(relay_ts, id)` (not `seq`) and wire the `nativeRelay` `onIngested` hook to
-    refresh it; this is a sizable store rework (currently legacy-seq). (2)
-    security.md relay-state inventory fold-in; (3) phase-3 review vs relay.md
-    (still unbuilt: transient blob store, group-state record, invite redeem,
-    push registration). OPEN FOLLOW-UPS: live WS task has no stop signal
-    (reconnects until process exit); relay reconnect-on-boot not wired (only via
-    migration today); sender→contact resolution interim (identity key as id).
-    Desk queue unchanged (mobile init, tauri smoke, biometric ACLs).
+  - **DONE (iter 34) — relay reconnect-on-boot (D6).** The relay session lives
+    only in the client process, so a cold start never resumed the WS/drains.
+    Now: `rememberRelayUrl` persists the relay URL to device settings at connect
+    (native origin is `tauri://…`, not the relay — must capture); `reconnectRelay`
+    (called from `markUnlocked`, since drains need the MK-derived sealing key →
+    vault must be unlocked) redials if not connected then (re)starts delivery —
+    **fully defensive** (offline/down/not-enrolled → delivery off till next
+    unlock, never throws into unlock). Re-lock stops the listener (drains need
+    MK); Rust WS task keeps running by design. Tests (web 449, +5). Closes the
+    "reconnect-on-boot not wired" follow-up.
+  - **DEFERRED (deliberate) — v8 chat store model.** Reworking the chat store
+    to order/merge by `(relay_ts, id)` instead of legacy `seq` is NOT a safe
+    single autonomous iteration: `seq` is load-bearing for message identity,
+    dedup, edits, reactions, AND read/unread state — redesigning those together
+    is the **phase-4/5 relay-native chat cutover**, and a piecemeal change would
+    regress working legacy-WS chat. Live inbound *capture* is done (iter 33);
+    live *render* waits on this cutover. Flagged for deliberate scoping (worth a
+    user check-in before starting).
+  - **Next iterations (phase 3, chat-store-independent):** (1) security.md
+    relay-state inventory fold-in (doc/hardening, low-risk); (2) phase-3 review
+    vs relay.md — still unbuilt: **transient blob store** (D6; note its
+    up/download auth model + blobId anti-enumeration needs careful design, not
+    just mechanical build), group-state record (D14), invite redeem (D4b), push
+    registration (D7). OPEN FOLLOW-UPS: live WS task has no stop signal
+    (reconnects until process exit); sender→contact resolution interim (identity
+    key as id). Desk queue unchanged (mobile init, tauri smoke, biometric ACLs).
   - **NOTE — unsigned commits:** iters 31–32 (`a9460bb`, `7399261`, `fc4e143`)
     committed with `-c commit.gpgsign=false` because the 1Password op-ssh-sign
     agent was locked (user approved "unsigned this once"). Re-sign later once
