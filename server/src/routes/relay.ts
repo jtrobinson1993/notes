@@ -101,6 +101,26 @@ export function relayRoutes(
     live.register(app, deviceIdForToken, config?.rateLimitMax ?? 600);
   }
 
+  /** Current member identity pubkeys of a group, from its signed state record
+   *  (D14). Empty if the group is unknown or the record can't be parsed. */
+  function groupMemberPubkeys(groupId: string): string[] {
+    const cur = db.getRelayGroupState(groupId);
+    if (!cur) return [];
+    try {
+      const members = (JSON.parse(cur.record) as { members?: unknown }).members;
+      if (!Array.isArray(members)) return [];
+      return members
+        .map((m) => (m as { identityPubKey?: unknown })?.identityPubKey)
+        .filter((k): k is string => typeof k === 'string');
+    } catch {
+      return [];
+    }
+  }
+  /** The requester's per-relay directory identity key (undefined if unpublished). */
+  function requesterIdentity(userId: string): string | undefined {
+    return db.getRelayDirectoryByUserId(userId)?.identityPubkey;
+  }
+
   // Relay timestamps are non-decreasing within this process (D11 ordering).
   let lastTs = 0;
   function stampTs(): number {
@@ -448,6 +468,63 @@ export function relayRoutes(
       await unlink(path).catch(() => {});
       return { ok: true };
     });
+
+    // Group blob upload (D6/D14): authorized by the GROUP TOKEN (x-group-token),
+    // so any member can upload sender-anonymously — the relay can't tell which
+    // member (unlike a device token, which would leak the sender within the
+    // group). Uniform 401 for a bad token.
+    app.post(
+      '/api/relay/groups/:id/blobs',
+      { bodyLimit: MAX_BLOB_BYTES, config: blobRate },
+      async (request, reply) => {
+        const { id } = request.params as { id: string };
+        const groupToken = request.headers['x-group-token'];
+        if (typeof groupToken !== 'string') {
+          return reply.code(400).send({ error: 'x-group-token required' });
+        }
+        const body = request.body;
+        if (!Buffer.isBuffer(body) || body.length === 0) {
+          return reply.code(400).send({ error: 'expected application/octet-stream body' });
+        }
+        const verifier = db.getRelayGroupVerifier(id);
+        const presented = createHash('sha256').update(groupToken).digest('base64url');
+        if (!verifier || presented !== verifier) {
+          return reply.code(401).send({ error: 'upload refused' });
+        }
+        const blobId = newToken();
+        await mkdir(blobDir, { recursive: true });
+        await writeFile(join(blobDir, blobId), body);
+        db.createRelayGroupBlob(blobId, id, body.length);
+        for (const bid of db.pruneRelayGroupBlobs(BLOB_TTL_MS)) {
+          await unlink(join(blobDir, bid)).catch(() => {});
+        }
+        return { blobId, size: body.length };
+      },
+    );
+
+    // Group blob download: device token + current membership (per the group
+    // state record). Unknown/wrong-group/non-member → uniform 404. First cut is
+    // TTL-GC only; per-member-ack GC is a follow-up.
+    app.get('/api/relay/groups/:id/blobs/:blobId', { config: blobRate }, async (request, reply) => {
+      const device = requireDevice(request, reply);
+      if (!device) return;
+      const { id, blobId } = request.params as { id: string; blobId: string };
+      const path = blobPathFor(blobId);
+      const blob = path ? db.getRelayGroupBlob(blobId) : undefined;
+      const me = requesterIdentity(device.userId);
+      if (!path || !blob || blob.groupId !== id || !me || !groupMemberPubkeys(id).includes(me)) {
+        return reply.code(404).send({ error: 'not found' });
+      }
+      try {
+        const info = await stat(path);
+        reply.header('content-type', 'application/octet-stream');
+        reply.header('content-length', info.size);
+        reply.header('cache-control', 'private, max-age=31536000, immutable');
+        return reply.send(createReadStream(path));
+      } catch {
+        return reply.code(404).send({ error: 'not found' });
+      }
+    });
   }
 
   // ---- group state (D14) ----
@@ -526,6 +603,25 @@ export function relayRoutes(
       );
     if (!isMember) return reply.code(404).send({ error: 'not found' });
     return { record: current.record, version: current.version };
+  });
+
+  // Group blob-upload verifier = hash(group token) shared among members. Any
+  // current member may set it (they all derive the same value from the group
+  // key); non-members can't touch it (403).
+  app.put('/api/relay/groups/:id/verifier', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const { id } = request.params as { id: string };
+    const b = request.body as { verifier?: string } | null;
+    if (!b?.verifier || typeof b.verifier !== 'string' || b.verifier.length > 128) {
+      return reply.code(400).send({ error: 'verifier required' });
+    }
+    const me = requesterIdentity(device.userId);
+    if (!me || !groupMemberPubkeys(id).includes(me)) {
+      return reply.code(403).send({ error: 'not a group member' });
+    }
+    db.setRelayGroupVerifier(id, b.verifier);
+    return { ok: true };
   });
 
   // ---- account escrow (D15) ----

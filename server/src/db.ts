@@ -506,6 +506,17 @@ CREATE TABLE IF NOT EXISTS relay_group_state (
   version INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS relay_group_verifiers (
+  group_id TEXT PRIMARY KEY,
+  verifier TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_group_blobs (
+  blob_id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `);
 
   // Idempotent v8 migration: relay_escrow.kdf_params (added after the table).
@@ -906,6 +917,44 @@ CREATE TABLE IF NOT EXISTS relay_group_state (
         .prepare('SELECT identity_pubkey, sealing_pubkey FROM relay_directory WHERE user_id = ?')
         .get(userId) as { identity_pubkey: string; sealing_pubkey: string } | undefined;
       return r ? { identityPubkey: r.identity_pubkey, sealingPubkey: r.sealing_pubkey } : undefined;
+    },
+
+    /** D6 group blobs: `hash(group token)` shared among members (any member can
+     *  upload sender-anonymously; the relay can't tell which one). */
+    setRelayGroupVerifier(groupId: string, verifier: string): void {
+      db.prepare(
+        `INSERT INTO relay_group_verifiers (group_id, verifier, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(group_id) DO UPDATE SET verifier = excluded.verifier, updated_at = excluded.updated_at`,
+      ).run(groupId, verifier, Date.now());
+    },
+    getRelayGroupVerifier(groupId: string): string | undefined {
+      const r = db
+        .prepare('SELECT verifier FROM relay_group_verifiers WHERE group_id = ?')
+        .get(groupId) as { verifier: string } | undefined;
+      return r?.verifier;
+    },
+    createRelayGroupBlob(blobId: string, groupId: string, size: number): void {
+      db.prepare(
+        'INSERT INTO relay_group_blobs (blob_id, group_id, size, created_at) VALUES (?, ?, ?, ?)',
+      ).run(blobId, groupId, size, Date.now());
+    },
+    getRelayGroupBlob(blobId: string): { groupId: string; size: number } | undefined {
+      const r = db
+        .prepare('SELECT group_id, size FROM relay_group_blobs WHERE blob_id = ?')
+        .get(blobId) as { group_id: string; size: number } | undefined;
+      return r ? { groupId: r.group_id, size: r.size } : undefined;
+    },
+    /** TTL sweep: delete expired group blobs, returning ids for file cleanup. */
+    pruneRelayGroupBlobs(maxAgeMs: number): string[] {
+      const cutoff = Date.now() - maxAgeMs;
+      const sweep = db.transaction((): string[] => {
+        const rows = db
+          .prepare('SELECT blob_id FROM relay_group_blobs WHERE created_at < ?')
+          .all(cutoff) as { blob_id: string }[];
+        db.prepare('DELETE FROM relay_group_blobs WHERE created_at < ?').run(cutoff);
+        return rows.map((r) => r.blob_id);
+      });
+      return sweep();
     },
 
     /** D15 escrow: opaque wrapped-key payload + auth-key hashes. The blobs

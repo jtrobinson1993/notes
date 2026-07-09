@@ -123,8 +123,21 @@ group-state record (D14) for the member set.
 - `POST /api/relay/blobs/:id/ack` (device token, recipient only) — delete now;
   otherwise swept at **TTL 14 days**.
 
+**Group blobs** (built on D14): a member uploads sender-anonymously with the
+**group token**, so — like the DM delivery token — the relay can't tell which
+member (a device token would leak the sender within the group).
+
+- `PUT /api/relay/groups/:id/verifier` `{ verifier }` (device token, current
+  member) — register `hash(group token)`; members all derive the same value
+  from the group key. Non-members → 403.
+- `POST /api/relay/groups/:id/blobs` (`x-group-token` header, octet-stream body)
+  → `{ blobId, size }`; uniform 401 on a bad token.
+- `GET /api/relay/groups/:id/blobs/:blobId` (device token + **current
+  membership** per the group-state record) → ciphertext; non-member/wrong-group/
+  unknown → uniform 404.
+
 *Follow-ups:* chunked/resumable + ranged transfer for large media (first cut is
-whole-blob); group blobs on D14.
+whole-blob); per-member-ack GC for group blobs (first cut is TTL-only).
 
 ## Directory & key transparency (D5)
 
