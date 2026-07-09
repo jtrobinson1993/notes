@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createPublicKey, generateKeyPairSync, randomBytes, sign as edSign, verify as edVerify } from 'node:crypto';
 import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { leafHash, verifyInclusion, type ProofStep } from '../src/ktMerkle.js';
 
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
@@ -110,6 +111,54 @@ describe('directory + KT roots (D5)', () => {
     expect(since.json().roots).toHaveLength(1);
     const wellKnown = await ctx.app.inject({ method: 'GET', url: '/.well-known/accord/kt-roots' });
     expect(wellKnown.json()).toEqual(roots.json());
+  });
+
+  it('returns a per-entry inclusion proof that verifies against the signed root', async () => {
+    ctx = await makeApp();
+    // Several registered handles ⇒ a real Merkle path (not just a lone leaf).
+    const handles = ['Alice#0001', 'Bravo#0002', 'Carol#0003', 'Delta#0004', 'Echo#0005'];
+    const registered: Record<string, { identityPubKey: string; sealingPubKey: string }> = {};
+    for (const handle of handles) {
+      const u = seedAuthedUser(ctx.db, { handle });
+      const bearer = await deviceBearer(u.cookie);
+      const keys = identityKeys();
+      registered[handle] = keys;
+      await ctx.app.inject({ method: 'PUT', url: '/api/relay/directory', headers: { authorization: bearer }, payload: keys });
+    }
+
+    const target = 'Carol#0003';
+    const lookup = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/relay/directory/${encodeURIComponent(target)}`,
+    });
+    expect(lookup.statusCode).toBe(200);
+    const body = lookup.json() as {
+      identityPubKey: string;
+      sealingPubKey: string;
+      rootHash: string;
+      epoch: number;
+      proof: ProofStep[];
+    };
+
+    // The returned key proves present under the epoch root.
+    const leaf = leafHash({
+      handle: target,
+      identityPubkey: body.identityPubKey,
+      sealingPubkey: body.sealingPubKey,
+    });
+    expect(verifyInclusion(leaf, body.proof, body.rootHash)).toBe(true);
+    expect(body.proof.length).toBeGreaterThan(0);
+
+    // The rootHash the proof lands on is exactly the latest signed KT root.
+    const roots = (await ctx.app.inject({ method: 'GET', url: '/api/relay/kt/roots' })).json()
+      .roots as { epoch: number; rootHash: string }[];
+    const latest = roots[roots.length - 1];
+    expect(body.rootHash).toBe(latest.rootHash);
+    expect(body.epoch).toBe(latest.epoch);
+
+    // A forged key at the same handle does NOT verify under the honest root.
+    const forged = leafHash({ handle: target, identityPubkey: body.identityPubKey, sealingPubkey: randomBytes(32).toString('base64') });
+    expect(verifyInclusion(forged, body.proof, body.rootHash)).toBe(false);
   });
 
   it('404s an unregistered handle and rejects malformed keys', async () => {

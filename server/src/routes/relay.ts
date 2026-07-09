@@ -12,6 +12,7 @@ import type { DB } from '../db.js';
 import type { RelayLive } from '../relayLive.js';
 import { requireAuth } from '../session.js';
 import { newToken } from '../util.js';
+import { directoryRoot, inclusionProof, leafHash } from '../ktMerkle.js';
 import {
   fingerprintB64url,
   generateRelayIdentity,
@@ -150,11 +151,9 @@ export function relayRoutes(
   });
 
   function publishEpoch(): number {
-    const digest = createHash('sha256');
-    for (const e of db.allRelayDirectoryEntries()) {
-      digest.update(`${e.handle}|${e.identityPubkey}|${e.sealingPubkey}\n`);
-    }
-    const rootHash = digest.digest('base64url');
+    // Merkle root over the handle-ordered directory — the same ordering the
+    // per-entry inclusion proofs are built against (see ktMerkle).
+    const rootHash = directoryRoot(db.allRelayDirectoryEntries());
     const prev = db.latestKtRoot();
     if (prev && prev.rootHash === rootHash) return prev.epoch; // no change, no epoch
     const payload = `kt-root|${rootHash}|${prev?.rootHash ?? 'genesis'}`;
@@ -176,12 +175,21 @@ export function relayRoutes(
 
   app.get('/api/relay/directory/:handle', async (request, reply) => {
     const { handle } = request.params as { handle: string };
-    const entry = db.getRelayDirectoryByHandle(handle);
+    // Build the proof from the same handle-ordered set the root is computed
+    // over, so the returned key is provably present under the signed epoch root
+    // (spec/key-transparency.md — inclusion/lookup proof on every fetch). The
+    // client verifies proof → rootHash and rootHash's signature via /kt/roots.
+    const entries = db.allRelayDirectoryEntries();
+    const index = entries.findIndex((e) => e.handle.toLowerCase() === handle.toLowerCase());
+    const entry = index < 0 ? undefined : entries[index];
     if (!entry) return reply.code(404).send({ error: 'unknown handle' });
+    const root = db.latestKtRoot();
     return {
       identityPubKey: entry.identityPubkey,
       sealingPubKey: entry.sealingPubkey,
-      epoch: db.latestKtRoot()?.epoch ?? 0,
+      epoch: root?.epoch ?? 0,
+      rootHash: root?.rootHash ?? directoryRoot(entries),
+      proof: inclusionProof(entries.map(leafHash), index),
     };
   });
 

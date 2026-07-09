@@ -148,7 +148,12 @@ client resume across drops.)
 
 ## Directory & key transparency (D5)
 
-- `GET /api/directory/:handle` → `{ identityPubKey, ktInclusionProof, epoch }`.
+- `GET /api/relay/directory/:handle` → `{ identityPubKey, sealingPubKey,
+  rootHash, epoch, proof }` — **built**: `proof` is a Merkle **inclusion path**
+  proving the returned keys are present under the signed epoch `rootHash` (the
+  root is a binary Merkle tree over the handle-ordered directory; verify with
+  `ktMerkle.verifyInclusion`, then verify `rootHash`'s signature via `/kt/roots`).
+  *Interim:* leaves are handle-derived (no VRF label blinding yet).
 - `GET /api/kt/roots?since=epoch` → signed epoch roots (consistency checking);
   also aliased at `GET /.well-known/accord/kt-roots` for third-party auditors.
 - Clients self-audit their own binding on every connect and piggyback latest

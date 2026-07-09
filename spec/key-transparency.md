@@ -1,7 +1,13 @@
 # Key transparency (v8 design)
 
-> **Status: v8 design — not yet built.** The D5 log format + client behavior +
-> the reference-auditor scope. This is also the document D5 promises to
+> **Status: v8 — partially built.** Built: signed hash-chained epoch roots +
+> **per-entry Merkle inclusion proofs** on directory lookup (server
+> `ktMerkle.ts`; the root is a binary Merkle tree over the handle-ordered
+> directory, `GET /api/relay/directory/:handle` returns `{ rootHash, epoch,
+> proof }`, verified by the shared `verifyInclusion`). Still design-only: VRF
+> **label blinding** (leaves are still handle-derived, so the tree is not yet
+> privacy-preserving), consistency/extension proofs between epochs, self-audit
+> history, and the reference auditor. This is also the document D5 promises to
 > *publish* so independent parties can audit relays.
 
 ## What is logged

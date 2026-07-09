@@ -1154,9 +1154,27 @@ Playwright version (currently 1.60.0).
     ignored ⇒ restart buffer), bounded only against *no-progress* stalls
     (RESUME_MAX_STALLS=5; progress resets). server 352 (+2 blob range tests),
     cargo 62, tsc clean. relay.md follow-ups updated (ranged = built).
+  - **DONE (iter 77) — KT per-entry inclusion proofs (D5, phase 6 start).** New
+    pure `server/src/ktMerkle.ts`: binary Merkle tree over the handle-ordered
+    directory (domain-separated leaf/node prefixes → no 2nd-preimage swap; odd
+    nodes *carried* not duplicated; empty/single roots well-defined).
+    `publishEpoch` now roots the signed epoch on the Merkle root (was a flat
+    sha256 concat); `GET /api/relay/directory/:handle` returns `{ rootHash,
+    epoch, proof }` — an inclusion path the client verifies with the shared
+    `verifyInclusion`, then checks `rootHash`'s signature via `/kt/roots`. Tests:
+    ktMerkle unit (root determinism, all-sizes proof round-trip, wrong-index/
+    tampered-leaf/forged-key rejection, domain separation) + directory route
+    e2e (5-handle dir → proof verifies against latest signed root; forged key
+    fails). server 359→ (2 new files), tsc clean. STILL interim: VRF label
+    blinding (leaves handle-derived), epoch consistency/extension proofs,
+    self-audit history, reference auditor, and client-side verify wiring (no v8
+    directory-*fetch* path in the Rust client yet — publish-only). specs updated
+    (key-transparency.md status → partially built; relay.md directory doc).
   - **Remaining v8 spec (larger, phase 3/5/6):** (3) voice under v8
-    (device-token auth, multipath ring). (4) content-free push (D7). (5) KT
-    inclusion proofs / auditor (phase 6). (6) D12 legacy→v8 cutover. NOTE:
+    (device-token auth, multipath ring) — entangled w/ legacy cookie realtime
+    auth; needs a coexistence design call. (4) content-free push (D7,
+    deprioritized). (5) KT: VRF blinding + consistency proofs + auditor (rest of
+    phase 6). (6) D12 legacy→v8 cutover. NOTE:
     best-effort caveats as before; unsigned commits (1Password) — re-sign via
     `git rebase --exec 'git commit --amend --no-edit -S' 38dacc7`. (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
