@@ -386,6 +386,50 @@ struct MyDirectoryKeys {
     sealing_pub: String,
 }
 
+/// v8 friends on the connected relay (D4b) — for the friends list + starting DMs.
+#[tauri::command]
+fn friends_list(
+    vault: VaultState,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<Vec<store::FriendSummary>, String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.list_friends(&relay_fp).map_err(|e| e.to_string())
+}
+
+/// A friend's addressing (seal + send) on the connected relay, or None.
+#[tauri::command]
+fn friend_addressing(
+    contact_id: String,
+    vault: VaultState,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<Option<store::FriendAddressing>, String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store
+        .friend_addressing(&contact_id, &relay_fp)
+        .map_err(|e| e.to_string())
+}
+
+/// Unfriend, local half (D4b): drop the friend flag + their addressing so we can
+/// no longer reach them. The caller also rotates the profile key + re-issues
+/// tokens to remaining friends (a follow-up flow).
+#[tauri::command]
+fn friend_remove(
+    contact_id: String,
+    vault: VaultState,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store
+        .remove_friend(&contact_id, &relay_fp)
+        .map_err(|e| e.to_string())
+}
+
 /// Register the wrapped-MK escrow with the connected relay (D15).
 #[tauri::command]
 async fn relay_escrow_upload(
@@ -686,6 +730,9 @@ pub fn run() {
             relay_invite_mint,
             relay_invite_redeem,
             relay_my_directory_keys,
+            friends_list,
+            friend_addressing,
+            friend_remove,
             relay_directory_publish,
             relay_register_verifier,
             relay_send,

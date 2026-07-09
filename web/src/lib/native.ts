@@ -106,6 +106,39 @@ export function relayMyDirectoryKeys(): Promise<{ identity_pub: string; sealing_
   return invoke('relay_my_directory_keys');
 }
 
+// ---- friends (D4b) ----
+
+export interface FriendSummary {
+  contact_id: string;
+  handle: string;
+  display_name: string | null;
+}
+
+export interface FriendAddressing {
+  handle: string;
+  /** Friend's Ed25519 identity key (raw bytes). */
+  identity_pub: number[];
+  /** Friend's X25519 sealing key (raw bytes) — seal envelopes to this. */
+  sealing_pub: number[];
+  /** Capability to send to the friend via the sealed mailbox. */
+  delivery_token: string;
+}
+
+/** v8 friends on the connected relay (friends list + starting DMs). */
+export function friendsList(): Promise<FriendSummary[]> {
+  return invoke<FriendSummary[]>('friends_list');
+}
+
+/** A friend's addressing (seal + send), or null if not a friend here. */
+export function friendAddressing(contactId: string): Promise<FriendAddressing | null> {
+  return invoke('friend_addressing', { contactId });
+}
+
+/** Unfriend (local half): drop the friend flag + addressing. */
+export function friendRemove(contactId: string): Promise<void> {
+  return invoke('friend_remove', { contactId });
+}
+
 /** Register hash(delivery token) with the relay; resolves with the token
  *  itself, which gets sealed to friends (D6). */
 export function relayRegisterVerifier(): Promise<string> {
