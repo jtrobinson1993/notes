@@ -1099,11 +1099,14 @@ Playwright version (currently 1.60.0).
     → `group_send` fan-out → tee same id). (a6) [DONE iter 65] **inbound group
     drain** — tries DM `open`, then `open_group` per stored group key; a hit
     routes to that group_id. **v8 group round-trip complete core-side** (create
-    → send → receive), edit/delete/react reuse the author check. Next: **key
-    distribution to members** (add-member: seal the group key + token to a
-    friend via a `group-invite` envelope; recipient stores key + ensures the
-    group conv; admin bumps the D14 record adding them) and **group UI**
-    (create/list/open/send, reuse the DM bubble rendering). (b) **group creation** — genesis D14 record (me=owner) + set group
+    → send → receive), edit/delete/react reuse the author check. (a7) [DONE iter
+    66] **group invite inbound** — `KIND_GROUP_INVITE` (DM-sealed {groupId,
+    groupKey, name}); drain stores the key (`upsert_group`) + ensures the group
+    conv → I'm a member (cargo 59). Next: **add-member admin side** —
+    `group_add_member(group_id, contact_id)`: RelayClient `group_state_get` →
+    add friend to record + version bump + re-sign + PUT → seal a group-invite to
+    the friend + `mailbox_send`. Then **group UI** (create/list/open/send +
+    add-member, reuse DM bubbles). (b) **group creation** — genesis D14 record (me=owner) + set group
     verifier (hash of group token derived from group key) + distribute the group
     key to members (seal per-member, like a friend-accept). (c) **membership** —
     add member (re-key or share current key) + version bump. (d) inbound: drain
