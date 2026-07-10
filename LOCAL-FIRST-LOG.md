@@ -60,10 +60,18 @@ Playwright version (currently 1.60.0).
   `publish(handle→key)→(epoch,root)`, `lookup(handle)→(LookupProof,EpochHash)`,
   `vrf_public_key()`. 3 cargo tests incl. the real client round-trip
   (`akd::client::lookup_verify` accepts a valid proof; a wrong-handle proof is
-  rejected; epochs advance). **(2)** HTTP layer (localhost API: publish/lookup/
-  audit/key_history) → the sidecar binary. **(3)** persistent `Database` impl
-  over SQLite + a **persisted VRF key** (HardCodedAkdVRF is test-only — REQUIRED
-  before prod). **(4)** Node relay integration — swap the interim Merkle directory
+  rejected; epochs advance). **(2) [DONE, iter 97]** HTTP layer — axum router +
+  binary: `POST /publish` ({entries:[{handle,key(b64)}]}→{epoch,root(b64)}),
+  `GET /lookup/:handle` (→{proof(serde-json),epoch,root}), `GET /vrf-public-key`;
+  `AKD_SIDECAR_TOKEN` **Bearer guard** (localhost-bind + shared secret — the
+  internal-API hardening from the spike security review); main.rs binds
+  127.0.0.1:AKD_SIDECAR_PORT. Proofs cross as **serde JSON** (not protobuf — the
+  nostd WASM client can't decode protobuf; JSON deserializes uniformly native +
+  WASM). 6 cargo tests incl. the full **HTTP round-trip: publish→lookup→
+  deserialize→`lookup_verify` from the JSON responses**, 401 without/wrong token,
+  404 absent handle. audit/key_history endpoints: next. **(3)** persistent
+  `Database` impl over SQLite + a **persisted VRF key** (HardCodedAkdVRF is
+  test-only — REQUIRED before prod). **(4)** Node relay integration — swap the interim Merkle directory
   for the sidecar (publish on directory PUT; serve akd proofs on lookup;
   audit/consistency for roots). **(5)** native client verify via `akd_core`
   (direct Rust dep in the Tauri core). **(6)** web-satellite WASM `akd_core`

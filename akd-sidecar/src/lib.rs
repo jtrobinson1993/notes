@@ -12,6 +12,8 @@
 //! `HardCodedAkdVRF` used here and in akd's own examples) are follow-up slices
 //! and are REQUIRED before this is production-safe.
 
+use std::sync::Arc;
+
 use akd::append_only_zks::AzksParallelismConfig;
 use akd::directory::Directory;
 use akd::ecvrf::HardCodedAkdVRF;
@@ -19,6 +21,16 @@ use akd::errors::AkdError;
 use akd::storage::memory::AsyncInMemoryDatabase;
 use akd::storage::StorageManager;
 use akd::{AkdLabel, AkdValue, Digest, EpochHash, LookupProof};
+use axum::extract::{Path, State};
+use axum::http::{header::AUTHORIZATION, StatusCode};
+use axum::response::Response;
+use axum::routing::{get, post};
+use axum::{middleware, Json, Router};
+use base64::Engine as _;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+
+const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
 /// Hash/label configuration — the same one WhatsApp KT runs in production.
 pub type Config = akd::WhatsAppV1Configuration;
@@ -60,6 +72,109 @@ impl KtDirectory {
     pub async fn vrf_public_key(&self) -> Result<Vec<u8>, AkdError> {
         Ok(self.dir.get_public_key().await?.as_bytes().to_vec())
     }
+}
+
+// ---- HTTP sidecar (localhost API the Node relay calls) ----
+// The relay proxies publish (on directory PUT) + lookup (per fetch) here; media
+// is unrelated. Proofs are serialized with serde JSON so both client verifiers
+// (native `akd_core`, web WASM `akd_core`) can deserialize them uniformly (the
+// protobuf wire format is std-only and wouldn't work in the nostd WASM build).
+
+#[derive(Clone)]
+struct AppState {
+    kt: Arc<Mutex<KtDirectory>>,
+    /// Shared secret the relay presents (Bearer). `None` disables the check
+    /// (tests) — production always sets one, since even a localhost API must not
+    /// be drivable by a co-tenant.
+    token: Arc<Option<String>>,
+}
+
+#[derive(Deserialize)]
+struct PublishReq {
+    entries: Vec<PublishEntry>,
+}
+#[derive(Deserialize)]
+struct PublishEntry {
+    handle: String,
+    /// base64 identity pubkey bytes.
+    key: String,
+}
+#[derive(Serialize)]
+struct PublishResp {
+    epoch: u64,
+    /// base64 signed root hash for the new epoch.
+    root: String,
+}
+#[derive(Serialize)]
+struct LookupResp {
+    /// serde-serialized `LookupProof` (the client deserializes + verifies it).
+    proof: LookupProof,
+    epoch: u64,
+    root: String,
+}
+#[derive(Serialize)]
+struct VrfKeyResp {
+    /// base64 VRF public key.
+    key: String,
+}
+
+/// Build the sidecar router over a shared directory. `token` (if set) is the
+/// Bearer secret every request must present.
+pub fn router(kt: Arc<Mutex<KtDirectory>>, token: Option<String>) -> Router {
+    let state = AppState { kt, token: Arc::new(token) };
+    Router::new()
+        .route("/publish", post(publish))
+        .route("/lookup/:handle", get(lookup))
+        .route("/vrf-public-key", get(vrf_key))
+        .layer(middleware::from_fn_with_state(state.clone(), require_token))
+        .with_state(state)
+}
+
+async fn require_token(
+    State(st): State<AppState>,
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> Result<Response, StatusCode> {
+    if let Some(expected) = st.token.as_ref() {
+        let presented = req.headers().get(AUTHORIZATION).and_then(|v| v.to_str().ok());
+        if presented != Some(format!("Bearer {expected}").as_str()) {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    }
+    Ok(next.run(req).await)
+}
+
+type ApiErr = (StatusCode, String);
+
+async fn publish(State(st): State<AppState>, Json(req): Json<PublishReq>) -> Result<Json<PublishResp>, ApiErr> {
+    let mut entries = Vec::with_capacity(req.entries.len());
+    for e in req.entries {
+        let key = B64.decode(&e.key).map_err(|_| (StatusCode::BAD_REQUEST, "bad base64 key".into()))?;
+        entries.push((e.handle, key));
+    }
+    let mut kt = st.kt.lock().await;
+    let (epoch, root) = kt.publish(entries).await.map_err(server_err)?;
+    Ok(Json(PublishResp { epoch, root: B64.encode(root) }))
+}
+
+async fn lookup(State(st): State<AppState>, Path(handle): Path<String>) -> Result<Json<LookupResp>, ApiErr> {
+    let kt = st.kt.lock().await;
+    // A lookup for an absent/unpublished handle can't be proven → 404.
+    let (proof, epoch_hash) = kt
+        .lookup(&handle)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(LookupResp { proof, epoch: epoch_hash.epoch(), root: B64.encode(epoch_hash.hash()) }))
+}
+
+async fn vrf_key(State(st): State<AppState>) -> Result<Json<VrfKeyResp>, ApiErr> {
+    let kt = st.kt.lock().await;
+    let key = kt.vrf_public_key().await.map_err(server_err)?;
+    Ok(Json(VrfKeyResp { key: B64.encode(key) }))
+}
+
+fn server_err(e: AkdError) -> ApiErr {
+    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
 #[cfg(test)]
@@ -128,5 +243,107 @@ mod tests {
         assert_eq!(e1, 1);
         assert_eq!(e2, 2);
         assert_ne!(r1, r2); // the root moves as the directory grows
+    }
+
+    // ---- HTTP layer ----
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    async fn send(app: &Router, req: Request<Body>) -> (StatusCode, serde_json::Value) {
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+        };
+        (status, json)
+    }
+
+    fn authed(method: &str, uri: &str, body: Option<serde_json::Value>) -> Request<Body> {
+        let mut b = Request::builder().method(method).uri(uri).header(AUTHORIZATION, "Bearer secret");
+        let body = match body {
+            Some(v) => {
+                b = b.header("content-type", "application/json");
+                Body::from(v.to_string())
+            }
+            None => Body::empty(),
+        };
+        b.body(body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn http_publish_lookup_roundtrips_and_the_proof_verifies() {
+        let kt = Arc::new(Mutex::new(KtDirectory::new().await.unwrap()));
+        let app = router(kt, Some("secret".into()));
+
+        let key = B64.encode([9u8; 32]);
+        let (st, _) = send(
+            &app,
+            authed("POST", "/publish", Some(serde_json::json!({ "entries": [{ "handle": "Alice#0001", "key": key }] }))),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+
+        let (st, look) = send(&app, authed("GET", "/lookup/Alice%230001", None)).await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, vrf) = send(&app, authed("GET", "/vrf-public-key", None)).await;
+
+        // Reconstruct the client's view purely from the JSON wire responses and
+        // verify — proving the serde wire format round-trips into a real proof.
+        let proof: LookupProof = serde_json::from_value(look["proof"].clone()).unwrap();
+        let root: Digest = B64
+            .decode(look["root"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let epoch = look["epoch"].as_u64().unwrap();
+        let vrf_pub = B64.decode(vrf["key"].as_str().unwrap()).unwrap();
+
+        let result = akd::client::lookup_verify::<Config>(
+            &vrf_pub,
+            root,
+            epoch,
+            AkdLabel::from("Alice#0001"),
+            proof,
+        )
+        .expect("wire-serialized proof should verify");
+        assert_eq!(result.value, AkdValue(vec![9u8; 32]));
+    }
+
+    #[tokio::test]
+    async fn http_requires_the_bearer_token() {
+        let kt = Arc::new(Mutex::new(KtDirectory::new().await.unwrap()));
+        let app = router(kt, Some("secret".into()));
+        // No auth header → 401.
+        let req = Request::builder().method("GET").uri("/vrf-public-key").body(Body::empty()).unwrap();
+        let (st, _) = send(&app, req).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        // Wrong token → 401.
+        let bad = Request::builder()
+            .method("GET")
+            .uri("/vrf-public-key")
+            .header(AUTHORIZATION, "Bearer nope")
+            .body(Body::empty())
+            .unwrap();
+        let (st, _) = send(&app, bad).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn http_lookup_of_an_unpublished_handle_is_404() {
+        let kt = Arc::new(Mutex::new(KtDirectory::new().await.unwrap()));
+        let app = router(kt, Some("secret".into()));
+        // Publish someone so the tree has an epoch, then look up a different one.
+        send(
+            &app,
+            authed("POST", "/publish", Some(serde_json::json!({ "entries": [{ "handle": "Alice#0001", "key": B64.encode([1u8;32]) }] }))),
+        )
+        .await;
+        let (st, _) = send(&app, authed("GET", "/lookup/Ghost%230000", None)).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
     }
 }
