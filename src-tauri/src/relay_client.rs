@@ -465,6 +465,112 @@ impl RelayClient {
         Ok((body.record, body.version))
     }
 
+    // ---- v8 voice SFU control proxy (spec/voice.md § v8) ----
+    // The webview's mediasoup-client can't hold the device token (keys stay in
+    // the core), so its SFU control calls are proxied here — device-token authed
+    // — while media/RTP flows webview↔SFU directly. Payloads are opaque mediasoup
+    // blobs (serde_json::Value passthrough); the relay + mediasoup-client agree
+    // on their shape.
+
+    /// Join a call's SFU room → `{ routerRtpCapabilities, peers }`.
+    pub async fn sfu_join(&self, signing: &SigningKey, call_id: &str) -> Result<serde_json::Value, String> {
+        self.sfu_post(signing, call_id, "join", None).await
+    }
+
+    /// Create a WebRtcTransport (`direction` = send|recv) → its ICE/DTLS params.
+    pub async fn sfu_transport(
+        &self,
+        signing: &SigningKey,
+        call_id: &str,
+        direction: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.sfu_post(signing, call_id, "transport", Some(serde_json::json!({ "direction": direction }))).await
+    }
+
+    /// Connect a transport (DTLS handshake).
+    pub async fn sfu_connect(
+        &self,
+        signing: &SigningKey,
+        call_id: &str,
+        transport_id: &str,
+        dtls_parameters: serde_json::Value,
+    ) -> Result<(), String> {
+        self.sfu_post(
+            signing,
+            call_id,
+            "transport/connect",
+            Some(serde_json::json!({ "transportId": transport_id, "dtlsParameters": dtls_parameters })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Produce mic audio → `{ producerId }`.
+    pub async fn sfu_produce(
+        &self,
+        signing: &SigningKey,
+        call_id: &str,
+        transport_id: &str,
+        rtp_parameters: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.sfu_post(
+            signing,
+            call_id,
+            "produce",
+            Some(serde_json::json!({ "transportId": transport_id, "rtpParameters": rtp_parameters })),
+        )
+        .await
+    }
+
+    /// Consume a peer's producer → `{ id, rtpParameters }`.
+    pub async fn sfu_consume(
+        &self,
+        signing: &SigningKey,
+        call_id: &str,
+        transport_id: &str,
+        producer_id: &str,
+        rtp_capabilities: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.sfu_post(
+            signing,
+            call_id,
+            "consume",
+            Some(serde_json::json!({
+                "transportId": transport_id, "producerId": producer_id, "rtpCapabilities": rtp_capabilities,
+            })),
+        )
+        .await
+    }
+
+    /// Leave the call's SFU room.
+    pub async fn sfu_leave(&self, signing: &SigningKey, call_id: &str) -> Result<(), String> {
+        self.sfu_post(signing, call_id, "leave", None).await.map(|_| ())
+    }
+
+    /// Shared device-token-authed POST to an SFU room subpath; returns the JSON
+    /// body (or Null for empty responses).
+    async fn sfu_post(
+        &self,
+        signing: &SigningKey,
+        call_id: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let mut req = reqwest::Client::new()
+            .post(format!("{base}/api/relay/voice/rooms/{call_id}/{path}"))
+            .bearer_auth(bearer);
+        if let Some(b) = body {
+            req = req.json(&b);
+        }
+        let res = req.send().await.map_err(|e| format!("sfu {path} failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("sfu {path} refused (HTTP {})", res.status()));
+        }
+        Ok(res.json::<serde_json::Value>().await.unwrap_or(serde_json::Value::Null))
+    }
+
     /// Register a group's blob/send verifier = hash(group token) (D14, member).
     pub async fn group_verifier_put(
         &self,

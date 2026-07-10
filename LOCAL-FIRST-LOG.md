@@ -1377,16 +1377,25 @@ Playwright version (currently 1.60.0).
     tests: join sequence + mic-encrypt, connect/produce event→control wiring,
     consume-at-join (decrypt), consume-on-signal + dedup, close→leave. web 517,
     tsc clean.
-  - **Remaining v8 spec:** voice follow-ups: (a) **real SfuControl (app)** — Rust
-    relay_client SFU methods (join/transport/connect/produce/consume/leave,
-    device-token authed, JSON passthrough) + IPC commands + native.ts wrappers
-    (the webview proxies control through Rust; media/RTP flows direct). (b) **wire
-    CallMedia in the app** — useNativeCall constructs it with the real
-    mediasoup-client Device + getUserMedia + voiceTransform E2EE + the `producer`
-    signal → onProducer; frame-key seal via the call-offer envelope (voiceCrypto).
-    (c) **e2e** browser produce→consume round-trip (harness page loading
-    voiceMedia + a REST SfuControl). (d) **mount** NativeCallPanel + call button.
-    (e) D4c fan-out (deferred). Then:
+  - **DONE (iter 92) — real SfuControl (app path, Rust proxy + IPC).**
+    relay_client.rs: `sfu_join`/`sfu_transport`/`sfu_connect`/`sfu_produce`/
+    `sfu_consume`/`sfu_leave` (device-token-authed POSTs via shared `sfu_post`;
+    opaque mediasoup JSON `serde_json::Value` passthrough). lib.rs: six `sfu_*`
+    IPC commands (`sfu_signing!` macro takes the device key) registered in the
+    handler. web `nativeSfu.ts`: `nativeSfuControl` implementing the voiceMedia
+    `SfuControl` via `invoke` (webview proxies control through the core — token
+    never crosses IPC; media/RTP flows webview↔SFU direct). Tests: nativeSfu maps
+    each call to its `sfu_*` command w/ camelCase args + returns produce's
+    producerId (mocked invoke). cargo 67, web 519 (+2), tsc clean. (Rust HTTP
+    passthrough follows the codebase's existing untested-HTTP-method pattern; the
+    e2e round-trip exercises the real path.)
+  - **Remaining v8 spec:** voice follow-ups: (a) **wire CallMedia in the app** —
+    useNativeCall constructs it with nativeSfuControl + real mediasoup-client
+    Device + getUserMedia + voiceTransform E2EE + the `producer` signal →
+    onProducer; frame-key seal via the call-offer envelope (voiceCrypto). (b)
+    **e2e** browser produce→consume round-trip (harness page loading voiceMedia +
+    a REST SfuControl). (c) **mount** NativeCallPanel + call button. (d) D4c
+    fan-out (deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).

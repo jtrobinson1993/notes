@@ -1307,6 +1307,84 @@ fn voice_leave(call_id: String, voice: tauri::State<'_, voice_live::VoiceSignal>
     Ok(())
 }
 
+// v8 voice SFU control proxy (device-token authed; the webview's mediasoup-client
+// routes control through these so the token never leaves the core; media/RTP
+// flows webview↔SFU directly). Opaque mediasoup JSON blobs pass straight through.
+macro_rules! sfu_signing {
+    ($vault:expr) => {{
+        let vault = $vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    }};
+}
+
+#[tauri::command]
+async fn sfu_join(
+    call_id: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<serde_json::Value, String> {
+    let signing = sfu_signing!(vault);
+    relay.sfu_join(&signing, &call_id).await
+}
+
+#[tauri::command]
+async fn sfu_transport(
+    call_id: String,
+    direction: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<serde_json::Value, String> {
+    let signing = sfu_signing!(vault);
+    relay.sfu_transport(&signing, &call_id, &direction).await
+}
+
+#[tauri::command]
+async fn sfu_connect(
+    call_id: String,
+    transport_id: String,
+    dtls_parameters: serde_json::Value,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let signing = sfu_signing!(vault);
+    relay.sfu_connect(&signing, &call_id, &transport_id, dtls_parameters).await
+}
+
+#[tauri::command]
+async fn sfu_produce(
+    call_id: String,
+    transport_id: String,
+    rtp_parameters: serde_json::Value,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<serde_json::Value, String> {
+    let signing = sfu_signing!(vault);
+    relay.sfu_produce(&signing, &call_id, &transport_id, rtp_parameters).await
+}
+
+#[tauri::command]
+async fn sfu_consume(
+    call_id: String,
+    transport_id: String,
+    producer_id: String,
+    rtp_capabilities: serde_json::Value,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<serde_json::Value, String> {
+    let signing = sfu_signing!(vault);
+    relay.sfu_consume(&signing, &call_id, &transport_id, &producer_id, rtp_capabilities).await
+}
+
+#[tauri::command]
+async fn sfu_leave(
+    call_id: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let signing = sfu_signing!(vault);
+    relay.sfu_leave(&signing, &call_id).await
+}
+
 /// All reactions on a conversation's messages (the UI groups by emoji, D11).
 #[tauri::command]
 fn conversation_reactions(
@@ -1652,6 +1730,12 @@ pub fn run() {
             voice_join,
             voice_signal,
             voice_leave,
+            sfu_join,
+            sfu_transport,
+            sfu_connect,
+            sfu_produce,
+            sfu_consume,
+            sfu_leave,
             conversation_reactions,
             messages_page,
             messages_ingest,
