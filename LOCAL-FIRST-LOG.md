@@ -99,8 +99,15 @@ Playwright version (currently 1.60.0).
   (404→null, vrf cache, bearer/trailing-slash). server 389, tsc clean. **(5)**
   native client verify via `akd_core`
   (direct Rust dep in the Tauri core). **(6)** web-satellite WASM `akd_core`
-  verifier. **(7)** docker-compose service + reproducible build. NOTE: stays a
-  parallel path; the interim Merkle KT keeps working until (4) cuts over.
+  verifier. **(7) [DONE, iter 101]** docker-compose — new `akd-sidecar/Dockerfile`
+  (multi-stage Rust build → slim runtime, non-root, `--locked`); `akd-sidecar`
+  compose service (compose-network only, **no published port**, `akd-data`
+  volume); main.rs bind is now `AKD_SIDECAR_HOST` (default 127.0.0.1; compose sets
+  0.0.0.0). Relay wired via `AKD_SIDECAR_URL=${AKD_SIDECAR_TOKEN:+http://
+  akd-sidecar:8091}` — **set the token in .env → full-AKD; empty → interim** (the
+  `:+` expansion leaves the URL empty). `.env.example` + README KT section +
+  Cargo.lock committed. `docker compose config` validates. NOTE: stays a parallel
+  path; the interim Merkle KT keeps working until (4) cuts over.
 
 - **ALL pre-implementation specs DRAFTED (list in roadmap now fully linked).**
   New files: **`spec/local-store.md`** (SQLCipher schema sketch, Rust core =

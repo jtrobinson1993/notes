@@ -85,6 +85,25 @@ Voice is **end-to-end encrypted** and relayed through a built-in mediasoup SFU
 Supported browsers: Chrome, Edge, Safari, Firefox, and Zen (the encryption uses
 the standard `RTCRtpScriptTransform`). See [spec/voice.md](spec/voice.md).
 
+### Key transparency (optional full-AKD)
+
+The relay publishes a **key-transparency log** so clients can verify a handle
+really maps to the identity key they're shown. Out of the box it runs an
+**interim** log (signed, hash-chained epoch roots + Merkle inclusion proofs).
+For the full **AKD** log — VRF-blinded labels (the directory can't be
+enumerated) and append-only *consistency* proofs — set a shared secret and the
+bundled `akd-sidecar` service takes over:
+
+```sh
+# in .env
+AKD_SIDECAR_TOKEN=$(openssl rand -base64 32)
+```
+
+`docker compose up -d` then runs the sidecar alongside the relay (compose
+network only, no exposed port; the relay authenticates with the token). Leave
+the token empty to stay on the interim log. See
+[spec/key-transparency.md](spec/key-transparency.md).
+
 ## How the encryption works
 
 - On signup the client generates a random 256-bit **master key (MK)**; it never

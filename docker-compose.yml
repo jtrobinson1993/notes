@@ -34,8 +34,33 @@ services:
       # Voice: the public/LAN IP clients reach this host at (required for calls
       # to connect off-localhost). Leave unset for local-only testing.
       VOICE_ANNOUNCED_IP: ${VOICE_ANNOUNCED_IP:-127.0.0.1}
+      # Full-AKD key transparency (optional): point the relay at the sidecar on
+      # the compose network. Unset AKD_SIDECAR_TOKEN → the relay uses the interim
+      # Merkle KT and the sidecar service below can be removed.
+      AKD_SIDECAR_URL: ${AKD_SIDECAR_TOKEN:+http://akd-sidecar:8091}
+      AKD_SIDECAR_TOKEN: ${AKD_SIDECAR_TOKEN:-}
     volumes:
       - notes-data:/data
+    depends_on:
+      - akd-sidecar
+
+  # v8 key-transparency (full-AKD, spec/key-transparency.md). Reachable only on
+  # the compose network (no published port) and authenticated by
+  # AKD_SIDECAR_TOKEN. Set that token in .env to enable full-AKD KT; leave it
+  # empty to run interim-Merkle KT (this service then idles harmlessly).
+  akd-sidecar:
+    build: ./akd-sidecar
+    image: ghcr.io/jtrobinson1993/notes-akd-sidecar:${NOTES_TAG:-latest}
+    container_name: notes-akd-sidecar
+    restart: unless-stopped
+    expose:
+      - '8091'
+    environment:
+      AKD_SIDECAR_HOST: 0.0.0.0
+      AKD_SIDECAR_PORT: '8091'
+      AKD_SIDECAR_TOKEN: ${AKD_SIDECAR_TOKEN:-}
+    volumes:
+      - akd-data:/akd-data
 
   caddy:
     image: caddy:2
@@ -57,5 +82,6 @@ services:
 
 volumes:
   notes-data:
+  akd-data:
   caddy-data:
   caddy-config:
