@@ -152,8 +152,17 @@ Playwright version (currently 1.60.0).
   seals my latest signed root to a friend; native.ts `ktGossipSend`, piggybacked
   best-effort on `sendDm`. cargo 73 (+1 disposition test), web 535 (nativeDm
   gossip assertion), tsc clean. **CLIENT-VERIFY 5a–5e DONE** (self-audit +
-  gossip, primitives + kt_state + alarms). Remaining: **(6)** web-satellite WASM
-  `akd_core` verifier. **(6)** web-satellite WASM
+  gossip, primitives + kt_state + alarms).
+  - **USER DECISION — full-AKD DONE (native client); WASM web-satellite verifier
+    DEFERRED.** The primary v8 client (native/Tauri) verifies KT end-to-end
+    (inclusion + self-audit + gossip split-view + alarms). **(6)** the browser
+    web-satellite WASM `akd_core` verifier + a JS reimplementation of self-audit/
+    gossip is a **separate future effort** (needs wasm-bindgen/wasm-pack tooling);
+    not on the v8 critical path since the native app is the primary client.
+    **FULL-AKD KEY TRANSPARENCY COMPLETE** (backend: engine→sidecar[persistence/
+    auth/compose]→relay integration; native client verify: primitives→kt_state→
+    self-audit[live+alarm]→gossip). Whole branch green: akd-sidecar 10, src-tauri
+    73, server 390, web 535, all typechecks, `docker compose config` valid. **(6)** web-satellite WASM
   `akd_core` verifier. **(7) [DONE, iter 101]** docker-compose — new `akd-sidecar/Dockerfile`
   (multi-stage Rust build → slim runtime, non-root, `--locked`); `akd-sidecar`
   compose service (compose-network only, **no published port**, `akd-data`
