@@ -4,22 +4,25 @@
 //! drives it over a localhost API (added in a later slice), and clients verify
 //! its proofs via `akd_core` (native: direct Rust dep; web: WASM).
 //!
-//! First slice: an **in-memory** directory wrapping `akd::Directory` with the
-//! production `WhatsAppV1Configuration`, exposing `publish` (handle → identity
-//! key, one epoch per batch) and `lookup` (a VRF-blinded inclusion proof) plus
-//! the VRF public key. Storage is in-memory for now — a persistent `Database`
-//! impl over the relay's SQLite and a **real (persisted) VRF key** (vs the
-//! `HardCodedAkdVRF` used here and in akd's own examples) are follow-up slices
-//! and are REQUIRED before this is production-safe.
+//! Wraps `akd::Directory` with the production `WhatsAppV1Configuration`, exposing
+//! `publish` (handle → identity key, one epoch per batch), `lookup` (VRF-blinded
+//! inclusion proof), `audit` (append-only/consistency), `key_history`, and the
+//! VRF public key. `KtDirectory::open(dir)` **persists**: a stable file-backed
+//! VRF key + a whole-directory state snapshot restored on open and rewritten
+//! after each publish (`KtDirectory::new()` stays ephemeral for tests). A
+//! `Database` trait impl over SQLite is the scaling upgrade over whole-DB
+//! snapshots.
 
+use std::path::{Path as SysPath, PathBuf};
 use std::sync::Arc;
 
 use akd::append_only_zks::AzksParallelismConfig;
 use akd::directory::Directory;
-use akd::ecvrf::HardCodedAkdVRF;
-use akd::errors::AkdError;
+use akd::ecvrf::{VrfError, VRFKeyStorage};
+use akd::errors::{AkdError, StorageError};
 use akd::storage::memory::AsyncInMemoryDatabase;
-use akd::storage::StorageManager;
+use akd::storage::types::DbRecord;
+use akd::storage::{Database, DbSetState, StorageManager, StorageUtil};
 use akd::{AkdLabel, AkdValue, AppendOnlyProof, Digest, EpochHash, HistoryParams, HistoryProof, LookupProof};
 use axum::extract::{Path, State};
 use axum::http::{header::AUTHORIZATION, StatusCode};
@@ -35,41 +38,135 @@ const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::gen
 /// Hash/label configuration — the same one WhatsApp KT runs in production.
 pub type Config = akd::WhatsAppV1Configuration;
 
+/// Errors from the KT directory (akd + persistence I/O).
+#[derive(Debug)]
+pub enum KtError {
+    Akd(AkdError),
+    Io(std::io::Error),
+    Serde(serde_json::Error),
+}
+impl std::fmt::Display for KtError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KtError::Akd(e) => write!(f, "akd: {e}"),
+            KtError::Io(e) => write!(f, "io: {e}"),
+            KtError::Serde(e) => write!(f, "serde: {e}"),
+        }
+    }
+}
+impl std::error::Error for KtError {}
+impl From<AkdError> for KtError {
+    fn from(e: AkdError) -> Self {
+        KtError::Akd(e)
+    }
+}
+impl From<std::io::Error> for KtError {
+    fn from(e: std::io::Error) -> Self {
+        KtError::Io(e)
+    }
+}
+impl From<serde_json::Error> for KtError {
+    fn from(e: serde_json::Error) -> Self {
+        KtError::Serde(e)
+    }
+}
+impl From<StorageError> for KtError {
+    fn from(e: StorageError) -> Self {
+        KtError::Akd(AkdError::Storage(e))
+    }
+}
+
+/// A VRF key persisted to a file so the directory's blinded labels stay stable
+/// across restarts (`HardCodedAkdVRF` is fixed/test-only; an ephemeral random key
+/// would invalidate every prior proof after a restart). The private key is a
+/// 32-byte ed25519 seed.
+#[derive(Clone)]
+pub struct FileVRF {
+    key: Vec<u8>,
+}
+impl FileVRF {
+    /// A fresh random key held only in memory (ephemeral directories / tests).
+    fn random() -> Self {
+        use rand::RngCore as _;
+        let mut key = vec![0u8; 32];
+        rand::thread_rng().fill_bytes(&mut key);
+        Self { key }
+    }
+    /// Load the key from `path`, generating + persisting one on first use.
+    fn load_or_create(path: &SysPath) -> Result<Self, KtError> {
+        if path.exists() {
+            Ok(Self { key: std::fs::read(path)? })
+        } else {
+            let vrf = Self::random();
+            atomic_write(path, &vrf.key)?;
+            Ok(vrf)
+        }
+    }
+}
+#[async_trait::async_trait]
+impl VRFKeyStorage for FileVRF {
+    async fn retrieve(&self) -> Result<Vec<u8>, VrfError> {
+        Ok(self.key.clone())
+    }
+}
+
 /// A key-transparency directory: `handle → identity pubkey`, with per-lookup
 /// inclusion proofs and VRF-blinded labels.
 pub struct KtDirectory {
-    dir: Directory<Config, AsyncInMemoryDatabase, HardCodedAkdVRF>,
+    dir: Directory<Config, AsyncInMemoryDatabase, FileVRF>,
+    /// A clone of the backing store (Arc-shared) — snapshotted after publish.
+    db: AsyncInMemoryDatabase,
+    /// Where to persist the directory state; `None` = ephemeral (tests).
+    snapshot_path: Option<PathBuf>,
 }
 
 impl KtDirectory {
-    /// Create an empty in-memory directory.
-    pub async fn new() -> Result<Self, AkdError> {
-        let storage = StorageManager::new_no_cache(AsyncInMemoryDatabase::new());
-        let dir =
-            Directory::<Config, _, _>::new(storage, HardCodedAkdVRF {}, AzksParallelismConfig::default())
-                .await?;
-        Ok(Self { dir })
+    /// An empty **ephemeral** in-memory directory (random VRF, no persistence).
+    pub async fn new() -> Result<Self, KtError> {
+        Self::build(FileVRF::random(), AsyncInMemoryDatabase::new(), None).await
     }
 
-    /// Publish a batch of `handle → identity-key` bindings as one new epoch.
-    /// Returns `(epoch, root_hash)` — the signed root the relay chains + serves.
-    pub async fn publish(&mut self, entries: Vec<(String, Vec<u8>)>) -> Result<(u64, Digest), AkdError> {
+    /// A **persistent** directory rooted at `dir`: a stable VRF key
+    /// (`dir/vrf.key`, generated once) and the directory state (`dir/state.json`,
+    /// restored on open, rewritten after each publish).
+    pub async fn open(dir: impl AsRef<SysPath>) -> Result<Self, KtError> {
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir)?;
+        let vrf = FileVRF::load_or_create(&dir.join("vrf.key"))?;
+        let snapshot_path = dir.join("state.json");
+        let db = AsyncInMemoryDatabase::new();
+        if let Some(records) = load_snapshot(&snapshot_path)? {
+            db.batch_set(records, DbSetState::General).await?;
+        }
+        Self::build(vrf, db, Some(snapshot_path)).await
+    }
+
+    async fn build(vrf: FileVRF, db: AsyncInMemoryDatabase, snapshot_path: Option<PathBuf>) -> Result<Self, KtError> {
+        let storage = StorageManager::new_no_cache(db.clone());
+        let dir = Directory::<Config, _, _>::new(storage, vrf, AzksParallelismConfig::default()).await?;
+        Ok(Self { dir, db, snapshot_path })
+    }
+
+    /// Publish a batch of `handle → identity-key` bindings as one new epoch, then
+    /// persist (if this directory is persistent). Returns `(epoch, root_hash)`.
+    pub async fn publish(&mut self, entries: Vec<(String, Vec<u8>)>) -> Result<(u64, Digest), KtError> {
         let updates = entries
             .into_iter()
             .map(|(handle, key)| (AkdLabel(handle.into_bytes()), AkdValue(key)))
             .collect();
         let EpochHash(epoch, root) = self.dir.publish(updates).await?;
+        self.snapshot().await?;
         Ok((epoch, root))
     }
 
     /// Produce an inclusion/lookup proof for a handle at the current epoch,
     /// alongside the epoch's `(epoch, root_hash)` the client verifies against.
-    pub async fn lookup(&self, handle: &str) -> Result<(LookupProof, EpochHash), AkdError> {
-        self.dir.lookup(AkdLabel::from(handle)).await
+    pub async fn lookup(&self, handle: &str) -> Result<(LookupProof, EpochHash), KtError> {
+        Ok(self.dir.lookup(AkdLabel::from(handle)).await?)
     }
 
     /// The VRF public key bytes clients need to verify label blinding.
-    pub async fn vrf_public_key(&self) -> Result<Vec<u8>, AkdError> {
+    pub async fn vrf_public_key(&self) -> Result<Vec<u8>, KtError> {
         Ok(self.dir.get_public_key().await?.as_bytes().to_vec())
     }
 
@@ -77,15 +174,42 @@ impl KtDirectory {
     /// epoch `start` to `end` — verified against the per-epoch root hashes
     /// (`akd::auditor::audit_verify`). This is the guarantee the interim Merkle
     /// KT can't provide.
-    pub async fn audit(&self, start: u64, end: u64) -> Result<AppendOnlyProof, AkdError> {
-        self.dir.audit(start, end).await
+    pub async fn audit(&self, start: u64, end: u64) -> Result<AppendOnlyProof, KtError> {
+        Ok(self.dir.audit(start, end).await?)
     }
 
     /// Complete key-history proof for a handle (self-audit: every version the
     /// log ever mapped it to), with the current `(epoch, root)`.
-    pub async fn key_history(&self, handle: &str) -> Result<(HistoryProof, EpochHash), AkdError> {
-        self.dir.key_history(&AkdLabel::from(handle), HistoryParams::Complete).await
+    pub async fn key_history(&self, handle: &str) -> Result<(HistoryProof, EpochHash), KtError> {
+        Ok(self.dir.key_history(&AkdLabel::from(handle), HistoryParams::Complete).await?)
     }
+
+    /// Snapshot the whole directory state to disk (if persistent). Whole-DB
+    /// rewrite per publish is fine at the relay's scale; a `Database` trait impl
+    /// over SQLite is the scaling upgrade.
+    async fn snapshot(&self) -> Result<(), KtError> {
+        if let Some(path) = &self.snapshot_path {
+            let records = self.db.batch_get_all_direct().await?;
+            atomic_write(path, &serde_json::to_vec(&records)?)?;
+        }
+        Ok(())
+    }
+}
+
+/// Load a snapshot of `DbRecord`s, or `None` if the file doesn't exist yet.
+fn load_snapshot(path: &SysPath) -> Result<Option<Vec<DbRecord>>, KtError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::from_slice(&std::fs::read(path)?)?))
+}
+
+/// Write `bytes` to `path` atomically (tmp file + rename) so a crash mid-write
+/// never leaves a torn KT snapshot.
+fn atomic_write(path: &SysPath, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
 }
 
 // ---- HTTP sidecar (localhost API the Node relay calls) ----
@@ -217,7 +341,7 @@ async fn key_history(State(st): State<AppState>, Path(handle): Path<String>) -> 
     Ok(Json(HistoryResp { proof, epoch: epoch_hash.epoch(), root: B64.encode(epoch_hash.hash()) }))
 }
 
-fn server_err(e: AkdError) -> ApiErr {
+fn server_err(e: KtError) -> ApiErr {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
@@ -323,6 +447,32 @@ mod tests {
         // Both the original and the rotated key are proven in the history.
         assert!(results.iter().any(|r| r.value == AkdValue(vec![1u8; 32])));
         assert!(results.iter().any(|r| r.value == AkdValue(vec![9u8; 32])));
+    }
+
+    /// A persistent directory survives a restart: state + VRF key reload from
+    /// disk, and a proof from before the restart still verifies.
+    #[tokio::test]
+    async fn persists_across_reopen() {
+        let dir = std::env::temp_dir().join(format!("akd-kt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (epoch, root, vrf_pub) = {
+            let mut kt = KtDirectory::open(&dir).await.unwrap();
+            let (e, r) = kt.publish(vec![("Alice#0001".into(), vec![7u8; 32])]).await.unwrap();
+            (e, r, kt.vrf_public_key().await.unwrap())
+        }; // dropped — only the on-disk snapshot + vrf.key remain
+
+        // Reopen from the same dir: the epoch, root, and VRF key are restored.
+        let kt2 = KtDirectory::open(&dir).await.unwrap();
+        assert_eq!(kt2.vrf_public_key().await.unwrap(), vrf_pub, "VRF key must be stable");
+
+        let (proof, eh) = kt2.lookup("Alice#0001").await.unwrap();
+        assert_eq!(eh.epoch(), epoch);
+        assert_eq!(eh.hash(), root, "restored root matches the pre-restart root");
+        akd::client::lookup_verify::<Config>(&vrf_pub, eh.hash(), eh.epoch(), AkdLabel::from("Alice#0001"), proof)
+            .expect("a proof from a reopened directory still verifies");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     // ---- HTTP layer ----

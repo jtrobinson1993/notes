@@ -17,9 +17,11 @@ async fn main() {
         eprintln!("WARNING: AKD_SIDECAR_TOKEN unset — the KT sidecar API is unauthenticated");
     }
 
+    let data_dir = std::env::var("AKD_SIDECAR_DATA").unwrap_or_else(|_| "./akd-data".into());
     let kt = Arc::new(Mutex::new(
-        KtDirectory::new().await.expect("initialise akd directory"),
+        KtDirectory::open(&data_dir).await.expect("initialise akd directory"),
     ));
+    eprintln!("akd-sidecar state dir: {data_dir}");
     let app = router(kt, token);
 
     let addr = format!("127.0.0.1:{port}");

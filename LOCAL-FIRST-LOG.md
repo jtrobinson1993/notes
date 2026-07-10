@@ -75,9 +75,17 @@ Playwright version (currently 1.60.0).
   the relay already holds) and `GET /key-history/:handle` → `HistoryProof`
   (self-audit, every version a handle ever mapped to). 9 cargo tests total, incl.
   `audit_verify` proving epoch 2 extends epoch 1, and `key_history_verify`
-  surfacing both an original + rotated key. **(3)** persistent
-  `Database` impl over SQLite + a **persisted VRF key** (HardCodedAkdVRF is
-  test-only — REQUIRED before prod). **(4)** Node relay integration — swap the interim Merkle directory
+  surfacing both an original + rotated key. **(3) [DONE, iter 99]** persistence —
+  `KtDirectory::open(dir)`: a **file-backed VRF key** (`vrf.key`, generated once,
+  via `FileVRF: VRFKeyStorage` — replaces the fixed/test-only `HardCodedAkdVRF`)
+  + a **whole-directory state snapshot** (`state.json`: `batch_get_all_direct`→
+  serde→atomic tmp+rename after each publish; restored via `batch_set` on open).
+  `new()` stays ephemeral for tests. New `KtError` (akd/io/serde). main.rs opens
+  `AKD_SIDECAR_DATA` (default ./akd-data). 10 cargo tests incl.
+  `persists_across_reopen` (publish→drop→reopen: epoch/root/VRF-key restored, a
+  pre-restart proof still verifies). SCALING NOTE: whole-DB snapshot per publish
+  is fine at relay scale; a `Database` trait impl over SQLite is the upgrade for
+  large directories. **(4)** Node relay integration — swap the interim Merkle directory
   for the sidecar (publish on directory PUT; serve akd proofs on lookup;
   audit/consistency for roots). **(5)** native client verify via `akd_core`
   (direct Rust dep in the Tauri core). **(6)** web-satellite WASM `akd_core`
