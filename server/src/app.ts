@@ -25,6 +25,7 @@ import { relayRoutes } from './routes/relay.js';
 import { createRealtime, WS_MAX_PAYLOAD } from './realtime.js';
 import { createRelayLive } from './relayLive.js';
 import { createVoiceSignal } from './voiceSignal.js';
+import { createVoiceSfu } from './voiceSfu.js';
 import { createPush } from './push.js';
 import { createVoice } from './voice.js';
 
@@ -59,12 +60,14 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   const realtime = createRealtime(db, config);
   const relayLive = createRelayLive();
   const voiceSignal = createVoiceSignal();
+  const voiceSfu = createVoiceSfu(config);
   const push = createPush(db, config, realtime);
   const voice = createVoice(db, config, realtime, push);
   // Tear down a fully-offline user's calls (mediasoup worker is lazy — no cost
   // until voice is actually used).
   realtime.onUserOffline((userId) => voice.disconnect(userId));
   app.addHook('onClose', async () => voice.close());
+  app.addHook('onClose', async () => voiceSfu.close());
 
   app.get('/api/health', async () => ({ ok: true }));
   authRoutes(app, db, config);
@@ -78,7 +81,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   emojiRoutes(app, config);
   ogRoutes(app);
   pushRoutes(app, db, push);
-  relayRoutes(app, db, relayLive, config, voiceSignal);
+  relayRoutes(app, db, relayLive, config, voiceSignal, voiceSfu);
   voice.register(app);
   realtime.register(app);
 

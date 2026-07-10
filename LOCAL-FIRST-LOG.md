@@ -1300,14 +1300,26 @@ Playwright version (currently 1.60.0).
     placeCall/accept/decline/hangup. Tests: panel (hidden idle/ended, ring
     buttons+emits, cancel/hangup states, Unknown fallback) + composable (reactive
     transitions, action/lifecycle delegation). web 512, tsc clean.
-  - **Remaining v8 spec:** voice follow-ups (all SFU): (a) **v8 SFU server**
-    (parallel module: device-token + call-id-capability room auth, mediasoup
-    transport/produce/consume, member cap) — large, mediasoup-worker-backed.
-    (b) **mediasoup-client CallMedia impl** (webview) behind `join(callId)`/
-    `close()` + frame E2EE via insertable streams. (c) **mount** NativeCallPanel
-    in the app shell bound to useNativeCall + a call button in NativeChat
-    (placeCall) — small, waits on a real CallMedia to be useful. (d) D4c
-    cross-relay fan-out + call-id dedup (deliberately deferred). Then:
+  - **DONE (iter 86) — v8 SFU server: capability-authed join.** New
+    `server/src/voiceSfu.ts` (`createVoiceSfu(config)`): parallel mediasoup SFU,
+    rooms keyed by **call id**, authed by **device token** (reuses
+    `deviceIdForToken`) — NO graph auth (v6's `resolveRoom` can't exist under the
+    graph-hiding relay), NO server-side media keys (frame E2EE is client-only, so
+    the SFU only relays ciphertext RTP — no rekey machinery). `POST
+    /api/relay/voice/rooms/:callId/join` → `{ callId, routerRtpCapabilities,
+    peers }`; lazy worker, per-call router, membership set + `MAX_PEERS_PER_CALL`
+    8; roster exposes only **ephemeral** participant ids + producer ids (no
+    device/user identity leaks). Wired via relayRoutes(…, voiceSfu) + app.ts
+    (createVoiceSfu + onClose). Tests (real worker): join→real opus RTP caps,
+    401 no-token / 400 bad-call-id, 2nd-joiner roster, room cap 409 +
+    idempotent re-join. server 375, tsc clean.
+  - **Remaining v8 spec:** voice follow-ups (all SFU): (a) **SFU transport /
+    connect / produce / consume / leave** endpoints (next slices, mirror voice.ts
+    but capability-scoped; producer-appeared notification rides the voiceSignal
+    socket). (b) **mediasoup-client CallMedia impl** (webview) behind
+    `join(callId)`/`close()` + frame E2EE via insertable streams + the media-key
+    exchange (1:1: caller seals a random media key to the callee). (c) **mount**
+    NativeCallPanel + call button. (d) D4c cross-relay fan-out (deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).

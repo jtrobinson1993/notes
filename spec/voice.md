@@ -358,13 +358,21 @@ are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
   (idle→dialing/ringing→connecting→connected→ended) — is **built** and
   unit-tested against an injected media interface. It handles **call control
   only** (ring/accept/hangup + peer presence); the signaling socket carries no
-  SDP/ICE. *Not yet built:* the media layer — **decided: mediasoup SFU** (as v6,
-  so neither caller learns the other's IP), driven in the **webview** via
-  mediasoup-client (browser libwebrtc + insertable-streams frame E2EE) behind
-  the `CallMedia.join(callId)`/`close()` interface. Remaining: device-token auth
-  on the mediasoup transport/produce/consume endpoints (v6's are cookie-authed),
-  the mediasoup-client `CallMedia` impl, and the call UI (incoming-call panel
-  from `DrainReport.calls`).
+  SDP/ICE. The **call UI** (`NativeCallPanel.vue` + `useNativeCall` composable +
+  `nativeVoiceCall` wiring) is **built** and unit-tested. Media model **decided:
+  mediasoup SFU** (as v6, so neither caller learns the other's IP), driven in the
+  **webview** via mediasoup-client (browser libwebrtc + insertable-streams frame
+  E2EE) behind `CallMedia.join(callId)`/`close()`.
+  - **v8 SFU server — built (first slice):** `server/src/voiceSfu.ts`, a parallel
+    mediasoup SFU whose rooms are keyed by **call id** and authorized by the
+    **device token** — not v6's social-graph `resolveRoom` (impossible under the
+    graph-hiding relay) — with **no server-side media keys** (frame E2EE is
+    client insertable-streams only, so the SFU relays ciphertext RTP and needs no
+    rekey). `POST /api/relay/voice/rooms/:callId/join` → `{ routerRtpCapabilities,
+    peers }` with an identity-free roster (ephemeral participant ids); member cap
+    8. *Remaining:* the transport / connect / produce / consume / leave endpoints
+    (capability-scoped), the mediasoup-client `CallMedia` impl + the 1:1 media-key
+    exchange, and mounting the call UI.
 - **Ringing — single-relay built; cross-relay (D4c) follow-up.** *Built:* the
   caller mints a fresh unguessable **call id** and seals a `call-offer {callId}`
   envelope (`KIND_CALL_OFFER`) into the callee's **mailbox** (`relay_call_offer`
