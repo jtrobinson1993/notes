@@ -97,7 +97,12 @@ Run against a real built server + web with a temp `DATA_DIR`, seeded.
   extension (which we need to unwrap MK) may not be supported by the virtual
   authenticator. Fallbacks, in order: (1) drive the **recovery-code** login path
   for E2E (no PRF needed); (2) an env-gated test-only login endpoint that seeds a
-  session + injects a known MK. Decide once during P2 setup.
+  session + injects a known MK. **Built (fallback 2, session-only):**
+  `POST /api/test/session` (`server/src/routes/test.ts`) mints an authenticated
+  session without the passkey ceremony — HARD off unless `config.testAuth`
+  (`E2E_TEST_AUTH=1` **and** `NODE_ENV!=='production'`), and the module refuses
+  under production regardless. It seeds no MK yet (voice/device-token E2E doesn't
+  need one; a chat-oriented MK-seed extends it later).
 - **Flows:** admin bootstrap → invite → register (recovery code shown once) →
   login / lock / unlock; notes CRUD + autosave indicator; live-editor formatting
   (type `**bold**`, assert markers concealed; shortcuts; a table + a checkbox);

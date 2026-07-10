@@ -20,6 +20,7 @@ import { linkRoutes } from './routes/link.js';
 import { gifRoutes } from './routes/gifs.js';
 import { emojiRoutes } from './routes/emoji.js';
 import { ogRoutes } from './routes/og.js';
+import { testRoutes } from './routes/test.js';
 import { pushRoutes } from './routes/push.js';
 import { relayRoutes } from './routes/relay.js';
 import { createRealtime, WS_MAX_PAYLOAD } from './realtime.js';
@@ -83,6 +84,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   ogRoutes(app);
   pushRoutes(app, db, push);
   relayRoutes(app, db, relayLive, config, voiceSignal, voiceSfu);
+  testRoutes(app, db, config); // no-op unless config.testAuth (E2E only)
   voice.register(app);
   realtime.register(app);
 

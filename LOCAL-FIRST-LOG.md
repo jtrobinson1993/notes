@@ -1332,13 +1332,34 @@ Playwright version (currently 1.60.0).
     Wired in app.ts (`createVoiceSfu(config, voiceSignal.notifyRoom)`). Test
     (bare app + real WS, direct notifyRoom): broadcasts to both members, honours
     the producer exclusion, no-op for an unknown room. server 381, tsc clean.
-  - **Remaining v8 spec:** voice follow-ups: (a) **mediasoup-client CallMedia
-    impl** (webview) behind `join(callId)`/`close()`: join→transports→produce
-    mic→consume peers (on the `producer` signal) + frame E2EE via insertable
-    streams + the 1:1 media-key exchange (caller seals a random media key to the
-    callee). LOW UNIT-TESTABILITY (mediasoup-client + browser WebRTC + getUserMedia
-    not in jsdom) → integration/e2e. (b) **mount** NativeCallPanel + call button.
-    (c) D4c cross-relay fan-out (deferred). Then:
+  - **USER DECISION (this session) — e2e-first for CallMedia.** The remaining
+    piece (browser mediasoup-client CallMedia + thin Rust SFU-proxy) can't be
+    unit-tested (mediasoup-client/getUserMedia not in jsdom; no Rust HTTP-mock
+    harness). User chose: **stand up a voice e2e harness first**, then build
+    CallMedia against it. Investigation surfaced the real prerequisite — e2e
+    contexts can't authenticate (device enroll needs a session; sessions need the
+    passkey ceremony), the same **auth seam** the chat e2e is stubbed (test.fixme)
+    on. So the foundational slice is that seam (unblocks BOTH chat + voice e2e).
+  - **DONE (iter 89) — env-gated test-auth seam (E2E foundation).** New
+    `server/src/routes/test.ts` `POST /api/test/session` — mints an authenticated
+    session (createUser + startSession) WITHOUT the passkey ceremony, so a
+    Playwright context can reach cookie-authed endpoints (→ device enroll → device
+    token → v8 SFU). SECURITY: HARD OFF by default — new `config.testAuth`
+    (`E2E_TEST_AUTH=1` AND `NODE_ENV!=='production'`); app.ts registers it only
+    when set; the module *also* refuses under NODE_ENV=production (defence in
+    depth). No MK handled (voice/device auth doesn't need it; chat MK-seed can
+    extend later). Tests: 404 by default (no accidental bypass), mints a session
+    that authenticates a real device-enroll when on, refused under production.
+    server 384, tsc clean. Unblocks the chat e2e too.
+  - **Remaining v8 spec:** voice follow-ups: (a) **voice e2e harness** — a
+    fake-media Chromium Playwright project + a device-token helper (test-session →
+    enroll → challenge → token) + a spec driving two peers through the v8 SFU
+    media round-trip (join→transport→produce fake mic→consume→assert media). (b)
+    **mediasoup-client CallMedia** built against that harness (behind an
+    injectable SfuControl so it runs in the app via Rust IPC and in e2e via direct
+    REST) + frame E2EE (reuse voiceCrypto/voiceTransform) + 1:1 media-key seal via
+    the call-offer envelope. (c) **mount** NativeCallPanel + call button. (d) D4c
+    fan-out (deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).

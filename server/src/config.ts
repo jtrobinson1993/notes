@@ -16,6 +16,11 @@ export interface Config {
   rateLimitMax: number;
   /** v6 voice (mediasoup SFU) network settings. */
   voice: VoiceConfig;
+  /** Test-only auth seam for E2E: when true, registers `POST /api/test/session`
+   *  which mints an authenticated session without the passkey ceremony. HARD
+   *  OFF by default and force-disabled under NODE_ENV=production — it is a
+   *  deliberate auth bypass that must never ship enabled. */
+  testAuth: boolean;
 }
 
 export interface VoiceConfig {
@@ -55,5 +60,8 @@ export function loadConfig(): Config {
       rtcMinPort: Number(process.env.VOICE_RTC_MIN_PORT ?? 40000),
       rtcMaxPort: Number(process.env.VOICE_RTC_MAX_PORT ?? 40100),
     },
+    // Opt-in via env AND never in production — the belt-and-braces gate for a
+    // route that bypasses the passkey ceremony.
+    testAuth: process.env.E2E_TEST_AUTH === '1' && process.env.NODE_ENV !== 'production',
   };
 }
