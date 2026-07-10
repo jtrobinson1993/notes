@@ -30,6 +30,14 @@ pub fn token_needs_refresh(expires_at: Instant, now: Instant) -> bool {
     now + REFRESH_MARGIN >= expires_at
 }
 
+/// A handle's KT key-history proof + what to verify it against (self-audit).
+pub struct KtHistory {
+    pub proof_json: String,
+    pub epoch: u64,
+    pub root: String,
+    pub vrf_public_key: String,
+}
+
 /// Cap on consecutive *no-progress* reconnects before a resumable download
 /// gives up — a stream that keeps advancing between drops is never capped.
 const RESUME_MAX_STALLS: u32 = 5;
@@ -651,6 +659,38 @@ impl RelayClient {
             blob_id: String,
         }
         Ok(res.json::<Resp>().await.map_err(|e| format!("bad blob resp: {e}"))?.blob_id)
+    }
+
+    /// Fetch a handle's KT key-history proof for self-audit (D5, full-AKD only;
+    /// unauthenticated — KT is public). Returns the serde-JSON proof + the epoch,
+    /// root, and VRF public key the client verifies it against.
+    pub async fn directory_history(&self, handle: &str) -> Result<KtHistory, String> {
+        let base = self.base_url()?;
+        let mut url = reqwest::Url::parse(&format!("{base}/api/relay/directory"))
+            .map_err(|e| format!("bad relay url: {e}"))?;
+        // `push` percent-encodes the segment (handles contain '#').
+        url.path_segments_mut()
+            .map_err(|_| "relay url cannot be a base".to_string())?
+            .push(handle)
+            .push("history");
+        let res = reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("kt history fetch failed: {e}"))?;
+        if res.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err("no key history for handle (interim KT or unknown)".into());
+        }
+        if !res.status().is_success() {
+            return Err(format!("kt history refused (HTTP {})", res.status()));
+        }
+        let v: serde_json::Value = res.json().await.map_err(|e| format!("bad kt history: {e}"))?;
+        Ok(KtHistory {
+            proof_json: v.get("proof").map(|p| p.to_string()).unwrap_or_default(),
+            epoch: v.get("epoch").and_then(|e| e.as_u64()).unwrap_or(0),
+            root: v.get("rootHash").and_then(|r| r.as_str()).unwrap_or_default().to_string(),
+            vrf_public_key: v.get("vrfPublicKey").and_then(|k| k.as_str()).unwrap_or_default().to_string(),
+        })
     }
 
     /// Download attachment ciphertext (device-authed; only the recipient).

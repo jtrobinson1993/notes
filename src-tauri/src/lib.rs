@@ -150,6 +150,67 @@ async fn relay_directory_publish(
     relay.directory_publish(&device, id_pub, seal_pub).await
 }
 
+/// Report of a KT self-audit (D5): did the relay's log only ever bind my handle
+/// to keys I minted, and are its roots consistent (no split view)?
+#[derive(serde::Serialize, Clone)]
+struct KtAuditReport {
+    ok: bool,
+    /// Alarm reason when `!ok`: "self-audit-failed" (foreign key) or "split-view".
+    reason: Option<String>,
+    epoch: i64,
+}
+
+/// Self-audit my own handle against the relay's KT log (D5, full-AKD): fetch its
+/// key-history proof, verify it, and confirm every key it mapped my handle to is
+/// one I actually minted. Also records the root (split-view detection) and, on a
+/// clean pass, advances my verified root. A failure emits a hard `kt:alarm`.
+#[tauri::command]
+async fn kt_self_audit(
+    app: tauri::AppHandle,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<KtAuditReport, String> {
+    let (_base_url, relay_fp) = relay.session_info().ok_or("not connected to a relay")?;
+    // My handle + identity key (the akd value is the identity pubkey).
+    let (handle, my_key) = {
+        let vault = vault.lock().unwrap();
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        let store = vault.store().map_err(|e| e.to_string())?;
+        let handle = store
+            .get_setting("identity.handle")
+            .map_err(|e| e.to_string())?
+            .ok_or("no local handle — finish onboarding first")?;
+        (handle, ident.signing_public().to_vec())
+    };
+
+    let hist = relay.directory_history(&handle).await?;
+    let keys = kt::verify_key_history(&hist.vrf_public_key, &hist.root, hist.epoch, &handle, &hist.proof_json)?;
+    let verdict = kt::self_audit_verdict(&keys, std::slice::from_ref(&my_key));
+    let epoch = hist.epoch as i64;
+
+    let observe = {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store.kt_observe_root(&relay_fp, epoch, &hist.root).map_err(|e| e.to_string())?
+    };
+
+    let reason = match (&verdict, &observe) {
+        (kt::SelfAudit::Foreign(_), _) => Some("self-audit-failed".to_string()),
+        (_, store::KtObserve::SplitView { .. }) => Some("split-view".to_string()),
+        _ => None,
+    };
+    if reason.is_none() {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store.kt_set_verified(&relay_fp, epoch, &hist.root).map_err(|e| e.to_string())?;
+    } else {
+        use tauri::Emitter as _;
+        let _ = app.emit("kt:alarm", KtAuditReport { ok: false, reason: reason.clone(), epoch });
+    }
+    Ok(KtAuditReport { ok: reason.is_none(), reason, epoch })
+}
+
 /// Seal an E2E envelope to a recipient's sealing key (envelope v1).
 #[tauri::command]
 fn envelope_seal(
@@ -1754,6 +1815,7 @@ pub fn run() {
             sfu_produce,
             sfu_consume,
             sfu_leave,
+            kt_self_audit,
             conversation_reactions,
             messages_page,
             messages_ingest,

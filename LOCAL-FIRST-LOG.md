@@ -121,9 +121,13 @@ Playwright version (currently 1.60.0).
   404 on interim — no history), + pure `kt::self_audit_verdict(history_keys,
   my_keys)→SelfAudit{Clean|Foreign(key)}` (flags a key the log bound to my handle
   that I never minted = hard equivocation). server 390, cargo kt 3 tests.
-  *[next] orchestration:* relay_client history fetch + `kt_self_audit` command
-  (fetch→`verify_key_history`→`self_audit_verdict`→`kt_observe_root`+`kt_set_
-  verified` or emit alarm).
+  *[DONE, iter 105] orchestration:* relay_client `directory_history` (public GET,
+  Url-encodes the handle's '#') + `KtHistory`; `kt_self_audit` command — derives
+  my handle+identity key, fetches history, `verify_key_history`→`self_audit_
+  verdict` (my key = akd value), `kt_observe_root`, then on clean+consistent
+  `kt_set_verified` else emits a hard `kt:alarm` ("self-audit-failed" |
+  "split-view") + returns `KtAuditReport{ok,reason,epoch}`. cargo 71. (Command
+  orchestration is network/vault-bound → verify+verdict cores carry the tests.)
   **(5d)** gossip (piggyback latest root on envelopes; inbound split-view check).
   **(5e)** alarm surface (soft/hard per spec). **(6)** web-satellite WASM
   `akd_core` verifier. **(7) [DONE, iter 101]** docker-compose — new `akd-sidecar/Dockerfile`
