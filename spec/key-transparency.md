@@ -18,6 +18,45 @@ federation is out). The logged binding is `handle → identity pubkey
 identity key; devices are an account-internal concern authenticated by the
 identity (see [relay.md](relay.md)).
 
+## Full-AKD feasibility spike (`akd` crate — de-risking the "confirm at build")
+
+Ran a throwaway spike against Meta's **`akd` 0.12.0** (`github.com/facebook/akd`,
+MIT/Apache) to de-risk the sidecar path before committing. Conclusion: **GO is
+feasible; no dead-ends.** Findings:
+
+- **Builds clean, production-proven.** Compiles on Rust 1.96 in seconds; pulls
+  `ed25519-dalek` + `blake3` (already ours) + `protobuf`. The `whatsapp_v1`
+  config feature is the engine behind WhatsApp KT — maintained by Meta.
+  *Caveat:* the old standalone `akd_client`/`akd_mysql` crates lag at 0.8.9
+  (novifinancial era) — superseded: verification now lives in `akd_core::verify`;
+  MySQL is just one optional storage crate.
+- **No mandatory MySQL** (my biggest flagged risk — resolved). `akd` exposes a
+  `Database` trait with a built-in in-memory impl (`storage/memory.rs`); MySQL is
+  a separate optional crate. We implement the trait over our SQLite/filesystem
+  (or run in-memory + snapshot). No new stateful datastore forced on the relay.
+- **All three proof types are first-class:** `publish(Vec<(AkdLabel, AkdValue)>)
+  → EpochHash`; `lookup(label) → (LookupProof, EpochHash)` (inclusion);
+  `audit(start,end) → AppendOnlyProof` (consistency/append-only); `key_history
+  (label) → HistoryProof` (self-audit). `get_public_key() → VRFPublicKey` — **VRF
+  label blinding is built in** (the privacy property our interim Merkle lacks).
+- **Client verification is `no_std`/WASM-viable** (my other big flagged risk —
+  resolved). `verify` (`lookup_verify`, `key_history_verify`) lives in the light
+  `akd_core`, which compiles clean with `--no-default-features --features
+  nostd,vrf,whatsapp_v1` → a **wasm-bindgen** shim gives the JS **web satellite** a
+  verifier. The **native Tauri core can embed `akd_core::verify` directly** (plain
+  Rust dep — no napi/WASM). *Wiring detail:* nostd excludes the `proto` module, so
+  a WASM verifier marshals proof **structs** across the JS↔WASM boundary rather
+  than protobuf bytes — extra glue, not a blocker.
+
+**Recommended shape (when we do it):** `akd` in a **sidecar** (its own
+docker-compose service, `docker compose up` unchanged) implementing the
+`Database` trait over SQLite; Node relay calls it for publish/lookup/audit;
+native client verifies via `akd_core` (direct dep), web satellite via a WASM
+`akd_core`. **Still off the v8 critical path** — ship v8 on the interim KT
+(chained roots + Merkle inclusion proofs + auditor), do full-AKD as a post-v8
+hardening milestone. The spike's point: that milestone is now scoped and
+unblocked.
+
 ## Log structure
 
 **AKD/CONIKS lineage** (the engine behind WhatsApp KT / Apple CKV; lean on
