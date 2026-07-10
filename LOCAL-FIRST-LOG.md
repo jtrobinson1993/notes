@@ -51,6 +51,16 @@ Playwright version (currently 1.60.0).
 
 ## Decisions locked
 
+- **SIGNING RESOLVED — all v8 branch commits re-signed.** The whole branch was
+  committed unsigned while 1Password's op-ssh-sign agent was locked (user's
+  one-time approval). Once unlocked, re-signed all 171 commits in one pass:
+  `git rebase --exec 'git commit --amend --no-edit -S' main` (hashes changed,
+  content preserved; 0 unsigned in range). Going forward commits sign normally
+  (commit.gpgsign=true) — **stop using `-c commit.gpgsign=false`**. (Local
+  `%G?` shows N only because no `gpg.ssh.allowedSignersFile` is set — the SSH
+  signatures ARE attached; verified via the `gpgsig` header.)
+
+
 - **USER DECISION — implement full-AKD KT now (`akd` sidecar).** After the
   feasibility spike (recorded in key-transparency.md; `akd` builds, no MySQL,
   all proof types + VRF, verify is no_std/WASM-viable, actively maintained — last
