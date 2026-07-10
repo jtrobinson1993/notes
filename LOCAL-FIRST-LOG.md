@@ -1313,13 +1313,24 @@ Playwright version (currently 1.60.0).
     (createVoiceSfu + onClose). Tests (real worker): join→real opus RTP caps,
     401 no-token / 400 bad-call-id, 2nd-joiner roster, room cap 409 +
     idempotent re-join. server 375, tsc clean.
-  - **Remaining v8 spec:** voice follow-ups (all SFU): (a) **SFU transport /
-    connect / produce / consume / leave** endpoints (next slices, mirror voice.ts
-    but capability-scoped; producer-appeared notification rides the voiceSignal
-    socket). (b) **mediasoup-client CallMedia impl** (webview) behind
-    `join(callId)`/`close()` + frame E2EE via insertable streams + the media-key
-    exchange (1:1: caller seals a random media key to the callee). (c) **mount**
-    NativeCallPanel + call button. (d) D4c cross-relay fan-out (deferred). Then:
+  - **DONE (iter 87) — v8 SFU media endpoints.** Added to voiceSfu.ts, all
+    device-token + call-id-membership guarded (`member()` helper): `transport`
+    (send|recv WebRtcTransport → ICE/DTLS params), `transport/connect` (DTLS),
+    `produce` (audio; stores producerId — RTP is ciphertext, frames E2E-sealed
+    client-side), `consume` (by producerId; router canConsume check), `leave`
+    (close transports, drop from room, close router when empty; shared
+    `doLeave`). Tests (real worker): send+recv transport creation w/ real params,
+    non-member→401 / bad-direction→400, connect/produce/consume→404 on unknown
+    transport, leave→membership dropped. server 379, tsc clean. (Full produce/
+    consume happy-path needs a real mediasoup-client → e2e, matching v6's depth.)
+  - **Remaining v8 spec:** voice follow-ups: (a) **producer-appeared
+    notification** — on produce, notify the call's other devices (over the
+    voiceSignal socket) so they consume; small cross-wire (VoiceSignal.notifyRoom
+    + a voiceSfu callback). (b) **mediasoup-client CallMedia impl** (webview)
+    behind `join(callId)`/`close()`: join→transports→produce mic→consume peers +
+    frame E2EE via insertable streams + the 1:1 media-key exchange (caller seals
+    a random media key to the callee). (c) **mount** NativeCallPanel + call
+    button. (d) D4c cross-relay fan-out (deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).

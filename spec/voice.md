@@ -370,9 +370,11 @@ are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
     client insertable-streams only, so the SFU relays ciphertext RTP and needs no
     rekey). `POST /api/relay/voice/rooms/:callId/join` → `{ routerRtpCapabilities,
     peers }` with an identity-free roster (ephemeral participant ids); member cap
-    8. *Remaining:* the transport / connect / produce / consume / leave endpoints
-    (capability-scoped), the mediasoup-client `CallMedia` impl + the 1:1 media-key
-    exchange, and mounting the call UI.
+    8. The **media endpoints** — `transport` (send/recv), `transport/connect`
+    (DTLS), `produce`, `consume`, `leave` — are also **built**, each guarded by
+    device token + call-id membership. *Remaining:* a producer-appeared
+    notification (over the voiceSignal socket), the mediasoup-client `CallMedia`
+    impl + the 1:1 media-key exchange, and mounting the call UI.
 - **Ringing — single-relay built; cross-relay (D4c) follow-up.** *Built:* the
   caller mints a fresh unguessable **call id** and seals a `call-offer {callId}`
   envelope (`KIND_CALL_OFFER`) into the callee's **mailbox** (`relay_call_offer`

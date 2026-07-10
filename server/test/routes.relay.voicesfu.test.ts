@@ -90,3 +90,62 @@ describe('v8 voice SFU — capability-authed join', () => {
     expect((await join(CALL_ID, bearers[0]!)).statusCode).toBe(200);
   }, 30_000);
 });
+
+const post = (path: string, bearer?: string, payload?: unknown) =>
+  ctx.app.inject({
+    method: 'POST',
+    url: `/api/relay/voice/rooms/${CALL_ID}/${path}`,
+    headers: bearer ? { authorization: `Bearer ${bearer}` } : {},
+    payload: payload as object,
+  });
+
+describe('v8 voice SFU — media endpoints', () => {
+  it('creates real send + recv WebRtcTransports for a member', async () => {
+    ctx = await makeApp();
+    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice.cookie);
+    await join(CALL_ID, bearer);
+
+    for (const direction of ['send', 'recv'] as const) {
+      const res = await post('transport', bearer, { direction });
+      expect(res.statusCode).toBe(200);
+      const t = res.json() as { id: string; iceParameters: unknown; iceCandidates: unknown[]; dtlsParameters: unknown };
+      expect(typeof t.id).toBe('string');
+      expect(t.iceParameters).toBeTruthy(); // real mediasoup transport params
+      expect(Array.isArray(t.iceCandidates)).toBe(true);
+      expect(t.dtlsParameters).toBeTruthy();
+    }
+  }, 20_000);
+
+  it('rejects media calls from a non-member (401) and a bad direction (400)', async () => {
+    ctx = await makeApp();
+    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice.cookie);
+
+    // Not joined yet → not in call.
+    expect((await post('transport', bearer, { direction: 'send' })).statusCode).toBe(401);
+    expect((await post('transport')).statusCode).toBe(401); // anonymous
+    await join(CALL_ID, bearer);
+    expect((await post('transport', bearer, { direction: 'sideways' })).statusCode).toBe(400);
+  }, 20_000);
+
+  it('404s connect/produce/consume against an unknown transport', async () => {
+    ctx = await makeApp();
+    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice.cookie);
+    await join(CALL_ID, bearer);
+
+    expect((await post('transport/connect', bearer, { transportId: 'nope', dtlsParameters: {} })).statusCode).toBe(404);
+    expect((await post('produce', bearer, { transportId: 'nope', rtpParameters: {} })).statusCode).toBe(404);
+    expect((await post('consume', bearer, { transportId: 'nope', producerId: 'x', rtpCapabilities: {} })).statusCode).toBe(404);
+  }, 20_000);
+
+  it('leave drops membership (subsequent media calls 401)', async () => {
+    ctx = await makeApp();
+    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice.cookie);
+    await join(CALL_ID, bearer);
+    expect((await post('leave', bearer)).statusCode).toBe(200);
+    expect((await post('transport', bearer, { direction: 'send' })).statusCode).toBe(401);
+  }, 20_000);
+});

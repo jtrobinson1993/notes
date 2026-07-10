@@ -80,6 +80,46 @@ export function createVoiceSfu(config: Config): VoiceSfu {
     return authenticate(token);
   }
 
+  function isMember(callId: string, deviceId: string): boolean {
+    return rooms.get(callId)?.has(deviceId) ?? false;
+  }
+
+  function findTransport(callId: string, deviceId: string, transportId: string): types.WebRtcTransport | undefined {
+    const conn = conns.get(ck(callId, deviceId));
+    if (conn?.sendTransport?.id === transportId) return conn.sendTransport;
+    if (conn?.recvTransport?.id === transportId) return conn.recvTransport;
+    return undefined;
+  }
+
+  /** Close a device's media state and drop it from the room; close the router
+   *  when the room empties. Shared by the leave endpoint and (later) disconnect. */
+  function doLeave(callId: string, deviceId: string): void {
+    const conn = conns.get(ck(callId, deviceId));
+    if (conn) {
+      try {
+        conn.sendTransport?.close();
+        conn.recvTransport?.close();
+      } catch {
+        /* already closed */
+      }
+      conns.delete(ck(callId, deviceId));
+    }
+    const members = rooms.get(callId);
+    members?.delete(deviceId);
+    if (members && members.size === 0) {
+      rooms.delete(callId);
+      const router = routers.get(callId);
+      if (router) {
+        try {
+          router.close();
+        } catch {
+          /* ignore */
+        }
+        routers.delete(callId);
+      }
+    }
+  }
+
   function register(app: FastifyInstance, authenticate: DeviceAuth, rateLimitMax: number): void {
     const rate = { config: { rateLimit: { max: rateLimitMax, timeWindow: '1 minute' } } };
 
@@ -115,6 +155,107 @@ export function createVoiceSfu(config: Config): VoiceSfu {
         });
 
       return { callId, routerRtpCapabilities: router.rtpCapabilities, peers };
+    });
+
+    // Shared guard for the media endpoints: device token + current membership.
+    const member = (request: FastifyRequest): { callId: string; deviceId: string } | null => {
+      const deviceId = deviceOf(request, authenticate);
+      if (!deviceId) return null;
+      const { callId } = request.params as { callId: string };
+      if (!CALL_ID_RE.test(callId) || !isMember(callId, deviceId)) return null;
+      return { callId, deviceId };
+    };
+
+    // ---- Create a WebRtcTransport (send or recv) ----
+    app.post('/api/relay/voice/rooms/:callId/transport', rate, async (request, reply) => {
+      const m = member(request);
+      if (!m) return reply.code(401).send({ error: 'not in call' });
+      const { direction } = (request.body ?? {}) as { direction?: string };
+      if (direction !== 'send' && direction !== 'recv') return reply.code(400).send({ error: 'invalid direction' });
+
+      const router = await getRouter(m.callId);
+      const transport = await router.createWebRtcTransport({
+        listenInfos: [
+          { protocol: 'udp', ip: config.voice.listenIp, announcedAddress: config.voice.announcedIp },
+          { protocol: 'tcp', ip: config.voice.listenIp, announcedAddress: config.voice.announcedIp },
+        ],
+        enableUdp: true,
+        enableTcp: true,
+        preferUdp: true,
+      });
+      const conn = conns.get(ck(m.callId, m.deviceId))!;
+      if (direction === 'send') conn.sendTransport = transport;
+      else conn.recvTransport = transport;
+
+      return {
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters,
+      };
+    });
+
+    // ---- Connect a transport (DTLS handshake) ----
+    app.post('/api/relay/voice/rooms/:callId/transport/connect', rate, async (request, reply) => {
+      const m = member(request);
+      if (!m) return reply.code(401).send({ error: 'not in call' });
+      const { transportId, dtlsParameters } = (request.body ?? {}) as {
+        transportId?: string;
+        dtlsParameters?: unknown;
+      };
+      const transport = transportId ? findTransport(m.callId, m.deviceId, transportId) : undefined;
+      if (!transport) return reply.code(404).send({ error: 'no transport' });
+      await transport.connect({ dtlsParameters: dtlsParameters as types.DtlsParameters });
+      return { ok: true };
+    });
+
+    // ---- Produce: start sending mic audio (ciphertext RTP; frames E2E-sealed) ----
+    app.post('/api/relay/voice/rooms/:callId/produce', rate, async (request, reply) => {
+      const m = member(request);
+      if (!m) return reply.code(401).send({ error: 'not in call' });
+      const { transportId, rtpParameters } = (request.body ?? {}) as {
+        transportId?: string;
+        rtpParameters?: unknown;
+      };
+      const conn = conns.get(ck(m.callId, m.deviceId));
+      if (!conn?.sendTransport || conn.sendTransport.id !== transportId) {
+        return reply.code(404).send({ error: 'no send transport' });
+      }
+      const producer = await conn.sendTransport.produce({ kind: 'audio', rtpParameters: rtpParameters as types.RtpParameters });
+      conn.producer = producer;
+      conn.producerId = producer.id;
+      return { producerId: producer.id };
+    });
+
+    // ---- Consume: start receiving one peer's audio by producer id ----
+    app.post('/api/relay/voice/rooms/:callId/consume', rate, async (request, reply) => {
+      const m = member(request);
+      if (!m) return reply.code(401).send({ error: 'not in call' });
+      const { transportId, producerId, rtpCapabilities } = (request.body ?? {}) as {
+        transportId?: string;
+        producerId?: string;
+        rtpCapabilities?: unknown;
+      };
+      const conn = conns.get(ck(m.callId, m.deviceId));
+      if (!conn?.recvTransport || conn.recvTransport.id !== transportId) {
+        return reply.code(404).send({ error: 'no recv transport' });
+      }
+      const router = await getRouter(m.callId);
+      const caps = rtpCapabilities as types.RtpCapabilities;
+      if (!producerId || !router.canConsume({ producerId, rtpCapabilities: caps })) {
+        return reply.code(400).send({ error: 'cannot consume' });
+      }
+      const consumer = await conn.recvTransport.consume({ producerId, rtpCapabilities: caps, paused: false });
+      conn.consumers.set(producerId, consumer);
+      return { id: consumer.id, producerId, rtpParameters: consumer.rtpParameters };
+    });
+
+    // ---- Leave: release media state, drop from the room ----
+    app.post('/api/relay/voice/rooms/:callId/leave', rate, async (request, reply) => {
+      const m = member(request);
+      if (!m) return reply.code(401).send({ error: 'not in call' });
+      doLeave(m.callId, m.deviceId);
+      return { ok: true };
     });
   }
 
