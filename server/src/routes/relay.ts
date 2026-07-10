@@ -242,6 +242,21 @@ export function relayRoutes(
     };
   });
 
+  // Key-history proof for self-audit (D5): only the full-AKD backend can prove a
+  // handle's key history; the interim Merkle KT has none (→ 404).
+  app.get('/api/relay/directory/:handle/history', async (request, reply) => {
+    const { handle } = request.params as { handle: string };
+    if (!ktSidecar) return reply.code(404).send({ error: 'no key history (interim KT)' });
+    const hist = await ktSidecar.keyHistory(handle);
+    if (!hist) return reply.code(404).send({ error: 'unknown handle' });
+    return {
+      epoch: hist.epoch,
+      rootHash: hist.root,
+      proof: hist.proof,
+      vrfPublicKey: await ktSidecar.vrfPublicKey(),
+    };
+  });
+
   const rootsHandler = async (request: FastifyRequest) => {
     const since = Number((request.query as { since?: string }).since ?? 0) || 0;
     return {

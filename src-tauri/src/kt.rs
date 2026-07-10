@@ -76,9 +76,49 @@ pub fn verify_key_history(
     Ok(results.into_iter().map(|r| r.value.0).collect())
 }
 
+/// Verdict of a self-audit over a handle's verified key-history.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SelfAudit {
+    /// Every value the log mapped the handle to is a key the client minted.
+    Clean,
+    /// The log bound the handle to a key the client never minted — the relay
+    /// equivocated on the client's own identity (a HARD alarm).
+    Foreign(Vec<u8>),
+}
+
+/// Compare the keys a verified key-history proof revealed (`history_keys`)
+/// against the keys the client actually minted (`my_keys`); flag any foreign
+/// one. This is the self-audit decision — pure, so the network/verify plumbing
+/// around it stays thin.
+pub fn self_audit_verdict(history_keys: &[Vec<u8>], my_keys: &[Vec<u8>]) -> SelfAudit {
+    for k in history_keys {
+        if !my_keys.contains(k) {
+            return SelfAudit::Foreign(k.clone());
+        }
+    }
+    SelfAudit::Clean
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn self_audit_flags_only_a_key_i_never_minted() {
+        let mine = vec![vec![1u8; 32]];
+        // Only my key in the history → clean.
+        assert_eq!(self_audit_verdict(&[vec![1u8; 32]], &mine), SelfAudit::Clean);
+        // A rotation to a second key I also minted → clean.
+        let mine2 = vec![vec![1u8; 32], vec![9u8; 32]];
+        assert_eq!(self_audit_verdict(&[vec![1u8; 32], vec![9u8; 32]], &mine2), SelfAudit::Clean);
+        // A foreign key the relay inserted → flagged.
+        assert_eq!(
+            self_audit_verdict(&[vec![1u8; 32], vec![2u8; 32]], &mine),
+            SelfAudit::Foreign(vec![2u8; 32])
+        );
+        // Empty history → nothing to flag.
+        assert_eq!(self_audit_verdict(&[], &mine), SelfAudit::Clean);
+    }
     use akd::append_only_zks::AzksParallelismConfig;
     use akd::directory::Directory;
     use akd::ecvrf::HardCodedAkdVRF;

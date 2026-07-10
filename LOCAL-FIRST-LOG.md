@@ -115,8 +115,15 @@ Playwright version (currently 1.60.0).
   `kt_observe_root`→`KtObserve{New|Consistent|SplitView{recorded}}` (a *different*
   root at a seen epoch = provable equivocation, no append-only proof needed),
   `kt_set_verified`/`kt_verified` (latest verified epoch+root per relay). cargo 70
-  (+1: New→Consistent→SplitView + verified-root advance). **(5c)** self-audit flow
-  (fetch own key_history → verify → alarm if a key I didn't mint appears).
+  (+1: New→Consistent→SplitView + verified-root advance). **(5c) [in progress]**
+  self-audit. *[DONE, iter 104] server + decision core:* relay `GET /directory/
+  :handle/history` serves the sidecar's key-history proof (`KtSidecar.keyHistory`;
+  404 on interim — no history), + pure `kt::self_audit_verdict(history_keys,
+  my_keys)→SelfAudit{Clean|Foreign(key)}` (flags a key the log bound to my handle
+  that I never minted = hard equivocation). server 390, cargo kt 3 tests.
+  *[next] orchestration:* relay_client history fetch + `kt_self_audit` command
+  (fetch→`verify_key_history`→`self_audit_verdict`→`kt_observe_root`+`kt_set_
+  verified` or emit alarm).
   **(5d)** gossip (piggyback latest root on envelopes; inbound split-view check).
   **(5e)** alarm surface (soft/hard per spec). **(6)** web-satellite WASM
   `akd_core` verifier. **(7) [DONE, iter 101]** docker-compose — new `akd-sidecar/Dockerfile`

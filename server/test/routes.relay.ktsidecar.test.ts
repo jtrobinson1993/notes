@@ -32,6 +32,8 @@ function fakeSidecar(): Promise<{ url: string; state: SidecarState }> {
         res.end(JSON.stringify({ epoch: state.published.length, root: state.root }));
       } else if (req.url?.startsWith('/lookup/')) {
         res.end(JSON.stringify({ proof: { akd: 'lookup-proof' }, epoch: 1, root: state.root }));
+      } else if (req.url?.startsWith('/key-history/')) {
+        res.end(JSON.stringify({ proof: { akd: 'history-proof' }, epoch: 1, root: state.root }));
       } else if (req.url === '/vrf-public-key') {
         res.end(JSON.stringify({ key: Buffer.alloc(32, 9).toString('base64') }));
       } else {
@@ -94,6 +96,22 @@ describe('relay ↔ akd KT sidecar integration', () => {
     // The akd root is signed + chained into the KT roots log for auditors.
     const roots = (await ctx.app.inject({ method: 'GET', url: '/api/relay/kt/roots' })).json().roots as { rootHash: string }[];
     expect(roots.at(-1)?.rootHash).toBe(state.root);
+  });
+
+  it('serves the sidecar key-history proof for self-audit (404 without a sidecar)', async () => {
+    const { url } = await fakeSidecar();
+    ctx = await makeApp({ akdSidecarUrl: url, akdSidecarToken: 'sc-secret' });
+    const hist = await ctx.app.inject({ method: 'GET', url: '/api/relay/directory/Alice%230001/history' });
+    expect(hist.statusCode).toBe(200);
+    const body = hist.json();
+    expect(body.proof).toEqual({ akd: 'history-proof' });
+    expect(body.vrfPublicKey).toBe(Buffer.alloc(32, 9).toString('base64'));
+
+    // No sidecar → the interim KT has no history.
+    const noCtx = await makeApp();
+    const noHist = await noCtx.app.inject({ method: 'GET', url: '/api/relay/directory/Alice%230001/history' });
+    expect(noHist.statusCode).toBe(404);
+    await noCtx.cleanup();
   });
 
   it('without a sidecar configured, the interim Merkle KT still serves', async () => {

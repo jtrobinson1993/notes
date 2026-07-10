@@ -17,6 +17,8 @@ export interface KtSidecar {
   publish(entries: { handle: string; key: string }[]): Promise<{ epoch: number; root: string }>;
   /** A VRF-blinded inclusion proof for a handle, or `null` if not present. */
   lookup(handle: string): Promise<KtLookup | null>;
+  /** A key-history proof for a handle (self-audit), or `null` if not present. */
+  keyHistory(handle: string): Promise<KtLookup | null>;
   /** base64 VRF public key clients verify blinded labels against (cached). */
   vrfPublicKey(): Promise<string>;
 }
@@ -40,6 +42,12 @@ export function createKtSidecar(url: string, token: string): KtSidecar {
       const res = await fetch(`${base}/lookup/${encodeURIComponent(handle)}`, { headers: auth });
       if (res.status === 404) return null;
       if (!res.ok) throw new Error(`kt sidecar lookup failed (${res.status})`);
+      return (await res.json()) as KtLookup;
+    },
+    async keyHistory(handle) {
+      const res = await fetch(`${base}/key-history/${encodeURIComponent(handle)}`, { headers: auth });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`kt sidecar key-history failed (${res.status})`);
       return (await res.json()) as KtLookup;
     },
     async vrfPublicKey() {
