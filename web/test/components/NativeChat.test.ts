@@ -39,6 +39,9 @@ const nativeMod = vi.hoisted(() => ({
 }));
 vi.mock('../../src/lib/native', () => nativeMod);
 
+const call = vi.hoisted(() => ({ placeCall: vi.fn() }));
+vi.mock('../../src/lib/callHost', () => ({ callHost: () => call }));
+
 import NativeChat from '../../src/components/NativeChat.vue';
 
 const view = (over: Record<string, unknown>) => ({ seq: 0, senderId: '', text: '', ...over });
@@ -95,6 +98,15 @@ describe('NativeChat', () => {
     await flushPromises();
     expect(dm.sendDm).toHaveBeenCalledWith('idA', 'hello', undefined);
     expect((w.find('[data-testid="draft"]').element as HTMLInputElement).value).toBe('');
+  });
+
+  it('starts a voice call from the active DM header', async () => {
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-testid="call-start"]').trigger('click');
+    expect(call.placeCall).toHaveBeenCalledWith('idA');
   });
 
   it('creates an invite link', async () => {

@@ -10,7 +10,9 @@ import IconSend from '~icons/mynaui/send-solid';
 import IconBack from '~icons/mynaui/chevron-left';
 import IconUsers from '~icons/mynaui/users';
 import IconPaperclip from '~icons/mynaui/paperclip';
+import IconPhone from '~icons/mynaui/telephone-call-solid';
 import NativeAttachment from './NativeAttachment.vue';
+import { callHost } from '../lib/callHost';
 import { listDms, openDm, sendDm, type DmSummary } from '../lib/nativeDm';
 import {
   addGroupMember,
@@ -103,6 +105,12 @@ function onFilePick(e: Event): void {
   const files = (e.target as HTMLInputElement).files;
   if (files) pendingFiles.value = [...pendingFiles.value, ...files];
   (e.target as HTMLInputElement).value = ''; // allow re-picking the same file
+}
+
+/** Ring the active DM's friend (v8 voice); the global call panel takes over. */
+function startCall(): void {
+  const a = active.value;
+  if (a?.kind === 'dm') void callHost().placeCall(a.id);
 }
 
 async function send(): Promise<void> {
@@ -332,7 +340,18 @@ onUnmounted(() => unsub?.());
     <section v-else-if="active" class="flex flex-1 flex-col">
       <header class="flex items-center justify-between border-b border-neutral-500/20 p-3 text-sm font-semibold">
         <span>{{ active.name }}</span>
-        <button v-if="active.kind === 'group'" data-testid="add-member-toggle" class="text-xs font-normal text-blue-500" @click="addingMember = !addingMember">Add member</button>
+        <div class="flex items-center gap-3">
+          <button
+            v-if="active.kind === 'dm'"
+            data-testid="call-start"
+            class="rounded p-1 text-green-600 hover:bg-neutral-500/10"
+            title="Start a voice call"
+            @click="startCall"
+          >
+            <IconPhone class="h-5 w-5" />
+          </button>
+          <button v-if="active.kind === 'group'" data-testid="add-member-toggle" class="text-xs font-normal text-blue-500" @click="addingMember = !addingMember">Add member</button>
+        </div>
       </header>
       <!-- add-member picker (friends) -->
       <ul v-if="addingMember && active.kind === 'group'" class="border-b border-neutral-500/20 p-2 text-sm">

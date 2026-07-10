@@ -1402,13 +1402,25 @@ Playwright version (currently 1.60.0).
     `media.onProducer` (peer-join/leave still drive the engine). useNativeCall
     forwards `onFrameKey`. cargo 67 (+media-key disposition assertions), web 520
     (nativeVoiceCall + useNativeCall reworked), tsc clean.
-  - **Remaining v8 spec:** voice follow-ups: (a) **wire real media in the app** —
-    where useNativeCall is instantiated, build the VoiceMedia via createCallMedia
-    with nativeSfuControl + real mediasoup-client Device + getUserMedia +
-    voiceTransform encrypt/decrypt, and feed onFrameKey → voiceTransform
-    setFrameKey/setSendEpoch (arm insertable-streams E2EE). (b) **e2e** browser
-    produce→consume round-trip. (c) **mount** NativeCallPanel + call button. (d)
-    D4c fan-out (deferred). Then:
+  - **DONE (iter 94) — app wiring + mount (voice runs end-to-end in the app).**
+    New `nativeCallMedia.ts` `createNativeCallMedia()` — assembles createCallMedia
+    with the real deps: nativeSfuControl, `new Device()` (mediasoup-client),
+    getUserMedia mic (echo-cancel/NS/AGC), remote tracks → `<audio>`, and
+    voiceTransform `encryptSender`/`decryptReceiver` (only when
+    `voiceE2eeSupported()`); pure `frameKeyBytes` b64→bytes. New `callHost.ts` —
+    one shared `useNativeCall(createNativeCallMedia(), onFrameKey)`; `onFrameKey`
+    installs the call's key via `setFrameKey(0,…)`+`setSendEpoch(0)` (1:1 = one
+    epoch). New `NativeCallHost.vue` — mounts NativeCallPanel (native only),
+    `start()` on mount / `stop()` on unmount; mounted globally in App.vue.
+    NativeChat: a `call-start` phone button in the DM header → `callHost().
+    placeCall(contactId)`. Test: call button → placeCall(contactId). web 521,
+    tsc clean. (mediasoup-client was already in App.vue's graph via the v6 store
+    → no new bundling risk.)
+  - **Remaining v8 spec:** voice follow-ups: (a) **browser-media e2e round-trip**
+    (harness page loading nativeCallMedia/voiceMedia + a REST SfuControl; two
+    fake-mic peers produce→consume, assert media flows). (b) peer display-name in
+    the call panel (map peerId→friend handle; currently shows the pubkey). (c) D4c
+    cross-relay fan-out (deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).

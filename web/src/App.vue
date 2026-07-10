@@ -7,6 +7,7 @@ import { useVoiceStore } from './stores/voice';
 import NotificationOptIn from './components/NotificationOptIn.vue';
 import NativeGate from './components/NativeGate.vue';
 import MigrationPrompt from './components/MigrationPrompt.vue';
+import NativeCallHost from './components/NativeCallHost.vue';
 
 const session = useSessionStore();
 const notes = useNotesStore();
@@ -57,6 +58,8 @@ watch(
     <NativeGate>
       <RouterView />
       <MigrationPrompt />
+      <!-- Global v8 voice call panel (native shell; inert in the browser). -->
+      <NativeCallHost />
       <!-- First-open notification opt-in (asks once per device; signed-in only). -->
       <NotificationOptIn v-if="session.loggedIn" />
     </NativeGate>
