@@ -42,7 +42,11 @@ export interface VoiceSfu {
   close(): Promise<void>;
 }
 
-export function createVoiceSfu(config: Config): VoiceSfu {
+/** Announce a new producer to a call's other devices (over the signaling room),
+ *  so they consume it. Injected from the voice signaling hub. */
+export type ProducerNotifier = (callId: string, frame: object, exceptDeviceId?: string) => void;
+
+export function createVoiceSfu(config: Config, notify?: ProducerNotifier): VoiceSfu {
   // Lazily created on first join — the worker (a child process) never starts in
   // deployments/tests that don't use voice.
   let workerPromise: Promise<types.Worker> | null = null;
@@ -224,6 +228,13 @@ export function createVoiceSfu(config: Config): VoiceSfu {
       const producer = await conn.sendTransport.produce({ kind: 'audio', rtpParameters: rtpParameters as types.RtpParameters });
       conn.producer = producer;
       conn.producerId = producer.id;
+      // Tell the call's other devices to consume this producer (over the
+      // signaling room). Rides a `signal` frame so the native client forwards it.
+      notify?.(
+        m.callId,
+        { type: 'signal', callId: m.callId, payload: { kind: 'producer', producerId: producer.id, participantId: conn.participantId } },
+        m.deviceId,
+      );
       return { producerId: producer.id };
     });
 

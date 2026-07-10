@@ -36,6 +36,10 @@ interface VoiceSocket {
 
 export interface VoiceSignal {
   register(app: FastifyInstance, authenticate: DeviceAuth, rateLimitMax: number): void;
+  /** Push a control frame to every socket in a call's signaling room, optionally
+   *  skipping one device. The SFU uses this to announce a new producer so peers
+   *  know to consume it. */
+  notifyRoom(callId: string, frame: object, exceptDeviceId?: string): void;
 }
 
 export function createVoiceSignal(): VoiceSignal {
@@ -63,6 +67,15 @@ export function createVoiceSignal(): VoiceSignal {
   }
 
   /** Relay a frame to every *other* member of a call. */
+  function notifyRoom(callId: string, frame: object, exceptDeviceId?: string): void {
+    const set = rooms.get(callId);
+    if (!set) return;
+    for (const sock of set) {
+      if (exceptDeviceId && sock.deviceId === exceptDeviceId) continue;
+      sendTo(sock, frame);
+    }
+  }
+
   function relayToPeers(callId: string, from: VoiceSocket, frame: object): void {
     const set = rooms.get(callId);
     if (!set) return;
@@ -182,5 +195,5 @@ export function createVoiceSignal(): VoiceSignal {
     app.addHook('onClose', async () => clearInterval(timer));
   }
 
-  return { register };
+  return { register, notifyRoom };
 }

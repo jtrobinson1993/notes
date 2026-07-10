@@ -1323,14 +1323,22 @@ Playwright version (currently 1.60.0).
     non-member→401 / bad-direction→400, connect/produce/consume→404 on unknown
     transport, leave→membership dropped. server 379, tsc clean. (Full produce/
     consume happy-path needs a real mediasoup-client → e2e, matching v6's depth.)
-  - **Remaining v8 spec:** voice follow-ups: (a) **producer-appeared
-    notification** — on produce, notify the call's other devices (over the
-    voiceSignal socket) so they consume; small cross-wire (VoiceSignal.notifyRoom
-    + a voiceSfu callback). (b) **mediasoup-client CallMedia impl** (webview)
-    behind `join(callId)`/`close()`: join→transports→produce mic→consume peers +
-    frame E2EE via insertable streams + the 1:1 media-key exchange (caller seals
-    a random media key to the callee). (c) **mount** NativeCallPanel + call
-    button. (d) D4c cross-relay fan-out (deferred). Then:
+  - **DONE (iter 88) — producer-appeared notification.** `VoiceSignal.notifyRoom
+    (callId, frame, exceptDeviceId?)` pushes a frame to a call's signaling-room
+    sockets (skipping one device); `createVoiceSfu(config, notify?)` takes it and,
+    on `produce`, announces `{type:'signal', payload:{kind:'producer',
+    producerId, participantId}}` to the call's *other* devices (rides a `signal`
+    frame so the native voice_live client forwards it → CallMedia consumes).
+    Wired in app.ts (`createVoiceSfu(config, voiceSignal.notifyRoom)`). Test
+    (bare app + real WS, direct notifyRoom): broadcasts to both members, honours
+    the producer exclusion, no-op for an unknown room. server 381, tsc clean.
+  - **Remaining v8 spec:** voice follow-ups: (a) **mediasoup-client CallMedia
+    impl** (webview) behind `join(callId)`/`close()`: join→transports→produce
+    mic→consume peers (on the `producer` signal) + frame E2EE via insertable
+    streams + the 1:1 media-key exchange (caller seals a random media key to the
+    callee). LOW UNIT-TESTABILITY (mediasoup-client + browser WebRTC + getUserMedia
+    not in jsdom) → integration/e2e. (b) **mount** NativeCallPanel + call button.
+    (c) D4c cross-relay fan-out (deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).

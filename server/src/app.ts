@@ -60,7 +60,8 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   const realtime = createRealtime(db, config);
   const relayLive = createRelayLive();
   const voiceSignal = createVoiceSignal();
-  const voiceSfu = createVoiceSfu(config);
+  // The SFU announces new producers over the signaling room so peers consume.
+  const voiceSfu = createVoiceSfu(config, voiceSignal.notifyRoom);
   const push = createPush(db, config, realtime);
   const voice = createVoice(db, config, realtime, push);
   // Tear down a fully-offline user's calls (mediasoup worker is lazy — no cost
