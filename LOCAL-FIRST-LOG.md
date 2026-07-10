@@ -1364,12 +1364,29 @@ Playwright version (currently 1.60.0).
     voice.spec`, 2 passed). Validates test-auth → device-token → SFU end-to-end;
     the in-browser media round-trip (getUserMedia→produce→consume + frame E2EE)
     lands with CallMedia, driven through this harness.
-  - **Remaining v8 spec:** voice follow-ups: (a) **mediasoup-client CallMedia**
-    built against this harness (behind an injectable SfuControl so it runs in the
-    app via Rust IPC and in e2e via direct REST) + frame E2EE (reuse voiceCrypto/
-    voiceTransform) + 1:1 media-key seal via the call-offer envelope; extend
-    voice.spec to the full produce→consume media round-trip. (b) **mount**
-    NativeCallPanel + call button. (c) D4c fan-out (deferred). Then:
+  - **DONE (iter 91) — CallMedia SFU orchestration (unit-tested).** New
+    `web/src/lib/voiceMedia.ts` `createCallMedia(deps)` implementing the
+    `CallMedia` interface (`join(callId)`/`close()` + `onProducer(id)`): adapts
+    v6's mediasoup flow (device.load → send/recv transports w/ connect+produce
+    event wiring → produce mic → consume peers) to the v8 capability SFU. KEY:
+    every browser-only dep is **injected** — `SfuControl` (the 6 control calls),
+    `createDevice` (mediasoup-client Device factory), `getMicTrack`, frame-E2EE
+    `encryptSender`/`decryptReceiver`, `onRemoteTrack` — so the orchestration is
+    fully unit-testable with fakes (the real Device only runs in app/e2e).
+    Consumes join-time producers + later ones via `onProducer` (dedup set). 5
+    tests: join sequence + mic-encrypt, connect/produce event→control wiring,
+    consume-at-join (decrypt), consume-on-signal + dedup, close→leave. web 517,
+    tsc clean.
+  - **Remaining v8 spec:** voice follow-ups: (a) **real SfuControl (app)** — Rust
+    relay_client SFU methods (join/transport/connect/produce/consume/leave,
+    device-token authed, JSON passthrough) + IPC commands + native.ts wrappers
+    (the webview proxies control through Rust; media/RTP flows direct). (b) **wire
+    CallMedia in the app** — useNativeCall constructs it with the real
+    mediasoup-client Device + getUserMedia + voiceTransform E2EE + the `producer`
+    signal → onProducer; frame-key seal via the call-offer envelope (voiceCrypto).
+    (c) **e2e** browser produce→consume round-trip (harness page loading
+    voiceMedia + a REST SfuControl). (d) **mount** NativeCallPanel + call button.
+    (e) D4c fan-out (deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).

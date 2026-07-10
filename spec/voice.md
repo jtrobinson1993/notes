@@ -375,8 +375,17 @@ are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
     device token + call-id membership. On `produce`, the SFU **announces the new
     producer** to the call's other devices over the signaling room
     (`VoiceSignal.notifyRoom` → a `signal`/`producer` frame the native client
-    forwards) so they consume it. *Remaining:* the mediasoup-client `CallMedia`
-    impl + the 1:1 media-key exchange, and mounting the call UI.
+    forwards) so they consume it.
+  - **CallMedia orchestration — built + unit-tested:** `web/src/lib/voiceMedia.ts`
+    `createCallMedia(deps)` drives the mediasoup-client flow (device.load →
+    send/recv transports → produce mic → consume peers, + `onProducer`) behind
+    the `CallMedia` interface. Every browser-only dep is **injected** (`SfuControl`
+    control plane, mediasoup-client Device factory, mic track, frame-E2EE
+    encrypt/decrypt hooks), so the orchestration is unit-tested with fakes; the
+    app wires the real deps and e2e drives real browser media. *Remaining:* the
+    real `SfuControl` (Rust-IPC-proxied control), wiring CallMedia in the app
+    (real Device + getUserMedia + voiceTransform E2EE + the 1:1 media-key seal via
+    the call-offer envelope), the browser produce→consume e2e, and mounting the UI.
 - **Ringing — single-relay built; cross-relay (D4c) follow-up.** *Built:* the
   caller mints a fresh unguessable **call id** and seals a `call-offer {callId}`
   envelope (`KIND_CALL_OFFER`) into the callee's **mailbox** (`relay_call_offer`
