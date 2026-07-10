@@ -76,6 +76,29 @@ pub fn verify_key_history(
     Ok(results.into_iter().map(|r| r.value.0).collect())
 }
 
+/// Verify the relay's signature over a KT epoch root, as gossiped by a contact
+/// on E2E traffic (D5). The relay signs `kt-root|{root}|{prev}` (prev = "genesis"
+/// for the first epoch) with its identity key — so a valid signature proves the
+/// root is genuinely the relay's, and a contact can't fabricate one to frame an
+/// honest relay. Only then does a `(epoch,root)` mismatch vs. our own view count
+/// as the relay's equivocation (split view).
+pub fn verify_signed_root(
+    relay_pub_b64: &str,
+    root_b64: &str,
+    prev_b64: &str,
+    sig_b64: &str,
+) -> Result<bool, String> {
+    use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+    let pub_bytes: [u8; 32] = b64(relay_pub_b64)?
+        .try_into()
+        .map_err(|_| "relay key must be 32 bytes".to_string())?;
+    let key = VerifyingKey::from_bytes(&pub_bytes).map_err(|e| format!("bad relay key: {e}"))?;
+    let sig = Signature::from_slice(&b64(sig_b64)?).map_err(|e| format!("bad signature: {e}"))?;
+    let prev = if prev_b64.is_empty() { "genesis" } else { prev_b64 };
+    let payload = format!("kt-root|{root_b64}|{prev}");
+    Ok(key.verify(payload.as_bytes(), &sig).is_ok())
+}
+
 /// Verdict of a self-audit over a handle's verified key-history.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SelfAudit {
@@ -102,6 +125,29 @@ pub fn self_audit_verdict(history_keys: &[Vec<u8>], my_keys: &[Vec<u8>]) -> Self
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verify_signed_root_matches_the_relay_signing_scheme() {
+        use base64::engine::general_purpose::STANDARD;
+        use ed25519_dalek::{Signer as _, SigningKey};
+        let key = SigningKey::from_bytes(&[42u8; 32]);
+        let pub_b64 = STANDARD.encode(key.verifying_key().to_bytes());
+        let root = STANDARD.encode([3u8; 32]);
+        let prev = STANDARD.encode([2u8; 32]);
+
+        // Sign exactly as the relay does (`kt-root|{root}|{prev}`).
+        let sig = STANDARD.encode(key.sign(format!("kt-root|{root}|{prev}").as_bytes()).to_bytes());
+        assert_eq!(verify_signed_root(&pub_b64, &root, &prev, &sig).unwrap(), true);
+
+        // Genesis root (empty prev → "genesis").
+        let gsig = STANDARD.encode(key.sign(format!("kt-root|{root}|genesis").as_bytes()).to_bytes());
+        assert_eq!(verify_signed_root(&pub_b64, &root, "", &gsig).unwrap(), true);
+
+        // A tampered root, or another relay's key, must not verify.
+        assert_eq!(verify_signed_root(&pub_b64, &STANDARD.encode([9u8; 32]), &prev, &sig).unwrap(), false);
+        let other = STANDARD.encode(SigningKey::from_bytes(&[7u8; 32]).verifying_key().to_bytes());
+        assert_eq!(verify_signed_root(&other, &root, &prev, &sig).unwrap(), false);
+    }
 
     #[test]
     fn self_audit_flags_only_a_key_i_never_minted() {

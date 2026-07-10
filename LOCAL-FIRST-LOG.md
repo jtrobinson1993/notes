@@ -136,7 +136,14 @@ Playwright version (currently 1.60.0).
   copy), mounted in App.vue (native-gated). 10 tests (nativeKt subscribe/run/
   raise/replay/native-gate/teardown; KtAlarm hidden→shown per reason). web 535,
   tsc clean.
-  **(5d)** gossip (piggyback latest root on envelopes; inbound split-view check). **(6)** web-satellite WASM
+  **(5d) [in progress]** gossip (cross-user split-view). *[DONE, iter 107] crypto
+  core:* `kt::verify_signed_root(relay_pub, root, prev, sig)` — verifies the
+  relay's ed25519 signature over `kt-root|{root}|{prev}` (empty prev→"genesis")
+  so a contact-gossiped root is provably the relay's before a `(epoch,root)`
+  mismatch counts as equivocation. cargo 72 (+1: valid/genesis/tampered-root/
+  wrong-key). *[next]:* cache my latest signed root (fetch /kt/roots); attach it
+  to outbound message envelopes (optional ChatMessagePayload field); on drain
+  verify + `kt_observe_root`→split-view alarm. **(6)** web-satellite WASM
   `akd_core` verifier. **(7) [DONE, iter 101]** docker-compose — new `akd-sidecar/Dockerfile`
   (multi-stage Rust build → slim runtime, non-root, `--locked`); `akd-sidecar`
   compose service (compose-network only, **no published port**, `akd-data`
