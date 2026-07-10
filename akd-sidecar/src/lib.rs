@@ -20,7 +20,7 @@ use akd::ecvrf::HardCodedAkdVRF;
 use akd::errors::AkdError;
 use akd::storage::memory::AsyncInMemoryDatabase;
 use akd::storage::StorageManager;
-use akd::{AkdLabel, AkdValue, Digest, EpochHash, LookupProof};
+use akd::{AkdLabel, AkdValue, AppendOnlyProof, Digest, EpochHash, HistoryParams, HistoryProof, LookupProof};
 use axum::extract::{Path, State};
 use axum::http::{header::AUTHORIZATION, StatusCode};
 use axum::response::Response;
@@ -72,6 +72,20 @@ impl KtDirectory {
     pub async fn vrf_public_key(&self) -> Result<Vec<u8>, AkdError> {
         Ok(self.dir.get_public_key().await?.as_bytes().to_vec())
     }
+
+    /// Append-only (consistency) proof that the directory only *grew* from
+    /// epoch `start` to `end` — verified against the per-epoch root hashes
+    /// (`akd::auditor::audit_verify`). This is the guarantee the interim Merkle
+    /// KT can't provide.
+    pub async fn audit(&self, start: u64, end: u64) -> Result<AppendOnlyProof, AkdError> {
+        self.dir.audit(start, end).await
+    }
+
+    /// Complete key-history proof for a handle (self-audit: every version the
+    /// log ever mapped it to), with the current `(epoch, root)`.
+    pub async fn key_history(&self, handle: &str) -> Result<(HistoryProof, EpochHash), AkdError> {
+        self.dir.key_history(&AkdLabel::from(handle), HistoryParams::Complete).await
+    }
 }
 
 // ---- HTTP sidecar (localhost API the Node relay calls) ----
@@ -117,6 +131,19 @@ struct VrfKeyResp {
     /// base64 VRF public key.
     key: String,
 }
+#[derive(Serialize)]
+struct AuditResp {
+    /// serde-serialized `AppendOnlyProof`; the caller verifies it against the
+    /// per-epoch root hashes it already holds (from the roots endpoint).
+    proof: AppendOnlyProof,
+}
+#[derive(Serialize)]
+struct HistoryResp {
+    /// serde-serialized `HistoryProof`.
+    proof: HistoryProof,
+    epoch: u64,
+    root: String,
+}
 
 /// Build the sidecar router over a shared directory. `token` (if set) is the
 /// Bearer secret every request must present.
@@ -126,6 +153,8 @@ pub fn router(kt: Arc<Mutex<KtDirectory>>, token: Option<String>) -> Router {
         .route("/publish", post(publish))
         .route("/lookup/:handle", get(lookup))
         .route("/vrf-public-key", get(vrf_key))
+        .route("/audit/:start/:end", get(audit))
+        .route("/key-history/:handle", get(key_history))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state)
 }
@@ -171,6 +200,21 @@ async fn vrf_key(State(st): State<AppState>) -> Result<Json<VrfKeyResp>, ApiErr>
     let kt = st.kt.lock().await;
     let key = kt.vrf_public_key().await.map_err(server_err)?;
     Ok(Json(VrfKeyResp { key: B64.encode(key) }))
+}
+
+async fn audit(State(st): State<AppState>, Path((start, end)): Path<(u64, u64)>) -> Result<Json<AuditResp>, ApiErr> {
+    let kt = st.kt.lock().await;
+    let proof = kt.audit(start, end).await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(AuditResp { proof }))
+}
+
+async fn key_history(State(st): State<AppState>, Path(handle): Path<String>) -> Result<Json<HistoryResp>, ApiErr> {
+    let kt = st.kt.lock().await;
+    let (proof, epoch_hash) = kt
+        .key_history(&handle)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(HistoryResp { proof, epoch: epoch_hash.epoch(), root: B64.encode(epoch_hash.hash()) }))
 }
 
 fn server_err(e: AkdError) -> ApiErr {
@@ -243,6 +287,42 @@ mod tests {
         assert_eq!(e1, 1);
         assert_eq!(e2, 2);
         assert_ne!(r1, r2); // the root moves as the directory grows
+    }
+
+    /// The append-only (consistency) proof verifies epoch 2 extends epoch 1 —
+    /// the guarantee the interim Merkle KT can't give.
+    #[tokio::test]
+    async fn audit_proof_verifies_append_only_between_epochs() {
+        let mut kt = KtDirectory::new().await.unwrap();
+        let (_e1, r1) = kt.publish(vec![("Alice#0001".into(), vec![1u8; 32])]).await.unwrap();
+        let (_e2, r2) = kt.publish(vec![("Bob#0002".into(), vec![2u8; 32])]).await.unwrap();
+        let proof = kt.audit(1, 2).await.unwrap();
+        akd::auditor::audit_verify::<Config>(vec![r1, r2], proof)
+            .await
+            .expect("append-only proof should verify against the two epoch roots");
+    }
+
+    /// A key-history proof surfaces every version the log mapped a handle to.
+    #[tokio::test]
+    async fn key_history_proof_shows_every_version() {
+        let mut kt = KtDirectory::new().await.unwrap();
+        kt.publish(vec![("Alice#0001".into(), vec![1u8; 32])]).await.unwrap(); // v1 @ epoch 1
+        kt.publish(vec![("Alice#0001".into(), vec![9u8; 32])]).await.unwrap(); // v2 @ epoch 2
+
+        let (proof, eh) = kt.key_history("Alice#0001").await.unwrap();
+        let vrf = kt.vrf_public_key().await.unwrap();
+        let results = akd::client::key_history_verify::<Config>(
+            &vrf,
+            eh.hash(),
+            eh.epoch(),
+            AkdLabel::from("Alice#0001"),
+            proof,
+            akd::HistoryVerificationParams::default(),
+        )
+        .expect("history proof should verify");
+        // Both the original and the rotated key are proven in the history.
+        assert!(results.iter().any(|r| r.value == AkdValue(vec![1u8; 32])));
+        assert!(results.iter().any(|r| r.value == AkdValue(vec![9u8; 32])));
     }
 
     // ---- HTTP layer ----
@@ -331,6 +411,27 @@ mod tests {
             .unwrap();
         let (st, _) = send(&app, bad).await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn http_audit_and_key_history_endpoints_serve_proofs() {
+        let kt = Arc::new(Mutex::new(KtDirectory::new().await.unwrap()));
+        let app = router(kt, Some("secret".into()));
+        for key in [[1u8; 32], [9u8; 32]] {
+            send(
+                &app,
+                authed("POST", "/publish", Some(serde_json::json!({ "entries": [{ "handle": "Alice#0001", "key": B64.encode(key) }] }))),
+            )
+            .await;
+        }
+        let (st, audit) = send(&app, authed("GET", "/audit/1/2", None)).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(audit.get("proof").is_some());
+
+        let (st, hist) = send(&app, authed("GET", "/key-history/Alice%230001", None)).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(hist.get("proof").is_some());
+        assert_eq!(hist["epoch"].as_u64().unwrap(), 2);
     }
 
     #[tokio::test]

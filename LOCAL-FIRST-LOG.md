@@ -69,7 +69,13 @@ Playwright version (currently 1.60.0).
   nostd WASM client can't decode protobuf; JSON deserializes uniformly native +
   WASM). 6 cargo tests incl. the full **HTTP round-trip: publish→lookup→
   deserialize→`lookup_verify` from the JSON responses**, 401 without/wrong token,
-  404 absent handle. audit/key_history endpoints: next. **(3)** persistent
+  404 absent handle. **(2b) [DONE, iter 98]** the remaining proof endpoints —
+  `GET /audit/:start/:end` → `AppendOnlyProof` (**consistency/append-only** — the
+  guarantee the interim Merkle KT can't give; verified against per-epoch roots
+  the relay already holds) and `GET /key-history/:handle` → `HistoryProof`
+  (self-audit, every version a handle ever mapped to). 9 cargo tests total, incl.
+  `audit_verify` proving epoch 2 extends epoch 1, and `key_history_verify`
+  surfacing both an original + rotated key. **(3)** persistent
   `Database` impl over SQLite + a **persisted VRF key** (HardCodedAkdVRF is
   test-only — REQUIRED before prod). **(4)** Node relay integration — swap the interim Merkle directory
   for the sidecar (publish on directory PUT; serve akd proofs on lookup;
