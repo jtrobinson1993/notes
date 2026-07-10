@@ -109,8 +109,13 @@ Playwright version (currently 1.60.0).
   `whatsapp_v1,vrf,serde_serialization`; the heavy full `akd` is a **dev-dep**
   only, for test proof generation — stays out of the app binary). Proofs in as
   serde JSON, roots/VRF-key base64. cargo 69 (+2: real-proof accept + bad-root/
-  wrong-handle reject; key-history returns both minted keys). **(5b)** `kt_state`
-  local store (latest verified epoch+root per relay). **(5c)** self-audit flow
+  wrong-handle reject; key-history returns both minted keys). **(5b) [DONE, iter
+  103]** `kt_state` store — migration v11: `kt_state += last_epoch` + new
+  `kt_roots_seen(relay_id, epoch, root_hash, first_seen)`. Accessors:
+  `kt_observe_root`→`KtObserve{New|Consistent|SplitView{recorded}}` (a *different*
+  root at a seen epoch = provable equivocation, no append-only proof needed),
+  `kt_set_verified`/`kt_verified` (latest verified epoch+root per relay). cargo 70
+  (+1: New→Consistent→SplitView + verified-root advance). **(5c)** self-audit flow
   (fetch own key_history → verify → alarm if a key I didn't mint appears).
   **(5d)** gossip (piggyback latest root on envelopes; inbound split-view check).
   **(5e)** alarm surface (soft/hard per spec). **(6)** web-satellite WASM

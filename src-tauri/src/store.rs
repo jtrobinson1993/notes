@@ -186,6 +186,19 @@ const MIGRATIONS: &[&str] = &[
        group_id TEXT PRIMARY KEY, group_key BLOB NOT NULL, name TEXT,
        created_at INTEGER NOT NULL
      );",
+    // v11 — KT verification state (D5 client verify). `kt_state` tracks the
+    // latest *verified* epoch/root per relay (self-audit progress). `kt_roots_seen`
+    // remembers every (epoch → root) the client has observed (from /kt/roots or a
+    // gossiped root) so a second, different root at the same epoch is a provable
+    // split view — no append-only proof needed for that check.
+    "ALTER TABLE kt_state ADD COLUMN last_epoch INTEGER NOT NULL DEFAULT 0;
+     CREATE TABLE kt_roots_seen(
+       relay_id TEXT NOT NULL REFERENCES relays(id),
+       epoch INTEGER NOT NULL,
+       root_hash TEXT NOT NULL,
+       first_seen INTEGER NOT NULL,
+       PRIMARY KEY (relay_id, epoch)
+     );",
 ];
 
 #[derive(serde::Deserialize)]
@@ -282,6 +295,17 @@ pub struct ReactionRow {
 pub struct GroupSummary {
     pub group_id: String,
     pub name: Option<String>,
+}
+
+/// Outcome of observing a `(epoch, root)` for a relay's KT log.
+#[derive(Debug, PartialEq, Eq)]
+pub enum KtObserve {
+    /// First time this epoch was seen — recorded.
+    New,
+    /// Already recorded with the same root — consistent.
+    Consistent,
+    /// A *different* root was already recorded for this epoch — a split view.
+    SplitView { recorded: String },
 }
 
 #[derive(serde::Deserialize)]
@@ -755,6 +779,56 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    // ---- KT verification state (D5 client verify) ----
+
+    /// Record a `(epoch → root)` the client observed for a relay, detecting a
+    /// **split view**: a *different* root already recorded for the same epoch
+    /// means the relay showed two logs (no append-only proof needed for this).
+    pub fn kt_observe_root(&self, relay_id: &str, epoch: i64, root_hash: &str) -> Result<KtObserve, StoreError> {
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT root_hash FROM kt_roots_seen WHERE relay_id = ?1 AND epoch = ?2",
+                (relay_id, epoch),
+                |r| r.get(0),
+            )
+            .optional()?;
+        match existing {
+            Some(r) if r == root_hash => Ok(KtObserve::Consistent),
+            Some(recorded) => Ok(KtObserve::SplitView { recorded }),
+            None => {
+                self.conn.execute(
+                    "INSERT INTO kt_roots_seen(relay_id, epoch, root_hash, first_seen) VALUES (?1, ?2, ?3, ?4)",
+                    (relay_id, epoch, root_hash, now_ms()),
+                )?;
+                Ok(KtObserve::New)
+            }
+        }
+    }
+
+    /// Advance the latest *verified* epoch/root for a relay (after a successful
+    /// self-audit / inclusion verify).
+    pub fn kt_set_verified(&self, relay_id: &str, epoch: i64, root_hash: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO kt_state(relay_id, last_root, last_epoch) VALUES (?1, ?2, ?3)
+               ON CONFLICT(relay_id) DO UPDATE SET last_root = excluded.last_root, last_epoch = excluded.last_epoch",
+            (relay_id, root_hash, epoch),
+        )?;
+        Ok(())
+    }
+
+    /// The latest verified `(epoch, root)` for a relay, if any.
+    pub fn kt_verified(&self, relay_id: &str) -> Result<Option<(i64, String)>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT last_epoch, last_root FROM kt_state WHERE relay_id = ?1 AND last_root IS NOT NULL",
+                (relay_id,),
+                |r| Ok((r.get(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// Add a reaction (idempotent by (message, reactor, emoji)).
@@ -1520,5 +1594,28 @@ mod tests {
         store.remove_friend("c1", "r1").unwrap();
         assert!(store.friend_addressing("c1", "r1").unwrap().is_none());
         assert!(store.list_friends("r1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn kt_state_tracks_verified_roots_and_detects_split_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[11u8; 32]).unwrap();
+        store.upsert_relay("r1", "https://r.example", "fp", &[1u8; 32]).unwrap();
+
+        // First sighting of epoch 1 → New; the same root again → Consistent.
+        assert_eq!(store.kt_observe_root("r1", 1, "rootA").unwrap(), KtObserve::New);
+        assert_eq!(store.kt_observe_root("r1", 1, "rootA").unwrap(), KtObserve::Consistent);
+        // A DIFFERENT root at the same epoch → the relay equivocated (split view).
+        assert_eq!(
+            store.kt_observe_root("r1", 1, "rootB").unwrap(),
+            KtObserve::SplitView { recorded: "rootA".into() }
+        );
+
+        // Verified-root progress starts empty and advances.
+        assert_eq!(store.kt_verified("r1").unwrap(), None);
+        store.kt_set_verified("r1", 5, "rootE").unwrap();
+        assert_eq!(store.kt_verified("r1").unwrap(), Some((5, "rootE".into())));
+        store.kt_set_verified("r1", 6, "rootF").unwrap();
+        assert_eq!(store.kt_verified("r1").unwrap(), Some((6, "rootF".into())));
     }
 }
