@@ -42,6 +42,31 @@ pub const KIND_GROUP_INVITE: &str = "group-invite";
 /// (redelivered long after the caller gave up) is dropped at the drain, not
 /// re-rung — voice does not honour the "buffer, never drop" message invariant.
 pub const KIND_CALL_OFFER: &str = "call-offer";
+/// A KT gossip beacon (D5 client verify): a friend piggybacks the latest signed
+/// KT epoch root it has seen from the relay so the recipient can detect a **split
+/// view** (the relay showing different logs to different users). Payload
+/// `{ epoch, root, prev, sig }`; the recipient verifies the relay's signature
+/// before treating a root mismatch as equivocation.
+pub const KIND_KT_GOSSIP: &str = "kt-gossip";
+
+/// A verified KT gossip beacon: the signed root a friend saw. `gossiper` is the
+/// verified sender (unused for the check but handy for logs/UX).
+pub struct KtGossipData {
+    pub epoch: i64,
+    pub root: String,
+    pub prev: String,
+    pub sig: String,
+    pub gossiper: String,
+}
+
+#[derive(serde::Deserialize)]
+struct KtGossipPayload {
+    epoch: i64,
+    root: String,
+    #[serde(default)]
+    prev: String,
+    sig: String,
+}
 
 /// A verified incoming call: ring for `call_id` from `caller_id` (the verified
 /// envelope sender), carrying the base64 `media_key` for the call's frame E2EE.
@@ -326,6 +351,9 @@ pub enum Disposition {
     /// A verified voice call ring: surface an incoming call, then ack (a ring is
     /// ephemeral — always removed from the queue, never re-buffered).
     CallOffer(Box<CallOfferData>),
+    /// A verified KT gossip beacon: check the friend's signed root for a split
+    /// view, then ack (ephemeral — never re-buffered).
+    KtGossip(Box<KtGossipData>),
 }
 
 /// Decide the fate of one delivered envelope from the `open` result and its
@@ -388,6 +416,20 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
                     }
                 }
                 Err(_) => Disposition::Discard,
+            },
+            KIND_KT_GOSSIP => match serde_json::from_slice::<KtGossipPayload>(&opened.payload) {
+                // A well-formed beacon (non-empty root + sig). The relay-signature
+                // check happens at the drain (it has the pinned relay key).
+                Ok(p) if !p.root.is_empty() && !p.sig.is_empty() => {
+                    Disposition::KtGossip(Box::new(KtGossipData {
+                        epoch: p.epoch,
+                        root: p.root,
+                        prev: p.prev,
+                        sig: p.sig,
+                        gossiper: opened.sender_identity_pub,
+                    }))
+                }
+                _ => Disposition::Discard,
             },
             KIND_CALL_OFFER => match serde_json::from_slice::<CallOfferPayload>(&opened.payload) {
                 // A non-empty call id (to join the room) + a 32-byte media key
@@ -828,6 +870,30 @@ mod tests {
 
         // Garbage payload → discard (authenticated but unusable).
         let opened = Opened { kind: KIND_CALL_OFFER.into(), payload: b"not json".to_vec(), sender_identity_pub: caller, sent_at: 0 };
+        assert!(matches!(disposition(Ok(opened), 1), Disposition::Discard));
+    }
+
+    #[test]
+    fn kt_gossip_carries_the_signed_root_from_the_verified_sender() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let gossiper = b64.encode([4u8; 32]);
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "epoch": 42, "root": "ROOT", "prev": "PREV", "sig": "SIG",
+        }))
+        .unwrap();
+        let opened = Opened { kind: KIND_KT_GOSSIP.into(), payload, sender_identity_pub: gossiper.clone(), sent_at: 0 };
+        match disposition(Ok(opened), 1) {
+            Disposition::KtGossip(g) => {
+                assert_eq!((g.epoch, g.root.as_str(), g.prev.as_str(), g.sig.as_str()), (42, "ROOT", "PREV", "SIG"));
+                assert_eq!(g.gossiper, gossiper); // the verified sender, not a payload claim
+            }
+            _ => panic!("expected KtGossip"),
+        }
+
+        // Missing root or sig is unusable → discard (prev defaults to empty).
+        let no_sig = serde_json::to_vec(&serde_json::json!({ "epoch": 1, "root": "R", "sig": "" })).unwrap();
+        let opened = Opened { kind: KIND_KT_GOSSIP.into(), payload: no_sig, sender_identity_pub: gossiper, sent_at: 0 };
         assert!(matches!(disposition(Ok(opened), 1), Disposition::Discard));
     }
 

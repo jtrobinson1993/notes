@@ -5,7 +5,7 @@
 // derived from the two friends' keys, so this path needs neither the server nor
 // the seq model.
 
-import { dmConversationId, dmMarkRead, dmUnread, friendsList, relaySendMessage } from './native';
+import { dmConversationId, dmMarkRead, dmUnread, friendsList, ktGossipSend, relaySendMessage } from './native';
 import { loadHistoryLocal } from './nativeChat';
 import type { ChatMessageView } from '../stores/chat';
 
@@ -53,6 +53,10 @@ export async function openDm(
 /** Send a text to a friend. The core seals + delivers it and tees the same id
  *  into the local log; resolves with the message id (re-read via openDm to show
  *  it, or reloadActiveFromLog if the conversation is the active one). */
-export function sendDm(contactId: string, text: string, attachmentsJson?: string): Promise<string> {
-  return relaySendMessage(contactId, text, attachmentsJson);
+export async function sendDm(contactId: string, text: string, attachmentsJson?: string): Promise<string> {
+  const id = await relaySendMessage(contactId, text, attachmentsJson);
+  // Piggyback a KT gossip beacon (D5 split-view detection) — best-effort, never
+  // blocks or fails the send.
+  void ktGossipSend(contactId).catch(() => {});
+  return id;
 }

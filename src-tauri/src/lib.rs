@@ -308,6 +308,7 @@ async fn relay_mailbox_ack(
 /// reconnect; safe to call repeatedly.
 #[tauri::command]
 async fn relay_mailbox_drain(
+    app: tauri::AppHandle,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<message::DrainReport, String> {
@@ -346,6 +347,7 @@ async fn relay_mailbox_drain(
     let mut reacts = Vec::new();
     let mut group_invites = Vec::new();
     let mut call_rings = Vec::new();
+    let mut kt_gossips = Vec::new();
     let mut ack_ids = Vec::new();
     let mut buffered = 0usize;
     for row in rows {
@@ -427,6 +429,12 @@ async fn relay_mailbox_drain(
                     relay_ts: row.relay_ts,
                     media_key: c.media_key,
                 });
+                ack_ids.push(row.queue_id);
+            }
+            message::Disposition::KtGossip(g) => {
+                // Ephemeral: always ack. The relay-signature check + split-view
+                // detection run after the store block (need the relay key).
+                kt_gossips.push(*g);
                 ack_ids.push(row.queue_id);
             }
             message::Disposition::Discard => ack_ids.push(row.queue_id),
@@ -511,6 +519,36 @@ async fn relay_mailbox_drain(
         }
         (ingested, my_handle)
     };
+
+    // KT gossip (D5): verify each friend's gossiped root against the pinned relay
+    // key, then record it — a *different* root at an epoch we've seen means the
+    // relay showed two logs (split view), a hard alarm. A bad signature is
+    // ignored (a friend can't frame an honest relay).
+    if !kt_gossips.is_empty() {
+        if let Some(relay_pub) = relay.relay_identity_pub() {
+            let mut split_epoch: Option<i64> = None;
+            {
+                let vault = vault.lock().unwrap();
+                let store = vault.store().map_err(|e| e.to_string())?;
+                for g in &kt_gossips {
+                    if let Ok(true) = kt::verify_signed_root(&relay_pub, &g.root, &g.prev, &g.sig) {
+                        if let Ok(store::KtObserve::SplitView { .. }) =
+                            store.kt_observe_root(&relay_fp, g.epoch, &g.root)
+                        {
+                            split_epoch = Some(g.epoch);
+                        }
+                    }
+                }
+            }
+            if let Some(epoch) = split_epoch {
+                use tauri::Emitter as _;
+                let _ = app.emit(
+                    "kt:alarm",
+                    KtAuditReport { ok: false, reason: Some("split-view".into()), epoch },
+                );
+            }
+        }
+    }
 
     // Reciprocate: on a friend-accept (not a confirm), seal a friend-confirm
     // with my addressing back to the new friend's sealing key and send it via
@@ -1360,6 +1398,49 @@ async fn relay_call_offer(
     Ok(PlacedCall { call_id, media_key })
 }
 
+/// Gossip my latest-seen signed KT root to a friend (D5): seal a `kt-gossip`
+/// beacon into their mailbox so they can detect a split view (the relay serving
+/// us different logs). Best-effort — call opportunistically (e.g. after messaging
+/// a friend). No-op error if the relay has no signed root yet.
+#[tauri::command]
+async fn kt_gossip_send(
+    contact_id: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<(), String> {
+    let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
+    let root = match relay.latest_kt_root().await? {
+        Some(r) if !r.root.is_empty() && !r.sig.is_empty() => r,
+        _ => return Ok(()), // nothing to gossip yet
+    };
+    let (ident, addressing) = {
+        let vault = vault.lock().unwrap();
+        let mk = vault.mk().map_err(|e| e.to_string())?;
+        let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
+        let store = vault.store().map_err(|e| e.to_string())?;
+        let addressing = store
+            .friend_addressing(&contact_id, &relay_fp)
+            .map_err(|e| e.to_string())?
+            .ok_or("not a friend on this relay")?;
+        (ident, addressing)
+    };
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "epoch": root.epoch, "root": root.root, "prev": root.prev, "sig": root.sig,
+    }))
+    .map_err(|e| e.to_string())?;
+    let sealing: [u8; 32] = addressing
+        .sealing_pub
+        .clone()
+        .try_into()
+        .map_err(|_| "friend has a malformed sealing key".to_string())?;
+    let envelope = envelope::seal(&sealing, &ident, message::KIND_KT_GOSSIP, &payload, now_ms())
+        .map_err(|e| e.to_string())?;
+    relay
+        .mailbox_send(&addressing.handle, &addressing.delivery_token, envelope)
+        .await
+        .map(|_| ())
+}
+
 /// Join a call's signaling room (v8 voice): enqueue a `join` on the voice link
 /// so the relay puts this device in the call and starts relaying peer frames.
 #[tauri::command]
@@ -1816,6 +1897,7 @@ pub fn run() {
             sfu_consume,
             sfu_leave,
             kt_self_audit,
+            kt_gossip_send,
             conversation_reactions,
             messages_page,
             messages_ingest,

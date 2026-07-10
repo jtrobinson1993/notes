@@ -4,6 +4,7 @@ const native = vi.hoisted(() => ({
   friendsList: vi.fn(),
   dmConversationId: vi.fn(),
   relaySendMessage: vi.fn(),
+  ktGossipSend: vi.fn().mockResolvedValue(undefined),
   dmMarkRead: vi.fn().mockResolvedValue(undefined),
   dmUnread: vi.fn().mockResolvedValue(0),
 }));
@@ -48,5 +49,7 @@ describe('nativeDm', () => {
     native.relaySendMessage.mockResolvedValue('msg-9');
     await expect(sendDm('idA', 'hi')).resolves.toBe('msg-9');
     expect(native.relaySendMessage).toHaveBeenCalledWith('idA', 'hi', undefined);
+    // Piggybacks a KT gossip beacon to the friend (best-effort, doesn't block).
+    expect(native.ktGossipSend).toHaveBeenCalledWith('idA');
   });
 });

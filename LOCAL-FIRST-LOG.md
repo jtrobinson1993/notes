@@ -140,10 +140,20 @@ Playwright version (currently 1.60.0).
   core:* `kt::verify_signed_root(relay_pub, root, prev, sig)` — verifies the
   relay's ed25519 signature over `kt-root|{root}|{prev}` (empty prev→"genesis")
   so a contact-gossiped root is provably the relay's before a `(epoch,root)`
-  mismatch counts as equivocation. cargo 72 (+1: valid/genesis/tampered-root/
-  wrong-key). *[next]:* cache my latest signed root (fetch /kt/roots); attach it
-  to outbound message envelopes (optional ChatMessagePayload field); on drain
-  verify + `kt_observe_root`→split-view alarm. **(6)** web-satellite WASM
+  mismatch counts as equivocation. cargo 72. *[DONE, iter 108] integration:*
+  chose a **dedicated `kt-gossip` envelope kind** (cleaner than mutating every
+  message payload). message.rs: `KIND_KT_GOSSIP` + `KtGossipData` + disposition
+  (parse `{epoch,root,prev,sig}`; gossiper=verified sender; empty root/sig→
+  Discard) + `Disposition::KtGossip`. relay_client caches the relay **identity
+  pubkey** (from /info) + `latest_kt_root()` (newest signed /kt/roots entry).
+  Drain: verify each beacon's relay signature → `kt_observe_root` → emit hard
+  `kt:alarm{split-view}` on a mismatch (bad sig ignored — a friend can't frame an
+  honest relay); drain now takes `AppHandle`. Outbound `kt_gossip_send(contact)`
+  seals my latest signed root to a friend; native.ts `ktGossipSend`, piggybacked
+  best-effort on `sendDm`. cargo 73 (+1 disposition test), web 535 (nativeDm
+  gossip assertion), tsc clean. **CLIENT-VERIFY 5a–5e DONE** (self-audit +
+  gossip, primitives + kt_state + alarms). Remaining: **(6)** web-satellite WASM
+  `akd_core` verifier. **(6)** web-satellite WASM
   `akd_core` verifier. **(7) [DONE, iter 101]** docker-compose — new `akd-sidecar/Dockerfile`
   (multi-stage Rust build → slim runtime, non-root, `--locked`); `akd-sidecar`
   compose service (compose-network only, **no published port**, `akd-data`

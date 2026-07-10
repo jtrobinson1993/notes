@@ -430,6 +430,12 @@ export function ktSelfAudit(): Promise<KtAuditReport> {
   return invoke<KtAuditReport>('kt_self_audit');
 }
 
+/** Gossip my latest signed KT root to a friend so they can detect a split view
+ *  (D5). Best-effort — call opportunistically (e.g. after messaging them). */
+export function ktGossipSend(contactId: string): Promise<void> {
+  return invoke('kt_gossip_send', { contactId });
+}
+
 export function relayStatus(): Promise<{
   connected: boolean;
   base_url: string | null;

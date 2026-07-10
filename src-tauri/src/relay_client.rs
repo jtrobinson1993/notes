@@ -38,6 +38,14 @@ pub struct KtHistory {
     pub vrf_public_key: String,
 }
 
+/// A signed KT epoch root the client gossips to friends (split-view detection).
+pub struct SignedRoot {
+    pub epoch: i64,
+    pub root: String,
+    pub prev: String,
+    pub sig: String,
+}
+
 /// Cap on consecutive *no-progress* reconnects before a resumable download
 /// gives up — a stream that keeps advancing between drops is never capped.
 const RESUME_MAX_STALLS: u32 = 5;
@@ -99,6 +107,8 @@ async fn download_resumable(url: &str, bearer: &str) -> Result<Vec<u8>, String> 
 struct Session {
     base_url: String,
     relay_fp: String,
+    /// base64 relay identity (Ed25519) public key — verifies KT root signatures.
+    identity_pub: String,
     token: String,
     expires_at: Instant,
 }
@@ -113,6 +123,8 @@ pub struct RelayClient {
 struct InfoResponse {
     #[serde(rename = "identityFingerprint")]
     identity_fingerprint: String,
+    #[serde(rename = "identityPubKey", default)]
+    identity_pub_key: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -161,6 +173,7 @@ impl RelayClient {
         *self.session.lock().unwrap() = Some(Session {
             base_url: base.to_string(),
             relay_fp: info.identity_fingerprint,
+            identity_pub: info.identity_pub_key,
             token,
             expires_at,
         });
@@ -221,6 +234,12 @@ impl RelayClient {
     pub fn session_info(&self) -> Option<(String, String)> {
         let guard = self.session.lock().unwrap();
         guard.as_ref().map(|s| (s.base_url.clone(), s.relay_fp.clone()))
+    }
+
+    /// base64 relay identity public key (verifies KT root signatures), if known.
+    pub fn relay_identity_pub(&self) -> Option<String> {
+        let guard = self.session.lock().unwrap();
+        guard.as_ref().map(|s| s.identity_pub.clone()).filter(|k| !k.is_empty())
     }
 
     /// Begin the live-delivery task at most once per process (idempotent).
@@ -691,6 +710,28 @@ impl RelayClient {
             root: v.get("rootHash").and_then(|r| r.as_str()).unwrap_or_default().to_string(),
             vrf_public_key: v.get("vrfPublicKey").and_then(|k| k.as_str()).unwrap_or_default().to_string(),
         })
+    }
+
+    /// Fetch the relay's latest signed KT epoch root (for gossip). Unauthenticated
+    /// (KT roots are public). `None` if the log is empty.
+    pub async fn latest_kt_root(&self) -> Result<Option<SignedRoot>, String> {
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .get(format!("{base}/api/relay/kt/roots"))
+            .send()
+            .await
+            .map_err(|e| format!("kt roots fetch failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("kt roots refused (HTTP {})", res.status()));
+        }
+        let v: serde_json::Value = res.json().await.map_err(|e| format!("bad kt roots: {e}"))?;
+        let last = v.get("roots").and_then(|r| r.as_array()).and_then(|a| a.last());
+        Ok(last.map(|r| SignedRoot {
+            epoch: r.get("epoch").and_then(|e| e.as_i64()).unwrap_or(0),
+            root: r.get("rootHash").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+            prev: r.get("prevRootHash").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+            sig: r.get("signature").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+        }))
     }
 
     /// Download attachment ciphertext (device-authed; only the recipient).
