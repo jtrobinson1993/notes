@@ -1,9 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { CallRing, DrainReport } from '../../src/lib/native';
 import type { VoiceFrame } from '../../src/lib/nativeVoice';
+import type { VoiceMedia } from '../../src/lib/voiceMedia';
 
 const native = vi.hoisted(() => ({
-  relayCallOffer: vi.fn().mockResolvedValue('call-xyz'),
+  relayCallOffer: vi.fn().mockResolvedValue({ callId: 'call-xyz', mediaKey: 'KEY-CALLER' }),
   voiceJoin: vi.fn().mockResolvedValue(undefined),
   voiceLeave: vi.fn().mockResolvedValue(undefined),
 }));
@@ -36,25 +37,34 @@ vi.mock('../../src/lib/nativeVoice', () => ({
 }));
 
 import { createNativeCall, RING_TTL_MS } from '../../src/lib/nativeVoiceCall';
-import type { CallMedia } from '../../src/lib/voiceCall';
 
-function media(): CallMedia & { closed: number; joins: string[] } {
+function media(): VoiceMedia & { closed: number; joins: string[]; producers: string[] } {
   const joins: string[] = [];
+  const producers: string[] = [];
   return {
     closed: 0,
     joins,
+    producers,
     join: (id) => (joins.push(id), Promise.resolve()),
+    onProducer: (id) => (producers.push(id), Promise.resolve()),
     close(this: { closed: number }) {
       this.closed += 1;
     },
   };
 }
 
-const ring = (over: Partial<CallRing> = {}): CallRing => ({ callId: 'call-abc', callerId: 'caller', relayTs: 0, ...over });
+const ring = (over: Partial<CallRing> = {}): CallRing => ({
+  callId: 'call-abc',
+  callerId: 'caller',
+  relayTs: 0,
+  mediaKey: 'KEY-RING',
+  ...over,
+});
 const report = (calls: CallRing[]): DrainReport => ({ ingested: 0, acked: 0, buffered: 0, friends: 0, calls });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  native.relayCallOffer.mockResolvedValue({ callId: 'call-xyz', mediaKey: 'KEY-CALLER' });
   relay.ingestCb = null;
   voice.frameCb = null;
 });
@@ -72,22 +82,26 @@ describe('nativeVoiceCall wiring', () => {
     expect(voice.stop).toHaveBeenCalled();
   });
 
-  it('places a call through the ring + signaling IPCs', async () => {
-    const nc = createNativeCall(media());
+  it('places a call, arming the caller frame key from the ring result', async () => {
+    const keys: string[] = [];
+    const nc = createNativeCall(media(), { onFrameKey: (k) => keys.push(k) });
     await nc.start();
     await nc.call.placeCall('contactA');
     expect(native.relayCallOffer).toHaveBeenCalledWith('contactA');
     expect(native.voiceJoin).toHaveBeenCalledWith('call-xyz');
+    expect(keys).toEqual(['KEY-CALLER']); // caller's minted frame key
     expect(nc.call.state).toBe('dialing');
   });
 
-  it('rings on a fresh drained call and joins the SFU on accept', async () => {
+  it('rings on a fresh drained call, arming the callee frame key, and joins on accept', async () => {
+    const keys: string[] = [];
     const m = media();
-    const nc = createNativeCall(m, undefined, () => 1000);
+    const nc = createNativeCall(m, { now: () => 1000, onFrameKey: (k) => keys.push(k) });
     await nc.start();
-    relay.ingestCb!(report([ring({ callId: 'call-abc', callerId: 'bob', relayTs: 1000 })]));
+    relay.ingestCb!(report([ring({ callId: 'call-abc', callerId: 'bob', relayTs: 1000, mediaKey: 'KEY-RING' })]));
     expect(nc.call.state).toBe('ringing');
     expect(nc.call.peerId).toBe('bob');
+    expect(keys).toEqual(['KEY-RING']); // callee's frame key from the sealed ring
 
     await nc.call.accept();
     expect(native.voiceJoin).toHaveBeenCalledWith('call-abc');
@@ -95,14 +109,25 @@ describe('nativeVoiceCall wiring', () => {
     expect(nc.call.state).toBe('connecting');
   });
 
-  it('drops a stale ring (older than the TTL) without ringing', async () => {
-    const nc = createNativeCall(media(), undefined, () => RING_TTL_MS + 2);
+  it('drops a stale ring (older than the TTL) without ringing or a frame key', async () => {
+    const keys: string[] = [];
+    const nc = createNativeCall(media(), { now: () => RING_TTL_MS + 2, onFrameKey: (k) => keys.push(k) });
     await nc.start();
     relay.ingestCb!(report([ring({ relayTs: 1 })])); // age = RING_TTL_MS+1 > TTL
     expect(nc.call.state).toBe('idle');
+    expect(keys).toEqual([]);
   });
 
-  it('feeds inbound peer-leave frames to the engine (ends an active call)', async () => {
+  it('routes a producer signal to media.onProducer (not the call engine)', async () => {
+    const m = media();
+    const nc = createNativeCall(m);
+    await nc.start();
+    voice.frameCb!({ type: 'signal', callId: 'call-xyz', payload: { kind: 'producer', producerId: 'prod-7' } });
+    await Promise.resolve();
+    expect(m.producers).toEqual(['prod-7']);
+  });
+
+  it('feeds inbound peer-join/leave frames to the engine', async () => {
     const m = media();
     const nc = createNativeCall(m);
     await nc.start();

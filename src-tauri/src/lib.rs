@@ -363,6 +363,7 @@ async fn relay_mailbox_drain(
                     call_id: c.call_id,
                     caller_id: c.caller_id,
                     relay_ts: row.relay_ts,
+                    media_key: c.media_key,
                 });
                 ack_ids.push(row.queue_id);
             }
@@ -1236,16 +1237,28 @@ async fn relay_react(
     Ok(())
 }
 
+/// The caller's own view of a placed ring: the call id to `join` + the base64
+/// frame key it minted (which it also sealed to the callee inside the offer).
+#[derive(serde::Serialize)]
+struct PlacedCall {
+    #[serde(rename = "callId")]
+    call_id: String,
+    #[serde(rename = "mediaKey")]
+    media_key: String,
+}
+
 /// Place a voice call ring (v8 voice, single-relay). Mint a fresh 256-bit call
-/// id, seal a call-offer `{callId}` into the friend's mailbox, and return the
-/// call id so the caller can `join` it on the signaling socket (/api/relay/voice)
-/// and exchange SDP/ICE. The callee drains the ring, joins the same id, answers.
+/// id + a 256-bit frame key, seal a call-offer `{callId, mediaKey}` into the
+/// friend's mailbox, and return both so the caller can `join` the signaling
+/// socket and set its send frame key. The callee drains the ring (getting the
+/// same key), joins, and answers. The key rides inside the already-sealed
+/// envelope, so the SFU never sees it.
 #[tauri::command]
 async fn relay_call_offer(
     contact_id: String,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
-) -> Result<String, String> {
+) -> Result<PlacedCall, String> {
     let relay_fp = relay.status().relay_fp.ok_or("not connected to a relay")?;
     let (ident, addressing) = {
         let vault = vault.lock().unwrap();
@@ -1265,7 +1278,11 @@ async fn relay_call_offer(
     let mut raw = [0u8; 24];
     rand::rng().fill_bytes(&mut raw);
     let call_id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
-    let payload = serde_json::to_vec(&serde_json::json!({ "callId": call_id }))
+    // Fresh 256-bit frame key for the call's E2EE (standard base64, 32 bytes).
+    let mut key = [0u8; 32];
+    rand::rng().fill_bytes(&mut key);
+    let media_key = base64::engine::general_purpose::STANDARD.encode(key);
+    let payload = serde_json::to_vec(&serde_json::json!({ "callId": call_id, "mediaKey": media_key }))
         .map_err(|e| e.to_string())?;
     let sealing: [u8; 32] = addressing
         .sealing_pub
@@ -1278,7 +1295,7 @@ async fn relay_call_offer(
     relay
         .mailbox_send(&addressing.handle, &addressing.delivery_token, envelope)
         .await?;
-    Ok(call_id)
+    Ok(PlacedCall { call_id, media_key })
 }
 
 /// Join a call's signaling room (v8 voice): enqueue a `join` on the voice link

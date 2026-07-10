@@ -16,16 +16,20 @@ const hoisted = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/lib/nativeVoiceCall', () => ({
-  createNativeCall: (_media: unknown, onState?: (s: CallState) => void) => {
-    hoisted.onState = onState ?? null;
+  createNativeCall: (_media: unknown, opts?: { onState?: (s: CallState) => void }) => {
+    hoisted.onState = opts?.onState ?? null;
     return { call: hoisted.call, start: hoisted.start, stop: hoisted.stop };
   },
 }));
 
 import { useNativeCall } from '../../src/lib/useNativeCall';
-import type { CallMedia } from '../../src/lib/voiceCall';
+import type { VoiceMedia } from '../../src/lib/voiceMedia';
 
-const media: CallMedia = { join: vi.fn().mockResolvedValue(undefined), close: vi.fn() };
+const media: VoiceMedia = {
+  join: vi.fn().mockResolvedValue(undefined),
+  close: vi.fn(),
+  onProducer: vi.fn().mockResolvedValue(undefined),
+};
 
 beforeEach(() => {
   vi.clearAllMocks();

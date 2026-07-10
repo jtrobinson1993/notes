@@ -44,16 +44,23 @@ pub const KIND_GROUP_INVITE: &str = "group-invite";
 pub const KIND_CALL_OFFER: &str = "call-offer";
 
 /// A verified incoming call: ring for `call_id` from `caller_id` (the verified
-/// envelope sender). The drain judges staleness from the envelope's relay_ts.
+/// envelope sender), carrying the base64 `media_key` for the call's frame E2EE.
+/// The drain judges staleness from the envelope's relay_ts. The media key rides
+/// *inside* the already-sealed sealed-sender envelope, so only the callee reads
+/// it — the SFU never sees it (media frames stay E2E-encrypted end to end).
 pub struct CallOfferData {
     pub call_id: String,
     pub caller_id: String,
+    pub media_key: String,
 }
 
 #[derive(serde::Deserialize)]
 struct CallOfferPayload {
     #[serde(rename = "callId")]
     call_id: String,
+    /// base64 32-byte frame key the caller minted for this call.
+    #[serde(rename = "mediaKey")]
+    media_key: String,
 }
 
 /// A verified group invite: store `group_key` for `group_id` so I become a
@@ -383,11 +390,15 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
                 Err(_) => Disposition::Discard,
             },
             KIND_CALL_OFFER => match serde_json::from_slice::<CallOfferPayload>(&opened.payload) {
-                // A non-empty call id is required to join the signaling room.
-                Ok(p) if !p.call_id.is_empty() => Disposition::CallOffer(Box::new(CallOfferData {
-                    call_id: p.call_id,
-                    caller_id: opened.sender_identity_pub,
-                })),
+                // A non-empty call id (to join the room) + a 32-byte media key
+                // (for frame E2EE) are both required — otherwise it's unusable.
+                Ok(p) if !p.call_id.is_empty() && is_b64_32(&p.media_key) => {
+                    Disposition::CallOffer(Box::new(CallOfferData {
+                        call_id: p.call_id,
+                        caller_id: opened.sender_identity_pub,
+                        media_key: p.media_key,
+                    }))
+                }
                 _ => Disposition::Discard,
             },
             // A known-good envelope of a kind we don't handle yet → wait for update.
@@ -400,9 +411,20 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
     }
 }
 
+/// True iff `s` is base64 (standard) for exactly 32 bytes — a media/frame key.
+fn is_b64_32(s: &str) -> bool {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map(|b| b.len() == 32)
+        .unwrap_or(false)
+}
+
 /// An incoming call ring surfaced to the UI from a drained call-offer envelope
 /// (v8 voice). `relay_ts` lets the UI drop a stale ring (redelivered long after
 /// the caller gave up) rather than ring for a call that's already over.
+/// `media_key` is the base64 frame key for the call's E2EE (only the callee, who
+/// opened the sealed envelope, sees it).
 #[derive(serde::Serialize)]
 pub struct CallRing {
     #[serde(rename = "callId")]
@@ -411,6 +433,8 @@ pub struct CallRing {
     pub caller_id: String,
     #[serde(rename = "relayTs")]
     pub relay_ts: i64,
+    #[serde(rename = "mediaKey")]
+    pub media_key: String,
 }
 
 /// Result of a drain pass (for logs/UI + tests).
@@ -769,7 +793,9 @@ mod tests {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD;
         let caller = b64.encode([9u8; 32]);
-        let payload = serde_json::to_vec(&serde_json::json!({ "callId": "call-abc123" })).unwrap();
+        let media_key = b64.encode([5u8; 32]);
+        let payload =
+            serde_json::to_vec(&serde_json::json!({ "callId": "call-abc123", "mediaKey": media_key })).unwrap();
         let opened = Opened {
             kind: KIND_CALL_OFFER.into(),
             payload,
@@ -781,13 +807,23 @@ mod tests {
                 assert_eq!(c.call_id, "call-abc123");
                 // The caller is the verified envelope sender, never a payload claim.
                 assert_eq!(c.caller_id, caller);
+                assert_eq!(c.media_key, media_key); // frame key rides the sealed offer
             }
             _ => panic!("expected CallOffer"),
         }
 
         // An empty call id is unusable (can't join a room) → discard, not buffer.
-        let empty = serde_json::to_vec(&serde_json::json!({ "callId": "" })).unwrap();
+        let empty = serde_json::to_vec(&serde_json::json!({ "callId": "", "mediaKey": media_key })).unwrap();
         let opened = Opened { kind: KIND_CALL_OFFER.into(), payload: empty, sender_identity_pub: caller.clone(), sent_at: 0 };
+        assert!(matches!(disposition(Ok(opened), 1), Disposition::Discard));
+
+        // A missing / wrong-length media key is unusable for E2EE → discard.
+        let nokey = serde_json::to_vec(&serde_json::json!({ "callId": "call-x" })).unwrap();
+        let opened = Opened { kind: KIND_CALL_OFFER.into(), payload: nokey, sender_identity_pub: caller.clone(), sent_at: 0 };
+        assert!(matches!(disposition(Ok(opened), 1), Disposition::Discard));
+        let shortkey =
+            serde_json::to_vec(&serde_json::json!({ "callId": "call-x", "mediaKey": b64.encode([1u8; 10]) })).unwrap();
+        let opened = Opened { kind: KIND_CALL_OFFER.into(), payload: shortkey, sender_identity_pub: caller.clone(), sent_at: 0 };
         assert!(matches!(disposition(Ok(opened), 1), Disposition::Discard));
 
         // Garbage payload → discard (authenticated but unusable).

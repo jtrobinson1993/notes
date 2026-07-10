@@ -3,8 +3,9 @@
 // control actions, so NativeCallPanel can bind them. Media is injected (the
 // mediasoup-client SFU wrapper, once built).
 import { ref, type Ref } from 'vue';
-import { createNativeCall } from './nativeVoiceCall';
-import type { CallMedia, CallState } from './voiceCall';
+import { createNativeCall, type NativeCallOptions } from './nativeVoiceCall';
+import type { CallState } from './voiceCall';
+import type { VoiceMedia } from './voiceMedia';
 
 export interface UseNativeCall {
   state: Ref<CallState>;
@@ -17,14 +18,18 @@ export interface UseNativeCall {
   hangup(): Promise<void>;
 }
 
-export function useNativeCall(media: CallMedia): UseNativeCall {
+/** `onFrameKey` is forwarded to the wiring so the app can arm frame E2EE. */
+export function useNativeCall(media: VoiceMedia, onFrameKey?: NativeCallOptions['onFrameKey']): UseNativeCall {
   const state = ref<CallState>('idle');
   const peerId = ref<string | null>(null);
-  const nc = createNativeCall(media, (s) => {
-    state.value = s;
-    // Read the peer at the moment of transition (the engine clears it only
-    // after firing onState, so ring/dial states still carry it).
-    peerId.value = nc.call.peerId;
+  const nc = createNativeCall(media, {
+    onFrameKey,
+    onState: (s) => {
+      state.value = s;
+      // Read the peer at the moment of transition (the engine clears it only
+      // after firing onState, so ring/dial states still carry it).
+      peerId.value = nc.call.peerId;
+    },
   });
   return {
     state,

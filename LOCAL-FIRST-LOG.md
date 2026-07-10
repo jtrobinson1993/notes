@@ -1389,13 +1389,26 @@ Playwright version (currently 1.60.0).
     producerId (mocked invoke). cargo 67, web 519 (+2), tsc clean. (Rust HTTP
     passthrough follows the codebase's existing untested-HTTP-method pattern; the
     e2e round-trip exercises the real path.)
-  - **Remaining v8 spec:** voice follow-ups: (a) **wire CallMedia in the app** —
-    useNativeCall constructs it with nativeSfuControl + real mediasoup-client
-    Device + getUserMedia + voiceTransform E2EE + the `producer` signal →
-    onProducer; frame-key seal via the call-offer envelope (voiceCrypto). (b)
-    **e2e** browser produce→consume round-trip (harness page loading voiceMedia +
-    a REST SfuControl). (c) **mount** NativeCallPanel + call button. (d) D4c
-    fan-out (deferred). Then:
+  - **DONE (iter 93) — 1:1 frame-key exchange via the call-offer envelope + the
+    producer→onProducer wiring.** Rust: `CallOfferPayload`/`CallOfferData`/
+    `CallRing` gain `mediaKey` (base64 32B, validated by `is_b64_32`; a
+    missing/short key → Discard); `relay_call_offer` mints a fresh 256-bit frame
+    key, seals `{callId, mediaKey}` in the offer, returns `PlacedCall {callId,
+    mediaKey}` (key rides *inside* the already-sealed envelope → SFU never sees
+    it). Web: `relayCallOffer` → `PlacedCall`; `CallRing.mediaKey`;
+    `createNativeCall` reworked to take `VoiceMedia` + `{onState, onFrameKey,
+    now}` — placeRing arms the caller's key via `onFrameKey`, a fresh ring arms
+    the callee's from `ring.mediaKey`, and a `producer` signal routes to
+    `media.onProducer` (peer-join/leave still drive the engine). useNativeCall
+    forwards `onFrameKey`. cargo 67 (+media-key disposition assertions), web 520
+    (nativeVoiceCall + useNativeCall reworked), tsc clean.
+  - **Remaining v8 spec:** voice follow-ups: (a) **wire real media in the app** —
+    where useNativeCall is instantiated, build the VoiceMedia via createCallMedia
+    with nativeSfuControl + real mediasoup-client Device + getUserMedia +
+    voiceTransform encrypt/decrypt, and feed onFrameKey → voiceTransform
+    setFrameKey/setSendEpoch (arm insertable-streams E2EE). (b) **e2e** browser
+    produce→consume round-trip. (c) **mount** NativeCallPanel + call button. (d)
+    D4c fan-out (deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).

@@ -227,10 +227,18 @@ export function relayReact(
   return invoke('relay_react', { contactId, messageId, emoji, add });
 }
 
-/** Place a voice call ring (v8 voice): seals a call-offer into the friend's
- *  mailbox and returns the fresh call id to `join` on the signaling socket. */
-export function relayCallOffer(contactId: string): Promise<string> {
-  return invoke<string>('relay_call_offer', { contactId });
+/** The caller's view of a placed ring: the call id to `join` + the base64 frame
+ *  key it minted (also sealed to the callee inside the offer). */
+export interface PlacedCall {
+  callId: string;
+  mediaKey: string;
+}
+
+/** Place a voice call ring (v8 voice): mints a call id + frame key, seals a
+ *  call-offer into the friend's mailbox, returns both (caller sets its send
+ *  frame key from `mediaKey` and joins `callId`). */
+export function relayCallOffer(contactId: string): Promise<PlacedCall> {
+  return invoke<PlacedCall>('relay_call_offer', { contactId });
 }
 
 /** Join a call's signaling room so the relay starts relaying peer frames. */
@@ -388,6 +396,8 @@ export interface CallRing {
   callerId: string;
   /** Relay delivery stamp — drop a ring too old to still be live. */
   relayTs: number;
+  /** base64 frame key for the call's E2EE (sealed to us inside the offer). */
+  mediaKey: string;
 }
 
 /**
