@@ -12,6 +12,7 @@ import type { DB } from '../db.js';
 import type { RelayLive } from '../relayLive.js';
 import type { VoiceSignal } from '../voiceSignal.js';
 import type { VoiceSfu } from '../voiceSfu.js';
+import type { KtSidecar } from '../ktSidecar.js';
 import { requireAuth } from '../session.js';
 import { newToken } from '../util.js';
 import { directoryRoot, inclusionProof, leafHash } from '../ktMerkle.js';
@@ -71,6 +72,7 @@ export function relayRoutes(
   config?: Config,
   voiceSignal?: VoiceSignal,
   voiceSfu?: VoiceSfu,
+  ktSidecar?: KtSidecar,
 ): void {
   const identity = db.ensureRelayIdentity(generateRelayIdentity);
   const relayFp = fingerprintB64url(Buffer.from(identity.pubkey, 'base64'));
@@ -164,15 +166,21 @@ export function relayRoutes(
     type: 'pkcs8',
   });
 
-  function publishEpoch(): number {
-    // Merkle root over the handle-ordered directory — the same ordering the
-    // per-entry inclusion proofs are built against (see ktMerkle).
-    const rootHash = directoryRoot(db.allRelayDirectoryEntries());
+  /** Sign + chain a new root hash into the relay's KT log (both KT backends
+   *  publish signed, hash-chained roots; only the *root value* + proof shape
+   *  differ). Returns the relay epoch (or the prior one if unchanged). */
+  function appendSignedRoot(rootHash: string): number {
     const prev = db.latestKtRoot();
     if (prev && prev.rootHash === rootHash) return prev.epoch; // no change, no epoch
     const payload = `kt-root|${rootHash}|${prev?.rootHash ?? 'genesis'}`;
     const signature = edSign(null, Buffer.from(payload), signingKey).toString('base64');
     return db.appendKtRoot(rootHash, prev?.rootHash ?? null, signature);
+  }
+
+  function publishEpoch(): number {
+    // Interim Merkle root over the handle-ordered directory — the same ordering
+    // the per-entry inclusion proofs are built against (see ktMerkle).
+    return appendSignedRoot(directoryRoot(db.allRelayDirectoryEntries()));
   }
 
   // Register this account's per-relay public keys (device-token authed).
@@ -184,11 +192,38 @@ export function relayRoutes(
       return reply.code(400).send({ error: 'identityPubKey and sealingPubKey (base64, 32 bytes) required' });
     }
     db.setRelayDirectoryEntry(device.userId, b.identityPubKey, b.sealingPubKey);
+    if (ktSidecar) {
+      // Full-AKD: publish this handle→identity-key binding to the sidecar as a
+      // new epoch, then sign + chain the akd root into the relay's KT log.
+      const handle = db.getUser(device.userId)?.handle;
+      if (!handle) return reply.code(409).send({ error: 'no handle for account' });
+      const { root } = await ktSidecar.publish([{ handle, key: b.identityPubKey }]);
+      return { epoch: appendSignedRoot(root) };
+    }
     return { epoch: publishEpoch() };
   });
 
   app.get('/api/relay/directory/:handle', async (request, reply) => {
     const { handle } = request.params as { handle: string };
+    if (ktSidecar) {
+      // Full-AKD: the identity/sealing keys come from the relay directory, the
+      // VRF-blinded inclusion proof + root + VRF key from the sidecar. The client
+      // runs akd lookup_verify(proof) against `root` (whose signature it checks
+      // via /kt/roots).
+      const entry = db.getRelayDirectoryByHandle(handle);
+      if (!entry) return reply.code(404).send({ error: 'unknown handle' });
+      const look = await ktSidecar.lookup(handle);
+      if (!look) return reply.code(404).send({ error: 'unknown handle' });
+      return {
+        identityPubKey: entry.identityPubkey,
+        sealingPubKey: entry.sealingPubkey,
+        epoch: look.epoch,
+        rootHash: look.root,
+        proof: look.proof,
+        vrfPublicKey: await ktSidecar.vrfPublicKey(),
+        kt: 'akd',
+      };
+    }
     // Build the proof from the same handle-ordered set the root is computed
     // over, so the returned key is provably present under the signed epoch root
     // (spec/key-transparency.md — inclusion/lookup proof on every fetch). The

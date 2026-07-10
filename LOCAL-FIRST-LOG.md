@@ -85,9 +85,19 @@ Playwright version (currently 1.60.0).
   `persists_across_reopen` (publish→drop→reopen: epoch/root/VRF-key restored, a
   pre-restart proof still verifies). SCALING NOTE: whole-DB snapshot per publish
   is fine at relay scale; a `Database` trait impl over SQLite is the upgrade for
-  large directories. **(4)** Node relay integration — swap the interim Merkle directory
-  for the sidecar (publish on directory PUT; serve akd proofs on lookup;
-  audit/consistency for roots). **(5)** native client verify via `akd_core`
+  large directories. **(4) [DONE, iter 100]** Node relay integration —
+  **config-gated with graceful fallback**: new `server/src/ktSidecar.ts` client
+  (publish/lookup[404→null]/vrfPublicKey[cached], `AKD_SIDECAR_TOKEN` bearer);
+  `config.akdSidecarUrl/Token`; app.ts builds it when the URL is set. relay.ts:
+  when a sidecar is present, `PUT /directory` publishes the handle→identity-key
+  binding to the sidecar + signs/chains the akd root (shared `appendSignedRoot`),
+  and `GET /directory/:handle` returns the akd `{proof, epoch, rootHash,
+  vrfPublicKey, kt:'akd'}` (identity/sealing still from the relay dir); no URL →
+  the interim Merkle path is unchanged. Tests: fake-sidecar HTTP server → real
+  client+relay round-trip (publish recorded w/ bearer, akd proof served, root
+  signed into /kt/roots) + interim-still-works-without-sidecar + client unit
+  (404→null, vrf cache, bearer/trailing-slash). server 389, tsc clean. **(5)**
+  native client verify via `akd_core`
   (direct Rust dep in the Tauri core). **(6)** web-satellite WASM `akd_core`
   verifier. **(7)** docker-compose service + reproducible build. NOTE: stays a
   parallel path; the interim Merkle KT keeps working until (4) cuts over.

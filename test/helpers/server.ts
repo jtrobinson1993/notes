@@ -29,6 +29,8 @@ export function makeConfig(dataDir: string, overrides: Partial<Config> = {}): Co
     rateLimitMax: 1_000_000,
     voice: { announcedIp: '127.0.0.1', listenIp: '127.0.0.1', rtcMinPort: 40000, rtcMaxPort: 40100 },
     testAuth: false, // off by default; a test opts in via overrides
+    akdSidecarUrl: null,
+    akdSidecarToken: null,
     ...overrides,
   };
 }

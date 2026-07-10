@@ -154,6 +154,13 @@ client resume across drops.)
   root is a binary Merkle tree over the handle-ordered directory; verify with
   `ktMerkle.verifyInclusion`, then verify `rootHash`'s signature via `/kt/roots`).
   *Interim:* leaves are handle-derived (no VRF label blinding yet).
+  **Full-AKD path (when `AKD_SIDECAR_URL` is set):** same endpoint returns
+  `{ identityPubKey, sealingPubKey, proof, epoch, rootHash, vrfPublicKey,
+  kt:'akd' }` where `proof` is an akd **VRF-blinded** inclusion proof — verify
+  with `akd_core::lookup_verify` against `rootHash` + `vrfPublicKey`, then check
+  `rootHash`'s signature via `/kt/roots`. Directory PUTs publish to the sidecar
+  and its akd root is signed + chained into the KT log exactly like the interim
+  root. The relay picks the backend by config; the interim path is unchanged.
 - `GET /api/kt/roots?since=epoch` → signed epoch roots (consistency checking);
   also aliased at `GET /.well-known/accord/kt-roots` for third-party auditors.
 - Clients self-audit their own binding on every connect and piggyback latest

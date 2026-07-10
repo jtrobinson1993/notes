@@ -21,6 +21,12 @@ export interface Config {
    *  OFF by default and force-disabled under NODE_ENV=production — it is a
    *  deliberate auth bypass that must never ship enabled. */
   testAuth: boolean;
+  /** Full-AKD key-transparency sidecar (akd-sidecar). When set, the relay drives
+   *  KT through it (VRF-blinded inclusion + consistency proofs); when null it
+   *  falls back to the interim Merkle KT. Localhost-only; the token is the shared
+   *  bearer the sidecar checks. */
+  akdSidecarUrl: string | null;
+  akdSidecarToken: string | null;
 }
 
 export interface VoiceConfig {
@@ -63,5 +69,7 @@ export function loadConfig(): Config {
     // Opt-in via env AND never in production — the belt-and-braces gate for a
     // route that bypasses the passkey ceremony.
     testAuth: process.env.E2E_TEST_AUTH === '1' && process.env.NODE_ENV !== 'production',
+    akdSidecarUrl: process.env.AKD_SIDECAR_URL?.trim() || null,
+    akdSidecarToken: process.env.AKD_SIDECAR_TOKEN?.trim() || null,
   };
 }
