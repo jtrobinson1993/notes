@@ -12,7 +12,7 @@
 // onIncomingRing; the call's frame key (caller's minted, callee's from the ring)
 // is handed to `onFrameKey` so the app can arm insertable-streams E2EE.
 
-import { relayCallOffer, voiceJoin, voiceLeave, type CallRing } from './native';
+import { relayCallOffer, voiceJoin, voiceLeave, type CallRing, type FriendSummary } from './native';
 import { onMailIngested } from './nativeRelay';
 import { onVoiceFrame, startVoiceSignaling, stopVoiceSignaling } from './nativeVoice';
 import { VoiceCall, type CallState } from './voiceCall';
@@ -87,4 +87,14 @@ export function createNativeCall(media: VoiceMedia, opts: NativeCallOptions = {}
 
 function isFresh(ring: CallRing, nowMs: number): boolean {
   return nowMs - ring.relayTs <= RING_TTL_MS;
+}
+
+/** Resolve a call peer's display label from its key — a contact id (outgoing
+ *  call) or the caller's identity pubkey (incoming ring). Null if not a friend. */
+export function peerNameFrom(peerId: string | null, friends: FriendSummary[]): string | null {
+  if (!peerId) return null;
+  for (const f of friends) {
+    if (f.contact_id === peerId || f.identity_pub === peerId) return f.display_name || f.handle;
+  }
+  return null;
 }

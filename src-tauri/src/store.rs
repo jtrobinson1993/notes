@@ -262,6 +262,10 @@ pub struct FriendSummary {
     pub contact_id: String,
     pub handle: String,
     pub display_name: Option<String>,
+    /// STANDARD base64 of the friend's Ed25519 identity key — lets the UI map an
+    /// inbound call's verified `callerId` (same encoding) to this friend.
+    #[serde(rename = "identity_pub")]
+    pub identity_pub: String,
 }
 
 /// One reaction on a message (the UI groups by emoji + flags mine).
@@ -574,8 +578,9 @@ impl Store {
 
     /// List v8 friends on a relay (for the friends list + starting DMs).
     pub fn list_friends(&self, relay_id: &str) -> Result<Vec<FriendSummary>, StoreError> {
+        use base64::Engine as _;
         let mut stmt = self.conn.prepare(
-            "SELECT cr.contact_id, cr.handle, c.display_name
+            "SELECT cr.contact_id, cr.handle, c.display_name, cr.identity_pub
                FROM contact_relays cr JOIN contacts c ON c.id = cr.contact_id
               WHERE cr.relay_id = ?1 AND c.is_friend = 1 AND c.blocked_hidden = 0
                 AND cr.delivery_token IS NOT NULL
@@ -583,10 +588,14 @@ impl Store {
         )?;
         let rows = stmt
             .query_map((relay_id,), |r| {
+                let id_pub: Option<Vec<u8>> = r.get(3)?;
                 Ok(FriendSummary {
                     contact_id: r.get(0)?,
                     handle: r.get(1)?,
                     display_name: r.get(2)?,
+                    identity_pub: id_pub
+                        .map(|b| base64::engine::general_purpose::STANDARD.encode(b))
+                        .unwrap_or_default(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1500,6 +1509,12 @@ mod tests {
         assert_eq!(friends.len(), 1);
         assert_eq!(friends[0].contact_id, "c1");
         assert_eq!(friends[0].display_name.as_deref(), Some("Alice"));
+        // identity_pub is STANDARD base64 of the raw key (for inbound-call mapping).
+        use base64::Engine as _;
+        assert_eq!(
+            friends[0].identity_pub,
+            base64::engine::general_purpose::STANDARD.encode([1u8; 32])
+        );
 
         // Unfriend drops addressing + the friend flag (can no longer reach them).
         store.remove_friend("c1", "r1").unwrap();

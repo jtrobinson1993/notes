@@ -1416,11 +1416,25 @@ Playwright version (currently 1.60.0).
     placeCall(contactId)`. Test: call button → placeCall(contactId). web 521,
     tsc clean. (mediasoup-client was already in App.vue's graph via the v6 store
     → no new bundling risk.)
-  - **Remaining v8 spec:** voice follow-ups: (a) **browser-media e2e round-trip**
-    (harness page loading nativeCallMedia/voiceMedia + a REST SfuControl; two
-    fake-mic peers produce→consume, assert media flows). (b) peer display-name in
-    the call panel (map peerId→friend handle; currently shows the pubkey). (c) D4c
-    cross-relay fan-out (deferred). Then:
+  - **DONE (iter 95) — peer display-name in the call panel.** `FriendSummary`
+    gains `identity_pub` (STANDARD base64 of the friend's Ed25519 key — same
+    encoding as an inbound call's verified `callerId`): store `list_friends`
+    selects `cr.identity_pub` + encodes (Rust), web `FriendSummary` type updated.
+    Pure `peerNameFrom(peerId, friends)` (nativeVoiceCall) maps a peerId — a
+    contact id (outgoing) or an identity pubkey (incoming ring) — to the friend's
+    display name / handle. NativeCallHost fetches friends on mount + binds the
+    resolved `peerName` to the panel (was the raw pubkey). cargo 67 (+identity_pub
+    b64 assertion), web 525 (+4 peerNameFrom). tsc clean.
+  - **v8 VOICE FEATURE FUNCTIONALLY COMPLETE** (iters 79–95): signaling socket +
+    ring + call engine + control wiring + SFU server (join/media/producer notify)
+    + Rust native client + SFU control proxy + CallMedia orchestration + frame-key
+    exchange + app wiring/mount/call-button + peer name. Runs end-to-end; unit +
+    server-e2e tested throughout.
+  - **Remaining v8 spec:** (a) **browser-media e2e round-trip** — the one
+    validation gap (harness page loading voiceMedia + a REST SfuControl; two
+    fake-mic peers produce→consume, assert media flows). Heavy/flaky infra (bundled
+    same-origin harness page + WebRTC stats), best decided deliberately. (b) D4c
+    cross-relay fan-out (deferred by user's "single-relay first"). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).

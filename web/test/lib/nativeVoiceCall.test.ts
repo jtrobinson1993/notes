@@ -36,7 +36,8 @@ vi.mock('../../src/lib/nativeVoice', () => ({
   },
 }));
 
-import { createNativeCall, RING_TTL_MS } from '../../src/lib/nativeVoiceCall';
+import { createNativeCall, peerNameFrom, RING_TTL_MS } from '../../src/lib/nativeVoiceCall';
+import type { FriendSummary } from '../../src/lib/native';
 
 function media(): VoiceMedia & { closed: number; joins: string[]; producers: string[] } {
   const joins: string[] = [];
@@ -138,5 +139,31 @@ describe('nativeVoiceCall wiring', () => {
     voice.frameCb!({ type: 'peer-leave', callId: 'call-xyz' });
     await Promise.resolve();
     expect(nc.call.state).toBe('ended');
+  });
+});
+
+const friend = (over: Partial<FriendSummary>): FriendSummary => ({
+  contact_id: 'idA',
+  handle: 'A#1',
+  display_name: 'Alice',
+  identity_pub: 'PUB-A',
+  ...over,
+});
+
+describe('peerNameFrom', () => {
+  const friends = [friend({}), friend({ contact_id: 'idB', handle: 'B#2', display_name: null, identity_pub: 'PUB-B' })];
+
+  it('maps a contact id (outgoing call) to the display name', () => {
+    expect(peerNameFrom('idA', friends)).toBe('Alice');
+  });
+  it('maps an identity pubkey (incoming ring) to the friend', () => {
+    expect(peerNameFrom('PUB-A', friends)).toBe('Alice');
+  });
+  it('falls back to the handle when there is no display name', () => {
+    expect(peerNameFrom('idB', friends)).toBe('B#2');
+  });
+  it('returns null for an unknown peer or no peer', () => {
+    expect(peerNameFrom('stranger', friends)).toBeNull();
+    expect(peerNameFrom(null, friends)).toBeNull();
   });
 });

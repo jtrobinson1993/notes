@@ -112,6 +112,9 @@ export interface FriendSummary {
   contact_id: string;
   handle: string;
   display_name: string | null;
+  /** STANDARD base64 of the friend's Ed25519 identity key (maps an inbound
+   *  call's verified callerId, which uses the same encoding, to this friend). */
+  identity_pub: string;
 }
 
 export interface FriendAddressing {
