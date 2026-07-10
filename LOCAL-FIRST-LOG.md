@@ -51,6 +51,25 @@ Playwright version (currently 1.60.0).
 
 ## Decisions locked
 
+- **USER DECISION — implement full-AKD KT now (`akd` sidecar).** After the
+  feasibility spike (recorded in key-transparency.md; `akd` builds, no MySQL,
+  all proof types + VRF, verify is no_std/WASM-viable, actively maintained — last
+  commit ~1mo ago, backs WhatsApp KT), user greenlit building it. Plan (slices):
+  **(1) [DONE, iter 96] directory engine** — new `akd-sidecar/` crate wrapping
+  `akd::Directory` (WhatsAppV1Configuration, in-memory DB + HardCodedAkdVRF):
+  `publish(handle→key)→(epoch,root)`, `lookup(handle)→(LookupProof,EpochHash)`,
+  `vrf_public_key()`. 3 cargo tests incl. the real client round-trip
+  (`akd::client::lookup_verify` accepts a valid proof; a wrong-handle proof is
+  rejected; epochs advance). **(2)** HTTP layer (localhost API: publish/lookup/
+  audit/key_history) → the sidecar binary. **(3)** persistent `Database` impl
+  over SQLite + a **persisted VRF key** (HardCodedAkdVRF is test-only — REQUIRED
+  before prod). **(4)** Node relay integration — swap the interim Merkle directory
+  for the sidecar (publish on directory PUT; serve akd proofs on lookup;
+  audit/consistency for roots). **(5)** native client verify via `akd_core`
+  (direct Rust dep in the Tauri core). **(6)** web-satellite WASM `akd_core`
+  verifier. **(7)** docker-compose service + reproducible build. NOTE: stays a
+  parallel path; the interim Merkle KT keeps working until (4) cuts over.
+
 - **ALL pre-implementation specs DRAFTED (list in roadmap now fully linked).**
   New files: **`spec/local-store.md`** (SQLCipher schema sketch, Rust core =
   headless client — storage+crypto+networking in Rust, webview = UI only,
