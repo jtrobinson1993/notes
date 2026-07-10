@@ -23,7 +23,17 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        // Fake mic so getUserMedia works headlessly (voice media e2e), and
+        // auto-grant the permission prompt.
+        launchOptions: {
+          args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+        },
+      },
+    },
     // Enable in CI once WebKit is installed (`npm run e2e:install`).
     // { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
@@ -41,6 +51,9 @@ export default defineConfig({
       APP_ORIGIN: ORIGIN,
       APP_NAME: 'Notes E2E',
       WEB_DIST,
+      // Enable the env-gated test-auth seam (POST /api/test/session) so E2E can
+      // authenticate without the passkey ceremony. Never set outside E2E.
+      E2E_TEST_AUTH: '1',
     },
   },
 });

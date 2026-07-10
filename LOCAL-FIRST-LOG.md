@@ -1351,15 +1351,25 @@ Playwright version (currently 1.60.0).
     extend later). Tests: 404 by default (no accidental bypass), mints a session
     that authenticates a real device-enroll when on, refused under production.
     server 384, tsc clean. Unblocks the chat e2e too.
-  - **Remaining v8 spec:** voice follow-ups: (a) **voice e2e harness** — a
-    fake-media Chromium Playwright project + a device-token helper (test-session →
-    enroll → challenge → token) + a spec driving two peers through the v8 SFU
-    media round-trip (join→transport→produce fake mic→consume→assert media). (b)
-    **mediasoup-client CallMedia** built against that harness (behind an
-    injectable SfuControl so it runs in the app via Rust IPC and in e2e via direct
-    REST) + frame E2EE (reuse voiceCrypto/voiceTransform) + 1:1 media-key seal via
-    the call-offer envelope. (c) **mount** NativeCallPanel + call button. (d) D4c
-    fan-out (deferred). Then:
+  - **DONE (iter 90) — voice e2e harness (foundation).** playwright.config: the
+    e2e webServer now sets `E2E_TEST_AUTH=1` (activates the seam) + the chromium
+    project gets `--use-fake-device-for-media-stream`/`--use-fake-ui-for-media-
+    stream` (headless mic for future media specs). New `e2e/helpers/deviceToken.ts`
+    — over real HTTP: test-session → device enroll (Node Ed25519) → challenge →
+    signed-nonce → token. New `e2e/voice.spec.ts` — two independent peers get
+    device tokens and join the SAME v8 SFU call room against the running server +
+    a **real mediasoup worker**: asserts real opus RTP caps, Alice-first empty
+    roster, Bob sees Alice (identity-free ephemeral participant id, null
+    producer), and a no-token join → 401. **Both pass** (`npx playwright test
+    voice.spec`, 2 passed). Validates test-auth → device-token → SFU end-to-end;
+    the in-browser media round-trip (getUserMedia→produce→consume + frame E2EE)
+    lands with CallMedia, driven through this harness.
+  - **Remaining v8 spec:** voice follow-ups: (a) **mediasoup-client CallMedia**
+    built against this harness (behind an injectable SfuControl so it runs in the
+    app via Rust IPC and in e2e via direct REST) + frame E2EE (reuse voiceCrypto/
+    voiceTransform) + 1:1 media-key seal via the call-offer envelope; extend
+    voice.spec to the full produce→consume media round-trip. (b) **mount**
+    NativeCallPanel + call button. (c) D4c fan-out (deferred). Then:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).
