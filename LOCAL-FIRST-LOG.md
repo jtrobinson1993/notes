@@ -1430,11 +1430,19 @@ Playwright version (currently 1.60.0).
     + Rust native client + SFU control proxy + CallMedia orchestration + frame-key
     exchange + app wiring/mount/call-button + peer name. Runs end-to-end; unit +
     server-e2e tested throughout.
-  - **Remaining v8 spec:** (a) **browser-media e2e round-trip** — the one
-    validation gap (harness page loading voiceMedia + a REST SfuControl; two
-    fake-mic peers produce→consume, assert media flows). Heavy/flaky infra (bundled
-    same-origin harness page + WebRTC stats), best decided deliberately. (b) D4c
-    cross-relay fan-out (deferred by user's "single-relay first"). Then:
+  - **USER DECISION (this session) — voice track PAUSED for real-device testing.**
+    v8 voice is functionally complete + green; user will exercise it on a real
+    Tauri app + two devices/mics and report breakage (the true validation for
+    media). The browser-media e2e (heavy/flaky infra) waits until the happy path
+    is confirmed real. **On resume: fix whatever real-device testing surfaces
+    first**, then decide on the browser-media e2e. NOT started autonomously:
+    D12 cutover, content-free push (D7), KT full-AKD — each needs a fresh
+    decision; await user direction.
+  - **Deferred voice follow-ups (post-validation):** (a) **browser-media e2e
+    round-trip** (harness page loading voiceMedia + a REST SfuControl; two
+    fake-mic peers produce→consume, assert media flows) — bundled same-origin
+    harness page + WebRTC stats, timing-sensitive. (b) D4c cross-relay fan-out
+    (deferred by "single-relay first"). Older backlog:
     (4) content-free push (D7, deprioritized). (5) KT full AKD: VRF blinding +
     consistency proofs (large — `akd` crate + napi; dependency/architecture
     lift). (6) D12 legacy→v8 cutover (production migration — needs the user).
