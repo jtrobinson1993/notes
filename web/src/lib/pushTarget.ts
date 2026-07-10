@@ -14,9 +14,10 @@ import type { PushPayload } from '@notes/shared';
  * - anything unrecognised falls back to the app root.
  */
 export function pushTargetUrl(payload: Partial<PushPayload> | undefined | null): string {
-  if (!payload || !payload.conversationId) return '/';
-  if (payload.type === 'call') return `/chat/${payload.conversationId}`;
-  if (payload.type !== 'message' && payload.type !== 'reaction') return '/';
+  if (!payload) return '/';
+  // `mail` (v8 content-free wake) has no deep-link target; the SW handles it.
+  if (payload.type === 'call' && payload.conversationId) return `/chat/${payload.conversationId}`;
+  if ((payload.type !== 'message' && payload.type !== 'reaction') || !payload.conversationId) return '/';
 
   const base = `/chat/${payload.conversationId}`;
   const path =

@@ -710,4 +710,8 @@ export type PushPayload =
       seq: number;
       threadParentSeq?: number;
     }
-  | { type: 'call'; conversationId: string };
+  | { type: 'call'; conversationId: string }
+  // v8 sealed-mailbox wake (D7): fully content-free — no conversation, sender, or
+  // routing (the relay is zero-at-rest + sealed-sender). Just tells a device to
+  // drain its mailbox.
+  | { type: 'mail' };

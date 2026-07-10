@@ -61,11 +61,20 @@ Playwright version (currently 1.60.0).
   wake only when **no recipient device is live** (online devices already get the
   relayLive nudge). `push` threaded into relayRoutes. server 392 (+2: register/
   unregister device-token-authed, content-free wake on send to an offline
-  recipient — web-push mocked). *[next] client:* Rust `relay_push_subscribe`
-  command + relay_client method (device-token authed, like the SFU proxy) +
-  service-worker handling of `{type:'mail'}`→drain. NOTE: web-push (VAPID) covers
-  web + desktop-webview; **APNs/FCM lands with the native mobile shell** (desk
-  queue).
+  recipient — web-push mocked). **[DONE, iter 110 — SW wake→drain]** shared
+  `PushPayload += {type:'mail'}` (fully content-free); `sw.ts` push handler: on a
+  `mail` wake, postMessage `relay-mail` to open clients + show a generic "New
+  messages" notification (never content); `main.ts` SW-message listener → `mail`
+  → `drainMailbox()`; `pushTargetUrl` guards the target-less `mail` variant. web
+  535, tsc clean (+pushTarget mail case). **REMAINING (architecture-gated):** the
+  *registration* wiring (which client holds the device token to POST /push/
+  subscribe) is entangled with the client model — the **browser web-satellite**
+  (D12; holds its own device token → registers directly) vs the **native
+  desktop** (token in Rust → a `relay_push_subscribe` IPC; but Tauri-webview push
+  support is uncertain, and relayLive already covers the app-open case) vs
+  **mobile** (APNs/FCM, future). So registration lands with the web-satellite /
+  mobile shell; the relay + SW wake path is ready for them. **D7 as-buildable-now
+  COMPLETE** (server wake + registration endpoints + SW drain-on-wake).
 
 
 - **SIGNING RESOLVED — all v8 branch commits re-signed.** The whole branch was

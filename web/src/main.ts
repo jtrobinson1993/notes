@@ -5,6 +5,7 @@ import App from './App.vue';
 import { router } from './router';
 import { initTheme } from './lib/theme';
 import { trackViewportHeight } from './lib/viewport';
+import { drainMailbox } from './lib/nativeRelay';
 // Self-hosted fonts (bundled, no CDN call — same privacy posture as the icons):
 // Geist Sans for UI/prose, Geist Mono for code. Both variable (all weights).
 import '@fontsource-variable/geist';
@@ -28,6 +29,9 @@ if ('serviceWorker' in navigator) {
     const d = e.data as { type?: string; url?: string } | null;
     if (d?.type === 'notification-navigate' && typeof d.url === 'string') {
       void router.push(d.url);
+    } else if (d?.type === 'relay-mail') {
+      // v8 content-free mailbox wake (D7): drain the sealed mailbox now.
+      void drainMailbox();
     }
   });
 }

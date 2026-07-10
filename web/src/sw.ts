@@ -65,6 +65,24 @@ sw.addEventListener('push', (event) => {
   } catch {
     /* a contentless push — still show a generic notification */
   }
+  // v8 sealed-mailbox wake (D7): tell any open client to drain now, and show a
+  // generic notification (never content — the relay is sealed-sender).
+  if (data.type === 'mail') {
+    event.waitUntil(
+      (async () => {
+        const clients = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        for (const client of clients) client.postMessage({ type: 'relay-mail' });
+        await sw.registration.showNotification('Accord', {
+          body: 'New messages',
+          icon: '/icons/icon-192.png',
+          badge: '/icons/icon-192.png',
+          tag: 'accord-mail', // collapse repeated mail wakes into one
+          data,
+        });
+      })(),
+    );
+    return;
+  }
   const conversationId =
     data.type === 'message' || data.type === 'reaction' ? data.conversationId : undefined;
   // Content-free bodies: never the text, emoji, or who acted (see push.ts).

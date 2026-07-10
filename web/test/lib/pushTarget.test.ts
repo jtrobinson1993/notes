@@ -41,5 +41,7 @@ describe('pushTargetUrl', () => {
     expect(pushTargetUrl(null)).toBe('/');
     expect(pushTargetUrl(undefined)).toBe('/');
     expect(pushTargetUrl({ type: 'message' } as never)).toBe('/');
+    // v8 content-free mail wake has no deep-link target.
+    expect(pushTargetUrl({ type: 'mail' })).toBe('/');
   });
 });
