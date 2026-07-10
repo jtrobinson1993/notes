@@ -8,6 +8,7 @@ import NotificationOptIn from './components/NotificationOptIn.vue';
 import NativeGate from './components/NativeGate.vue';
 import MigrationPrompt from './components/MigrationPrompt.vue';
 import NativeCallHost from './components/NativeCallHost.vue';
+import KtAlarm from './components/KtAlarm.vue';
 
 const session = useSessionStore();
 const notes = useNotesStore();
@@ -60,6 +61,8 @@ watch(
       <MigrationPrompt />
       <!-- Global v8 voice call panel (native shell; inert in the browser). -->
       <NativeCallHost />
+      <!-- Key-transparency hard-alarm banner (native shell; self-audit on connect). -->
+      <KtAlarm />
       <!-- First-open notification opt-in (asks once per device; signed-in only). -->
       <NotificationOptIn v-if="session.loggedIn" />
     </NativeGate>

@@ -128,8 +128,15 @@ Playwright version (currently 1.60.0).
   `kt_set_verified` else emits a hard `kt:alarm` ("self-audit-failed" |
   "split-view") + returns `KtAuditReport{ok,reason,epoch}`. cargo 71. (Command
   orchestration is network/vault-bound → verify+verdict cores carry the tests.)
-  **(5d)** gossip (piggyback latest root on envelopes; inbound split-view check).
-  **(5e)** alarm surface (soft/hard per spec). **(6)** web-satellite WASM
+  **(5e) [DONE, iter 106]** alarm surface + trigger — native.ts `ktSelfAudit` +
+  `KtAuditReport`; new `nativeKt.ts` (`startKtAudit` subscribes to the `kt:alarm`
+  Tauri event + runs one self-audit on connect; `onKtAlarm` fan-out with
+  latest-replay; `stopKtAudit` full reset); new `KtAlarm.vue` prominent
+  non-dismissable red banner (z-tooltip, distinct split-view vs foreign-key
+  copy), mounted in App.vue (native-gated). 10 tests (nativeKt subscribe/run/
+  raise/replay/native-gate/teardown; KtAlarm hidden→shown per reason). web 535,
+  tsc clean.
+  **(5d)** gossip (piggyback latest root on envelopes; inbound split-view check). **(6)** web-satellite WASM
   `akd_core` verifier. **(7) [DONE, iter 101]** docker-compose — new `akd-sidecar/Dockerfile`
   (multi-stage Rust build → slim runtime, non-root, `--locked`); `akd-sidecar`
   compose service (compose-network only, **no published port**, `akd-data`

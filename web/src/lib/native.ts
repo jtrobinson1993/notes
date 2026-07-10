@@ -415,6 +415,21 @@ export function relayMailboxDrain(): Promise<DrainReport> {
   return invoke<DrainReport>('relay_mailbox_drain');
 }
 
+/** Result of a KT self-audit (D5): whether the relay's log only bound my handle
+ *  to keys I minted + its roots are consistent. `reason` is the alarm on failure
+ *  ("self-audit-failed" | "split-view"). */
+export interface KtAuditReport {
+  ok: boolean;
+  reason: string | null;
+  epoch: number;
+}
+
+/** Self-audit my own handle against the relay's KT log (full-AKD). Also emits a
+ *  `kt:alarm` event on failure (see nativeKt). */
+export function ktSelfAudit(): Promise<KtAuditReport> {
+  return invoke<KtAuditReport>('kt_self_audit');
+}
+
 export function relayStatus(): Promise<{
   connected: boolean;
   base_url: string | null;
