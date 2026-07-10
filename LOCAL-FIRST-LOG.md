@@ -51,6 +51,23 @@ Playwright version (currently 1.60.0).
 
 ## Decisions locked
 
+- **USER DECISION — content-free push (D7): direct APNs/FCM/web-push keys in the
+  deployment now; Sygnal-style gateway later.** Building D7 with the relay
+  holding VAPID/APNs keys directly (already the spec's lean). **[DONE, iter 109 —
+  server side]** `Push.notifyMailbox(userId)` sends a **content-free**
+  `{type:'mail'}` web-push wake (no content/routing — zero-at-rest + sealed
+  sender); relay endpoints `GET /push/key` (VAPID public key) + device-token-
+  authed `POST /push/subscribe` / `/push/unsubscribe`; `mailbox/send` fires the
+  wake only when **no recipient device is live** (online devices already get the
+  relayLive nudge). `push` threaded into relayRoutes. server 392 (+2: register/
+  unregister device-token-authed, content-free wake on send to an offline
+  recipient — web-push mocked). *[next] client:* Rust `relay_push_subscribe`
+  command + relay_client method (device-token authed, like the SFU proxy) +
+  service-worker handling of `{type:'mail'}`→drain. NOTE: web-push (VAPID) covers
+  web + desktop-webview; **APNs/FCM lands with the native mobile shell** (desk
+  queue).
+
+
 - **SIGNING RESOLVED — all v8 branch commits re-signed.** The whole branch was
   committed unsigned while 1Password's op-ssh-sign agent was locked (user's
   one-time approval). Once unlocked, re-signed all 171 commits in one pass:

@@ -13,6 +13,7 @@ import type { RelayLive } from '../relayLive.js';
 import type { VoiceSignal } from '../voiceSignal.js';
 import type { VoiceSfu } from '../voiceSfu.js';
 import type { KtSidecar } from '../ktSidecar.js';
+import type { Push } from '../push.js';
 import { requireAuth } from '../session.js';
 import { newToken } from '../util.js';
 import { directoryRoot, inclusionProof, leafHash } from '../ktMerkle.js';
@@ -73,6 +74,7 @@ export function relayRoutes(
   voiceSignal?: VoiceSignal,
   voiceSfu?: VoiceSfu,
   ktSidecar?: KtSidecar,
+  push?: Push,
 ): void {
   const identity = db.ensureRelayIdentity(generateRelayIdentity);
   const relayFp = fingerprintB64url(Buffer.from(identity.pubkey, 'base64'));
@@ -339,9 +341,40 @@ export function relayRoutes(
       db.enqueueRelayEnvelope(devices, relayTs, Buffer.from(b.envelope, 'base64'));
       // Nudge any connected recipient devices to fetch now (poll otherwise).
       live?.notifyDevices(devices);
+      // Offline recipient (no live device): a content-free push wakes a device
+      // to drain the sealed mailbox (D7). Online devices already got the nudge.
+      const anyOnline = devices.some((d) => live?.isDeviceOnline(d));
+      if (!anyOnline) push?.notifyMailbox(user.id);
     }
     db.pruneRelayMailbox(MAILBOX_TTL_MS); // opportunistic TTL sweep
     return { relayTs };
+  });
+
+  // ---- content-free push registration (D7) ----
+  // The VAPID public key a client needs to create a web-push subscription
+  // (null when push isn't configured → the client falls back to poll/live-WS).
+  app.get('/api/relay/push/key', async () => ({ publicKey: push?.publicKey ?? null }));
+
+  // Register a web-push subscription for the device's account (device-token
+  // authed). The push only ever carries `{type:'mail'}`, so this leaks nothing.
+  app.post('/api/relay/push/subscribe', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const b = request.body as { endpoint?: string; p256dh?: string; auth?: string } | null;
+    if (!b?.endpoint || !b?.p256dh || !b?.auth) {
+      return reply.code(400).send({ error: 'endpoint, p256dh, auth required' });
+    }
+    db.addPushSubscription({ userId: device.userId, endpoint: b.endpoint, p256dh: b.p256dh, auth: b.auth });
+    return { ok: true };
+  });
+
+  app.post('/api/relay/push/unsubscribe', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const b = request.body as { endpoint?: string } | null;
+    if (!b?.endpoint) return reply.code(400).send({ error: 'endpoint required' });
+    db.deletePushSubscription(device.userId, b.endpoint);
+    return { ok: true };
   });
 
   app.get('/api/relay/mailbox', async (request, reply) => {

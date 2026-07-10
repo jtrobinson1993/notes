@@ -36,6 +36,12 @@ export interface Push {
   /** Push a content-free incoming-call ping to callees without a live socket
    *  (online devices are rung over the WebSocket). */
   notifyCall(conversationId: string, callerId: string, calleeIds: string[]): void;
+  /** v8 sealed mailbox (D7): a **content-free** `{type:'mail'}` wake to a
+   *  recipient's push subscriptions so an offline device drains the sealed
+   *  mailbox over its authed REST. Carries no content or routing — the relay is
+   *  zero-at-rest and sealed-sender. Online-gating is the caller's job (the live
+   *  nudge already reaches connected devices). */
+  notifyMailbox(userId: string): void;
 }
 
 const NOOP: Push = {
@@ -44,6 +50,7 @@ const NOOP: Push = {
   notifyNewMessage() {},
   notifyReaction() {},
   notifyCall() {},
+  notifyMailbox() {},
 };
 
 /** Resolve VAPID keys: explicit env vars win; otherwise generate once and
@@ -118,5 +125,21 @@ export function createPush(db: DB, config: Config, realtime: Realtime): Push {
     deliver(calleeIds, callerId, { type: 'call', conversationId });
   }
 
-  return { enabled: true, publicKey: keys.publicKey, notifyNewMessage, notifyReaction, notifyCall };
+  // v8 content-free mailbox wake (D7). Unlike `deliver`, it sends unconditionally
+  // to the user's subscriptions — the v8 online-gating (relayLive) is decided by
+  // the caller, and there is no actor/content to carry. Prunes dead subs.
+  function notifyMailbox(userId: string): void {
+    const body = JSON.stringify({ type: 'mail' });
+    for (const sub of db.listPushSubscriptions(userId)) {
+      webpush
+        .sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, body)
+        .catch((err: { statusCode?: number }) => {
+          if (err?.statusCode === 404 || err?.statusCode === 410) {
+            db.deletePushSubscription(userId, sub.endpoint);
+          }
+        });
+    }
+  }
+
+  return { enabled: true, publicKey: keys.publicKey, notifyNewMessage, notifyReaction, notifyCall, notifyMailbox };
 }

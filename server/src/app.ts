@@ -87,7 +87,7 @@ export async function buildApp(db: DB, config: Config): Promise<FastifyInstance>
   const ktSidecar = config.akdSidecarUrl
     ? createKtSidecar(config.akdSidecarUrl, config.akdSidecarToken ?? '')
     : undefined;
-  relayRoutes(app, db, relayLive, config, voiceSignal, voiceSfu, ktSidecar);
+  relayRoutes(app, db, relayLive, config, voiceSignal, voiceSfu, ktSidecar, push);
   testRoutes(app, db, config); // no-op unless config.testAuth (E2E only)
   voice.register(app);
   realtime.register(app);
