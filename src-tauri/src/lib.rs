@@ -2,6 +2,7 @@ mod attachment;
 mod blobs;
 mod envelope;
 mod identity;
+mod kt;
 mod keys;
 mod message;
 mod relay_client;

@@ -40,6 +40,12 @@ base64 = "0.22"
 tokio = { version = "1", features = ["rt", "macros", "time", "net"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
+# v8 key-transparency client verify (akd inclusion + key-history proofs). Only
+# the light verify core — the full `akd` crate (storage/tree/audit) stays out of
+# the app; consistency/append-only verification is the reference auditor's job.
+akd_core = { version = "0.12", default-features = false, features = ["whatsapp_v1", "vrf", "serde_serialization"] }
 
 [dev-dependencies]
 tempfile = "3"
+# The full akd crate, tests only — generates real proofs to verify against.
+akd = { version = "0.12", features = ["whatsapp_v1"] }

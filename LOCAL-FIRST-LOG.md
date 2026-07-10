@@ -97,9 +97,24 @@ Playwright version (currently 1.60.0).
   client+relay round-trip (publish recorded w/ bearer, akd proof served, root
   signed into /kt/roots) + interim-still-works-without-sidecar + client unit
   (404→null, vrf cache, bearer/trailing-slash). server 389, tsc clean. **(5)**
-  native client verify via `akd_core`
-  (direct Rust dep in the Tauri core). **(6)** web-satellite WASM `akd_core`
-  verifier. **(7) [DONE, iter 101]** docker-compose — new `akd-sidecar/Dockerfile`
+  **USER DECISION — build the full client-side KT verification feature** (self-
+  audit + gossip + verify primitives + alarms). Design (from the akd_core probe):
+  akd_core exposes `lookup_verify` + `key_history_verify` (light) but NOT
+  consistency/append-only verify (full `akd` only) → native client does
+  **inclusion + self-audit** with akd_core; **gossip split-view** is cheap
+  `(epoch,root)`-equality vs a cached `kt_state` (no akd); full append-only stays
+  the **auditor's** job. Slices: **(5a) [DONE, iter 102]** verify primitives —
+  `src-tauri/src/kt.rs`: `verify_lookup`(→verified identity key) +
+  `verify_key_history`(→every minted key) over `akd_core` (default-features off:
+  `whatsapp_v1,vrf,serde_serialization`; the heavy full `akd` is a **dev-dep**
+  only, for test proof generation — stays out of the app binary). Proofs in as
+  serde JSON, roots/VRF-key base64. cargo 69 (+2: real-proof accept + bad-root/
+  wrong-handle reject; key-history returns both minted keys). **(5b)** `kt_state`
+  local store (latest verified epoch+root per relay). **(5c)** self-audit flow
+  (fetch own key_history → verify → alarm if a key I didn't mint appears).
+  **(5d)** gossip (piggyback latest root on envelopes; inbound split-view check).
+  **(5e)** alarm surface (soft/hard per spec). **(6)** web-satellite WASM
+  `akd_core` verifier. **(7) [DONE, iter 101]** docker-compose — new `akd-sidecar/Dockerfile`
   (multi-stage Rust build → slim runtime, non-root, `--locked`); `akd-sidecar`
   compose service (compose-network only, **no published port**, `akd-data`
   volume); main.rs bind is now `AKD_SIDECAR_HOST` (default 127.0.0.1; compose sets
