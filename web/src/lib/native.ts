@@ -588,39 +588,8 @@ export function attachmentEvict(id: string): Promise<void> {
   return invoke('attachment_evict', { id });
 }
 
-// ---- first-run legacy import (spec/migration.md) ----
-// The webview decrypts with the existing v1 crypto and streams plaintext
-// batches to the core; each call is transactional and idempotent, so the
-// migrator can resume after a partial failure by re-sending.
-
-export interface ImportNote {
-  id: string;
-  title: string | null;
-  search_text: string | null;
-  folder_id: string | null;
-  created: number;
-  updated: number;
-  /** Yjs doc binary (Y.encodeStateAsUpdate) seeded from the legacy note. */
-  ydoc_state: number[];
-  /** `{ owner, access }` JSON for shared-with-me notes; null for own notes. */
-  shared_json: string | null;
-  /** The note's E2E key (unwrapped/unsealed during migration; phase-4 sync). */
-  note_key: number[] | null;
-  /** JSON string[] of the note's tags. */
-  tags_json: string | null;
-}
-
-export interface ImportConversation {
-  id: string;
-  type: 'dm' | 'group';
-}
-
-export interface ImportContact {
-  id: string;
-  display_name: string | null;
-  is_friend: boolean;
-}
-
+/** A message row for the local log — used by the live-ingest path
+ *  (`messagesIngest`) that keeps the log current with new traffic. */
 export interface ImportMessage {
   id: string;
   conversation_id: string;
@@ -634,31 +603,3 @@ export interface ImportMessage {
   edited_at: number | null;
 }
 
-export function importNotes(batch: ImportNote[]): Promise<number> {
-  return invoke<number>('import_notes', { batch });
-}
-
-export interface ImportNoteVersion {
-  note_id: string;
-  kind: 'legacy';
-  name: string | null;
-  created: number;
-  /** JSON `{title, body}` snapshot bytes. */
-  snapshot: number[];
-}
-
-export function importNoteVersions(batch: ImportNoteVersion[]): Promise<number> {
-  return invoke<number>('import_note_versions', { batch });
-}
-
-export function importConversations(batch: ImportConversation[]): Promise<number> {
-  return invoke<number>('import_conversations', { batch });
-}
-
-export function importContacts(batch: ImportContact[]): Promise<number> {
-  return invoke<number>('import_contacts', { batch });
-}
-
-export function importMessages(batch: ImportMessage[]): Promise<number> {
-  return invoke<number>('import_messages', { batch });
-}

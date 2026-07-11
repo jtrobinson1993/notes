@@ -905,6 +905,15 @@ the native app escapes). Decided shape:
   *Status: REVISED — greenfield launch, no migration (was: hard cutover with
   per-user migration). Native (full, signed, reproducible) + web (lower-trust,
   satellite-only). Pre-launch: warn users to save notes; everything is wiped.*
+  - **POST-LAUNCH — codebase cleanup & review pass.** After v8 ships, do a
+    dedicated sweep to remove anything unused/unnecessary that the pre-v8 →
+    greenfield transition left behind: the store-level legacy-import methods
+    (`import_notes`/`import_note_versions`/`import_conversations`/
+    `import_contacts` — now test-only after the migration commands were removed),
+    any legacy server/chat/crypto paths no longer reached once standalone web is
+    disabled, dead types, and stale spec sections. (The top-layer migration code —
+    `migrate.ts`, `MigrationPrompt.vue`, the migration IPC commands, and
+    `spec/migration.md` — was already deleted when the greenfield decision landed.)
 
 #### Key hierarchy, revocation & groups
 

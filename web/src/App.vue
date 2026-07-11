@@ -6,7 +6,6 @@ import { startChat, stopChat, useChatStore } from './stores/chat';
 import { useVoiceStore } from './stores/voice';
 import NotificationOptIn from './components/NotificationOptIn.vue';
 import NativeGate from './components/NativeGate.vue';
-import MigrationPrompt from './components/MigrationPrompt.vue';
 import NativeCallHost from './components/NativeCallHost.vue';
 import KtAlarm from './components/KtAlarm.vue';
 
@@ -55,10 +54,9 @@ watch(
        app, incl. pre-auth pages). env() insets are 0 on desktop, so it's inert. -->
   <div class="app-safe h-full">
     <!-- Native shell: the vault wall gates everything; in the browser the
-         gate slots straight through and the migration prompt stays hidden. -->
+         gate slots straight through. -->
     <NativeGate>
       <RouterView />
-      <MigrationPrompt />
       <!-- Global v8 voice call panel (native shell; inert in the browser). -->
       <NativeCallHost />
       <!-- Key-transparency hard-alarm banner (native shell; self-audit on connect). -->
