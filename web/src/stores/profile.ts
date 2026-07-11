@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import type { ProfileData, SealedProfileKey } from '@notes/shared';
 import { api } from '../lib/api';
+import { isNative, settingsGet, settingsSet } from '../lib/native';
 import { ub64 } from '../lib/b64';
 import {
   decryptProfile,
@@ -49,6 +50,18 @@ export const useProfileStore = defineStore('profile', () => {
 
   /** Load my profile info + (if set) decrypt my own blob via the MK-wrapped key. */
   async function load(): Promise<void> {
+    if (isNative) {
+      // Native identity: the handle is the local `identity.handle` setting
+      // (assigned by the relay at onboarding); the display name is the local
+      // `profile.displayName` setting (chosen at signup). No legacy /api/profile*
+      // calls here — they'd resolve to the asset server. E2EE distribution of the
+      // display name to friends lands with the friends cutover.
+      myHandle.value = (await settingsGet('identity.handle')) ?? '';
+      const dn = await settingsGet('profile.displayName');
+      if (dn) myData.value = { ...myData.value, displayName: dn };
+      loaded.value = true;
+      return;
+    }
     const info = await api.profileGet();
     myHandle.value = info.handle;
     myNameColor.value = info.nameColor;
@@ -112,6 +125,13 @@ export const useProfileStore = defineStore('profile', () => {
    *  keep; prefer `updateProfileData` to avoid accidentally dropping one. */
   async function save(data: ProfileData): Promise<void> {
     myData.value = data;
+    if (isNative) {
+      // Native shell: persist the display name to the local `profile.displayName`
+      // setting (read back by `load`). Bio/avatar + E2EE distribution to friends
+      // land with the friends cutover — for now they stay in memory this session.
+      await settingsSet('profile.displayName', data.displayName?.trim() ?? '');
+      return;
+    }
     if (!profileKey) profileKey = generateProfileKey();
     await persist(epoch.value);
   }

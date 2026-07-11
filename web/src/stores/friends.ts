@@ -2,6 +2,15 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type { Friend, FriendInvite, FriendRequest, ServerFrame } from '@notes/shared';
 import { api } from '../lib/api';
+import {
+  isNative,
+  friendsList,
+  friendRemove,
+  relayRegisterVerifier,
+  relayStatus,
+  settingsGet,
+} from '../lib/native';
+import { createFriendInvite, redeemFriendInvite } from '../lib/nativeInvites';
 import { useProfileStore } from './profile';
 
 export const useFriendsStore = defineStore('friends', () => {
@@ -10,6 +19,21 @@ export const useFriendsStore = defineStore('friends', () => {
   const invites = ref<FriendInvite[]>([]);
 
   async function load(): Promise<void> {
+    if (isNative) {
+      // v8 D4b: friends live in the local store (recorded by the drain when the
+      // friend-accept/confirm handshake completes). There are no server-held
+      // requests or a persisted invite list — the handshake auto-friends, and an
+      // invite is a self-describing string you generate + share.
+      friends.value = (await friendsList()).map((s) => ({
+        userId: s.contact_id,
+        displayName: s.display_name?.trim() || s.handle,
+        handle: s.handle,
+        publicKey: null,
+        online: false,
+      }));
+      requests.value = [];
+      return;
+    }
     const [f, r, i] = await Promise.all([api.friends(), api.friendRequests(), api.friendInvites()]);
     friends.value = f;
     requests.value = r;
@@ -30,18 +54,50 @@ export const useFriendsStore = defineStore('friends', () => {
   }
 
   async function createInvite(): Promise<FriendInvite> {
+    if (isNative) {
+      const status = await relayStatus();
+      if (!status.connected || !status.base_url || !status.relay_fp) {
+        throw new Error('not connected to a relay');
+      }
+      const handle = (await settingsGet('identity.handle')) ?? '';
+      const { invite, expiresAt } = await createFriendInvite({
+        handle,
+        relayUrl: status.base_url,
+        relayFp: status.relay_fp,
+      });
+      // The self-describing invite string IS the shareable code (embeds relay +
+      // my pinned keys + the one-time token); it isn't persisted server-side.
+      const fi: FriendInvite = { id: crypto.randomUUID(), token: invite, createdAt: Date.now(), expiresAt };
+      invites.value = [fi, ...invites.value];
+      return fi;
+    }
     const invite = await api.friendInviteCreate();
     invites.value = [invite, ...invites.value];
     return invite;
   }
 
   async function deleteInvite(id: string): Promise<void> {
+    if (isNative) {
+      // Nothing server-side to revoke beyond the one-time token (it expires); just
+      // drop it from the local list.
+      invites.value = invites.value.filter((x) => x.id !== id);
+      return;
+    }
     await api.friendInviteDelete(id);
     invites.value = invites.value.filter((x) => x.id !== id);
   }
 
-  /** Redeem a friend invite token; reloads requests to reflect the new state. */
+  /** Redeem a friend invite. Native: the "token" is the pasted self-describing
+   *  invite string; sealing a friend-accept kicks off the D4b handshake, and the
+   *  friendship lands once the inviter's confirm drains (so we reload). */
   async function redeem(token: string): Promise<void> {
+    if (isNative) {
+      const handle = (await settingsGet('identity.handle')) ?? '';
+      const deliveryToken = await relayRegisterVerifier();
+      await redeemFriendInvite(token, { handle, deliveryToken });
+      await load();
+      return;
+    }
     await api.friendRedeem(token);
     requests.value = await api.friendRequests();
   }
@@ -62,6 +118,11 @@ export const useFriendsStore = defineStore('friends', () => {
   }
 
   async function unfriend(userId: string): Promise<void> {
+    if (isNative) {
+      await friendRemove(userId); // native store drops the friend flag + addressing
+      friends.value = friends.value.filter((x) => x.userId !== userId);
+      return;
+    }
     await api.unfriend(userId);
     friends.value = friends.value.filter((x) => x.userId !== userId);
     // Rotate my profile key so the removed friend can't read future updates.

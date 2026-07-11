@@ -12,6 +12,7 @@ import SidebarTooltip from './SidebarTooltip.vue';
 import ActiveBar from './ActiveBar.vue';
 import { conversationInitial, conversationTitle, dmPeerId } from '../lib/convName';
 import { isNative } from '../lib/native';
+import { lockVault } from '../lib/nativeVault';
 import IconChatDots from '~icons/mynaui/chat-dots';
 import { chatPane, closeNote, isMobile, noteOpen, showChannels } from '../lib/mobileNav';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
@@ -33,6 +34,13 @@ async function logout() {
   await session.logout();
   notes.reset();
   router.push('/login');
+}
+
+/** Native "sign out" = re-lock the vault (the local-first equivalent; there's no
+ *  server session to end). NativeGate then shows the unlock wall. */
+async function lockNow() {
+  if (isNative) await lockVault();
+  else session.lock();
 }
 
 const STORAGE_KEY = 'sidebar-expanded';
@@ -223,12 +231,12 @@ const navClass = computed(() => {
             <span v-if="expanded" class="truncate">Collapse</span>
           </button>
         </SidebarTooltip>
-        <SidebarTooltip v-if="session.unlocked" label="Lock now" :disabled="expanded">
+        <SidebarTooltip v-if="isNative || session.unlocked" label="Lock now" :disabled="expanded">
           <button
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
             aria-label="Lock now"
-            @click="session.lock()"
+            @click="lockNow"
           >
             <IconLock class="h-5 w-5 shrink-0" />
             <span v-if="expanded" class="truncate">Lock</span>
@@ -268,7 +276,7 @@ const navClass = computed(() => {
             <span v-if="expanded" class="truncate">Settings</span>
           </RouterLink>
         </SidebarTooltip>
-        <SidebarTooltip label="Sign out" :disabled="expanded">
+        <SidebarTooltip v-if="!isNative" label="Sign out" :disabled="expanded">
           <button
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"

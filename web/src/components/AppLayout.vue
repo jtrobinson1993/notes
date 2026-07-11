@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useSessionStore } from '../stores/session';
 import { isMobile } from '../lib/mobileNav';
+import { isNative } from '../lib/native';
 import AppSidebar from './AppSidebar.vue';
 import MobileCallBar from './MobileCallBar.vue';
 import IncomingCallModal from './IncomingCallModal.vue';
 
 const session = useSessionStore();
+// In the native shell the vault gate (NativeGate) owns lock/unlock and the app
+// only renders once it's unlocked, so the legacy passkey/session concepts here
+// ("logged in", "unlocked") don't apply — treat the app as authed + unlocked.
+const authed = computed(() => isNative || session.loggedIn);
+const showLock = computed(() => !isNative && !session.unlocked);
 const unlockError = ref('');
 const unlocking = ref(false);
 
@@ -47,12 +53,12 @@ async function unlockPassword() {
 <template>
   <div class="flex h-full flex-col overflow-hidden">
     <!-- Mobile: in-call controls as a top bar; the app shrinks below it. -->
-    <MobileCallBar v-if="session.loggedIn && isMobile" />
+    <MobileCallBar v-if="authed && isMobile" />
     <div class="flex min-h-0 grow">
-    <AppSidebar v-if="session.loggedIn" />
+    <AppSidebar v-if="authed" />
     <main class="relative min-h-0 min-w-0 grow overflow-y-auto">
       <div
-        v-if="!session.unlocked"
+        v-if="showLock"
         class="absolute inset-0 z-nav flex flex-col items-center justify-center gap-4 bg-zinc-50/95 p-6 backdrop-blur dark:bg-zinc-950/95"
       >
         <p class="text-lg font-semibold">Locked</p>
@@ -113,6 +119,6 @@ async function unlockPassword() {
       <slot />
     </main>
     </div>
-    <IncomingCallModal v-if="session.loggedIn" />
+    <IncomingCallModal v-if="authed" />
   </div>
 </template>

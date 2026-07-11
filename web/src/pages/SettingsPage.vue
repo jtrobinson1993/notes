@@ -272,6 +272,7 @@ useQuery({
   key: ['profile-data'],
   query: async () => {
     if (!profile.loaded) await profile.load();
+    handle.value = profile.myHandle;
     displayName.value = profile.myData.displayName ?? '';
     bio.value = profile.myData.bio ?? '';
     avatar.value = profile.myData.avatar;
@@ -620,13 +621,15 @@ async function importFiles(event: Event) {
             </div>
             <span class="shrink-0 rounded-lg bg-zinc-100 px-2.5 py-1 font-mono text-sm dark:bg-zinc-800">{{ handle }}</span>
           </div>
-          <!-- The handle is also the username for password sign-in, so changing it
-               changes how a password account logs in. -->
-          <p class="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+          <!-- The handle is also the username for password sign-in (legacy web
+               only) — the native app signs in with the local vault, not a handle. -->
+          <p v-if="!isNative" class="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
             <IconDanger class="mt-px h-3.5 w-3.5 shrink-0" />
             <span>This is also your <strong>username for password sign-in</strong>. If you change it, log in with the new handle from now on (passkey sign-in is unaffected).</span>
           </p>
-          <div class="mt-3 flex flex-wrap items-center gap-2">
+          <!-- Handle change rides the legacy password/passkey reauth flow; the
+               native handle is chosen at signup (a native change flow is TODO). -->
+          <div v-if="!isNative" class="mt-3 flex flex-wrap items-center gap-2">
             <button
               type="button"
               :disabled="handleBusy"
