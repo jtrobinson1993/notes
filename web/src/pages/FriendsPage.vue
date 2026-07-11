@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import { useChatStore } from '../stores/chat';
 import { useFriendsStore } from '../stores/friends';
+import { isNative } from '../lib/native';
 
 const friends = useFriendsStore();
 const chat = useChatStore();
@@ -80,6 +81,12 @@ async function decline(id: string) {
 const dmError = ref('');
 async function openDm(userId: string) {
   dmError.value = '';
+  // Native: DMs live on the self-contained native chat surface (/dm); open it
+  // with the friend preselected. The legacy chat store (below) is browser-only.
+  if (isNative) {
+    router.push({ path: '/dm', query: { open: userId } });
+    return;
+  }
   const friend = friends.friends.find((f) => f.userId === userId);
   if (!friend) return;
   try {

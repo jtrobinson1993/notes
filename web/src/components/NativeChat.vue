@@ -5,6 +5,7 @@
 // Message actions (edit/delete/react) are DM-only for now (group edit/react
 // fan-out is a follow-up); groups support create / send / receive / add-member.
 import { onMounted, onUnmounted, ref } from 'vue';
+import { useRoute } from 'vue-router';
 import IconAdd from '~icons/mynaui/message-plus';
 import IconSend from '~icons/mynaui/send-solid';
 import IconBack from '~icons/mynaui/chevron-left';
@@ -255,9 +256,16 @@ async function addMember(contactId: string): Promise<void> {
   }
 }
 
+const route = useRoute();
 let unsub: (() => void) | null = null;
-onMounted(() => {
-  void refreshLists();
+onMounted(async () => {
+  await refreshLists();
+  // Deep link from the Friends page ("Message"): auto-open that friend's DM.
+  const openId = route?.query?.open;
+  if (typeof openId === 'string') {
+    const dm = dms.value.find((d) => d.contactId === openId);
+    if (dm) await open({ kind: 'dm', id: dm.contactId, name: dm.displayName || dm.handle, conversationId: dm.conversationId });
+  }
   unsub = onMailIngested(() => {
     void loadMessages();
     void refreshLists();
