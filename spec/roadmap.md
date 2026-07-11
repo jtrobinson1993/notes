@@ -914,6 +914,41 @@ the native app escapes). Decided shape:
     disabled, dead types, and stale spec sections. (The top-layer migration code —
     `migrate.ts`, `MigrationPrompt.vue`, the migration IPC commands, and
     `spec/migration.md` — was already deleted when the greenfield decision landed.)
+  - **Distribution & signing — phased, unsigned-first (DECIDED).** For the
+    initial 4-user testing, ship **unsigned / free** and accept the friction; buy
+    signing identities only when going wider. Recall: on **desktop** signing only
+    removes scary warnings (you can run unsigned); on **mobile** signing is
+    **mandatory to install at all**. Key fact: **one Apple Developer Program
+    ($99/yr) covers both macOS notarization *and* iOS.** Phasing:
+    - **Phase 1 — local testing, all unsigned/free:**
+      - **Android — sideload over USB-C (primary quick-test path).** Build the
+        Tauri Android target; a **debug build is auto-signed with a free debug
+        key** (a release build uses your own free `keytool` keystore — either
+        installs). Push it to the phone via **`adb install app.apk`** over the
+        USB-C cable, or copy the APK across and tap it with **"install unknown
+        apps"** enabled. No Play Store, no CA, no cost. ⚠ If you use a release
+        keystore, **keep it safe** — updates must be signed with the same key or
+        friends have to reinstall.
+      - **macOS — unsigned, accept Gatekeeper.** First launch: **right-click →
+        Open** (or System Settings → Privacy → "Open Anyway", or
+        `xattr -dr com.apple.quarantine App.app`). Free.
+      - **Windows — unsigned, accept SmartScreen** ("More info → Run anyway").
+        Free.
+      - **Linux — unsigned AppImage/.deb**, run directly. Free.
+    - **Phase 2 — desktop signing (only when going past the friend group):**
+      macOS notarization (Apple Dev $99), Windows **Azure Trusted Signing**
+      (~$10/mo) or an OV/EV cert, Linux GPG signature + SHA-256 checksums.
+    - **Phase 3 — iOS LAST (paid; can't be done free for a group).** Once
+      everything else works unsigned, buy the **Apple Developer Program ($99/yr,
+      also unlocks macOS notarization)** and test iOS then. iOS **must** be signed
+      even to install on a device — a free Apple ID only yields **7-day
+      self-signed dev builds for *your own* device via Xcode**, not viable for
+      friends — so distribute via **Ad Hoc** (register each friend's device UDID,
+      ≤100/yr) or **TestFlight**.
+    - *Note: the Tauri **mobile shell (iOS + Android) isn't built yet** — it's
+      still to-do (mobile init + the APNs/FCM push path land with it). This plan
+      applies once mobile targets exist; **launch is desktop-first**, so all
+      iOS/Android signing can be deferred until mobile is on the table.*
 
 #### Key hierarchy, revocation & groups
 
