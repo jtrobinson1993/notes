@@ -2,15 +2,8 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type { Friend, FriendInvite, FriendRequest, ServerFrame } from '@notes/shared';
 import { api } from '../lib/api';
-import {
-  isNative,
-  friendsList,
-  friendRemove,
-  relayRegisterVerifier,
-  relayStatus,
-  settingsGet,
-} from '../lib/native';
-import { createFriendInvite, redeemFriendInvite } from '../lib/nativeInvites';
+import { isNative, friendsList, friendRemove } from '../lib/native';
+import { createInvite as nativeCreateInvite, redeemInvite as nativeRedeemInvite } from '../lib/nativeFriends';
 import { useProfileStore } from './profile';
 
 export const useFriendsStore = defineStore('friends', () => {
@@ -55,18 +48,10 @@ export const useFriendsStore = defineStore('friends', () => {
 
   async function createInvite(): Promise<FriendInvite> {
     if (isNative) {
-      const status = await relayStatus();
-      if (!status.connected || !status.base_url || !status.relay_fp) {
-        throw new Error('not connected to a relay');
-      }
-      const handle = (await settingsGet('identity.handle')) ?? '';
-      const { invite, expiresAt } = await createFriendInvite({
-        handle,
-        relayUrl: status.base_url,
-        relayFp: status.relay_fp,
-      });
-      // The self-describing invite string IS the shareable code (embeds relay +
-      // my pinned keys + the one-time token); it isn't persisted server-side.
+      // Same D4b orchestration the DM panel uses (nativeFriends). The
+      // self-describing invite string IS the shareable code (embeds relay + my
+      // pinned keys + the one-time token); it isn't persisted server-side.
+      const { invite, expiresAt } = await nativeCreateInvite();
       const fi: FriendInvite = { id: crypto.randomUUID(), token: invite, createdAt: Date.now(), expiresAt };
       invites.value = [fi, ...invites.value];
       return fi;
@@ -92,9 +77,7 @@ export const useFriendsStore = defineStore('friends', () => {
    *  friendship lands once the inviter's confirm drains (so we reload). */
   async function redeem(token: string): Promise<void> {
     if (isNative) {
-      const handle = (await settingsGet('identity.handle')) ?? '';
-      const deliveryToken = await relayRegisterVerifier();
-      await redeemFriendInvite(token, { handle, deliveryToken });
+      await nativeRedeemInvite(token); // token = the pasted self-describing invite
       await load();
       return;
     }
