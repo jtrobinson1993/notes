@@ -31,6 +31,7 @@ export function makeConfig(dataDir: string, overrides: Partial<Config> = {}): Co
     testAuth: false, // off by default; a test opts in via overrides
     akdSidecarUrl: null,
     akdSidecarToken: null,
+    registrationMode: 'invite', // secure default; a test opts into 'public'
     ...overrides,
   };
 }

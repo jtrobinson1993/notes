@@ -15,7 +15,8 @@ import type { VoiceSfu } from '../voiceSfu.js';
 import type { KtSidecar } from '../ktSidecar.js';
 import type { Push } from '../push.js';
 import { requireAuth } from '../session.js';
-import { newToken } from '../util.js';
+import { newId, newToken } from '../util.js';
+import { isValidHandle } from '../handles.js';
 import { directoryRoot, inclusionProof, leafHash } from '../ktMerkle.js';
 import {
   fingerprintB64url,
@@ -154,6 +155,11 @@ export function relayRoutes(
     identityFingerprint: relayFp,
     identityPubKey: identity.pubkey,
     apiVersion: 1,
+    // Onboarding needs to know whether registration requires an invite. Once the
+    // relay has an admin, 'invite' mode means new accounts need a minted invite;
+    // 'public' means anyone may register. (A brand-new relay reports its mode but
+    // still lets the first account through regardless — see /register.)
+    registrationMode: config?.registrationMode ?? 'invite',
   }));
 
   // ---- key directory + transparency roots (D5) ----
@@ -275,6 +281,93 @@ export function relayRoutes(
   app.get('/api/relay/kt/roots', rootsHandler);
   // Third-party auditor surface (key-transparency.md).
   app.get('/.well-known/accord/kt-roots', rootsHandler);
+
+  // ---- account registration (v8 native bootstrap) ----
+
+  // The signup surface: create an account and enroll its first device in one
+  // unauthenticated call, returning a device token so the client is immediately
+  // authed (no separate challenge round-trip). Gated by `registrationMode`:
+  //   • public — anyone may register;
+  //   • invite — a valid invite is always required (there is NO admin/first-user
+  //     bypass; the relay is operator-controlled). Two invite kinds are accepted:
+  //       – an operator **registration invite** (CLI-minted, no inviter) — how the
+  //         operator seeds a fresh relay, incl. their own first account;
+  //       – a user **friend invite** (D4b) — also establishes the friendship: we
+  //         stash a one-shot so the account's first authed call delivers the
+  //         friend-accept ("invite your friends" flow).
+  // The matched invite is consumed here (the gate).
+  const REGISTER_RATE = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
+  app.post('/api/relay/register', REGISTER_RATE, async (request, reply) => {
+    const b = request.body as { pubKey?: string; name?: string; inviteToken?: string; handle?: string } | null;
+    const raw = b?.pubKey ? rawKey(b.pubKey) : null;
+    if (!raw) return reply.code(400).send({ error: 'pubKey must be a base64 32-byte Ed25519 key' });
+    // Idempotency / re-run guard: if this exact device key is already enrolled,
+    // don't mint a duplicate account — the client should authenticate instead.
+    if (db.getRelayDeviceByPubkey(b!.pubKey!)) {
+      return reply.code(409).send({ error: 'device already registered — sign in instead' });
+    }
+
+    const mode = config?.registrationMode ?? 'invite';
+    let inviterUserId: string | undefined;
+    if (mode === 'invite') {
+      if (!b!.inviteToken || typeof b!.inviteToken !== 'string') {
+        return reply.code(403).send({ error: 'an invite is required to register on this relay' });
+      }
+      const tokenHash = createHash('sha256').update(b!.inviteToken).digest('base64url');
+      // Accept a user friend-invite (sets inviterUserId → friendship) OR an
+      // operator registration invite (pure signup grant). Try the friend invite
+      // first; only if it doesn't match do we consume a registration invite.
+      inviterUserId = db.redeemRelayInvite(tokenHash, Date.now());
+      if (!inviterUserId && !db.redeemRegistrationInvite(tokenHash, Date.now())) {
+        // Uniform 401 (unknown/expired/used are indistinguishable) — the token is
+        // high-entropy, so this leaks nothing about real accounts or invites.
+        return reply.code(401).send({ error: 'invalid or expired invite' });
+      }
+    }
+
+    // The client offers a picker of generated Word#1234 candidates and sends the
+    // chosen one; validate it's a real generated handle (never trust the input),
+    // then claim it. createUser reissues a fresh handle if it's somehow taken.
+    const chosen = typeof b?.handle === 'string' && isValidHandle(b.handle) ? b.handle : undefined;
+    const userId = newId();
+    const handle = db.createUser({ id: userId, role: 'member', handle: chosen });
+    const deviceId = fingerprintB64url(raw);
+    const enrolled = db.enrollRelayDevice(userId, deviceId, b!.pubKey!, b?.name ?? null);
+    if (!enrolled) {
+      // Near-impossible after the pubkey pre-check above (fingerprint derives
+      // from the key), but never leave a keyless orphan account behind.
+      db.deleteUser(userId);
+      return reply.code(409).send({ error: 'device key already enrolled to another account' });
+    }
+    if (inviterUserId) db.setPendingRegisterFriend(userId, inviterUserId);
+
+    return { userId, deviceId, handle, ...issueDeviceToken(deviceId) };
+  });
+
+  // The account's first authed leg of the D4b handshake: deliver the sealed
+  // friend-accept to whoever invited us (stashed at registration). One-shot —
+  // the pending record is claimed and deleted, so this can't be replayed to spam
+  // the inviter. No pending inviter (public signup, or already claimed) → no-op.
+  app.post('/api/relay/register/friend-accept', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const b = request.body as { envelope?: string } | null;
+    if (!b?.envelope || typeof b.envelope !== 'string') {
+      return reply.code(400).send({ error: 'envelope required' });
+    }
+    if (b.envelope.length > MAX_ENVELOPE_B64) {
+      return reply.code(413).send({ error: 'envelope too large' });
+    }
+    const inviterUserId = db.takePendingRegisterFriend(device.userId);
+    if (!inviterUserId) return { delivered: false };
+    const devices = db.activeRelayDeviceIds(inviterUserId);
+    const relayTs = stampTs();
+    if (devices.length) {
+      db.enqueueRelayEnvelope(devices, relayTs, Buffer.from(b.envelope, 'base64'));
+      live?.notifyDevices(devices);
+    }
+    return { delivered: true, relayTs };
+  });
 
   // Enrollment rides the legacy session for now — exactly the migration
   // bootstrap ("sign in with existing credentials → device key enrolled");

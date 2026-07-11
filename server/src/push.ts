@@ -4,7 +4,14 @@ import webpush from 'web-push';
 import type { PushPayload } from '@notes/shared';
 import type { Config } from './config.js';
 import type { DB } from './db.js';
-import type { Realtime } from './realtime.js';
+
+/** Minimal presence check the pusher needs — "is this user reachable another
+ *  way, so skip the push?" The legacy monolith passes its realtime hub; the
+ *  relay-only app passes a relayLive-backed (or always-offline) adapter. Keeping
+ *  this structural decouples push from the legacy realtime module. */
+export interface Presence {
+  isOnline(userId: string): boolean;
+}
 
 // Web Push delivery. The server is crypto-oblivious, so a push NEVER carries
 // message content — only a routing hint ({ type:'message', conversationId }).
@@ -76,7 +83,7 @@ function resolveVapidKeys(config: Config): { publicKey: string; privateKey: stri
   return keys;
 }
 
-export function createPush(db: DB, config: Config, realtime: Realtime): Push {
+export function createPush(db: DB, config: Config, presence: Presence): Push {
   const keys = resolveVapidKeys(config);
   if (!keys) return NOOP;
 
@@ -90,7 +97,7 @@ export function createPush(db: DB, config: Config, realtime: Realtime): Push {
     const body = JSON.stringify(payload);
     for (const uid of recipientIds) {
       if (uid === actorId) continue;
-      if (realtime.isOnline(uid)) continue;
+      if (presence.isOnline(uid)) continue;
       for (const sub of db.listPushSubscriptions(uid)) {
         webpush
           .sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, body)

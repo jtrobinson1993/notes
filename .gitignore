@@ -20,3 +20,7 @@ test-results/
 
 # Throwaway WebKit-harness render output (screenshots + parity JSON)
 web/dev/out/
+
+# v8 relay runtime data (local dev)
+relay-data/
+data-v8-test/

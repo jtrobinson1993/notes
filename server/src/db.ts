@@ -494,6 +494,27 @@ CREATE TABLE IF NOT EXISTS relay_invites (
   used INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
+-- Operator registration invites: CLI-minted signup grants with NO inviter (as
+-- opposed to relay_invites, which are user-minted D4b friend invites that also
+-- establish a friendship). The relay operator mints these to let people onto an
+-- invite-only relay; the register endpoint accepts either kind. Store only
+-- hash(token) — the raw token is the operator-held capability.
+CREATE TABLE IF NOT EXISTS relay_registration_invites (
+  token_hash TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+-- One-shot: when a new account registers via an invite, we stash who invited
+-- them so the account's *first authenticated* call can deliver a sealed
+-- friend-accept back to the inviter (the invite capability is already consumed
+-- by registration, so this is the follow-up leg of the D4b handshake). Deleted
+-- as soon as it's claimed; a fresh account has at most one pending inviter.
+CREATE TABLE IF NOT EXISTS relay_register_pending_friend (
+  new_user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  inviter_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS relay_blobs (
   blob_id TEXT PRIMARY KEY,
   recipient_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -760,6 +781,43 @@ CREATE TABLE IF NOT EXISTS relay_group_blobs (
           .changes > 0
       );
     },
+    /** Operator (CLI) revoke by device id alone — no owning-user scope. */
+    revokeRelayDeviceById(deviceId: string): boolean {
+      return db.prepare('UPDATE relay_devices SET revoked = 1 WHERE id = ?').run(deviceId).changes > 0;
+    },
+    /** Operator (CLI) inventory: every enrolled device with its owner + handle. */
+    listAllRelayDevices(): {
+      id: string;
+      userId: string;
+      handle: string | null;
+      name: string | null;
+      createdAt: number;
+      revoked: boolean;
+    }[] {
+      return (
+        db
+          .prepare(
+            `SELECT d.id, d.user_id, d.name, d.created_at, d.revoked, u.handle
+             FROM relay_devices d LEFT JOIN users u ON u.id = d.user_id
+             ORDER BY d.created_at`,
+          )
+          .all() as {
+          id: string;
+          user_id: string;
+          name: string | null;
+          created_at: number;
+          revoked: number;
+          handle: string | null;
+        }[]
+      ).map((r) => ({
+        id: r.id,
+        userId: r.user_id,
+        handle: r.handle,
+        name: r.name,
+        createdAt: r.created_at,
+        revoked: r.revoked !== 0,
+      }));
+    },
     getRelayDeviceById(id: string): { id: string; userId: string; revoked: boolean } | undefined {
       const r = db.prepare('SELECT id, user_id, revoked FROM relay_devices WHERE id = ?').get(id) as
         | { id: string; user_id: string; revoked: number }
@@ -857,6 +915,58 @@ CREATE TABLE IF NOT EXISTS relay_group_blobs (
         return r.inviter_user_id;
       });
       return claim();
+    },
+    /** Operator registration invite (CLI-minted; no inviter): store hash(token). */
+    mintRegistrationInvite(tokenHash: string, expiresAt: number): void {
+      db.prepare(
+        'INSERT OR REPLACE INTO relay_registration_invites (token_hash, expires_at, used, created_at) VALUES (?, ?, 0, ?)',
+      ).run(tokenHash, expiresAt, Date.now());
+    },
+    /** One-time claim of an operator registration invite: true iff it was unused
+     *  and unexpired (and is now marked used). Races resolve to one winner. */
+    redeemRegistrationInvite(tokenHash: string, now: number): boolean {
+      const claim = db.transaction((): boolean => {
+        const r = db
+          .prepare('SELECT expires_at, used FROM relay_registration_invites WHERE token_hash = ?')
+          .get(tokenHash) as { expires_at: number; used: number } | undefined;
+        if (!r || r.used || r.expires_at < now) return false;
+        db.prepare('UPDATE relay_registration_invites SET used = 1 WHERE token_hash = ?').run(tokenHash);
+        return true;
+      });
+      return claim();
+    },
+    /** Non-consuming validity check for an operator registration invite. */
+    getRegistrationInvite(tokenHash: string): { expiresAt: number; used: number } | undefined {
+      const r = db
+        .prepare('SELECT expires_at, used FROM relay_registration_invites WHERE token_hash = ?')
+        .get(tokenHash) as { expires_at: number; used: number } | undefined;
+      return r ? { expiresAt: r.expires_at, used: r.used } : undefined;
+    },
+    /** Housekeeping: drop expired/used registration invites past a grace window. */
+    pruneRegistrationInvites(maxAgeMs: number): number {
+      return db
+        .prepare('DELETE FROM relay_registration_invites WHERE expires_at < ? OR (used = 1 AND created_at < ?)')
+        .run(Date.now(), Date.now() - maxAgeMs).changes;
+    },
+    /** Record that `newUserId` registered via an invite minted by `inviterUserId`
+     *  so the account's first authed call can deliver the friend-accept (D4b). */
+    setPendingRegisterFriend(newUserId: string, inviterUserId: string): void {
+      db.prepare(
+        'INSERT OR REPLACE INTO relay_register_pending_friend (new_user_id, inviter_user_id, created_at) VALUES (?, ?, ?)',
+      ).run(newUserId, inviterUserId, Date.now());
+    },
+    /** One-shot claim: return + delete the inviter recorded for `newUserId`, or
+     *  undefined if none (already claimed, or a non-invite/public signup). */
+    takePendingRegisterFriend(newUserId: string): string | undefined {
+      const take = db.transaction((): string | undefined => {
+        const r = db
+          .prepare('SELECT inviter_user_id FROM relay_register_pending_friend WHERE new_user_id = ?')
+          .get(newUserId) as { inviter_user_id: string } | undefined;
+        if (!r) return undefined;
+        db.prepare('DELETE FROM relay_register_pending_friend WHERE new_user_id = ?').run(newUserId);
+        return r.inviter_user_id;
+      });
+      return take();
     },
     /** Housekeeping: drop expired/used invites past a grace window. */
     pruneRelayInvites(maxAgeMs: number): number {

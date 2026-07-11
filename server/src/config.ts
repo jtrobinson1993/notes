@@ -27,6 +27,14 @@ export interface Config {
    *  bearer the sidecar checks. */
   akdSidecarUrl: string | null;
   akdSidecarToken: string | null;
+  /** Who may create an account on this relay (`POST /api/relay/register`):
+   *  - `'public'` — open registration, anyone can create an account.
+   *  - `'invite'` — closed: an existing user must mint an invite for each new
+   *    account (the greenfield friend-graph bootstrap, mirroring the legacy
+   *    admin-invite model). The very first account (userCount 0) is always
+   *    allowed and becomes the admin, so a fresh relay can be claimed.
+   *  Defaults to `'invite'` — a relay is closed unless the operator opts it open. */
+  registrationMode: 'public' | 'invite';
 }
 
 export interface VoiceConfig {
@@ -71,5 +79,8 @@ export function loadConfig(): Config {
     testAuth: process.env.E2E_TEST_AUTH === '1' && process.env.NODE_ENV !== 'production',
     akdSidecarUrl: process.env.AKD_SIDECAR_URL?.trim() || null,
     akdSidecarToken: process.env.AKD_SIDECAR_TOKEN?.trim() || null,
+    // Secure default: closed to open registration. Only the exact string
+    // 'public' opens it; anything else (incl. unset/typo) stays invite-only.
+    registrationMode: process.env.RELAY_REGISTRATION_MODE === 'public' ? 'public' : 'invite',
   };
 }
