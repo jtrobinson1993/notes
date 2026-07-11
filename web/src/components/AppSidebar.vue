@@ -118,8 +118,9 @@ const navClass = computed(() => {
     :class="navClass"
   >
     <TooltipProvider :delay-duration="0" :skip-delay-duration="0">
-      <!-- Top: new chat -->
-      <div class="flex flex-col gap-1 p-2">
+      <!-- Top: new chat (legacy group chat; native DMs/groups live at /dm, opened
+           from the Direct messages icon below). -->
+      <div v-if="!isNative" class="flex flex-col gap-1 p-2">
         <SidebarTooltip label="New chat" :disabled="expanded">
           <button
             class="flex items-center gap-2 rounded-lg bg-blue-600 px-2 py-2 text-sm font-medium text-white hover:bg-blue-700"
@@ -132,7 +133,7 @@ const navClass = computed(() => {
           </button>
         </SidebarTooltip>
       </div>
-      <NewChatModal v-model:open="newChatOpen" />
+      <NewChatModal v-if="!isNative" v-model:open="newChatOpen" />
 
       <!-- Conversations + Notes -->
       <div class="flex min-h-0 grow flex-col gap-1 overflow-y-auto">
