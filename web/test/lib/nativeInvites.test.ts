@@ -6,6 +6,7 @@ const native = vi.hoisted(() => ({
   relayMyDirectoryKeys: vi.fn(),
   envelopeSeal: vi.fn(),
   settingsSet: vi.fn().mockResolvedValue(undefined),
+  settingsGet: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('../../src/lib/native', () => native);
 

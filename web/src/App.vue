@@ -2,8 +2,11 @@
 import { watch } from 'vue';
 import { useSessionStore } from './stores/session';
 import { useNotesStore } from './stores/notes';
+import { useProfileStore } from './stores/profile';
 import { startChat, stopChat, useChatStore } from './stores/chat';
 import { useVoiceStore } from './stores/voice';
+import { isNative } from './lib/native';
+import { gateState } from './lib/nativeVault';
 import NotificationOptIn from './components/NotificationOptIn.vue';
 import NativeGate from './components/NativeGate.vue';
 import NativeCallHost from './components/NativeCallHost.vue';
@@ -11,8 +14,21 @@ import KtAlarm from './components/KtAlarm.vue';
 
 const session = useSessionStore();
 const notes = useNotesStore();
+const profile = useProfileStore();
 const voice = useVoiceStore();
 const chat = useChatStore();
+
+// Native: the vault gate (not the legacy session) is the "signed in + unlocked"
+// signal. When it opens, load the local identity so the chrome shows the handle.
+if (isNative) {
+  watch(
+    () => gateState.value,
+    (s) => {
+      if (s === 'ready') void profile.load();
+    },
+    { immediate: true },
+  );
+}
 
 // Surface total unread in the browser tab title and (when installed) the PWA
 // app-icon badge, so new messages are visible without the tab focused.

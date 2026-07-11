@@ -59,7 +59,11 @@ describe('idle re-lock (D4 layer A)', () => {
   });
 
   it('default policy (stay unlocked) never arms a timer', async () => {
-    native.settingsGet.mockResolvedValue(null);
+    // Onboarded (handle + relay URL present) so markUnlocked opens to 'ready';
+    // relock.policy is absent → defaults to 'stay', so no timer arms.
+    native.settingsGet.mockImplementation(async (key: string) =>
+      key === 'identity.handle' ? 'Me#0001' : key === 'relay.url' ? 'https://r' : null,
+    );
     gateState.value = 'ready';
     markUnlocked();
     await flushMicro();

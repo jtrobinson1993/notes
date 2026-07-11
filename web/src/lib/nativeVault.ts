@@ -13,9 +13,21 @@ import { ref } from 'vue';
 import { isNative, settingsGet, vaultLock, vaultStatus, vaultUnlockKeychain } from './native';
 import { reconnectRelay, stopRelayDelivery } from './nativeRelay';
 
-export type GateState = 'checking' | 'setup' | 'recovery' | 'locked' | 'ready';
+export type GateState = 'checking' | 'setup' | 'recovery' | 'locked' | 'onboarding' | 'ready';
 
 export const gateState = ref<GateState>(isNative ? 'checking' : 'ready');
+
+/** Device settings that together mark the account as onboarded: a relay to talk
+ *  to and the handle it assigned us. Absent on a freshly-created vault. */
+const HANDLE_KEY = 'identity.handle';
+const RELAY_URL_KEY = 'relay.url';
+
+/** True once this device has an account on a relay (handle + relay URL stored).
+ *  Until then, an unlocked vault still needs the onboarding step. */
+async function isOnboarded(): Promise<boolean> {
+  const [handle, url] = await Promise.all([settingsGet(HANDLE_KEY), settingsGet(RELAY_URL_KEY)]);
+  return !!handle && !!url;
+}
 
 /** Initial status probe + silent keychain unlock (D3 primary path). */
 export async function initGate(): Promise<void> {
@@ -39,8 +51,27 @@ export async function initGate(): Promise<void> {
 }
 
 /** Call after any successful unlock/create: opens the gate + arms re-lock, and
- *  (native) reconnects the relay so live delivery resumes after a cold start. */
+ *  (native) reconnects the relay so live delivery resumes after a cold start.
+ *  A native vault with no relay account yet routes to the onboarding step
+ *  instead of straight to 'ready'. */
 export function markUnlocked(): void {
+  void openGate();
+}
+
+async function openGate(): Promise<void> {
+  if (isNative && !(await isOnboarded())) {
+    gateState.value = 'onboarding';
+    return;
+  }
+  gateState.value = 'ready';
+  void applyRelockPolicy();
+  void reconnectRelay();
+}
+
+/** Call after onboarding registers an account (handle + relay URL now stored):
+ *  open the gate for real. The relay session is already live from registration,
+ *  so reconnectRelay just (re)starts the JS mail listener. */
+export function markOnboarded(): void {
   gateState.value = 'ready';
   void applyRelockPolicy();
   void reconnectRelay();

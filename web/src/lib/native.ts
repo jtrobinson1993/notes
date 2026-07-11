@@ -79,6 +79,24 @@ export function relayConnect(url: string): Promise<void> {
   return invoke('relay_connect', { url });
 }
 
+/** Create this device's account on a relay and enroll the device in one call,
+ *  leaving the core authenticated (no separate `relayConnect` needed). Pass the
+ *  bare invite `token` on an invite-only relay (omit for public/first account).
+ *  Resolves with the server-assigned handle. */
+export function relayRegister(url: string, inviteToken?: string, handle?: string): Promise<string> {
+  return invoke<string>('relay_register', {
+    url,
+    inviteToken: inviteToken ?? null,
+    handleChoice: handle ?? null,
+  });
+}
+
+/** Invite signups only: deliver the sealed friend-accept to the inviter (the
+ *  follow-up leg of the D4b handshake). Resolves with whether it was delivered. */
+export function relayRegisterFriendAccept(envelope: number[]): Promise<boolean> {
+  return invoke<boolean>('relay_register_friend_accept', { envelope });
+}
+
 /** Upload the wrapped-MK escrow bundle to the connected relay (D15). */
 export function relayEscrowUpload(): Promise<void> {
   return invoke('relay_escrow_upload');

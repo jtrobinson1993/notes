@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import type { UserInfo, WrappedKey } from '@notes/shared';
 import { api } from '../lib/api';
+import { isNative } from '../lib/native';
 import { b64, ub64 } from '../lib/b64';
 import {
   generateKeyPair,
@@ -70,6 +71,16 @@ export const useSessionStore = defineStore('session', () => {
 
   async function init(): Promise<void> {
     if (ready.value) return;
+    if (isNative) {
+      // Native shell: auth + onboarding are owned by the vault gate (NativeGate)
+      // and relay registration, NOT the legacy passkey/session API. Skip the
+      // relative /api/meta + /api/me calls — under the `tauri://` origin they'd
+      // resolve to the bundled asset server and return the SPA's index.html, so
+      // `res.json()` would throw "Unrecognized token '<'". This is exactly the
+      // crash seen right after creating the vault.
+      ready.value = true;
+      return;
+    }
     try {
       const meta = await api.meta();
       needsSetup.value = meta.needsSetup;

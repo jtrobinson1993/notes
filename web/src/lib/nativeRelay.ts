@@ -15,7 +15,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   isNative,
   relayConnect,
+  relayDirectoryPublish,
   relayMailboxDrain,
+  relayRegisterVerifier,
   relayStatus,
   settingsGet,
   settingsSet,
@@ -111,6 +113,16 @@ export async function reconnectRelay(): Promise<void> {
       const url = await settingsGet(RELAY_URL_KEY);
       if (!url) return; // never connected a relay on this device yet
       await relayConnect(url);
+    }
+    // Self-heal: (re)publish our directory entry + sealed-sender verifier
+    // (idempotent). Onboarding does this too, but a partial onboarding — e.g. a
+    // verifier step that failed after register — completes here on reconnect, so
+    // an account can't stay half-published.
+    try {
+      await relayDirectoryPublish();
+      await relayRegisterVerifier();
+    } catch {
+      // Best-effort; the next connect retries. Never blocks live delivery.
     }
     await startRelayDelivery();
   } catch {

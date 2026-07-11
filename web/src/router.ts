@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import { useSessionStore } from './stores/session';
+import { isNative } from './lib/native';
 import { chatPane } from './lib/mobileNav';
 
 // The last in-app view, restored on a cold start so the app reopens where you
@@ -26,6 +27,30 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   const session = useSessionStore();
   await session.init();
+
+  // Native shell: the vault gate (NativeGate) owns auth + onboarding. There is
+  // no legacy /login, /setup, /recover, or invite-link flow — fold those back
+  // to the app root — and none of the session-based redirects apply (the
+  // session store never talks to /api here). Just restore the last open view.
+  if (isNative) {
+    if (to.path === '/login' || to.path === '/setup' || to.path === '/recover' || to.path.startsWith('/invite/')) {
+      return '/';
+    }
+    if (!restoredInitial) {
+      restoredInitial = true;
+      if (to.path === '/') {
+        const last = localStorage.getItem(LAST_ROUTE_KEY);
+        if (last && last !== to.fullPath) {
+          if (last.startsWith('/chat/')) chatPane.value = 'messages';
+          return last;
+        }
+      } else if (to.path.startsWith('/chat/')) {
+        chatPane.value = 'messages';
+      }
+    }
+    return true;
+  }
+
   if (session.needsSetup && to.path !== '/setup') return '/setup';
   if (!session.needsSetup && to.path === '/setup') return '/';
   if (!to.meta.public && !session.loggedIn) return '/login';
