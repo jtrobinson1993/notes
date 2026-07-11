@@ -166,6 +166,12 @@ export function relayRegisterVerifier(): Promise<string> {
   return invoke<string>('relay_register_verifier');
 }
 
+/** Change my public handle to a picked generated candidate (Word#1234). Resolves
+ *  with the server-confirmed handle (persisted locally by the core). */
+export function relayChangeHandle(handle: string): Promise<string> {
+  return invoke<string>('relay_change_handle', { handle });
+}
+
 /**
  * Send a v8 text message to a friend (D6/D11): the core derives the DM
  * conversation id (both sides compute the same one), composes + seals the

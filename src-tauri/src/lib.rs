@@ -324,6 +324,28 @@ async fn relay_register_verifier(
     Ok(token)
 }
 
+/// Change my public handle to a client-picked generated candidate. Persists the
+/// server-confirmed handle locally so the chrome updates. Friends are unaffected
+/// (identity-keyed); only what non-contacts see by handle changes.
+#[tauri::command]
+async fn relay_change_handle(
+    handle: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<String, String> {
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    let confirmed = relay.change_handle(&signing, &handle).await?;
+    {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store.set_setting("identity.handle", &confirmed).map_err(|e| e.to_string())?;
+    }
+    Ok(confirmed)
+}
+
 #[tauri::command]
 async fn relay_send(
     recipient_handle: String,
@@ -1903,6 +1925,7 @@ pub fn run() {
             attachment_fetch,
             relay_directory_publish,
             relay_register_verifier,
+            relay_change_handle,
             relay_send,
             envelope_seal,
             envelope_open,

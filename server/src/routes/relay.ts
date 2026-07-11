@@ -369,6 +369,34 @@ export function relayRoutes(
     return { delivered: true, relayTs };
   });
 
+  // Change my public handle (device-token authed). The client offers a picker of
+  // generated Word#1234 candidates and sends the chosen one. The directory is
+  // user-keyed (the handle comes from the users join), so the keys don't move —
+  // only the handle→key mapping changes, so we refresh the KT root. Friends
+  // address me by identity key + delivery token, so a handle change never breaks
+  // the friend graph; only what non-contacts see by handle changes.
+  app.post('/api/relay/handle', async (request, reply) => {
+    const device = requireDevice(request, reply);
+    if (!device) return;
+    const b = request.body as { handle?: string } | null;
+    if (!b?.handle || !isValidHandle(b.handle)) {
+      return reply.code(400).send({ error: 'handle must be a generated Word#1234' });
+    }
+    if (db.handleTaken(b.handle)) return reply.code(409).send({ error: 'that handle is taken' });
+    if (!db.setUserHandle(device.userId, b.handle)) {
+      return reply.code(409).send({ error: 'that handle is taken' });
+    }
+    const dir = db.getRelayDirectoryByUserId(device.userId);
+    let epoch: number;
+    if (ktSidecar && dir) {
+      const { root } = await ktSidecar.publish([{ handle: b.handle, key: dir.identityPubkey }]);
+      epoch = appendSignedRoot(root);
+    } else {
+      epoch = publishEpoch();
+    }
+    return { handle: b.handle, epoch };
+  });
+
   // Enrollment rides the legacy session for now — exactly the migration
   // bootstrap ("sign in with existing credentials → device key enrolled");
   // QR pairing (D8) becomes the second enrollment path later.

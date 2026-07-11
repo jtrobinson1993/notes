@@ -5,7 +5,8 @@ import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
 import AppModal from '../components/AppModal.vue';
 import DeviceLockSettings from '../components/settings/DeviceLockSettings.vue';
-import { isNative } from '../lib/native';
+import { isNative, relayChangeHandle } from '../lib/native';
+import { generateHandleOptions } from '@notes/shared';
 import { MIN_PASSWORD_LENGTH, derivePasswordKey, derivePasswordAuthKey } from '../lib/password';
 import { b64, ub64 } from '../lib/b64';
 import { api } from '../lib/api';
@@ -128,6 +129,32 @@ const handle = ref('');
 const handleOptions = ref<string[]>([]);
 const handleBusy = ref(false);
 const handleMsg = ref('');
+
+// Native handle change: pick a new generated Word#1234 candidate (client-side,
+// like signup) and claim it on the relay — no password reauth (the vault is the
+// credential). Friends are unaffected (they address me by identity key).
+const nativeHandleOptions = ref<string[]>([]);
+const handleChangeBusy = ref(false);
+const handleChangeMsg = ref('');
+function nativeRerollHandles(): void {
+  handleChangeMsg.value = '';
+  nativeHandleOptions.value = generateHandleOptions(4);
+}
+async function nativeChangeHandle(opt: string): Promise<void> {
+  handleChangeBusy.value = true;
+  handleChangeMsg.value = '';
+  try {
+    const confirmed = await relayChangeHandle(opt);
+    handle.value = confirmed;
+    profile.myHandle = confirmed;
+    nativeHandleOptions.value = [];
+    handleChangeMsg.value = 'Handle changed.';
+  } catch (e) {
+    handleChangeMsg.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    handleChangeBusy.value = false;
+  }
+}
 
 useQuery({
   key: ['profile'],
@@ -658,6 +685,38 @@ async function importFiles(event: Event) {
               More options
             </button>
           </div>
+          <!-- Native handle change: pick a fresh generated candidate (no reauth). -->
+          <div v-if="isNative" class="mt-3">
+            <button
+              v-if="!nativeHandleOptions.length"
+              type="button"
+              class="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              @click="nativeRerollHandles"
+            >
+              Change handle
+            </button>
+            <div v-else class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-zinc-500 dark:text-zinc-400">Pick a new handle:</span>
+                <button type="button" class="text-xs text-blue-600 hover:underline dark:text-blue-400" @click="nativeRerollHandles">Re-roll</button>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  v-for="opt in nativeHandleOptions"
+                  :key="opt"
+                  type="button"
+                  data-testid="native-handle-option"
+                  :disabled="handleChangeBusy"
+                  class="rounded-lg border border-blue-300 bg-blue-50 px-2.5 py-1 font-mono text-sm text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                  @click="nativeChangeHandle(opt)"
+                >
+                  {{ opt }}
+                </button>
+              </div>
+              <button type="button" class="text-xs text-zinc-500 hover:underline dark:text-zinc-400" @click="nativeHandleOptions = []">Cancel</button>
+            </div>
+          </div>
+          <p v-if="handleChangeMsg" class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ handleChangeMsg }}</p>
           <p v-if="handleMsg" class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{{ handleMsg }}</p>
         </div>
 

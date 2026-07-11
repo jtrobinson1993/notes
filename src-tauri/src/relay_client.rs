@@ -486,6 +486,37 @@ impl RelayClient {
         Ok(())
     }
 
+    /// Change my public handle (device-authed). Returns the server-confirmed
+    /// handle. The relay refreshes the KT root; friends are unaffected (they
+    /// address me by identity key + delivery token).
+    pub async fn change_handle(&self, signing: &SigningKey, handle: &str) -> Result<String, String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/handle"))
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({ "handle": handle }))
+            .send()
+            .await
+            .map_err(|e| format!("handle change failed: {e}"))?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let msg = res
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            return Err(format!("handle change refused: {msg}"));
+        }
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            handle: String,
+        }
+        let body: Resp = res.json().await.map_err(|e| format!("bad handle response: {e}"))?;
+        Ok(body.handle)
+    }
+
     /// Mint a friend invite (device-authed, D4b): store `hash(token)` + expiry
     /// for a future friend. Returns the absolute expiry (ms).
     pub async fn invite_mint(

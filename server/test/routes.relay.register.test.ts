@@ -78,6 +78,46 @@ describe('account registration (v8 native bootstrap)', () => {
     expect(res.json().handle).not.toBe('not a real handle!!');
   });
 
+  it('changes the handle to another valid generated one (device-authed)', async () => {
+    ctx = await makeApp({ registrationMode: 'public' });
+    const { pubKey } = deviceKey();
+    const bearer = `Bearer ${(await register({ pubKey, handle: 'Otter#0421' })).json().token as string}`;
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/relay/handle',
+      headers: { authorization: bearer },
+      payload: { handle: 'Willow#3589' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().handle).toBe('Willow#3589');
+    // The old handle is now free (another account can claim it).
+    const { pubKey: pk2 } = deviceKey();
+    expect((await register({ pubKey: pk2, handle: 'Otter#0421' })).json().handle).toBe('Otter#0421');
+  });
+
+  it('handle change rejects a malformed handle (400) and a taken one (409)', async () => {
+    ctx = await makeApp({ registrationMode: 'public' });
+    const { pubKey } = deviceKey();
+    const bearer = `Bearer ${(await register({ pubKey })).json().token as string}`;
+    const bad = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/relay/handle',
+      headers: { authorization: bearer },
+      payload: { handle: 'not valid' },
+    });
+    expect(bad.statusCode).toBe(400);
+    // A second account takes Otter#0421; the first can't claim it.
+    const { pubKey: pk2 } = deviceKey();
+    await register({ pubKey: pk2, handle: 'Otter#0421' });
+    const taken = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/relay/handle',
+      headers: { authorization: bearer },
+      payload: { handle: 'Otter#0421' },
+    });
+    expect(taken.statusCode).toBe(409);
+  });
+
   it('invite mode: registration always requires an invite (no first-user bypass)', async () => {
     // Even on a fresh, empty relay there is no admin/first-user free pass — the
     // operator must mint an invite (via CLI) to seed the first account.

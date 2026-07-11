@@ -109,6 +109,13 @@ admin and no first-user bypass. The operator chooses who may register via
   handle if it's somehow taken; an absent/invalid `handle` is simply auto-assigned.
   The account's **display name** (the E2EE name contacts see) is chosen at signup
   too, but stays client-side — the relay never sees it.
+- `POST /api/relay/handle` `{ handle }` (device-token authed) changes my public
+  handle to another generated candidate: validates it (`isValidHandle` + not
+  taken), updates `users.handle`, and refreshes the KT root (the directory is
+  user-keyed — the handle comes from the users join, so the identity/sealing keys
+  don't move). Friends address me by identity key + delivery token, so a handle
+  change never breaks the friend graph; only what non-contacts see by handle
+  changes. 400 malformed / 409 taken.
 - A **friend** invite additionally doubles as a **friend request** (the
   greenfield "invite your friends" flow): registering with one stashes a
   **one-shot pending-friend** record binding the new account to the inviter. The
