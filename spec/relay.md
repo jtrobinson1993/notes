@@ -17,6 +17,15 @@ only until delivery is acknowledged, never learns message senders
 media. Everything it *does* persist is enumerated below — nothing else may be
 added without updating this inventory and [security.md](security.md).
 
+**Deployment.** The relay runs as a **standalone process** (`buildRelayApp` /
+`npm run relay:start`) that mounts only `/api/relay/*` + a health probe — no web
+frontend, no legacy auth/notes/chat/friends stack. It is **operator-controlled**
+via the relay CLI (`npm run relay -- create-invite | list-devices |
+revoke-device | status | prune`), which acts directly on the database: there is
+no in-app admin account. (During the greenfield transition the legacy all-in-one
+server still exists for the passkey web app, but the native app targets this
+standalone relay.)
+
 ## State inventory
 
 ### Durable (survives restart; the complete list)
@@ -62,9 +71,52 @@ correlation is documented there).
   no cross-relay replay, D4b) → `{ token, expiresInSec }`. Token TTL is short
   (minutes); devices re-sign silently. **Revoking a device = stop honoring its
   challenges**; its live token dies within the window (no blocklist state).
-- **Device enrollment:** a new device key is registered either (a) sealed-MK
-  pairing from an existing device (D8 — the existing device signs an "add
-  device" record), or (b) account bootstrap after escrow auth (below).
+- **Device enrollment:** a new device key is registered either (a) at account
+  registration (below), (b) sealed-MK pairing from an existing device (D8 — the
+  existing device signs an "add device" record), or (c) account bootstrap after
+  escrow auth (below).
+
+## Registration (account creation)
+
+The signup surface for a brand-new account + its first device, in one
+unauthenticated call. The relay is **operator-controlled** — there is no in-app
+admin and no first-user bypass. The operator chooses who may register via
+`RELAY_REGISTRATION_MODE` (default **`invite`**; set `public` to open it):
+
+- **`public`** — anyone may create an account.
+- **`invite`** — closed: a valid invite is **always** required (including the
+  operator's own first account). Two invite kinds are accepted:
+  - an **operator registration invite** — CLI-minted, no inviter, a pure signup
+    grant (`relay_registration_invites`, storing only `hash(token)`). This is how
+    the operator seeds a fresh relay and lets new people on.
+  - a **user friend invite** (D4b, `relay_invites`) — minted in-app by an
+    existing user; besides granting signup it also establishes the friendship
+    (below).
+
+- `GET /api/relay/info` also returns `registrationMode`, so onboarding knows
+  whether to require an invite before showing the signup form.
+- `POST /api/relay/register` `{ pubKey, name?, inviteToken?, handle? }` — creates
+  the user (role `member`), enrolls `pubKey` as its first device, and returns
+  `{ userId, deviceId, handle, token, expiresInSec }` (a device token, so the
+  client is authed immediately — no separate challenge round-trip). Rejects an
+  already-enrolled `pubKey` (409, idempotency) and, in `invite` mode, a
+  missing/invalid invite (403/401, uniform). Rate-limited. The matched invite
+  (whichever kind) is consumed here.
+- `handle` is optional: the native signup screen offers a picker of **generated
+  `Word#1234` candidates** (from the shared curated word list — never a typed
+  username, so the word is always vetted) with a re-roll, and sends the chosen
+  one. The relay validates it (`isValidHandle`) and claims it, reissuing a fresh
+  handle if it's somehow taken; an absent/invalid `handle` is simply auto-assigned.
+  The account's **display name** (the E2EE name contacts see) is chosen at signup
+  too, but stays client-side — the relay never sees it.
+- A **friend** invite additionally doubles as a **friend request** (the
+  greenfield "invite your friends" flow): registering with one stashes a
+  **one-shot pending-friend** record binding the new account to the inviter. The
+  account's first authed call, `POST /api/relay/register/friend-accept`
+  `{ envelope }`, claims that record and drops the sealed friend-accept into the
+  inviter's mailbox — completing the D4b handshake (the inviter reciprocates a
+  friend-confirm the new device drains). One-shot: it can't be replayed to spam
+  the inviter. Operator invites and public signups have no inviter (no-op).
 
 ## Escrow & account bootstrap (D15)
 

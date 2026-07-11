@@ -232,7 +232,9 @@ No plans for video (see v7).
 
 **Status: long-term goal, large rework. Direction is chosen and **all design
 decisions D1–D15 are now resolved** (each marked *decided* below; see also
-"Open questions", all closed). **Nothing here is built yet** — the next step is
+"Open questions", all closed). **D16** (a future v8 web client) is newly logged
+and **deferred** — the launch is native-only, and D16 lists the open decisions
+to settle if/when a web client is built. **Nothing here is built yet** — the next step is
 implementation per "Suggested phasing." This section captures the design digging
 done *before* committing engineering. **Release strategy (decided): one
 release** — all six phases land on this branch/PR; no incremental releases of
@@ -902,9 +904,84 @@ the native app escapes). Decided shape:
     all users a reminder to **export/save any notes they want to keep** — chat
     history is disposable; notes are not automatically preserved. (`migrate.ts` +
     the migration IPCs/`MigrationPrompt` become dead code → shelve/delete.)
+  - **Native onboarding + account registration — BUILT.** With migration gone,
+    the native shell needed its own account-creation path (the old device-enroll
+    rode the legacy session, which native doesn't have — that gap surfaced as a
+    `JSON Parse error` on a built app: the session store's relative `/api/meta`
+    + `/api/me` calls resolved to the Tauri asset server and returned HTML).
+    Built: (a) relay-configurable **registration mode** — `public` **or**
+    `invite`-only (`RELAY_REGISTRATION_MODE`, default invite; first account
+    always allowed → admin), exposed on `/api/relay/info`; (b) `POST
+    /api/relay/register` creates the account + enrolls the first device + returns
+    a device token (immediately authed); in invite mode the invite both gates
+    signup **and** carries the D4b friend request (one-shot friend-accept
+    delivery on the account's first authed call — "invite your friends, just like
+    the legacy app"); (c) a native onboarding step in `NativeGate` (paste an
+    invite, or join a public relay by address) between vault-unlock and the app;
+    (d) native-aware session store + router guard (skip the legacy passkey/login
+    flow entirely under the `tauri://` origin). My instance runs **invite-only**.
+  - **Relay decoupled from the frontend + legacy — operator-controlled (BUILT/
+    in progress).** The relay is "just a relay" and shouldn't carry the legacy
+    web-app stack or need a UI for admin tasks. Decided + built:
+    - **Standalone relay build** (`buildRelayApp` / `npm run relay:dev|relay:start`)
+      mounting ONLY `/api/relay/*` + health — no WebAuthn/sessions, notes/chat/
+      friends REST, admin, GIF/emoji/OG, legacy realtime, or SPA. (`createPush`
+      was decoupled from the legacy realtime hub via a structural `Presence`.)
+    - **Operator CLI** (`npm run relay -- create-invite | list-devices |
+      revoke-device | status | prune`) operating directly on `DATA_DIR` — the
+      operator interface, no frontend.
+    - **No in-app admin / no first-user bypass.** All relay accounts are plain
+      members; invite mode always requires an invite. Two invite kinds:
+      **operator registration invites** (CLI-minted, no inviter) and **user
+      friend invites** (D4b, also friend you); `register` accepts either.
+    - **No web client for now — native-only launch (decided 2026-07-11).** The
+      product ships native-only; a v8 web client is deferred to a future version
+      (see D16 below). The legacy passkey web client is **not** the go-forward
+      web surface. Its code isn't deleted *yet* (that's the irreversible
+      post-launch cleanup — the legacy monolith `npm run dev:server` still builds
+      and its tests still pass), but nothing new depends on it and it is slated
+      for removal once the native launch is settled.
   *Status: REVISED — greenfield launch, no migration (was: hard cutover with
-  per-user migration). Native (full, signed, reproducible) + web (lower-trust,
-  satellite-only). Pre-launch: warn users to save notes; everything is wiped.*
+  per-user migration). **Native-only** for launch (full, signed, reproducible);
+  web client deferred (D16). Pre-launch: warn users to save notes; wiped.*
+
+**D16 — Future: v8 relay-based web client (deferred; native-only for now).** A
+browser client that talks to the standalone relay like the native app does,
+replacing the retired legacy passkey web app. Deferred deliberately — not a
+toggle. Key context and the **open decisions** to settle before building:
+
+- **The UI is already shared, the *engine* isn't.** `web/src/` already runs in
+  both the Tauri shell and a browser and toggles on `isNative`. But in native
+  mode it delegates *all* keys/crypto/relay/storage to the **Rust core** over
+  Tauri `invoke()`; a browser has neither. The work is providing that engine in
+  the browser, not rebuilding the UI.
+- **DECISION — engine strategy:**
+  - *(A) Compile the Rust core to WASM* + browser shims (OS keychain →
+    WebCrypto/IndexedDB, SQLCipher → wa-sqlite, reqwest → fetch/WebSocket, the
+    `invoke` bridge → a WASM binding). Reuses the audited protocol/crypto, no
+    drift; large upfront shimming.
+  - *(B) Reimplement the engine in TypeScript* (`@noble/curves` — already a web
+    dep — + WebCrypto + IndexedDB, reusing `web/src/lib/crypto.ts`). Faster start;
+    duplicates the whole relay protocol in a 2nd language (drift + double audit).
+- **DECISION — security posture (the hard one).** Native's core property is that
+  keys live in Rust and **never enter the webview**. A browser client *cannot*
+  preserve that: keys end up in the JS-reachable context (WASM linear memory is
+  readable from JS too), so an **XSS becomes key theft**. The web client is
+  therefore inherently the **lower-trust satellite**. Decide: accept it, and how
+  much to *limit* the surface to bound the blast radius (e.g. read-mostly, no
+  note-key custody / no long-lived DM keys, ephemeral session only, opt-in).
+- **DECISION — at-rest storage in the browser.** SQLCipher isn't available;
+  choose wa-sqlite-with-encryption vs sql.js/IndexedDB with an app-wrapped key
+  (and accept that browser at-rest protection is weaker than the native vault).
+- **DECISION — device identity + pairing.** How a browser enrolls as a relay
+  device (its own `register`, or D8 pairing from an existing device), key
+  storage (WebCrypto **non-extractable** keys where possible), and multi-device
+  implications.
+- **Unblocks legacy removal.** Once D16 lands (or is firmly abandoned), the
+  legacy auth/notes/chat/friends stack + the vestigial session-gated
+  `/api/relay/devices` endpoints (the test-suite's device-enroll primitive, 17
+  files) can be deleted; multi-device enroll returns as device-token-authed D8
+  pairing.
   - **POST-LAUNCH — codebase cleanup & review pass.** After v8 ships, do a
     dedicated sweep to remove anything unused/unnecessary that the pre-v8 →
     greenfield transition left behind: the store-level legacy-import methods

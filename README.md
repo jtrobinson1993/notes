@@ -62,6 +62,7 @@ existing passkeys.
 | `PORT` | `3000` | Listen port |
 | `DATA_DIR` | `/data` (in Docker) | Where the SQLite database lives |
 | `APP_NAME` | `Accord` | Display name |
+| `RELAY_REGISTRATION_MODE` | `invite` | Who may create an account: `invite` (a valid invite is always required — mint one with the relay CLI) or `public` (anyone) |
 | `BACKUP_INTERVAL_HOURS` | `24` | Periodic SQLite backup interval (0 disables) |
 | `BACKUP_KEEP` | `14` | Number of backups to retain |
 | `VOICE_ANNOUNCED_IP` | `127.0.0.1` | Public/LAN IP clients reach for voice media — set for non-local calls |
@@ -70,6 +71,38 @@ existing passkeys.
 
 All state lives in `DATA_DIR` — back up that one directory (it only contains
 encrypted notes and public keys).
+
+### Running the relay (v8, native app)
+
+The v8 native app talks to a **standalone relay** — a zero-knowledge message
+relay with no web frontend and no accounts UI. It is **operator-controlled via a
+CLI**, not a browser:
+
+```sh
+# Start just the relay (only /api/relay/* — no legacy web app). Use an ABSOLUTE
+# DATA_DIR so the CLI and server always agree on the database.
+DATA_DIR=/srv/accord-data RELAY_REGISTRATION_MODE=invite npm run relay:dev   # dev (tsx watch)
+DATA_DIR=/srv/accord-data npm run relay:start                                # prod (built)
+```
+
+Operator tasks are the relay CLI (`npm run relay -- <command>`), which operates
+directly on `DATA_DIR` — no running server required:
+
+```sh
+DATA_DIR=/srv/accord-data npm run relay -- create-invite [--days N]  # print a one-time signup code
+DATA_DIR=/srv/accord-data npm run relay -- list-devices              # enrolled devices
+DATA_DIR=/srv/accord-data npm run relay -- revoke-device <id>        # revoke a device
+DATA_DIR=/srv/accord-data npm run relay -- status                    # accounts / devices / mode
+```
+
+On an invite-only relay **every** account needs a code (there is no admin/first
+-user bypass) — mint one with `create-invite` and enter it in the app's
+onboarding (or hand it to a friend). Existing users can also invite friends from
+inside the app (that invite additionally establishes the friendship).
+
+> The legacy passkey web app + its all-in-one server (`npm run dev:server`) still
+> exist during the greenfield transition, but the native app is the product and
+> the relay above is its backend.
 
 ### Voice (v6)
 
