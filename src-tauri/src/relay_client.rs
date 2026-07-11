@@ -180,6 +180,111 @@ impl RelayClient {
         Ok(())
     }
 
+    /// Bootstrap this device's account: create it and enroll the device in one
+    /// call, then store the returned bearer as our live session (so a following
+    /// `connect` is unnecessary — we're authed immediately). `invite_token` is
+    /// required on an invite-only relay. `handle` is the Word#1234 the user picked
+    /// from the client-generated candidates (the relay validates + claims it).
+    /// Returns the server-assigned handle.
+    pub async fn register(
+        &self,
+        base_url: &str,
+        signing: &SigningKey,
+        invite_token: Option<&str>,
+        handle: Option<&str>,
+    ) -> Result<String, String> {
+        let http = reqwest::Client::new();
+        let base = base_url.trim_end_matches('/').to_string();
+
+        let info: InfoResponse = http
+            .get(format!("{base}/api/relay/info"))
+            .send()
+            .await
+            .map_err(|e| format!("relay unreachable: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("bad relay info: {e}"))?;
+
+        let mut body = serde_json::json!({
+            "pubKey": device_public_key_b64(signing),
+            "name": "Accord device",
+        });
+        if let Some(tok) = invite_token {
+            body["inviteToken"] = serde_json::json!(tok);
+        }
+        if let Some(h) = handle {
+            body["handle"] = serde_json::json!(h);
+        }
+        let res = http
+            .post(format!("{base}/api/relay/register"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("registration failed: {e}"))?;
+        if !res.status().is_success() {
+            // Surface the relay's own message (e.g. "an invite is required")
+            // so onboarding can show why registration was refused.
+            let status = res.status();
+            let msg = res
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            return Err(format!("registration refused: {msg}"));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct RegisterResponse {
+            handle: String,
+            token: String,
+            #[serde(rename = "expiresInSec")]
+            expires_in_sec: u64,
+        }
+        let reg: RegisterResponse =
+            res.json().await.map_err(|e| format!("bad register response: {e}"))?;
+
+        *self.session.lock().unwrap() = Some(Session {
+            base_url: base,
+            relay_fp: info.identity_fingerprint,
+            identity_pub: info.identity_pub_key,
+            token: reg.token,
+            expires_at: Instant::now() + Duration::from_secs(reg.expires_in_sec),
+        });
+        Ok(reg.handle)
+    }
+
+    /// The account's first authed leg of the D4b handshake (invite signups only):
+    /// deliver the sealed friend-accept to whoever invited us. Returns whether the
+    /// relay actually delivered it (false = no pending inviter / already claimed).
+    pub async fn register_friend_accept(
+        &self,
+        signing: &SigningKey,
+        envelope: Vec<u8>,
+    ) -> Result<bool, String> {
+        use base64::Engine as _;
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .post(format!("{base}/api/relay/register/friend-accept"))
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({
+                "envelope": base64::engine::general_purpose::STANDARD.encode(&envelope),
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("friend-accept delivery failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("friend-accept refused (HTTP {})", res.status()));
+        }
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            delivered: bool,
+        }
+        let body: Resp = res.json().await.map_err(|e| format!("bad friend-accept response: {e}"))?;
+        Ok(body.delivered)
+    }
+
     async fn fetch_token(
         http: &reqwest::Client,
         base: &str,

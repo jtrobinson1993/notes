@@ -125,6 +125,66 @@ async fn relay_connect(
     Ok(())
 }
 
+/// Create this device's account on `url` and enroll the device in one call,
+/// leaving us authenticated (no separate `relay_connect` needed). `invite_token`
+/// is the bare invite token (extracted from a friend invite by the caller) —
+/// required on an invite-only relay, except for the first account. Persists the
+/// server-assigned handle and brings up the live-delivery + voice links, exactly
+/// like `relay_connect`. Returns the handle.
+#[tauri::command]
+async fn relay_register(
+    url: String,
+    invite_token: Option<String>,
+    handle_choice: Option<String>,
+    app: tauri::AppHandle,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+    voice: tauri::State<'_, voice_live::VoiceSignal>,
+) -> Result<String, String> {
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    let handle = relay
+        .register(&url, &signing, invite_token.as_deref(), handle_choice.as_deref())
+        .await?;
+    // Persist my handle so the rest of the app (KT self-audit, invite creation,
+    // friend reciprocation) can name me without another round-trip.
+    {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store.set_setting("identity.handle", &handle).map_err(|e| e.to_string())?;
+    }
+    // We're authed now: bring up the same links `relay_connect` does.
+    if relay.try_begin_live() {
+        if let Some((base, fp)) = relay.session_info() {
+            tauri::async_runtime::spawn(relay_live::run_forever(base, fp, signing.clone(), app.clone()));
+        }
+    }
+    if let Some(rx) = voice.begin() {
+        if let Some((base, fp)) = relay.session_info() {
+            tauri::async_runtime::spawn(voice_live::run_forever(base, fp, signing, app, rx));
+        }
+    }
+    Ok(handle)
+}
+
+/// Invite signups only: deliver the sealed friend-accept to whoever invited us
+/// (the follow-up leg of the D4b handshake, now that we hold a device token).
+/// Returns whether the relay delivered it.
+#[tauri::command]
+async fn relay_register_friend_accept(
+    envelope: Vec<u8>,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<bool, String> {
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    relay.register_friend_accept(&signing, envelope).await
+}
+
 /// Derive this account's per-relay identity (D4b) and publish it to the
 /// relay's key directory (D5). Requires the vault unlocked (MK) and a
 /// connected relay (its fingerprint is the derivation input).
@@ -446,10 +506,11 @@ async fn relay_mailbox_drain(
     // (D4b): record the verified sender's addressing so we can reach them, and
     // read my own handle (persisted at invite creation) for reciprocation.
     let friend_count = friends.len();
-    let (ingested, my_handle) = {
+    let (ingested, my_handle, my_display_name) = {
         let vault = vault.lock().unwrap();
         let store = vault.store().map_err(|e| e.to_string())?;
         let my_handle = store.get_setting("identity.handle").map_err(|e| e.to_string())?;
+        let my_display_name = store.get_setting("profile.displayName").map_err(|e| e.to_string())?;
         // Persist the relay row so friend + conversation rows can FK to it.
         store
             .upsert_relay(&relay_fp, &base_url, &relay_fp, &my_identity_pub)
@@ -459,7 +520,7 @@ async fn relay_mailbox_drain(
                 store
                     .record_friend(&store::FriendRecord {
                         contact_id: f.contact_id.clone(),
-                        display_name: None,
+                        display_name: f.display_name.clone(),
                         relay_id: relay_fp.clone(),
                         handle: f.handle.clone(),
                         identity_pub: f.identity_pub.clone(),
@@ -517,7 +578,7 @@ async fn relay_mailbox_drain(
                 .ensure_conversation(&g.group_id, "group", &relay_fp)
                 .map_err(|e| e.to_string())?;
         }
-        (ingested, my_handle)
+        (ingested, my_handle, my_display_name)
     };
 
     // KT gossip (D5): verify each friend's gossiped root against the pinned relay
@@ -565,7 +626,12 @@ async fn relay_mailbox_drain(
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            let payload = message::friend_payload(&handle, &my_delivery_token, &my_sealing_b64);
+            let payload = message::friend_payload(
+                &handle,
+                &my_delivery_token,
+                &my_sealing_b64,
+                my_display_name.as_deref(),
+            );
             match envelope::seal(&recipient, &ident, message::KIND_FRIEND_CONFIRM, &payload, now_ms()) {
                 Ok(env) => {
                     let _ = relay.mailbox_send(&f.handle, &f.delivery_token, env).await;
@@ -1813,6 +1879,8 @@ pub fn run() {
             settings_set,
             device_public_key,
             relay_connect,
+            relay_register,
+            relay_register_friend_accept,
             relay_status,
             relay_escrow_upload,
             relay_invite_mint,

@@ -159,6 +159,9 @@ pub struct FriendAcceptData {
     /// Stable local id for the friend = their identity key (base64).
     pub contact_id: String,
     pub handle: String,
+    /// Friend's chosen display name (E2EE, from the signed payload), if they set
+    /// one — so the friends list shows their real name, not just the handle.
+    pub display_name: Option<String>,
     /// Friend's Ed25519 identity (raw), from the verified envelope sender.
     pub identity_pub: Vec<u8>,
     /// Friend's X25519 sealing key (raw), from the signed payload.
@@ -172,6 +175,8 @@ pub struct FriendAcceptData {
 #[derive(serde::Deserialize)]
 struct FriendPayload {
     handle: String,
+    #[serde(rename = "displayName", default)]
+    display_name: Option<String>,
     #[serde(rename = "deliveryToken")]
     delivery_token: String,
     #[serde(rename = "sealingPub")]
@@ -203,9 +208,15 @@ pub fn group_record_add_member(record: &str, identity_pub_b64: &str) -> Result<S
 /// + sealing key (base64). Symmetric with `FriendAcceptData::parse`, and matches
 /// the TS `redeemFriendInvite` shape, so either side can produce what the other
 /// decodes. Used by the drain to reciprocate a confirm.
-pub fn friend_payload(handle: &str, delivery_token: &str, sealing_pub_b64: &str) -> Vec<u8> {
+pub fn friend_payload(
+    handle: &str,
+    delivery_token: &str,
+    sealing_pub_b64: &str,
+    display_name: Option<&str>,
+) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "handle": handle,
+        "displayName": display_name,
         "deliveryToken": delivery_token,
         "sealingPub": sealing_pub_b64,
     }))
@@ -226,6 +237,7 @@ impl FriendAcceptData {
         Some(FriendAcceptData {
             contact_id: opened.sender_identity_pub.clone(),
             handle: p.handle,
+            display_name: p.display_name.filter(|s| !s.trim().is_empty()),
             identity_pub,
             sealing_pub,
             delivery_token: p.delivery_token,
@@ -666,7 +678,7 @@ mod tests {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD;
         let sealing = b64.encode([4u8; 32]);
-        let bytes = friend_payload("Me#0009", "my-deliv", &sealing);
+        let bytes = friend_payload("Me#0009", "my-deliv", &sealing, Some("Jarrod"));
         // What I seal as a confirm is exactly what a recipient's parse expects.
         let opened = Opened {
             kind: KIND_FRIEND_CONFIRM.into(),
@@ -676,6 +688,7 @@ mod tests {
         };
         let f = FriendAcceptData::parse(&opened, false).expect("parse");
         assert_eq!(f.handle, "Me#0009");
+        assert_eq!(f.display_name.as_deref(), Some("Jarrod")); // display name round-trips
         assert_eq!(f.delivery_token, "my-deliv");
         assert_eq!(f.sealing_pub, vec![4u8; 32]);
         assert!(!f.reciprocate);

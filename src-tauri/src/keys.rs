@@ -23,6 +23,11 @@ pub const INFO_MK_WRAP_RECOVERY: &[u8] = b"accord/mk-wrap/recovery/v1";
 // a client presents to fetch escrow can never unwrap the blobs it receives.
 pub const INFO_AUTH_PASSWORD: &[u8] = b"accord/auth/password/v1";
 pub const INFO_AUTH_RECOVERY: &[u8] = b"accord/auth/recovery/v1";
+// The account's profile key, derived from MK (D13: one derivation tree). It's
+// the root of the delivery token + display-name encryption. Deriving it from MK
+// keeps it identical on every device with this account (stable delivery token),
+// and it replaces the value the (now-removed) migration used to seed.
+pub const INFO_PROFILE: &[u8] = b"accord/profile-key/v1";
 // D6: delivery token = KDF(profile key, "delivery") — the sealed-sender
 // capability friends present to the relay.
 pub const INFO_DELIVERY: &[u8] = b"accord/delivery/v1";

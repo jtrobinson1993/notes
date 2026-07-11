@@ -423,17 +423,27 @@ impl Vault {
         Ok(base64::engine::general_purpose::STANDARD.encode(auth.as_ref()))
     }
 
-    /// D6 delivery token + verifier, derived from the profile key (which the
-    /// migration stored as the `profile.key` setting). Returns
-    /// `(token, verifier)`: the token goes sealed to friends; the verifier
-    /// (its hash) is what the relay stores. Requires the vault unlocked.
+    /// D6 delivery token + verifier, derived from the account's profile key.
+    /// Returns `(token, verifier)`: the token goes sealed to friends; the
+    /// verifier (its hash) is what the relay stores. Requires the vault unlocked.
+    ///
+    /// The profile key lives in the `profile.key` setting. On a greenfield
+    /// account there's no migration to seed it, so we derive it from MK on first
+    /// use and persist it — identical on every device with this account (a stable
+    /// delivery token), and unchanged for accounts that already have one.
     pub fn delivery_token(&self) -> Result<(String, String), VaultError> {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD;
         let store = self.store()?;
-        let key_b64 = store
-            .get_setting("profile.key")?
-            .ok_or(VaultError::NotInitialized)?;
+        let key_b64 = match store.get_setting("profile.key")? {
+            Some(k) => k,
+            None => {
+                let derived = keys::derive_auth_key(self.mk()?.as_ref(), keys::INFO_PROFILE)?;
+                let k = b64.encode(derived.as_ref());
+                store.set_setting("profile.key", &k)?;
+                k
+            }
+        };
         let profile_key = b64
             .decode(key_b64)
             .map_err(|_| VaultError::Keychain("corrupt profile key setting".into()))?;
@@ -679,6 +689,30 @@ mod tests {
         // Locked vault → no token.
         vault.lock();
         assert!(vault.delivery_token().is_err());
+    }
+
+    #[test]
+    fn delivery_token_derives_from_mk_when_unseeded_and_is_stable_across_devices() {
+        // Greenfield accounts have no migration to seed `profile.key`. Regression
+        // guard for the onboarding bug: delivery_token() must derive it from MK on
+        // first use (not fail), persist it, and yield the SAME token on every
+        // device with this account (same MK) so friends can always reach it.
+        let (_d1, mut v1) = new_vault();
+        let _ = v1.create("a long enough password").unwrap();
+        assert!(v1.store().unwrap().get_setting("profile.key").unwrap().is_none());
+
+        let (token1, _) = v1.delivery_token().unwrap();
+        // First use persisted the derived key and is deterministic on repeat.
+        assert!(v1.store().unwrap().get_setting("profile.key").unwrap().is_some());
+        assert_eq!(token1, v1.delivery_token().unwrap().0);
+
+        // A second device restored from escrow (same MK, fresh store with no
+        // profile.key) derives the identical token.
+        let payload = v1.escrow_bundle().unwrap().payload;
+        let (_d2, mut v2) = new_vault();
+        v2.restore_from_escrow(&payload, "a long enough password").unwrap();
+        assert!(v2.store().unwrap().get_setting("profile.key").unwrap().is_none());
+        assert_eq!(token1, v2.delivery_token().unwrap().0);
     }
 
     #[test]
