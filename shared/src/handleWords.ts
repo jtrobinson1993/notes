@@ -1,7 +1,9 @@
 // Curated word list for public handles (Word#1234). Animals + nature only, all
-// 3–10 characters, lowercase, no profanity, no spaces — vetted by hand so we never
-// surface a dubious or offensive word. Kept server-side because handle generation
-// (and its uniqueness check) happens on the server.
+// 3–10 characters, lowercase, no profanity, no spaces — vetted by hand so we
+// never surface a dubious or offensive word. Single source of truth: the server
+// generates + uniqueness-checks handles, and the native client offers a picker
+// of candidates at signup — both must draw from the *same* list, since the
+// server's `isValidHandle` rejects any word not in it.
 //
 // Combined with a 4-digit discriminator this gives well over a million unique
 // handles, which is plenty for a self-hosted instance.

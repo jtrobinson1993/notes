@@ -715,3 +715,6 @@ export type PushPayload =
   // routing (the relay is zero-at-rest + sealed-sender). Just tells a device to
   // drain its mailbox.
   | { type: 'mail' };
+
+// Public-handle generation + validation (shared by server + native client).
+export * from './handles.js';
