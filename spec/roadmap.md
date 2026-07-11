@@ -887,18 +887,24 @@ the native app escapes). Decided shape:
   - **Session TTL** — **session-scoped by default** (ends on tab close), opt-in
     "keep me linked up to N days" for a trusted machine, and **always remotely
     unlinkable** from the native device's device list.
-  - **Migration of today's web-first users → native: hard cutover at launch.** The
-    switch path: **install native → sign in with existing credentials** (one-time
-    server-verified bootstrap, provisions the device key) **→ automatic first-run
-    migration** pulls server-stored data local (D10) **→ account becomes
-    native-primary**, server drops durable storage, web becomes a satellite. At v8
-    launch, **standalone web is disabled** — users must install native to continue;
-    server data stays **pullable for a short window** (with an export fallback for
-    stragglers), then purged. Fastest route to full zero-at-rest; abrupt UX for
-    users without a native device, accepted.
-  *Status: decided — native (full, signed, reproducible) + web (lower-trust,
-  satellite-only, in-memory, voice-capable); hard cutover from standalone web at
-  launch.*
+  - **Migration of today's users → native: NONE — greenfield launch (REVISED).**
+    The original plan was a per-user data migration (install native → sign in with
+    existing credentials → automatic first-run pull of server-stored data → old-key-
+    signs-new-key attestation so contacts auto-trust the new identity → purge). With
+    only a handful of users (me + 3 friends), that whole machinery isn't worth it.
+    **New plan: no account migration.** v8 ships greenfield — deploy the v8 relay +
+    akd-sidecar, everyone installs the native app and **creates a fresh v8 account**,
+    then re-adds each other via the built invite flow (SAS-verifiable). This drops
+    the identity-attestation crypto, the data-pull, the T-0 migration sign-in, the
+    T+60 purge/straggler exports, and the rollback-to-legacy posture entirely.
+    **⚠ PRE-LAUNCH ITEM — tell everyone to save their notes.** The cutover **wipes
+    everything** (fresh accounts, no data carried over). Before flipping to v8, send
+    all users a reminder to **export/save any notes they want to keep** — chat
+    history is disposable; notes are not automatically preserved. (`migrate.ts` +
+    the migration IPCs/`MigrationPrompt` become dead code → shelve/delete.)
+  *Status: REVISED — greenfield launch, no migration (was: hard cutover with
+  per-user migration). Native (full, signed, reproducible) + web (lower-trust,
+  satellite-only). Pre-launch: warn users to save notes; everything is wiped.*
 
 #### Key hierarchy, revocation & groups
 
