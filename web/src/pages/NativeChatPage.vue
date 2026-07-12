@@ -16,6 +16,6 @@ onMounted(() => {
 
 <template>
   <AppLayout>
-    <NativeChat v-if="isNative" />
+    <NativeChat v-if="isNative" :hide-list="true" />
   </AppLayout>
 </template>

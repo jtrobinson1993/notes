@@ -13,8 +13,8 @@ import SidebarTooltip from './SidebarTooltip.vue';
 import ActiveBar from './ActiveBar.vue';
 import { conversationInitial, conversationTitle, dmPeerId } from '../lib/convName';
 import { isNative } from '../lib/native';
+import { nativeConversations } from '../lib/nativeConversations';
 import { lockVault } from '../lib/nativeVault';
-import IconChatDots from '~icons/mynaui/chat-dots';
 import { chatPane, closeNote, isMobile, noteOpen, showChannels } from '../lib/mobileNav';
 import IconPanelLeftOpen from '~icons/mynaui/panel-left-open';
 import IconPanelLeftClose from '~icons/mynaui/panel-left-close';
@@ -75,6 +75,18 @@ function convIcon(conv: Conversation): string | null {
   return peer ? profile.avatarFor(peer) ?? null : null;
 }
 
+// New chat: legacy opens a modal; native goes to the chat surface's add panel.
+function newChat(): void {
+  if (isNative) router.push({ path: '/dm', query: { add: '1' } });
+  else newChatOpen.value = true;
+}
+
+// A native sidebar conversation is active when the chat surface has it open.
+function nativeChatActive(key: string): boolean {
+  const r = router.currentRoute.value;
+  return r.path === '/dm' && r.query.open === key;
+}
+
 const sortedConversations = computed(() =>
   // Threads aren't top-level entries — they're reached from their parent message.
   chat.conversations.filter((c) => c.kind !== 'thread').sort((a, b) => b.lastSeq - a.lastSeq),
@@ -120,15 +132,14 @@ const navClass = computed(() => {
     :class="navClass"
   >
     <TooltipProvider :delay-duration="0" :skip-delay-duration="0">
-      <!-- Top: new chat (legacy group chat; native DMs/groups live at /dm, opened
-           from the Direct messages icon below). -->
-      <div v-if="!isNative" class="flex flex-col gap-1 p-2">
+      <!-- Top: new chat (legacy opens the modal; native opens the chat add panel). -->
+      <div class="flex flex-col gap-1 p-2">
         <SidebarTooltip label="New chat" :disabled="expanded">
           <button
             class="flex items-center gap-2 rounded-lg bg-blue-600 px-2 py-2 text-sm font-medium text-white hover:bg-blue-700"
             :class="expanded ? 'w-fit pr-3' : 'justify-center'"
             aria-label="New chat"
-            @click="newChatOpen = true"
+            @click="newChat"
           >
             <IconMessagePlus class="h-6 w-6 shrink-0" />
             <span v-if="expanded" class="truncate">New chat</span>
@@ -140,6 +151,48 @@ const navClass = computed(() => {
 
       <!-- Conversations + Notes -->
       <div class="flex min-h-0 grow flex-col gap-1 overflow-y-auto">
+        <!-- Native DMs + groups (above Notes), title + icon from member/group name. -->
+        <template v-if="isNative">
+        <SidebarTooltip
+          v-for="c in nativeConversations"
+          :key="c.key"
+          :label="c.title"
+          :disabled="expanded"
+        >
+          <RouterLink
+            :to="{ path: '/dm', query: { open: c.key } }"
+            :aria-label="c.title"
+            class="group relative flex items-center gap-2 px-2 py-1 text-sm"
+            :class="[
+              expanded ? '' : 'justify-center',
+              nativeChatActive(c.key) ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',
+            ]"
+          >
+            <ActiveBar :active="nativeChatActive(c.key)" />
+            <span
+              class="relative flex h-9 w-9 shrink-0 items-center justify-center bg-zinc-300 text-xs font-medium text-zinc-700 transition-[border-radius] duration-300 ease-[cubic-bezier(0.34,1.8,0.5,1)] dark:bg-zinc-700 dark:text-zinc-100"
+              :class="nativeChatActive(c.key) ? 'rounded-xl icon-pop' : 'rounded-[18px] group-hover:rounded-xl'"
+            >
+              {{ c.initial }}
+              <span
+                v-if="c.unread > 0 && !expanded"
+                class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white"
+              >
+                {{ c.unread }}
+              </span>
+            </span>
+            <span v-if="expanded" class="min-w-0 grow truncate">{{ c.title }}</span>
+            <span
+              v-if="c.unread > 0 && expanded"
+              class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white"
+            >
+              {{ c.unread }}
+            </span>
+          </RouterLink>
+        </SidebarTooltip>
+        </template>
+
+        <template v-if="!isNative">
         <SidebarTooltip
           v-for="conv in sortedConversations"
           :key="conv.id"
@@ -186,6 +239,7 @@ const navClass = computed(() => {
             </span>
           </RouterLink>
         </SidebarTooltip>
+        </template>
 
         <!-- Notes, below the chats, in flow -->
         <SidebarTooltip label="Notes" :disabled="expanded">
@@ -255,18 +309,6 @@ const navClass = computed(() => {
           >
             <IconUsers class="h-5 w-5 shrink-0" />
             <span v-if="expanded" class="truncate">Friends</span>
-          </RouterLink>
-        </SidebarTooltip>
-        <!-- v8 local-first DMs (native shell only). -->
-        <SidebarTooltip v-if="isNative" label="Direct messages" :disabled="expanded">
-          <RouterLink
-            to="/dm"
-            aria-label="Direct messages"
-            class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
-            :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
-          >
-            <IconChatDots class="h-5 w-5 shrink-0" />
-            <span v-if="expanded" class="truncate">Direct messages</span>
           </RouterLink>
         </SidebarTooltip>
         <SidebarTooltip label="Settings" :disabled="expanded">

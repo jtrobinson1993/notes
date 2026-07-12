@@ -27,6 +27,7 @@ const relay = vi.hoisted(() => ({ onMailIngested: vi.fn(() => () => {}) }));
 vi.mock('../../src/lib/nativeRelay', () => relay);
 
 const nativeMod = vi.hoisted(() => ({
+  isNative: true,
   relayDeleteMessage: vi.fn(),
   relayEditMessage: vi.fn(),
   relayReact: vi.fn(),
@@ -282,6 +283,7 @@ describe('NativeChat', () => {
     await w.find('[data-testid="redeem"]').trigger('click');
     await flushPromises();
     expect(friends.redeemInvite).toHaveBeenCalledWith('accord://friend?i=xyz');
-    expect(dm.listDms).toHaveBeenCalledTimes(2); // mount + after redeem
+    // mount + redeem's refreshLists + the sidebar-list refresh (refreshNativeConversations).
+    expect(dm.listDms).toHaveBeenCalledTimes(3);
   });
 });

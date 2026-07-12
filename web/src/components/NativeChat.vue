@@ -4,8 +4,9 @@
 // server, no seq. Conversations' messages live in the local encrypted log.
 // Message actions (edit/delete/react) are DM-only for now (group edit/react
 // fan-out is a follow-up); groups support create / send / receive / add-member.
-import { onMounted, onUnmounted, ref } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
+import { refreshNativeConversations } from '../lib/nativeConversations';
 import IconAdd from '~icons/mynaui/message-plus';
 import IconSend from '~icons/mynaui/send-solid';
 import IconBack from '~icons/mynaui/chevron-left';
@@ -95,6 +96,7 @@ async function open(conv: Conv): Promise<void> {
   active.value = conv;
   await loadMessages();
   await refreshLists(); // opening marked it read → clear its unread badge
+  void refreshNativeConversations();
 }
 
 /** A message's attachments (the payload's attachments_json, parsed in rowToView). */
@@ -134,6 +136,7 @@ async function send(): Promise<void> {
     draft.value = '';
     pendingFiles.value = [];
     await loadMessages();
+    void refreshNativeConversations();
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -219,6 +222,7 @@ async function doRedeem(): Promise<void> {
     await redeemInvite(invite);
     redeemText.value = '';
     await refreshLists();
+    void refreshNativeConversations();
     panel.value = 'list';
   } catch (e) {
     error.value = String(e);
@@ -236,6 +240,7 @@ async function makeGroup(): Promise<void> {
     await createGroup(name);
     newGroupName.value = '';
     await refreshLists();
+    void refreshNativeConversations();
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -256,28 +261,51 @@ async function addMember(contactId: string): Promise<void> {
   }
 }
 
+// When embedded in the app, the conversation list lives in the app sidebar
+// (legacy layout), so hide this component's internal list and drive the active
+// conversation / add panel from the route (`?open=dm:<id>|grp:<id>`, `?add=1`).
+defineProps<{ hideList?: boolean }>();
 const route = useRoute();
+
+/** Open the conversation (or add panel) named by the route query. */
+async function openFromRoute(): Promise<void> {
+  const q = route?.query ?? {};
+  if (q.add === '1') {
+    panel.value = 'add';
+    return;
+  }
+  const target = q.open;
+  if (typeof target !== 'string') return;
+  panel.value = 'list';
+  if (target.startsWith('dm:')) {
+    const id = target.slice(3);
+    const dm = dms.value.find((d) => d.contactId === id);
+    if (dm) await open({ kind: 'dm', id: dm.contactId, name: dm.displayName || dm.handle, conversationId: dm.conversationId });
+  } else if (target.startsWith('grp:')) {
+    const id = target.slice(4);
+    const g = groups.value.find((x) => x.groupId === id);
+    if (g) await open({ kind: 'group', id: g.groupId, name: g.name || 'Group', conversationId: g.conversationId });
+  }
+}
+
 let unsub: (() => void) | null = null;
 onMounted(async () => {
   await refreshLists();
-  // Deep link from the Friends page ("Message"): auto-open that friend's DM.
-  const openId = route?.query?.open;
-  if (typeof openId === 'string') {
-    const dm = dms.value.find((d) => d.contactId === openId);
-    if (dm) await open({ kind: 'dm', id: dm.contactId, name: dm.displayName || dm.handle, conversationId: dm.conversationId });
-  }
+  await openFromRoute();
   unsub = onMailIngested(() => {
     void loadMessages();
     void refreshLists();
+    void refreshNativeConversations(); // keep the sidebar list + unread current
   });
 });
 onUnmounted(() => unsub?.());
+watch(() => [route?.query?.open, route?.query?.add], () => void openFromRoute());
 </script>
 
 <template>
   <div class="flex h-full">
-    <!-- Conversation list -->
-    <aside class="flex w-64 shrink-0 flex-col border-r border-neutral-500/20">
+    <!-- Conversation list (hidden in the app — the app sidebar shows it). -->
+    <aside v-if="!hideList" class="flex w-64 shrink-0 flex-col border-r border-neutral-500/20">
       <header class="flex items-center justify-between p-3">
         <h2 class="text-sm font-semibold">Chats</h2>
         <button
@@ -340,6 +368,13 @@ onUnmounted(() => unsub?.());
         <p class="text-sm opacity-70">Or redeem one you were sent:</p>
         <textarea v-model="redeemText" rows="2" placeholder="Paste an invite link" class="w-full rounded border border-neutral-500/30 bg-transparent p-2 font-mono text-xs" />
         <button data-testid="redeem" :disabled="busy || !redeemText.trim()" class="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50" @click="doRedeem">Redeem</button>
+      </div>
+      <div class="mt-6 space-y-2">
+        <p class="text-sm opacity-70">Or create a group:</p>
+        <form class="flex items-center gap-2" @submit.prevent="makeGroup">
+          <input v-model="newGroupName" data-testid="add-panel-group" placeholder="Group name" class="min-w-0 flex-1 rounded border border-neutral-500/30 bg-transparent px-3 py-2 text-sm" />
+          <button type="submit" :disabled="busy || !newGroupName.trim()" class="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">Create</button>
+        </form>
       </div>
       <p v-if="error" class="mt-4 text-sm text-red-500">{{ error }}</p>
     </section>

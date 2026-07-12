@@ -7,6 +7,7 @@ import { startChat, stopChat, useChatStore } from './stores/chat';
 import { useVoiceStore } from './stores/voice';
 import { isNative } from './lib/native';
 import { gateState } from './lib/nativeVault';
+import { startNativeConversations } from './lib/nativeConversations';
 import NotificationOptIn from './components/NotificationOptIn.vue';
 import NativeGate from './components/NativeGate.vue';
 import NativeCallHost from './components/NativeCallHost.vue';
@@ -24,7 +25,10 @@ if (isNative) {
   watch(
     () => gateState.value,
     (s) => {
-      if (s === 'ready') void profile.load();
+      if (s === 'ready') {
+        void profile.load();
+        startNativeConversations(); // keep the sidebar chat list current
+      }
     },
     { immediate: true },
   );
