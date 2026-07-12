@@ -66,6 +66,39 @@ export function settingsSet(key: string, value: string): Promise<void> {
   return invoke('settings_set', { key, value });
 }
 
+// ---- multi-account (each account = its own vault; switching restarts the app) ----
+
+export interface AccountEntry {
+  id: string;
+  /** The account's public handle, once onboarded (else a placeholder). */
+  label: string;
+  dir: string;
+}
+export interface AccountRegistry {
+  active: string;
+  accounts: AccountEntry[];
+}
+
+/** The accounts on this device + which is active. */
+export function accountList(): Promise<AccountRegistry> {
+  return invoke<AccountRegistry>('account_list');
+}
+
+/** Switch to another account (restarts the app into its vault). */
+export function accountSwitch(id: string): Promise<void> {
+  return invoke('account_switch', { id });
+}
+
+/** Add a new empty account + switch to it (restart lands on onboarding). */
+export function accountAdd(): Promise<void> {
+  return invoke('account_add');
+}
+
+/** Label the active account with its handle (after onboarding / handle change). */
+export function accountSetLabel(label: string): Promise<void> {
+  return invoke('account_set_label', { label });
+}
+
 // ---- relay auth (D4/D4b client half) ----
 
 /** This device's Ed25519 public key (created on first use, keychain-held). */

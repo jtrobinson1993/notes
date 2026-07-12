@@ -5,7 +5,7 @@ import AppLayout from '../components/AppLayout.vue';
 import RecoveryCodeCard from '../components/RecoveryCodeCard.vue';
 import AppModal from '../components/AppModal.vue';
 import DeviceLockSettings from '../components/settings/DeviceLockSettings.vue';
-import { isNative, relayChangeHandle } from '../lib/native';
+import { isNative, relayChangeHandle, accountSetLabel } from '../lib/native';
 import { generateHandleOptions } from '@notes/shared';
 import { MIN_PASSWORD_LENGTH, derivePasswordKey, derivePasswordAuthKey } from '../lib/password';
 import { b64, ub64 } from '../lib/b64';
@@ -147,6 +147,7 @@ async function nativeChangeHandle(opt: string): Promise<void> {
     const confirmed = await relayChangeHandle(opt);
     handle.value = confirmed;
     profile.myHandle = confirmed;
+    await accountSetLabel(confirmed); // keep the account switcher label current
     nativeHandleOptions.value = [];
     handleChangeMsg.value = 'Handle changed.';
   } catch (e) {

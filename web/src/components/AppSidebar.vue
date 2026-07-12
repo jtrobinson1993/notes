@@ -8,6 +8,7 @@ import { useSessionStore } from '../stores/session';
 import { useProfileStore } from '../stores/profile';
 import { useNotesStore } from '../stores/notes';
 import NewChatModal from './NewChatModal.vue';
+import AccountSwitcher from './AccountSwitcher.vue';
 import SidebarTooltip from './SidebarTooltip.vue';
 import ActiveBar from './ActiveBar.vue';
 import { conversationInitial, conversationTitle, dmPeerId } from '../lib/convName';
@@ -22,6 +23,7 @@ import IconPen from '~icons/mynaui/pen';
 import IconLock from '~icons/mynaui/lock';
 import IconCog from '~icons/mynaui/cog';
 import IconUsers from '~icons/mynaui/users';
+import IconUserCircle from '~icons/mynaui/user-circle';
 import IconLogout from '~icons/mynaui/logout';
 
 const session = useSessionStore();
@@ -53,6 +55,7 @@ function toggle() {
 }
 
 const newChatOpen = ref(false);
+const accountSwitcherOpen = ref(false);
 
 function convName(conv: Conversation): string {
   return conversationTitle(conv, session.user?.id);
@@ -133,6 +136,7 @@ const navClass = computed(() => {
         </SidebarTooltip>
       </div>
       <NewChatModal v-if="!isNative" v-model:open="newChatOpen" />
+      <AccountSwitcher v-if="isNative" v-model:open="accountSwitcherOpen" />
 
       <!-- Conversations + Notes -->
       <div class="flex min-h-0 grow flex-col gap-1 overflow-y-auto">
@@ -275,6 +279,17 @@ const navClass = computed(() => {
             <IconCog class="h-5 w-5 shrink-0" />
             <span v-if="expanded" class="truncate">Settings</span>
           </RouterLink>
+        </SidebarTooltip>
+        <SidebarTooltip v-if="isNative" label="Switch account" :disabled="expanded">
+          <button
+            class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
+            :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
+            aria-label="Switch account"
+            @click="accountSwitcherOpen = true"
+          >
+            <IconUserCircle class="h-5 w-5 shrink-0" />
+            <span v-if="expanded" class="truncate">Switch account</span>
+          </button>
         </SidebarTooltip>
         <SidebarTooltip label="Sign out" :disabled="expanded">
           <button

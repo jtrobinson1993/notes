@@ -1,3 +1,4 @@
+mod accounts;
 mod attachment;
 mod blobs;
 mod envelope;
@@ -13,9 +14,42 @@ mod voice_live;
 
 use std::sync::Mutex;
 use tauri::Manager;
+use accounts::{AccountManager, Registry};
 use vault::{Vault, VaultStatus};
 
 type VaultState<'a> = tauri::State<'a, Mutex<Vault>>;
+type AccountState<'a> = tauri::State<'a, Mutex<AccountManager>>;
+
+/// The accounts on this device + which is active (for the switcher).
+#[tauri::command]
+fn account_list(accounts: AccountState) -> Registry {
+    accounts.lock().unwrap().registry()
+}
+
+/// Switch to another account: persist the choice and restart so the new account
+/// gets a fresh vault + relay/live-delivery tasks (single-session by design).
+#[tauri::command]
+fn account_switch(id: String, app: tauri::AppHandle, accounts: AccountState) -> Result<(), String> {
+    if !accounts.lock().unwrap().set_active(&id) {
+        return Err("unknown account".into());
+    }
+    app.restart();
+}
+
+/// Add a new (empty) account and switch to it — the restart lands on onboarding.
+#[tauri::command]
+fn account_add(app: tauri::AppHandle, accounts: AccountState) -> Result<(), String> {
+    accounts.lock().unwrap().add();
+    app.restart();
+}
+
+/// Label the active account with its handle (called after onboarding / a handle
+/// change) so the switcher shows real names.
+#[tauri::command]
+fn account_set_label(label: String, accounts: AccountState) -> Result<(), String> {
+    accounts.lock().unwrap().set_active_label(&label);
+    Ok(())
+}
 
 #[tauri::command]
 fn vault_status(vault: VaultState) -> VaultStatus {
@@ -1883,13 +1917,22 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            let data_dir = app.path().app_data_dir()?;
-            app.manage(Mutex::new(Vault::new(data_dir)));
+            // Multi-account: open the *active* account's vault (its own data dir).
+            // First run creates a default account that uses app_data_dir directly,
+            // preserving any existing single-account vault.
+            let base_dir = app.path().app_data_dir()?;
+            let manager = AccountManager::load(base_dir);
+            app.manage(Mutex::new(Vault::new(manager.active_data_dir())));
+            app.manage(Mutex::new(manager));
             app.manage(relay_client::RelayClient::default());
             app.manage(voice_live::VoiceSignal::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            account_list,
+            account_switch,
+            account_add,
+            account_set_label,
             vault_status,
             vault_create,
             vault_unlock_keychain,

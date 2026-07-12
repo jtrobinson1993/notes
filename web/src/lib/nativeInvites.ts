@@ -6,6 +6,7 @@
 // friends-store cutover.
 
 import {
+  accountSetLabel,
   envelopeSeal,
   relayConnect,
   relayDirectoryPublish,
@@ -58,6 +59,7 @@ export interface SignupIdentity {
  *  to friends comes with the friends cutover; for now it's shown in my own UI. */
 async function persistIdentity(handle: string, displayName?: string): Promise<void> {
   await settingsSet(MY_HANDLE_KEY, handle);
+  await accountSetLabel(handle); // so the account switcher shows my handle
   if (displayName?.trim()) await settingsSet(MY_DISPLAY_NAME_KEY, displayName.trim());
 }
 
