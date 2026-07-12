@@ -31,16 +31,15 @@ const notes = useNotesStore();
 const router = useRouter();
 
 async function logout() {
+  // Native has no server session to end — "sign out" re-locks the vault (the
+  // local-first equivalent); NativeGate then shows the unlock wall.
+  if (isNative) {
+    await lockVault();
+    return;
+  }
   await session.logout();
   notes.reset();
   router.push('/login');
-}
-
-/** Native "sign out" = re-lock the vault (the local-first equivalent; there's no
- *  server session to end). NativeGate then shows the unlock wall. */
-async function lockNow() {
-  if (isNative) await lockVault();
-  else session.lock();
 }
 
 const STORAGE_KEY = 'sidebar-expanded';
@@ -232,12 +231,12 @@ const navClass = computed(() => {
             <span v-if="expanded" class="truncate">Collapse</span>
           </button>
         </SidebarTooltip>
-        <SidebarTooltip v-if="isNative || session.unlocked" label="Lock now" :disabled="expanded">
+        <SidebarTooltip v-if="!isNative && session.unlocked" label="Lock now" :disabled="expanded">
           <button
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
             aria-label="Lock now"
-            @click="lockNow"
+            @click="session.lock()"
           >
             <IconLock class="h-5 w-5 shrink-0" />
             <span v-if="expanded" class="truncate">Lock</span>
@@ -277,7 +276,7 @@ const navClass = computed(() => {
             <span v-if="expanded" class="truncate">Settings</span>
           </RouterLink>
         </SidebarTooltip>
-        <SidebarTooltip v-if="!isNative" label="Sign out" :disabled="expanded">
+        <SidebarTooltip label="Sign out" :disabled="expanded">
           <button
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-zinc-500 dark:text-zinc-400"
             :class="expanded ? 'hover:bg-zinc-200 dark:hover:bg-zinc-800' : 'justify-center'"
