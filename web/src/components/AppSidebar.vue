@@ -110,12 +110,23 @@ function chatActive(id: string): boolean {
 // a bare full-width menu. On desktop it's always the normal rail. ---
 const railHidden = computed(() => {
   if (!isMobile.value) return false;
-  const p = router.currentRoute.value.path;
+  const r = router.currentRoute.value;
+  const p = r.path;
   if (p.startsWith('/chat/')) {
     // Only step aside for a real, loaded conversation's messages — otherwise a
     // missing/not-yet-loaded chat would hide the rail into a blank screen.
     const id = activeConvId.value;
     return chatPane.value === 'messages' && !!id && chat.conversations.some((c) => c.id === id);
+  }
+  if (p === '/dm') {
+    // Same rule for the native chat surface: the messages (or a note over them)
+    // own the screen; its sidebar pane keeps the rail beside it.
+    const key = r.query.open;
+    return (
+      chatPane.value === 'messages' &&
+      typeof key === 'string' &&
+      nativeConversations.value.some((c) => c.key === key)
+    );
   }
   if (p === '/') return noteOpen.value;
   return false; // friends/settings keep the rail for navigation
@@ -163,6 +174,7 @@ const navClass = computed(() => {
             :to="{ path: '/dm', query: { open: c.key } }"
             :aria-label="c.title"
             class="group relative flex items-center gap-2 px-2 py-1 text-sm"
+            @click="showChannels()"
             :class="[
               expanded ? '' : 'justify-center',
               nativeChatActive(c.key) ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-200',

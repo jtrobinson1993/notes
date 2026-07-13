@@ -108,7 +108,10 @@ and export are unchanged.
   clicking a pill opens the shared ColorPalette; pill text auto-picks black/white
   by WCAG luminance. Tag colors sync as an **encrypted settings blob**
   (`user_settings` table, `GET/PUT /api/settings/:key`, wrapped by MK — tag
-  names never reach the server in plaintext), with localStorage as cache.
+  names never reach the server in plaintext), with localStorage as cache. In the
+  **native shell** (no server) the blob is stored in the **encrypted vault**
+  (`settings_get`/`settings_set`, SQLCipher) and the plaintext localStorage cache
+  is not used — the blob's keys *are* tag names.
 - **Notes list:** opening the page auto-selects the most-recently-edited note
   (or creates one if empty; desktop only). Previews are plain text (markup
   stripped via the export pipeline) prefixed by the note's tag pills.
@@ -197,7 +200,9 @@ the per-conversation pins are stored as a single **master-key-encrypted settings
 blob** (`notes-org`, the same mechanism as tag colors / custom emoji), with a
 `localStorage` instant-load cache (`web/src/stores/organization.ts`). Folder
 names are as sensitive as tag names, so the whole blob is encrypted; the server
-only ever stores ciphertext.
+only ever stores ciphertext. In the **native shell** (no server) the same blob is
+persisted to the **encrypted vault** (`settings_get`/`settings_set`, SQLCipher)
+and the plaintext `localStorage` cache is not used.
 
 Because it lives outside the (E2EE) note payload and the server note model:
 

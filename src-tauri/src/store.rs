@@ -297,6 +297,16 @@ pub struct GroupSummary {
     pub name: Option<String>,
 }
 
+/// A conversation's activity, for ordering the sidebar by recency (D11).
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ConversationActivity {
+    pub conversation_id: String,
+    /// Newest message's relay stamp, or 0 when the conversation has none yet.
+    pub last_ts: i64,
+    /// Unread inbound (not-mine, not-deleted) messages past the read marker.
+    pub unread: i64,
+}
+
 /// Outcome of observing a `(epoch, root)` for a relay's KT log.
 #[derive(Debug, PartialEq, Eq)]
 pub enum KtObserve {
@@ -895,6 +905,34 @@ impl Store {
         )?)
     }
 
+    /// Every conversation's last-message stamp + unread count, in one pass —
+    /// what the sidebar orders by (most recent activity first). A conversation
+    /// with no messages yet (e.g. a brand-new friend's DM) reports `last_ts` 0,
+    /// so it still appears, just below the ones with traffic.
+    pub fn conversation_activity(&self) -> Result<Vec<ConversationActivity>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id,
+                    COALESCE(MAX(m.relay_ts), 0),
+                    COUNT(CASE WHEN m.relay_ts > c.last_read_ts AND m.deleted = 0
+                                 AND (m.sender_contact_id IS NULL OR m.sender_contact_id != 'self')
+                               THEN 1 END)
+               FROM conversations c
+               LEFT JOIN messages m ON m.conversation_id = c.id
+              GROUP BY c.id
+              ORDER BY 2 DESC",
+        )?;
+        let rows = stmt
+            .query_map((), |r| {
+                Ok(ConversationActivity {
+                    conversation_id: r.get(0)?,
+                    last_ts: r.get(1)?,
+                    unread: r.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// The `sender_contact_id` of a message, or None if unknown — the authority
     /// check for an inbound edit/delete (only the original sender may change it).
     pub fn message_sender(&self, id: &str) -> Result<Option<String>, StoreError> {
@@ -1483,6 +1521,53 @@ mod tests {
         // A newer inbound message becomes unread again.
         store.import_messages(vec![msg("m4", 40, "friend")]).unwrap();
         assert_eq!(store.conversation_unread("c1").unwrap(), 1);
+    }
+
+    #[test]
+    fn conversation_activity_orders_by_recency_and_keeps_empty_conversations() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[14u8; 32]).unwrap();
+        store.upsert_relay("r1", "https://r.example", "fp", &[1u8; 32]).unwrap();
+        for c in ["quiet", "old", "busy"] {
+            store.ensure_conversation(c, "dm", "r1").unwrap();
+        }
+        let msg = |id: &str, conv: &str, ts: i64, sender: &str| ImportMessage {
+            id: id.into(),
+            conversation_id: conv.into(),
+            channel_id: None,
+            sender_contact_id: Some(sender.into()),
+            relay_ts: ts,
+            content: Some("x".into()),
+            kind: "text".into(),
+            reply_ref_json: None,
+            attachments_json: None,
+            edited_at: None,
+        };
+        store
+            .import_messages(vec![
+                msg("m1", "old", 10, "friend"),
+                msg("m2", "busy", 30, "friend"),
+                msg("m3", "busy", 40, "self"), // mine — newest, but not unread
+            ])
+            .unwrap();
+
+        let rows = store.conversation_activity().unwrap();
+        // Most recent first; a friend I've never messaged still shows (last_ts 0).
+        assert_eq!(
+            rows,
+            vec![
+                ConversationActivity { conversation_id: "busy".into(), last_ts: 40, unread: 1 },
+                ConversationActivity { conversation_id: "old".into(), last_ts: 10, unread: 1 },
+                ConversationActivity { conversation_id: "quiet".into(), last_ts: 0, unread: 0 },
+            ]
+        );
+
+        // Reading a conversation clears its unread but keeps its place in the order.
+        store.mark_conversation_read("busy").unwrap();
+        let rows = store.conversation_activity().unwrap();
+        assert_eq!(rows[0].conversation_id, "busy");
+        assert_eq!(rows[0].unread, 0);
+        assert_eq!(rows[0].last_ts, 40);
     }
 
     #[test]

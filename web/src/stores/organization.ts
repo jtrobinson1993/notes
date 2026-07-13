@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { computed, onScopeDispose, ref } from 'vue';
 import { api } from '../lib/api';
 import { unwrapKey, wrapKey } from '../lib/crypto';
+import { isNative, settingsGet, settingsSet } from '../lib/native';
 import { useSessionStore } from './session';
 
 // v4 — note folders + chat-sidebar pins.
@@ -12,6 +13,11 @@ import { useSessionStore } from './session';
 // (sharing is v5). The whole structure is one master-key-encrypted settings blob
 // (folder names are as sensitive as tag names), mirroring tag colors / custom
 // emoji, with a localStorage instant-load cache.
+//
+// In the native shell there is no server: the blob lives in the encrypted vault
+// (SQLCipher `settings`, via the Rust core) instead, and the localStorage cache
+// is NOT used — folder names and pins are as sensitive as tag names, so they must
+// not sit in plaintext on disk next to an encrypted store.
 
 const SETTING_KEY = 'notes-org';
 const LOCAL_KEY = 'notes:org';
@@ -72,6 +78,8 @@ function empty(): OrgData {
 }
 
 function loadLocal(): OrgData {
+  // Native keeps no plaintext cache — load() reads the encrypted vault instead.
+  if (isNative) return empty();
   try {
     const raw = localStorage.getItem(LOCAL_KEY);
     if (!raw) return empty();
@@ -151,7 +159,7 @@ export const useOrgStore = defineStore('organization', () => {
 
   let pushTimer: ReturnType<typeof setTimeout> | null = null;
   function persist(): void {
-    localStorage.setItem(LOCAL_KEY, JSON.stringify(snapshot()));
+    if (!isNative) localStorage.setItem(LOCAL_KEY, JSON.stringify(snapshot()));
     if (pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(() => void pushRemote(), 800);
   }
@@ -161,26 +169,47 @@ export const useOrgStore = defineStore('organization', () => {
   onScopeDispose(() => {
     if (pushTimer) clearTimeout(pushTimer);
   });
+  /** Write the blob out: to the encrypted vault on native, else to the server as
+   *  a master-key-wrapped setting. */
   async function pushRemote(): Promise<void> {
+    if (isNative) {
+      await settingsSet(SETTING_KEY, JSON.stringify(snapshot())).catch(() => {});
+      return;
+    }
     if (!session.mk) return;
     const wrapped = await wrapKey(session.mk, new TextEncoder().encode(JSON.stringify(snapshot())), INFO_SETTINGS);
     await api.settingPut(SETTING_KEY, JSON.stringify(wrapped)).catch(() => {});
   }
 
-  /** Fetch + decrypt the server copy once unlocked. */
+  function apply(d: OrgData): void {
+    folders.value = d.folders;
+    noteFolders.value = d.noteFolders;
+    pins.value = d.pins;
+    noteOrder.value = d.noteOrder ?? {};
+    chat.value = d.chat ?? {};
+  }
+
+  /** Read the stored blob: the encrypted vault on native, else the server copy
+   *  (decrypted with the master key) once unlocked. */
   async function load(): Promise<void> {
-    if (loaded.value || !session.mk) return;
+    if (loaded.value) return;
+    if (isNative) {
+      loaded.value = true;
+      try {
+        const raw = await settingsGet(SETTING_KEY);
+        if (raw) apply({ ...empty(), ...(JSON.parse(raw) as OrgData) });
+      } catch {
+        loaded.value = false; // transient: retry next call
+      }
+      return;
+    }
+    if (!session.mk) return;
     loaded.value = true;
     try {
       const remote = await api.settingGet(SETTING_KEY);
       if (!remote) return; // nothing stored yet
       const pt = await unwrapKey(session.mk, JSON.parse(remote.data), INFO_SETTINGS);
-      const d = { ...empty(), ...(JSON.parse(new TextDecoder().decode(pt)) as OrgData) };
-      folders.value = d.folders;
-      noteFolders.value = d.noteFolders;
-      pins.value = d.pins;
-      noteOrder.value = d.noteOrder ?? {};
-      chat.value = d.chat ?? {};
+      apply({ ...empty(), ...(JSON.parse(new TextDecoder().decode(pt)) as OrgData) });
       localStorage.setItem(LOCAL_KEY, JSON.stringify(snapshot()));
     } catch {
       loaded.value = false; // transient: retry next call

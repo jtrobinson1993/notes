@@ -104,6 +104,13 @@ inside the app (that invite additionally establishes the friendship).
 > exist during the greenfield transition, but the native app is the product and
 > the relay above is its backend.
 
+In the app, the **left rail** lists every friend (your DM with them) and every
+group, ordered by most recent activity — expand it to see names next to the
+icons, and click one to open the chat. Each chat has its own **sidebar**: `#chat`
+for the conversation itself, plus notes you **pin** to it, organized into
+folders you can nest and drag around. Pinning is private — it doesn't share the
+note.
+
 ### Voice (v6)
 
 Voice is **end-to-end encrypted** and relayed through a built-in mediasoup SFU

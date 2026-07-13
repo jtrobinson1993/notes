@@ -35,6 +35,7 @@ const nativeMod = vi.hoisted(() => ({
   relayGroupEditMessage: vi.fn(),
   relayGroupReact: vi.fn(),
   conversationReactions: vi.fn().mockResolvedValue([]),
+  conversationActivity: vi.fn().mockResolvedValue([]),
   attachmentUpload: vi.fn(),
   attachmentFetch: vi.fn().mockResolvedValue([1, 2, 3]),
 }));
@@ -57,6 +58,7 @@ beforeEach(() => {
   grp.openGroup.mockResolvedValue({ conversationId: 'grp:x', messages: [] });
   relay.onMailIngested.mockReturnValue(() => {});
   nativeMod.conversationReactions.mockResolvedValue([]);
+  nativeMod.conversationActivity.mockResolvedValue([]);
 });
 
 describe('NativeChat', () => {

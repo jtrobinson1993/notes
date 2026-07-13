@@ -112,6 +112,39 @@ Implemented in `AppSidebar.vue`, mounted as a left rail in `AppLayout.vue`
 page content region (`<main>`), which is the only thing that scrolls, so the
 fixed sidebar controls never scroll out of view.
 
+## The rail + chat sidebar in the native shell (v8) — as built
+
+The native (Tauri) shell keeps the same two-level shape, sourced from the local
+store instead of the server (`lib/nativeConversations.ts`, refreshed on every
+mailbox drain):
+
+- **The rail lists every friend and every group.** A v8 DM exists for each
+  friend by construction (its conversation id is derived from the two identity
+  keys), so the rail lists **one entry per friend** — their icon (display-name
+  or handle initial; contacts have no avatar in v8 yet) plus, when expanded,
+  their **name** — and every group. Clicking one opens that conversation
+  (`/dm?open=dm:<contactId>|grp:<groupId>`). Unread badges as in the legacy rail.
+- **Ordered by most recent activity.** The Rust core's `conversation_activity`
+  returns each conversation's newest message stamp + unread count in one call;
+  the rail sorts by that stamp, newest first. A friend you've never messaged has
+  no messages, so they sort last (by name), but they are still listed — that's
+  how you start the first DM.
+- **Each chat has its own sidebar** (`NativeChatSidebar.vue`, between the rail
+  and the messages): a fixed **`#chat`** entry at the top — the conversation
+  itself, and the way back from an open note — then the personal tree of
+  **pinned notes** grouped by **chat folders** (create / rename / delete /
+  nest, drag-and-drop arrangement, pin/unpin via the pin picker), exactly as the
+  legacy DM sidebar. Clicking a pinned note **opens it over the messages**
+  (`NoteEditor`, full pane). v8 groups have no sub-channels yet (the relay's
+  group record carries members, not channels), so a group's sidebar is the same
+  `#chat` + pins tree; channels arrive with the group-channel record.
+- **Organization stays personal, and encrypted.** Folders and pins reuse the org
+  store's chat namespace (keyed by conversation id). There is no server in the
+  native shell, so the blob is persisted to the **encrypted vault** (SQLCipher
+  `settings`, via `settings_get`/`settings_set`) and the browser's plaintext
+  `localStorage` cache is **not** used — folder names are as sensitive as tag
+  names and must not sit in the clear beside an encrypted store.
+
 ## Modals
 
 `AppModal.vue` is the reusable shell for **primary, blocking actions** (the user

@@ -2,6 +2,7 @@ import { reactive } from 'vue';
 import { useSessionStore } from '../stores/session';
 import { api } from './api';
 import { unwrapKey, wrapKey } from './crypto';
+import { isNative, settingsGet, settingsSet } from './native';
 import { PRESET_COLORS, presetCss } from './editor/palette';
 
 // Per-tag pill colors, chosen via the pill's color popover. Values are the
@@ -9,15 +10,20 @@ import { PRESET_COLORS, presetCss } from './editor/palette';
 // light-dark(...)); tags without a stored color get a stable preset hashed
 // from their name.
 //
-// Colors are synced server-side as an encrypted settings blob (tag names are
-// sensitive — they otherwise only exist inside encrypted note payloads), with
-// localStorage as an instant-load/offline cache.
+// Colors are synced server-side as an encrypted settings blob (the KEYS are tag
+// names — sensitive, since they otherwise only exist inside encrypted note
+// payloads), with localStorage as an instant-load/offline cache.
+//
+// In the native shell there is no server: the blob lives in the encrypted vault
+// (SQLCipher `settings`, via the Rust core) and the plaintext localStorage cache
+// is NOT used — otherwise every tag name would sit in the clear on disk.
 
 const LOCAL_KEY = 'notes:tag-colors';
 const SETTING_KEY = 'tag-colors';
 const INFO_SETTINGS = 'notes:wrap:settings:v1';
 
 function load(): Record<string, string> {
+  if (isNative) return {}; // no plaintext cache; loadTagColors() reads the vault
   try {
     return JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}') as Record<string, string>;
   } catch {
@@ -28,12 +34,17 @@ function load(): Record<string, string> {
 const stored = reactive<Record<string, string>>(load());
 
 function persistLocal(): void {
+  if (isNative) return; // the vault write (schedulePush) is the only copy
   localStorage.setItem(LOCAL_KEY, JSON.stringify({ ...stored }));
 }
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function pushRemote(): Promise<void> {
+  if (isNative) {
+    await settingsSet(SETTING_KEY, JSON.stringify({ ...stored })).catch(() => {});
+    return;
+  }
   const session = useSessionStore();
   if (!session.mk) return;
   const wrapped = await wrapKey(session.mk, new TextEncoder().encode(JSON.stringify({ ...stored })), INFO_SETTINGS);
@@ -47,9 +58,21 @@ function schedulePush(): void {
 
 let loaded = false;
 
-/** Fetch and decrypt the server copy once the session is unlocked; local
- * entries missing from the server (offline edits) are pushed back. */
+/** Read the stored colors: the encrypted vault on native, else the server copy
+ * (decrypted with the master key) once the session is unlocked; local entries
+ * missing from the server (offline edits) are pushed back. */
 export async function loadTagColors(): Promise<void> {
+  if (isNative) {
+    if (loaded) return;
+    loaded = true;
+    try {
+      const raw = await settingsGet(SETTING_KEY);
+      if (raw) Object.assign(stored, JSON.parse(raw) as Record<string, string>);
+    } catch {
+      loaded = false; // transient: retry on the next call
+    }
+    return;
+  }
   const session = useSessionStore();
   if (loaded || !session.mk) return;
   loaded = true;

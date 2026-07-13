@@ -356,6 +356,18 @@ export function dmUnread(conversationId: string): Promise<number> {
   return invoke<number>('dm_unread', { conversationId });
 }
 
+/** A conversation's activity: newest message stamp (0 = no messages yet) + unread. */
+export interface ConversationActivity {
+  conversation_id: string;
+  last_ts: number;
+  unread: number;
+}
+
+/** Every conversation's activity in one call — what the sidebar orders by. */
+export function conversationActivity(): Promise<ConversationActivity[]> {
+  return invoke<ConversationActivity[]>('conversation_activity');
+}
+
 // ---- groups (D14) ----
 
 export interface GroupSummary {

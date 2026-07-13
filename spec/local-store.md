@@ -76,6 +76,9 @@ Namespaced Tauri commands; events flow back to the UI (`message-received`,
 - `relays.add(url, invite) / list() / remove()` — D4b join + identity derive.
 - `contacts.invite() / redeem(token) / verifySas(contactId) / link(contactId, relayId)` (D4c)
 - `messages.send(convId, content, attachments?) / list(convId, cursor) / edit / delete / react / markRead`
+- `conversation_activity()` — every conversation's newest-message stamp +
+  unread count in one pass (what the side rail orders chats by; conversations
+  with no messages report `last_ts` 0 and still list).
 - `notes.create / open(id) → doc handle / applyUpdate / history(id) / restore`
 - `groups.create / updateState(record)` — signs with owner/admin key (D14).
 - `attachments.fetch(id) / evict / rehydrate` (D6 retention)

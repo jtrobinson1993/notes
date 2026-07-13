@@ -832,6 +832,15 @@ fn dm_unread(conversation_id: String, vault: VaultState) -> Result<i64, String> 
         .map_err(|e| e.to_string())
 }
 
+/// Every conversation's last-message stamp + unread count (D11) — one call, so
+/// the sidebar can order chats by most recent activity without a query per row.
+#[tauri::command]
+fn conversation_activity(vault: VaultState) -> Result<Vec<store::ConversationActivity>, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.conversation_activity().map_err(|e| e.to_string())
+}
+
 /// Create a group I own (D14): publish my directory keys, PUT a genesis
 /// group-state record (me = owner, signed by my identity), register the group
 /// verifier derived from a fresh group key, and store the key + a local group
@@ -1957,6 +1966,7 @@ pub fn run() {
             dm_conversation_id_for,
             dm_mark_read,
             dm_unread,
+            conversation_activity,
             group_create,
             group_add_member,
             group_list,

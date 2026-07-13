@@ -15,6 +15,7 @@ import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import { useOrgStore, type OrgFolder } from '../stores/organization';
 import { useSessionStore } from '../stores/session';
 import { isMobile, noteOpen } from '../lib/mobileNav';
+import { isNative } from '../lib/native';
 import IconFolderMinus from '~icons/mynaui/folder-minus';
 import IconFolderPlus from '~icons/mynaui/folder-plus';
 import IconNote from '~icons/mynaui/file-text';
@@ -196,11 +197,19 @@ async function autoOpen() {
   selectedId.value = notes.sorted[0]?.id ?? (await notes.create());
 }
 
-// Instant load from the encrypted IndexedDB cache, then background sync.
+// Notes are readable once the keys are: in the browser that's the unlocked
+// session (master key held), in the native shell it's the vault gate — which
+// only renders the app once the vault is open, and never populates the legacy
+// session's master key. Gating on `session.unlocked` alone would leave the
+// native notes list permanently empty.
+const notesReady = computed(() => isNative || session.unlocked);
+
+// Instant load from the encrypted local store (SQLite natively, IndexedDB in the
+// browser), then background sync.
 useQuery({
   key: ['notes-sync'],
   query: async () => {
-    if (!session.unlocked) return null;
+    if (!notesReady.value) return null;
     if (!notes.loaded) await notes.loadFromCache();
     await notes.sync();
     void loadTagColors();
@@ -214,9 +223,9 @@ useQuery({
 });
 
 watch(
-  () => session.unlocked,
-  async (unlocked) => {
-    if (unlocked) {
+  notesReady,
+  async (ready) => {
+    if (ready) {
       await notes.loadFromCache();
       await notes.sync();
       void loadTagColors();

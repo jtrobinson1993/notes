@@ -925,3 +925,22 @@ not-yet-handled kind, so nothing is dropped across an app update; **discard
 authenticated-but-garbage payload — so a single malformed/forged inject can't
 wedge the queue. Rows are acked only after they are durably stored
 (hold-until-ack).
+
+### The native chat surface (v8) — as built
+
+The native shell's chat lives at `/dm` (`NativeChatPage.vue`) and mirrors the
+legacy three-column layout, with the local store — not the server — behind it:
+
+- **App rail** (`AppSidebar.vue`): every friend's DM + every group, ordered by
+  most recent activity. See [ui.md](ui.md) § The rail + chat sidebar in the
+  native shell.
+- **The conversation's sidebar** (`NativeChatSidebar.vue`): `#chat` at the top,
+  then pinned notes grouped into chat folders (personal; shares the org store's
+  chat namespace with the legacy sidebar). A pinned note opens over the messages.
+- **The messages** (`NativeChat.vue`): send / edit / delete / react / attach,
+  DMs and groups, off the local log (`messages_page`) with live updates on each
+  mailbox drain.
+
+Read state and ordering come from the core: `dm_mark_read` on open, and
+`conversation_activity` (newest `relay_ts` + unread per conversation) for the
+rail's order and its unread badges.
