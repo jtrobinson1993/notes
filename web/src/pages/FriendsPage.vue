@@ -17,7 +17,11 @@ onMounted(async () => {
   try {
     await friends.load();
   } catch (e) {
-    loadError.value = e instanceof Error ? e.message : 'failed to load friends';
+    // The native core rejects with a plain string (not an Error), so surface the
+    // reason itself — "not connected to a relay" is actionable; a bare "failed to
+    // load friends" reads like the friends are gone when they're only unreachable.
+    const reason = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
+    loadError.value = reason ? `Couldn’t load friends: ${reason}` : 'Couldn’t load friends.';
   } finally {
     loading.value = false;
   }
@@ -231,7 +235,7 @@ function fmtExpiry(ts: number): string {
               Remove
             </button>
           </li>
-          <li v-if="!loading && !friends.friends.length" class="p-3 text-sm text-zinc-400">
+          <li v-if="!loading && !loadError && !friends.friends.length" class="p-3 text-sm text-zinc-400">
             No friends yet — generate an invite code or redeem one.
           </li>
         </ul>
