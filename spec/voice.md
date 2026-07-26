@@ -1,426 +1,394 @@
-# v6 — Voice
+# Voice
 
-> **Status: implemented on the `v6-voice` branch** (pending a manual two-browser
-> audio check — automated tests can't drive real microphones). Server: an
-> embedded mediasoup SFU + `/api/voice/*` routes (`server/src/voice.ts`,
-> `voiceRooms.ts`). Web: `stores/voice.ts`, `lib/voiceCrypto.ts` +
-> `voiceTransform.ts`/`voiceFrameWorker.ts`, `CallPanel.vue` /
-> `IncomingCallModal.vue` + the sidebar/header integration. Tested: the room
-> state machine, the frame crypto, and the voice routes (access + rekey +
-> presence + calls).
+> **Status: built end-to-end, never validated on real hardware.** A 1:1 call in
+> the native app runs the whole path — ring → signaling socket → mediasoup SFU →
+> mic with per-frame E2EE → call panel — and is covered by unit tests plus a
+> Playwright spec against a real mediasoup worker. It has **never been exercised
+> on two real devices with real microphones**. That validation is the outstanding
+> item and gates all further voice work
+> ([roadmap.md](roadmap.md#real-device-voice-validation)).
 
-End-to-end-encrypted **real-time voice** over WebRTC, in two surfaces:
+Where the code lives:
 
-- **Voice channels** — persistent, joinable rooms (the voice-type channels
-  created in [v4](chat.md)). Members hop in and out; the room is always there.
-- **Direct voice calls** — 1:1 (and small-group) calls with a **ringtone** and an
-  **answer / ignore** prompt on the callee's side.
+| Half | Files |
+|---|---|
+| Relay | `server/src/voiceSignal.ts` (signaling WS), `server/src/voiceSfu.ts` (mediasoup SFU) |
+| Rust core | `src-tauri/src/voice_live.rs` (holds the signaling socket), `relay_call_offer` + the `voice_*`/`sfu_*` IPC commands in `lib.rs`, `KIND_CALL_OFFER` in `message.rs` |
+| Web (UI only) | `lib/voiceCall.ts` (engine), `nativeVoiceCall.ts` + `useNativeCall.ts` (wiring), `callHost.ts` (the app's single call), `voiceMedia.ts` + `nativeCallMedia.ts` + `nativeSfu.ts` (media/SFU control), `voiceTransform.ts` + `voiceFrameWorker.ts` + `voiceCrypto.ts` (frame E2EE), `components/NativeCallPanel.vue` + `NativeCallHost.vue` |
 
-No video (that's [v12](roadmap.md#v12--video-streaming-in-voice-channels)). Crypto
-reuses the sealing + epoch-rekey machinery from
-[accounts-and-crypto.md](accounts-and-crypto.md) and [chat.md](chat.md); the call
-signalling rides the existing chat WebSocket; incoming-call wake-ups reuse
-[notifications.md](notifications.md).
+## Scope as built
 
-## Decisions (confirmed)
+- **1:1 calls only.** The call button in the DM header rings that friend
+  (`NativeChat.vue` → `callHost().placeCall`); a global panel
+  (`NativeCallHost.vue`) shows the ring/answer/hang-up UI wherever you are in the
+  app. Group chats have no call button. The relay caps a call at 8 devices, but
+  that is a ceiling on a leaked call id (below), not a group-call feature.
+- **Native only.** Voice is part of the Tauri app; there is no browser client at
+  all (see [roadmap.md](roadmap.md#d16--a-v8-web-client-deferred)).
+- **No voice channels.** v6's persistent, joinable voice rooms were keyed to
+  server-side channel membership, which the relay cannot know — it hides the
+  social graph — and the server that hosted them is deleted. Nothing joins a
+  persistent room today; the only room that exists is a call.
+- **No video** — see [roadmap.md](roadmap.md#v12--video-streaming-in-voice-channels).
+- **No recording**, ever. Server-side recording is impossible by construction
+  (the relay can't decode the audio) and no client-side recording ships.
 
-These were settled in the v6 requirements pass and drive everything below:
+## Decisions that still hold
 
-1. **IP privacy is mandatory.** No participant may ever learn another
-   participant's IP address. → **all** media flows through a server-side
-   forwarding unit (an SFU), **including 1:1 calls** — there is **no
-   peer-to-peer / mesh** path, because direct connections leak peer IPs.
-2. **Always end-to-end encrypted.** The forwarding server only ever relays
-   **sealed media frames it cannot decode**. No "unencrypted for quality" mode —
-   encryption costs no meaningful latency and no quality (see
-   [§ Encryption cost](#why-this-doesnt-hurt-latency-or-quality)).
-3. **Scale is small.** Up to **~10 participants per room**, and (for this
-   deployment) **< 10 concurrent calls/rooms** server-wide. No simulcast/SVC,
-   no cascading SFUs — a single forwarding instance is plenty.
-4. **Self-hosted, single deployable unit.** The SFU must be an **npm dependency
-   embedded in the existing Node/Fastify server** — *not* a second standalone
-   service (LiveKit/Janus/ion are therefore out). One `docker run`, as today.
-5. **Full feature parity** for v6 (see [§ Client features](#client-features)).
-6. **Incoming 1:1 calls ring all linked devices; first to answer wins.**
-7. **Voice-room presence is visible to all members of the channel** (Discord
-   style) so people can join an ongoing conversation.
-8. **No recording**, ever — server-side recording is impossible by construction
-   (the server can't hear the audio) and no client-side recording feature ships.
-9. **No silence suppression in v6.** Opus transmits **continuously** (DTX off);
-   the all-talking bandwidth figures are therefore the sustained case, not just a
-   worst case. Deferred as a future follow-up — revisit **only if bandwidth
-   becomes a problem**. Side benefit: continuous transmission keeps each stream's
-   rate roughly flat, so it does **not** expose speech-activity timing via on/off
-   gaps (see [§ Security & privacy](#security--privacy)).
+1. **IP privacy is mandatory.** No participant may learn another's IP address, so
+   **all** media flows through the SFU, **including 1:1 calls**. There is no
+   peer-to-peer / mesh path — direct connections leak peer IPs, and routing mesh
+   through a relay to hide them just reinvents a worse SFU.
+2. **Always end-to-end encrypted.** The SFU only ever forwards sealed frames it
+   cannot decode. There is no "unencrypted for quality" mode, and as of the
+   fail-closed change there is no unencrypted mode *at all* (next section).
+3. **Scale is small** — ≤ 8 devices per call and a handful of concurrent calls.
+   No simulcast/SVC, no cascading SFUs; one mediasoup worker is plenty.
+4. **The SFU is embedded in the relay**, not a second service: `mediasoup` is an
+   npm dependency of the relay process (LiveKit/Janus/ion are separate
+   deployables and were rejected for that reason). The worker is a child process
+   started **lazily on the first join**, so relays and test runs that never place
+   a call never start it.
+5. **No silence suppression (Opus DTX).** Every joined mic transmits
+   continuously, so the bandwidth figures below are the sustained case — and the
+   per-stream rate stays roughly flat, which is why speech-activity timing is not
+   exposed as on/off gaps (see [§ Security & privacy](#security--privacy)).
+
+## Fail closed: no call without frame E2EE
+
+**A call that cannot be frame-encrypted is refused, not downgraded.** This is the
+one place voice deliberately takes a decision away from the user, and it is worth
+stating why:
+
+- The relay/SFU never seeing plaintext audio is the *premise* of the feature, not
+  a nice-to-have. A call whose frames aren't sealed is a different product.
+- The previous behaviour was the dangerous kind of failure: on a webview without
+  WebRTC Encoded Transform the frame key was still exchanged, the transforms were
+  simply never attached, plaintext Opus went to the SFU — and the UI was
+  **indistinguishable from an ordinary encrypted call**. There was no indicator
+  and no way for a user to notice.
+- Given a choice between "no call" and "a call that silently isn't private",
+  refusing is the answer that can't hurt anyone. A refused call is visible and
+  explainable; a silently plaintext call is neither.
+
+Two independent layers used to fail open, either one of which leaked on its own.
+Both are now closed:
+
+- **`voiceTransform.ts`** — `encryptSender()` / `decryptReceiver()` used to
+  no-op when `RTCRtpScriptTransform` was missing. They now **throw**
+  `VOICE_E2EE_UNSUPPORTED`, so audio cannot reach the wire unsealed.
+- **`nativeCallMedia.ts`** — used to pass the encrypt/decrypt hooks as
+  `undefined` when unsupported. It now **always** passes them, so a media layer
+  without encryption is not constructible in the app. (The hooks are optional in
+  the injectable `CallMediaDeps` interface purely so `voiceMedia.ts` can be
+  unit-tested with fakes; the app path never omits them.)
+
+On top of those, **`callHost.ts` gates the two entry points that would put audio
+on the wire** — `placeCall` and `accept` — on `voiceE2eeSupported()`, so the user
+gets the `VOICE_E2EE_UNSUPPORTED` toast (from
+[the error catalogue](../web/src/lib/errors/catalog.json)) instead of an
+exception. Refusing to answer also **declines the ring**, so the caller stops
+waiting on an answer that can never come rather than ringing out. **`decline` and
+`hangup` are never gated** — ending a call must always work.
+
+Belt and braces in the worker: the encrypt path drops a frame when no media key
+is loaded yet, rather than passing it through in the clear
+(`voiceFrameWorker.ts`).
+
+Pinned by `web/test/lib/callHost.e2ee.test.ts` (refuse to place, refuse+decline
+on answer, hang-up still allowed, normal path unaffected).
+
+### Webview support
+
+The relevant target is no longer a browser matrix — it is the **system webview
+the Tauri shell embeds**: WebKitGTK on Linux, WebView2 on Windows, WKWebView on
+macOS. We use the standards-track `RTCRtpScriptTransform` directly, with no
+`createEncodedStreams` fallback; `voiceE2eeSupported()` is a plain
+`typeof RTCRtpScriptTransform !== 'undefined'` check. Where a webview lacks it
+the user is told which component to update
+(`stepsToFix` in the catalogue entry). Which shipping webview versions actually
+provide it is one of the things real-device validation has to establish.
 
 ## Architecture
 
 ```
- Browser A ──┐                          ┌── Browser B
-  mic→Opus    │   sealed Opus frames     │   Opus→speaker
-  +E2EE seal  ├──► mediasoup SFU ────────┤   E2EE unseal
-  (DTLS-SRTP) │   (forwards opaquely)    │   (DTLS-SRTP)
- Browser C ──┘     in the Node process   └── ...
+ Device A ──┐                              ┌── Device B
+  mic→Opus   │     sealed Opus frames       │   Opus→speaker
+  +AES-GCM   ├──►  mediasoup SFU  ──────────┤   frame unseal
+  (DTLS-SRTP)│   (relay process, opaque)    │   (DTLS-SRTP)
+             │                              │
+             └──  /api/relay/voice WS  ─────┘   call control (join/leave/peers)
                           ▲
-        signalling + key epochs over the existing chat WebSocket
+             the ring itself rides the sealed-sender mailbox
 ```
 
-### The forwarding server: mediasoup (embedded)
+Three planes, deliberately separate:
 
-We use **[mediasoup](https://mediasoup.org) v3** (`npm install mediasoup@3`) — a
-**Selective Forwarding Unit** (SFU): a server that receives each participant's
-audio **once** and forwards copies to the others. It is the only mature,
-production SFU that is **a library you embed in a Node process** rather than a
-separate service, which is exactly decision #4.
+- **Ring** — a sealed `call-offer` envelope through the ordinary mailbox.
+- **Call control** — a device-token-authed WebSocket, `/api/relay/voice`.
+- **Media** — REST control of the SFU plus RTP straight from the webview to the
+  SFU.
 
-- **Install is clean.** mediasoup ≥ 3.12 ships **prebuilt worker binaries**, so
-  `npm install` is instant and needs no C/C++ toolchain on the target; it only
-  falls back to a local build if no prebuilt binary matches. We build inside the
-  existing **multi-arch Docker image** (amd64/arm64, both have prebuilt
-  binaries), so the end user still just `docker run`s. Node ≥ 22 required —
-  already our baseline.
-- **One process, with worker subprocesses.** mediasoup runs its media handling in
-  **C++ worker subprocesses** (managed by, and children of, our Node process).
-  This is a minor deviation from the spec's "single process" line — note it in
-  [README.md](README.md) — but it is **still a single deployable unit / one
-  container**, not a second service to run, monitor, or install. For our scale
-  **one worker** suffices (audio-only, < 10 rooms).
-- **It is also the relay.** Because the SFU is publicly reachable, clients connect
-  *to it* (client→server direction), so it doubles as the NAT-traversal endpoint.
-  **No separate TURN server is needed** — keeping us to the single npm dependency.
+### Ringing (single relay)
 
-### Why not mesh / why not a standalone SFU
+`relay_call_offer` (Rust core) mints a fresh **256-bit call id** (base64url — the
+routing capability) and a fresh **256-bit frame key**, then seals
+`{callId, mediaKey}` into the friend's mailbox as a `KIND_CALL_OFFER` envelope.
+Because the key rides *inside* the already-sealed envelope, **the relay and the
+SFU never see it**.
 
-- **Mesh (peer-to-peer)** would be simplest and give automatic E2EE, but every
-  participant learns every other's IP — fatal for decision #1. Forcing mesh
-  through a relay to hide IPs just reinvents a worse SFU.
-- **Standalone SFUs (LiveKit, Janus, ion)** are excellent but are separate
-  services to deploy and operate — they violate decision #4.
+- The caller gets `{callId, mediaKey}` back, arms its send key, and joins the
+  signaling room. The mic is **not** hot while it rings — the caller joins the
+  SFU only when the callee appears.
+- The callee's drain verifies the envelope like any other, so the caller is the
+  **cryptographically verified sender** (a ring cannot be spoofed), and surfaces
+  it in `DrainReport.calls`. A ring is **ephemeral**: always acked, never
+  re-buffered, and the UI drops one older than **60 s** (`RING_TTL_MS`) rather
+  than ringing for a call that has long since been abandoned.
+- A ring arriving while already in a call is ignored (auto-busy); the caller
+  simply times out.
+- A malformed offer — empty call id, or a media key that isn't 32 bytes — is
+  **discarded, not trusted** (`message.rs`), so a peer can't force a call onto a
+  weak or absent key.
 
-## End-to-end encryption
+**Cross-relay fan-out is not built** (D4c). Deferred deliberately, not
+overlooked: ringing every relay a contact is linked on at the same instant is a
+recognizable call-setup signature and hands colluding relays a timing linkage, so
+it needs independent per-relay sealing (call id inside each ciphertext) plus
+sized/jittered delivery. See
+[roadmap.md](roadmap.md#multi-relay--cross-relay-contact-continuity-d4c).
 
-Two independent encryption layers:
+### Call control — `GET /api/relay/voice`
 
-1. **Transport encryption (DTLS-SRTP)** — always-on in WebRTC, between each client
-   and the SFU. Protects the hop, but the SFU terminates it, so on its own the
-   server *could* hear the audio. This is **not** sufficient for us.
-2. **End-to-end frame encryption** — we encrypt each encoded audio frame with a
-   key the **server never has**, using the **WebRTC Encoded Transform API**
-   (`RTCRtpScriptTransform`) — a hook that runs our code in a Worker *after the
-   audio encoder but before packetization*. The SFU sees only opaque ciphertext
-   frames it forwards blindly. This is the same technique Jitsi/Zoom/Discord use
-   for E2EE, and mediasoup explicitly supports it (it never needs to parse the
-   payload, only the RTP headers, which stay in the clear for routing).
+A **dedicated** device-token-authed WebSocket (`voiceSignal.ts`), bearer token
+only: no cookie and no Origin check, because the client is native and there is no
+CSRF surface. Rooms are keyed by call id.
 
-Frame payloads are sealed with **AES-GCM** under a per-call **media key** (see
-[§ Keys](#keys--membership)). The RTP header and a minimal unencrypted prefix
-remain readable so the SFU can route/reorder; everything content-bearing is
-sealed.
+- Client frames: `join` / `leave` / `signal` (+ `ping`).
+- Server frames: `hello`, `joined {peers}`, `peer-join`, `peer-leave`,
+  `signal {payload}`, `error`.
+- The relay forwards a `signal` **only for a call the sender actually joined**,
+  so a device can't spray frames into rooms it isn't in.
+- Caps, all defense-in-depth around a *leaked* call id: 8 peers per call, 8 calls
+  per socket, 64 KB per frame, and a call-id charset/length check
+  (`[A-Za-z0-9_-]{8,128}`). A 30 s ping/pong heartbeat reaps dead sockets.
 
-### Browser support
+The Rust core (`voice_live.rs`) owns the socket — device-bearer auth refreshed
+per connect from the device key alone (so it survives a locked vault), reconnect
+with backoff — and pumps it both ways: `voice_join`/`voice_signal`/`voice_leave`
+IPC in, inbound frames out as the `voice:frame` Tauri event, which
+`nativeVoice.ts` fans to the call UI.
 
-**As built:** we use `RTCRtpScriptTransform` (the standards-track API) directly —
-it's implemented in **Safari**, **Firefox** (and **Zen**), and current
-**Chrome / Edge** (Chromium), so one code path covers all five targets. The
-transform runs in `voiceFrameWorker.ts`; `voiceE2eeSupported()` gates joining and
-shows a clear message where it's unavailable.
+**In practice `signal` carries no SDP/ICE.** Because media goes through the SFU,
+transport negotiation happens over the SFU's REST endpoints; the signaling socket
+carries presence (`peer-join`/`peer-leave`) and the SFU's producer announcements.
+The `signal` relay stays because it is the seam a future non-SFU or cross-relay
+path would use, and its payload is opaque to the relay either way.
 
-> **Follow-ups:** pin exact minimum versions per engine in [README.md](README.md);
-> if an older Chromium that lacks `RTCRtpScriptTransform` must be supported, add a
-> `createEncodedStreams` fallback (deferred — current Chromium doesn't need it).
+### Media — the SFU (`/api/relay/voice/rooms/:callId/*`)
 
-### Why this doesn't hurt latency or quality
+`voiceSfu.ts`: a mediasoup SFU whose **rooms are keyed by call id**. Authorization
+is a **valid device token plus the call id** — not v6's social-graph room
+resolution, which is impossible under a graph-hiding relay (see
+[§ Security & privacy](#security--privacy) for what that does and doesn't buy).
 
-- Encrypting a ~20 ms Opus frame (tens–hundreds of bytes) with AES-GCM is
-  **microseconds** — negligible next to the codec itself, on top of the
-  always-present SRTP layer. Encryption is **lossless**: same bits, sealed.
-- The real latency contributors are the **jitter buffer** (~20–100 ms) and the
-  one SFU hop — neither related to E2EE.
-- The *cost* of E2EE is **lost server-side audio features** (server mixing,
-  transcoding, server-side noise suppression). We don't want those anyway, and
-  all cleanup runs client-side regardless (next point).
-- **Noise suppression, echo cancellation, auto-gain** are done by the browser on
-  the **raw mic stream, before our encryption** — free and E2EE-compatible.
-  On top of that, **RNNoise** (WASM/AudioWorklet) runs client-side for heavier ML
-  noise removal at modest CPU cost. None of it involves the server.
-  **As built:** RNNoise has no native intensity knob, so the **Settings → Voice →
-  Noise suppression strength** slider is a **wet/dry mix** — it sums the denoised
-  (wet) and raw (dry) mic paths, where `1.0` = fully denoised (default) and `0` =
-  raw mic. Applied at call start and adjustable live during a call. If RNNoise
-  fails to load, the pipeline falls back to the raw mic (the call never breaks).
+- `POST …/join` → `{ routerRtpCapabilities, peers }`. Device token + a
+  well-formed call id; joining *is* what makes you a member (409 if the room is
+  already full).
+- `POST …/transport` (send | recv) / `…/transport/connect` (DTLS).
+- `POST …/produce` / `…/consume`.
+- `POST …/leave` — closes transports, and closes the router when the room empties.
 
-## Keys & membership
+The four media endpoints additionally require **current membership** of that room
+and operate only on transports the calling device owns.
 
-The per-call **media key** is distributed with the **exact machinery chat/v5
-already use** — seal the key to each member's public key; members unwrap with
-their master key. This is the "same key-distribution problem as chat membership"
-the roadmap predicted.
+Notable properties:
 
-- **Per room/call media key**, rotated on an **epoch** like chat conversation
-  keys. The voice key may be derived from / pinned to the conversation's current
-  chat epoch, or be its own parallel epoch — decide in implementation; the
-  mechanism is identical either way.
-- **Join → rekey:** when someone joins, bump the epoch so the **newcomer cannot
-  decrypt frames captured before they joined**.
-- **Leave/kick → rekey:** when someone leaves, bump the epoch so the **departed
-  member cannot decrypt any further audio**. This is the security-critical case
-  (forward secrecy on removal), mirroring chat's epoch re-key on membership
-  change.
-- **Boundary (document it):** voice is **ephemeral** — frames are not stored, so
-  "prior audio already heard" is simply gone; there is no at-rest plaintext to
-  protect, unlike notes. The rekey exists to cut off *future* audio, not to
-  protect past frames a member already decrypted in real time.
+- **No server-side media keys and no rekey machinery.** Frame E2EE is purely
+  client-side insertable streams, so the SFU relays ciphertext RTP and has
+  nothing to distribute. (v6's owner-coordinated epoch rekey, which sealed keys
+  over the legacy hub, is gone with it.)
+- **The roster is identity-free**: peers are ephemeral per-join `participantId`s
+  minted at join time, never device ids or user identities.
+- On `produce`, the SFU **announces the new producer** to the call's other
+  devices over the signaling room (`VoiceSignal.notifyRoom` → a `signal` frame
+  with `{kind:'producer', producerId}`), which the client turns into
+  `media.onProducer(...)` → `consume`.
+- Codec is **Opus only** (48 kHz stereo), matching v6.
 
-## Signalling
+The six control calls are proxied **through the Rust core**
+(`relay_client.rs` `sfu_*` → device-token-authed POSTs, opaque mediasoup JSON
+passthrough) and exposed as `sfu_*` IPC commands; `nativeSfu.ts` implements the
+`SfuControl` interface via `invoke`. **The device token never crosses IPC.** Media
+and RTP still flow webview↔SFU directly — only the control plane detours through
+Rust.
 
-Matches the codebase's existing split (chat does the same): the **WebSocket hub
-(`realtime.ts`) is push-only** — clients call **REST** to do things and the
-server fans out async events over the **WebSocket**. So voice uses **REST for the
-mediasoup handshake** (request/response by nature) and **WS frames for async
-events**.
+`voiceMedia.ts` (`createCallMedia`) drives the mediasoup-client flow: `device.load`
+→ send/recv transports → produce mic → consume peers. Every browser-only
+dependency is **injected** (SFU control, Device factory, mic track, frame-E2EE
+hooks), which is what makes the orchestration unit-testable;
+`nativeCallMedia.ts` supplies the real ones (`getUserMedia` with echo
+cancellation / noise suppression / AGC, remote tracks played through a detached
+`<audio>`).
 
-**REST** (`/api/voice/*`, each enforcing room access — see below):
+### The call engine
 
-- `POST .../rooms/:roomId/join` → router RTP capabilities + the caller's current
-  sealed media key(s) + the current peer/producer list.
-- `POST .../rooms/:roomId/transport` (create) / `.../transport/connect` (DTLS) —
-  thin wrappers over mediasoup `WebRtcTransport`.
-- `POST .../rooms/:roomId/produce` (start sending mic) / `.../consume` (receive a
-  peer) — wrappers over mediasoup `Producer`/`Consumer`.
-- `POST .../rooms/:roomId/leave`.
+`voiceCall.ts` is a framework-agnostic `VoiceCall` state machine —
+`idle → dialing | ringing → connecting → connected → ended` — owning **call
+control only** (ring, accept, decline, hang up, peer presence). It imports no
+WebRTC or IPC types; media and effects are injected, so it is fully unit tested.
+`nativeVoiceCall.ts` binds it to the IPC seams, `useNativeCall.ts` exposes it as
+Vue refs, and `callHost.ts` is the app's single instance shared by the panel and
+the DM call button.
 
-**WS `ServerFrame` additions** (async, server→client):
+Locking the vault tears the call down (`teardownCallHost`): a live call's frame
+key comes from state the master key protects, so no call may outlive an unlocked
+vault. It is a no-op when no call has been placed, so locking never spins up
+mic/mediasoup machinery just to tear it down.
 
-- `voice-peer-joined` / `voice-peer-left { roomId, userId }` — drives presence
-  (decision #7) and the call roster.
-- `voice-new-producer { roomId, producerId, userId }` — tells peers to `consume`.
-- `voice-key-epoch { roomId, epoch, sealedKey }` — rekey fan-out, the media key
-  sealed to **me** for the new epoch (reusing the sharing primitive).
+## Frame encryption
 
-**Room/membership reuses chat access.** A room id is a **voice channel id** (its
-allowed set = channel membership, honouring v5 private-channel membership) or a
-**direct-call id** (the DM's members). The join check is exactly chat's existing
-`requireConversationMember` / channel-access check — **no new authorization
-surface for who may join**. *Call* membership (who's live in the room now) is
-tracked separately from channel membership and drives the media-key epoch.
+Two independent layers:
+
+1. **DTLS-SRTP** — always on in WebRTC, between each client and the SFU. It
+   protects the hop, but the SFU terminates it, so on its own the relay *could*
+   hear the audio. Not sufficient.
+2. **End-to-end frame encryption** — each encoded Opus frame is sealed with
+   **AES-256-GCM** under the call's media key, inside a Worker attached via
+   `RTCRtpScriptTransform` (after the encoder, before packetization). The SFU
+   sees opaque payloads; it only needs the RTP headers, which stay in the clear
+   for routing.
+
+Wire format of a sealed frame payload (`voiceCrypto.ts`):
+
+```
+[ epoch: 4 bytes big-endian ][ iv: 12 bytes ][ AES-GCM ciphertext+tag ]
+```
+
+The epoch prefix lets a receiver pick the right key across a rekey, and is safe
+to prepend because the SFU treats the payload as opaque. Frames that fail to
+decrypt — unknown epoch, tampered, or truncated — are **dropped, not played**.
+
+**Keys.** A 1:1 call uses **one** key for its lifetime, installed at a fixed
+`epoch 0` by `callHost.ts` from the exchanged ring. The epoch machinery exists
+(per-epoch key map, `setSendEpoch`, `dropFrameKey`) and the frame format carries
+the epoch, but **nothing rotates a key today**: v6's join/leave rekey belonged to
+multi-party rooms with server-coordinated membership, and 1:1 calls with a
+per-call random key have no membership change to rekey for. Group calls would
+need that machinery revived.
+
+**Voice is ephemeral.** Frames are never stored, so there is no at-rest plaintext
+to protect the way notes have. A rekey (if group calls arrive) would exist to cut
+off *future* audio, never to protect frames a member already decrypted live.
+
+### Why E2EE costs nothing here
+
+- Sealing a ~20 ms Opus frame (tens–hundreds of bytes) with AES-GCM takes
+  microseconds — negligible beside the codec, on top of the always-present SRTP
+  layer. Encryption is lossless: same bits, sealed.
+- The real latency contributors are the jitter buffer (~20–100 ms) and the one
+  SFU hop; neither is related to E2EE.
+- What E2EE *does* cost is server-side audio features — mixing, transcoding,
+  server-side noise suppression. We don't want them, and the SFU couldn't do them
+  on ciphertext anyway.
+- Echo cancellation, noise suppression and auto-gain run in the webview on the
+  **raw mic stream, before encryption** (`MIC_CONSTRAINTS` in
+  `nativeCallMedia.ts`) — free and E2EE-compatible.
+
+## In-call features — mostly not built
+
+The call panel (`NativeCallPanel.vue`) is deliberately minimal: call phase
+(`Incoming call` / `Calling…` / `Connecting…` / `In call`), the peer's display
+name resolved from the friend list (never a raw pubkey), and **Accept / Decline**
+or **Hang up / Cancel**. That is all it does.
+
+Not built — do not read v6's feature list into the current app:
+
+- **Mute, deafen, per-person volume, who's-speaking highlight, connection-quality
+  indicator** — none exist.
+- **Push-to-talk and RNNoise noise-suppression strength** have **Settings → Voice
+  UI and persisted device preferences** (`voicePrefs.ts`, `SettingsPage.vue`) but
+  **nothing reads them in the call path**: the mic is always open, and no RNNoise
+  worklet is loaded (`@sapphi-red/web-noise-suppressor` is a dependency, unused
+  in `web/src`). The settings are inert today.
+- **The `connected` state is never reached in the app.** `VoiceCall` has
+  `onMediaConnected()` to move `connecting → connected`, but only tests call it —
+  no production code does, so the panel stays on "Connecting…" for the life of
+  the call even when audio is flowing. Wiring that up belongs with real-device
+  validation, since that's when the transition can actually be observed.
+
+These are UI work, not protocol work; see
+[roadmap.md](roadmap.md#ui-surfaces-not-built).
 
 ## Networking / self-host
 
-- mediasoup needs a **public IP (`announcedIp`)** and a **UDP (and TCP fallback)
-  port range (`rtcMinPort`–`rtcMaxPort`)** reachable from clients. On a homelab
-  this means **port-forwarding that range** to the host and announcing the WAN
-  IP. Document the required ports + an env var for `announcedIp` alongside the
-  Docker compose.
-- **Bandwidth (the real ceiling on home hardware):** Opus voice ≈ **40 kbps**
-  per stream. A full 10-person room ⇒ server **ingest** 10 × 40 ≈ 0.4 Mbps,
-  **egress** 10 × 9 × 40 ≈ **3.6 Mbps up**. At < 10 concurrent rooms that's low
-  tens of Mbps **upload**. **Without DTX (decision #9) this is the sustained
-  rate, not a peak** — every joined mic transmits continuously. Watch home upload
-  bandwidth; CPU is trivial (the SFU only copies packets and *can't* transcode
-  encrypted audio anyway).
-- **No silence suppression (Opus DTX) in v6** — deferred (decision #9). Revisit
-  to cut bandwidth if it becomes a problem; doing so would reintroduce a
-  speech-activity timing leak (see [§ Security & privacy](#security--privacy)).
-
-## Direct 1:1 (and small-group) calls
-
-- **Ring all linked devices; first answer wins** (decision #6). Reuses
-  [device linking](accounts-and-crypto.md) + the **content-free Web Push**
-  pipeline ([notifications.md](notifications.md)) to wake **backgrounded/closed**
-  devices (especially mobile PWA). The push is content-free — it signals "call
-  from a conversation" and the client fetches details after waking.
-- **Answer / ignore** prompt on the callee; answering one device **cancels the
-  ring on the others** (a `voice.call.answered` fan-out).
-- Handle **timeout** (caller hangs up / "missed call"), **busy/decline**, and
-  **caller cancel before pickup**.
-
-## Voice channels
-
-- **Persistent rooms** keyed to a v4 voice-type channel; joining = `voice.join`
-  on that channel id.
-- **Presence visible to all channel members** (decision #7): the channel list
-  shows who's currently in voice, so others can drop in.
-
-## Client features
-
-Full parity, **all client-side** (compatible with E2EE — the server is not
-involved in any of these):
-
-- **Mute** (stop your producer) and **deafen** (stop all consumers + mute).
-- **Voice activation mode** (**Settings → Voice**, device-level): *Voice activity*
-  (open mic) or *Push-to-talk*. In PTT mode the mic only transmits while held —
-  via the in-call **Hold to talk** button or an optional, user-recorded **PTT key**
-  (stored as a `KeyboardEvent.code`; honoured globally except while typing).
-- **Per-person volume** sliders (local gain per remote consumer).
-- **Who's-speaking highlight** — each client already decrypts every peer's audio
-  to play it, so it measures **audio energy locally** and highlights the active
-  speaker with **zero server metadata**.
-- **Connection-quality indicator** — derived from client-side `getStats()`
-  (packet loss, jitter, round-trip time).
+- mediasoup needs a **public address** (`VOICE_ANNOUNCED_IP`, default
+  `127.0.0.1` — a single-host default that **must** be set for a real
+  deployment), a listen address (`VOICE_LISTEN_IP`, default `0.0.0.0`) and a
+  **UDP+TCP port range** (`VOICE_RTC_MIN_PORT`–`VOICE_RTC_MAX_PORT`, default
+  40000–40100) reachable from clients. On a homelab that means forwarding that
+  range and announcing the WAN address.
+- **No separate STUN/TURN server.** The SFU is publicly reachable and clients
+  connect *to it*, so it doubles as the NAT-traversal endpoint; transports are
+  created with UDP preferred and TCP enabled as fallback.
+- **Bandwidth is the real ceiling on home hardware.** Opus voice ≈ 40 kbps per
+  stream, and with DTX off that is sustained, not peak. A 1:1 call is trivial; a
+  full 8-device room is ~0.3 Mbps ingest and ~2.2 Mbps egress. CPU is trivial —
+  the SFU copies packets and *cannot* transcode encrypted audio anyway.
 
 ## Security & privacy
 
-- **IP privacy:** satisfied by construction — all media goes via the SFU; no peer
-  ever sees another's address.
-- **Server cannot hear audio:** E2EE frame layer; the server only forwards
-  ciphertext.
-- **Metadata the server *does* learn (be honest):** who is in which call, join/
-  leave timing, and packet timing/sizes. It **never** learns audio content or who
-  is speaking *from content*. Because v6 runs **without DTX (decision #9)**, each
-  mic transmits continuously, so the per-stream rate is roughly flat and
-  **speech-activity timing is largely not exposed** via on/off gaps (some residual
-  leak is possible from variable frame sizes in VBR mode).
-- **If DTX is added later (for bandwidth), speech-timing leak returns.** Stopping
-  transmission during silence makes the gaps — and cross-participant turn-taking —
-  observable to the server. The mitigations, both **future follow-ups**, are decoy
-  traffic (encrypted "fake" frames marked inside the sealed payload, dropped by
-  recipients after decrypt; the server can't distinguish them; no added latency):
-  - **Constant-rate padding** — transmit at full speech rate even when silent.
-    **Strong** (flat rate reveals nothing) but **gives back all the bandwidth DTX
-    saved** — the opposite of DTX.
-  - **Intermittent cover ("chaffing")** — cheaper decoys below full rate. **Partial
-    only**: real speech is always sent, so any sub-speech-rate decoy leaves the
-    envelope higher during real speech, leaking activity to an observer who averages
-    over time. Raises effort; not a guarantee.
-  - It's a privacy ↔ bandwidth dial, not additive savings. For a self-hosted server
-    among friends the realistic threat is seizure/compromise/network observer, so
-    none of this is needed for v6 (no DTX = naturally flat).
-- **No recording** (decision #8).
-- **Authorization** to join a room is exactly chat membership — no weaker path.
+- **IP privacy** — satisfied by construction: all media goes via the SFU, so no
+  participant ever sees another's address.
+- **The relay cannot hear audio** — frames are sealed under a key minted by the
+  caller and delivered inside a sealed envelope. The relay never handles a media
+  key, and there is no code path that produces audio without the transform
+  attached (see [§ Fail closed](#fail-closed-no-call-without-frame-e2ee)).
+- **Authorization to join a call is possession of the call id**, plus a valid
+  device token on that relay. There is no friendship check at the SFU — the relay
+  hides the social graph, so it cannot make one. The call id is 192 bits of
+  randomness delivered only inside a sealed offer, and a stranger who somehow
+  obtained one gains **nothing readable**: frames are sealed to a key that rode
+  inside the envelope, so they'd receive ciphertext they can't decrypt and any
+  audio they produced would be dropped by the peers as undecryptable. The 8-peer
+  cap stops a leaked id from being packed with listeners.
+- **Metadata the relay does learn:** which authenticated devices share a call id,
+  join/leave timing, and packet timing/sizes. That is the same fact the SFU
+  necessarily knows to route media. It learns no identities in cleartext from the
+  signaling socket, no audio content, and not who is speaking.
+- **Speech-activity timing is largely not exposed**, because DTX is off: every
+  joined mic transmits continuously, so the per-stream rate is roughly flat.
+  (Some residual leak from variable frame sizes in VBR is possible.) **If DTX is
+  ever added for bandwidth, that leak returns** — silence gaps and cross-party
+  turn-taking become observable. The mitigations are a privacy↔bandwidth dial,
+  not free: constant-rate padding is strong but gives back everything DTX saved,
+  and sub-rate "chaffing" is partial only (real speech is always sent, so the
+  envelope still rises during it). None is needed while DTX stays off; see
+  [roadmap.md](roadmap.md#smaller-deferred-items).
+- **No recording**, by construction and by omission.
 
-## Testing plan
+## Testing
 
-Per [testing.md](testing.md) and `CLAUDE.md`:
-
-- **Unit (server):** signalling message handling, room membership ↔ chat-access
-  enforcement (a non-member cannot `voice.join`), key-epoch fan-out, rekey on
-  join/leave, presence correctness.
-- **Unit (crypto/web):** media-key seal/unwrap reusing the sharing primitive +
-  the frame-encrypt/decrypt round-trip incl. wrong-epoch/tamper rejection
-  (`voiceCrypto.test.ts`, done).
-- **Done (server):** the room/owner/epoch state machine (`voiceRooms.test.ts`)
-  and the voice routes — access, owner-coordinated rekey, presence, and direct
-  calls (`routes.voice.test.ts`).
-- **Not yet automated:** the client call state machine and a Playwright flow with
-  **fake media devices** (`--use-fake-device-for-media-stream`); actual audio
-  fidelity is out of automated scope and needs a manual two-browser check.
-
-## Resolved during implementation
-
-- **Media key = its own call-scoped epoch** (not pinned to the chat epoch): a
-  single **owner** (longest-present peer) authors each rekey on join/leave,
-  serialising changes to avoid races. See `voiceRooms.ts`.
-- **E2EE transform:** `RTCRtpScriptTransform` directly (no shim needed for current
-  browsers); `createEncodedStreams` fallback deferred.
-- **Signalling:** REST handshake + WS events (the hub is push-only).
-
-## Open questions / research follow-ups
-
-- Pin **minimum browser versions** per engine for `RTCRtpScriptTransform`;
-  record in [README.md](README.md).
-- Confirm **mobile PWA background wake** reliability for incoming calls on iOS
-  Safari (Web Push limitations) — may constrain the "ring all devices" promise on
-  iOS.
-- mediasoup **worker count / `announcedIp` + port-range** defaults and Docker
-  documentation.
-- Codec params (Opus target bitrate, FEC) defaults. **DTX off** in v6 (decision #9).
-- **Silence suppression (Opus DTX)** — **future follow-up**, only if bandwidth
-  becomes a problem; reintroduces a speech-timing leak that decoy traffic
-  (also deferred) would then mitigate (see [§ Security & privacy](#security--privacy)).
-
-## v8 changes (as built)
-
-Voice survives v8 nearly untouched — the SFU/STUN/TURN stack and frame E2EE
-are unchanged, and voice has no at-rest data. The v8 path runs **end-to-end**:
-signaling socket → ring → call engine → SFU control → media with frame E2EE →
-call UI. It is **functionally complete and unit/e2e-tested, but has not yet been
-exercised on real devices with real microphones** — that validation is the
-outstanding item ([roadmap.md](roadmap.md)).
-
-- **Auth — built.** A **dedicated** device-token-authed signaling socket
-  `GET /api/relay/voice` (`server/src/voiceSignal.ts`), separate from the legacy
-  cookie-authed `/api/ws` so it survives the D12 cutover unchanged (the legacy
-  realtime hub can be deleted without touching voice). Bearer token only — no
-  cookie, no Origin check (native client, no CSRF surface), mirroring the relay
-  live-nudge hub.
-- **Signaling model — built (single-relay).** Frames are relayed between the
-  devices in a call, keyed by an **unguessable call id** (the routing
-  capability). Client frames: `join`/`leave`/`signal` (+ `ping`); server frames:
-  `hello`, `joined {peers}`, `peer-join`, `peer-leave`, `signal {payload}`,
-  `error`. The relay forwards only for a call the sender actually joined; the
-  `payload` is opaque **E2E-sealed** SDP/ICE the relay never reads. Per-call
-  member cap (8) + per-socket call cap + 64 KB frame cap + call-id entropy check
-  are defense-in-depth: a *leaked* call id still can't eavesdrop (payloads are
-  sealed to the peer's key) and can't pack unlimited listeners into a room. The
-  relay learns only *which authenticated devices share a call id* — the same
-  fact the SFU already exposes. **Native client half — built:**
-  `src-tauri/src/voice_live.rs` holds the WS (device-bearer, backoff-supervised)
-  and pumps it both ways — `voice_join`/`voice_signal`/`voice_leave` IPC frames
-  up, inbound peer frames out as the `voice:frame` Tauri event (web
-  `nativeVoice.ts` fans them to the call UI). The **call engine** —
-  `web/src/lib/voiceCall.ts`, a framework-agnostic `VoiceCall` state machine
-  (idle→dialing/ringing→connecting→connected→ended) — is **built** and
-  unit-tested against an injected media interface. It handles **call control
-  only** (ring/accept/hangup + peer presence); the signaling socket carries no
-  SDP/ICE. The **call UI** (`NativeCallPanel.vue` + `useNativeCall` composable +
-  `nativeVoiceCall` wiring) is **built** and unit-tested. Media model **decided:
-  mediasoup SFU** (as v6, so neither caller learns the other's IP), driven in the
-  **webview** via mediasoup-client (browser libwebrtc + insertable-streams frame
-  E2EE) behind `CallMedia.join(callId)`/`close()`.
-  - **v8 SFU server — built (first slice):** `server/src/voiceSfu.ts`, a parallel
-    mediasoup SFU whose rooms are keyed by **call id** and authorized by the
-    **device token** — not v6's social-graph `resolveRoom` (impossible under the
-    graph-hiding relay) — with **no server-side media keys** (frame E2EE is
-    client insertable-streams only, so the SFU relays ciphertext RTP and needs no
-    rekey). `POST /api/relay/voice/rooms/:callId/join` → `{ routerRtpCapabilities,
-    peers }` with an identity-free roster (ephemeral participant ids); member cap
-    8. The **media endpoints** — `transport` (send/recv), `transport/connect`
-    (DTLS), `produce`, `consume`, `leave` — are also **built**, each guarded by
-    device token + call-id membership. On `produce`, the SFU **announces the new
-    producer** to the call's other devices over the signaling room
-    (`VoiceSignal.notifyRoom` → a `signal`/`producer` frame the native client
-    forwards) so they consume it.
-  - **CallMedia orchestration — built + unit-tested:** `web/src/lib/voiceMedia.ts`
-    `createCallMedia(deps)` drives the mediasoup-client flow (device.load →
-    send/recv transports → produce mic → consume peers, + `onProducer`) behind
-    the `CallMedia` interface. Every browser-only dep is **injected** (`SfuControl`
-    control plane, mediasoup-client Device factory, mic track, frame-E2EE
-    encrypt/decrypt hooks), so the orchestration is unit-tested with fakes; the
-    app wires the real deps and e2e drives real browser media.
-  - **Real `SfuControl` — built.** The six control calls are proxied through the
-    Rust core (`relay_client.rs` `sfu_*` → device-token-authed POSTs, opaque
-    mediasoup JSON passthrough) and exposed as `sfu_*` IPC commands; web
-    `nativeSfu.ts` implements `SfuControl` via `invoke`. **The device token never
-    crosses IPC** — media/RTP still flows webview↔SFU directly.
-  - **1:1 frame-key exchange — built.** `relay_call_offer` mints a fresh 256-bit
-    frame key and seals `{callId, mediaKey}` *inside* the already-sealed offer
-    envelope, so the **SFU never sees the media key**. The caller arms its key on
-    placing the ring, the callee from the received ring; a missing or short key
-    is discarded rather than trusted.
-  - **App wiring — built.** `nativeCallMedia.ts` assembles the real deps
-    (nativeSfuControl, mediasoup-client `Device`, `getUserMedia` mic with
-    echo-cancel/NS/AGC, remote tracks → `<audio>`, voiceTransform frame E2EE when
-    supported); `callHost.ts` installs the call key as epoch 0 (1:1 = one epoch);
-    `NativeCallHost.vue` mounts the panel app-wide (native only), and the DM
-    header carries the call button. The panel resolves the peer's **display name**
-    from the friend list rather than showing a raw pubkey.
-  - **Test posture:** the SFU control/media plane is covered by a Playwright
-    spec driving two independent device-token peers against a **real mediasoup
-    worker**. The in-browser media round-trip (getUserMedia → produce → consume
-    with frame E2EE) is **deferred** — it needs a bundled same-origin harness page
-    and is timing-sensitive; real-device testing comes first.
-- **Ringing — single-relay built; cross-relay (D4c) follow-up.** *Built:* the
-  caller mints a fresh unguessable **call id** and seals a `call-offer {callId}`
-  envelope (`KIND_CALL_OFFER`) into the callee's **mailbox** (`relay_call_offer`
-  IPC → returns the call id to the caller so it can `join`). The drain verifies
-  it like any envelope — caller = the verified sender (spoof-proof) — and
-  surfaces a ring in `DrainReport.calls` (a ring is *ephemeral*: always acked,
-  never re-buffered; the UI drops one too stale by `relayTs`). Both parties then
-  `join` that call id on the signaling socket and exchange SDP/ICE. *Follow-up:*
-  the D4c multi-relay **fan-out** (offer to every relay the contact is linked on,
-  ring on the first copy, media on the SFU that carried the accepted offer).
-  Deferred deliberately — simultaneous multi-relay delivery is a recognizable
-  call-setup signature and gives colluding relays a timing linkage, so it needs
-  independent per-relay sealing (call id inside the ciphertext) + sized/jittered
-  delivery.
-- **Web satellite** (D12) can join voice — live media only, nothing at rest.
+- **Unit (crypto/web):** the frame crypto round-trip including wrong-epoch and
+  tamper rejection (`web/test/crypto/voiceCrypto.test.ts`); the call engine
+  against a fake media layer (`voiceCall.test.ts`); the native wiring
+  (`nativeVoiceCall.test.ts`, `useNativeCall.test.ts`, `nativeVoice.test.ts`);
+  the SFU orchestration with fakes (`voiceMedia.test.ts`, `nativeSfu.test.ts`);
+  the fail-closed gate (`callHost.e2ee.test.ts`); device prefs
+  (`voicePrefs.test.ts`).
+- **Unit (server):** the signaling hub — join/leave, room isolation, the caps,
+  producer notification (`voiceSignal.test.ts`, `voiceSignal.notify.test.ts`) —
+  and the SFU routes' auth/membership matrix (`routes.relay.voicesfu.test.ts`).
+- **Unit (Rust):** call-offer sealing/verification, including rejection of an
+  empty call id or a short media key (`message.rs`).
+- **E2E (Playwright):** `e2e/voice.spec.ts` drives the **real relay and a real
+  mediasoup worker**. Two independent devices authenticate through **production
+  endpoints only** — `POST /api/relay/register`, then the real challenge →
+  signed-nonce → token flow (`e2e/helpers/deviceToken.ts`); there is no test-auth
+  seam — and join the same call room, asserting Opus capabilities, an
+  identity-free roster, and a 401 without a token.
+- **Deliberately not automated:** the in-browser media round-trip (getUserMedia →
+  produce → consume with frame E2EE), which needs a bundled same-origin harness
+  page and is timing-sensitive, and the frame Worker itself (no
+  `RTCRtpScriptTransform` in jsdom/Node). Both are gated behind real-device
+  validation — see [roadmap.md](roadmap.md#before-launch).

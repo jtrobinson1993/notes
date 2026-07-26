@@ -1,997 +1,461 @@
-# v3 — E2EE chat
-
-**Group chat** (multi-member channels), **1:1 DMs**, and **friend lists** among
-the server's users. A DM is just a two-member conversation — one unified
-conversation / member / message model, not a special case. Message rendering
-reuses the token-based renderer from v2.1 (no `v-html`, raw HTML inert by
-construction) — see [security.md](security.md). Layout is a full-width list
-(Discord-style): one row per message with a left **avatar gutter**. Consecutive
-messages from one sender (within ~5 min) are grouped — the first row shows the
-**avatar** + display name + timestamp (own messages included); the rest leave the
-gutter empty, where each message's own timestamp appears **on hover**. Messages
-have **no background** and stack as tight lines (4 in a row read like one 4-line
-message); only a per-message **hover highlight** distinguishes them. Everyone's
-messages align the same way (inline-start — left in LTR, right in RTL); your own
-are not special-cased. The default avatar is a colored circle (deterministic per
-user) with the first letter of the display name — `ChatAvatar.vue`.
-
-Crypto reuses the sealing primitive from
-[accounts-and-crypto.md](accounts-and-crypto.md); the app shell / sidebar is in
-[ui.md](ui.md).
-
-## Friends & ephemeral invite codes
-
-Friends are bootstrapped with **ephemeral invite codes**, not a permanent
-handle. A user generates a **randomly generated, opaque** code (never derived
-from the username, never user-chosen) and shares it. Anyone holding a live code
-can send that user a friend request, which the user still **accepts or
-declines** — so a leaked code can't silently add anyone.
-
-- **Reusable within a 24-hour window** (hand it to several friends at once), then
-  **hard-deleted from the server and unrecoverable** — a purge sweep removes the
-  row; it is not merely flagged expired.
-- **Opaque by design:** there's no durable handle to correlate or leak. A vanity
-  scheme (`CAM#1234`) would bake identity into the lookup key and let a curious
-  host read identities out of the friend graph; a random self-destructing code
-  carries no information and is dead within 24h. Enough entropy to resist
-  enumeration; redemptions rate-limited. (This is the chat-side answer to the
-  curious-host threat model — see [security.md](security.md).)
-
-## Display name vs handle
-
-Each user has an editable **display name** — shown to contacts (friend lists,
-DMs, member lists) — overlaid on the public **handle** (`Word#1234`) the server
-and non-contacts see. There is **no username**: the handle is the sole
-identifier (login is passkey/discoverable, recovery keys off the handle).
-**Registration captures the display name up front** (a required field in
-`RegisterFlow.vue`, persisted via `profileSet` once the new session is
-authenticated) so accounts aren't nameless; it's also editable later in
-Settings → Profile. When a user still has no display name (legacy/empty), the
-server shows a neutral `User-<id-prefix>` fallback.
-
-Each user may also pick a **name color** shown to others in chat. Choices are
-restricted to the curated **`NAME_COLORS`** palette (the `--brand-*` accents,
-each a `light-dark()` pair) — a free color picker is deliberately *not* offered,
-so every choice stays readable in every theme. Stored server-side as the color
-name (`users.name_color`, validated against the palette; null = default),
-surfaced on `ProfileInfo` and each `ConversationMember`, and rendered as
-`color: var(--brand-<name>)` on the sender's name (message header, reply quote,
-replying-to banner). Set it in Settings → Profile.
-
-## What is E2E-encrypted vs server-visible
-
-Encrypted (server sees only ciphertext): **message content** and the
-**conversation keys**. Server-visible **metadata**: live invite codes, display
-names, the friend graph, conversation membership, message sequence numbers and
-server-receipt timestamps, per-user unread markers. (The sender's own timestamp
-lives *inside* the encrypted payload.) Accepted tradeoff for a trusted,
-self-hosted server — see [security.md](security.md) for what could be hardened.
-
-## Conversation keys & epochs
-
-Each conversation has a symmetric **conversation key** that encrypts its
-messages, distributed with the sealed-box primitive (`sealKey` → a member's
-X25519 public key; `unsealKey` with their private key). Because a group re-keys
-on every membership change, the server keeps each member's sealed key **per
-epoch** in a `conversation_keys` table (`conversation_members.sealed_key` holds
-only the current one); `toConversation` returns the member's full `epochKeys`
-list, and the client unseals each into a `convId → epoch → key` map. Keeping all
-epoch keys server-side is what lets a re-keyed group's **back-scroll survive a
-reload** (the in-memory cache is lost).
-
-Membership changes mint a **new epoch**: a fresh key sealed to all current
-members; each message records its epoch and is decrypted with the key for *that*
-epoch. Clients keep every epoch key sealed to them, so:
-
-- **Removing a member (or leaving):** the actor's client mints the new epoch and
-  seals it only to the *remaining* members; the target's `conversation_keys` rows
-  are deleted. The removed member reads everything **up to** removal (via keys
-  already in memory) but nothing after. (Re-keying is client-side → requires the
-  actor online.)
-- **Adding a member — the inviter decides history:** a *share-history* flag.
-  *Share* → also seal every prior epoch key to the joiner (back-scroll readable).
-  *Start fresh* → only the new epoch key (unread starts at the latest seq;
-  earlier messages aren't decryptable).
-- **The server enforces the fresh boundary** (not just the missing keys): each
-  member has a **history floor** `since_seq` (`conversation_members.since_seq`,
-  0 = full history). A fresh-history join sets it to the conversation's max seq at
-  join time; share-history joins and original members stay at 0. `listMessages` /
-  `listReactions` only return rows with `seq > since_seq`, so a fresh joiner is
-  **never even sent** pre-join ciphertext (no "could not be decrypted" leak, and
-  no metadata about messages they can't read). A one-time, idempotent migration
-  backfills the floor for existing fresh joiners (detected as members lacking the
-  genesis epoch-0 key), using the max seq at their `joined_at`.
-
-The server validates each re-key: the `keys` must cover **exactly** the expected
-member set, `epoch` must be `current + 1`, and a share-history join's `priorKeys`
-must cover epochs `0..current` — so a partial or stale re-key is rejected, never
-half-applied.
-
-**Permissions.** Members carry a `role` (`owner` = creator, `admin`, `member`).
-The pure `canManageMembers(role)` rule (in `@notes/shared`, enforced server-side
-and used for client affordances) decides who may add/remove/change roles: owners
-**and admins** can — **admins have the same powers as the owner**, with two
-exceptions baked into the routes: an admin can never **remove or demote the
-owner**, and only the owner can't have their role changed at all. Anyone may
-**leave**; an owner who leaves hands ownership to the earliest-joined remaining
-member; a group never drops below two members. Live membership/epoch/role
-changes fan out as a `conversation-updated` frame (recipients refetch); a removed
-member gets `conversation-removed` (drops it). (There is no configurable
-per-group "who can manage" policy — admins always can.)
-
-Within an epoch the key is static (no per-message forward secrecy); epochs give
-coarse forward/backward secrecy at membership boundaries. We deliberately do
-**not** hand-roll Double Ratchet / MLS. **1:1 DMs have fixed membership → a
-single epoch and none of the re-keying machinery.**
-
-## Delivery transport — the WebSocket
-
-Chat needs the server to push a message the instant it arrives.
-
-- **One authenticated socket per client** at `/api/ws`, multiplexing all
-  conversations. The upgrade carries the existing **session cookie** and is
-  authenticated with the same lookup as REST; cross-origin upgrades are rejected.
-- **Send path stays REST:** the client `POST`s ciphertext; the server persists
-  it, assigns the next per-conversation **sequence number**, returns it, then
-  fans the frame out to every connected member (including the sender's *other*
-  devices). REST-to-send keeps sending durable; the socket is purely the
-  server→client delivery path.
-- **The socket is liveness; the DB is truth.** On reconnect the client backfills
-  via REST — gated on the server's `hello` frame, so an accepted-then-closed
-  upgrade (Origin/cookie reject) can't drive a reconnect+re-decrypt storm.
-  Ordering/durability come from DB seq numbers, so a dropped socket never loses
-  a message. Single server process holding sockets in memory (the
-  self-hosted reality); multi-process would need Redis pub/sub — out of scope.
-
-### Connection limits & operational hardening
-
-Capacity is never the bottleneck at this scale (a friends-group instance is
-dozens to a few hundred sockets); these are about determinism and not leaking
-resources. The OS **file-descriptor** limit (one fd/socket) is the real ceiling.
-
-- **`ulimits: { nofile: 65536 }`** for the server in `docker-compose.yml` (don't
-  leave it at a ~1024 default).
-- **Heartbeat + idle timeout:** protocol ping/pong; drop sockets that stop
-  answering (mobile clients vanish without a clean close).
-- **Per-user connection cap** (a handful of devices/tabs); evict the oldest.
-- **Bounded `maxPayload`** so one message can't balloon memory.
-
-## Notifications
-
-Phase 1–2: in-app only — unread badges + live delivery while foregrounded.
-**Background / PWA push** (the OS banner when closed) is deferred to phase 3:
-it needs the **Web Push** stack (service worker + Push API + VAPID) and leaks
-sender/timing metadata to the browser's push service even though the body stays
-encrypted. This deferral explicitly covers PWA message notifications.
-
-## Phasing
-
-- **Phase 1** — friends (ephemeral invite codes + add/accept) and **1:1 DMs**
-  over the WebSocket, persisted ciphertext history, unread markers. Single epoch;
-  no re-keying. **Implemented — see below.**
-- **Phase 2** — **group channels:** membership add/remove + leave, epoch
-  re-keying, the inviter's share-history choice, and per-group permissions
-  with owner/admin roles (admins share the owner's powers, can't remove the
-  owner). **Implemented — see above.**
-- **Phase 3** — hardening: CSP headers (theme-script hash) + background/PWA push.
-
----
-
-## Phase 1 — as built
-
-Built via three parallel agents against a frozen `@notes/shared` type contract.
-Verified: full workspace typecheck + build; a 19-assertion in-memory DB test;
-a crypto seal→unseal→encrypt→decrypt round-trip; server boots and enforces auth
-(REST chat routes 401 unauth, WS rejects unauthenticated/cross-origin upgrades).
-
-### Data model (server `db.ts`)
-
-- `users` — gains a nullable **`display_name`** column (idempotent
-  `ALTER TABLE` guarded by `PRAGMA table_info`). Effective name =
-  `display_name ?? 'User-'+id.slice(0,6)` (never any login identifier).
-- `friend_invites(id, token UNIQUE, created_by, created_at, expires_at)` —
-  **reusable** (no `used_by`); **hard-purged** on expiry by `purgeExpiredInvites()`
-  (hourly sweep + lazy on lookup).
-- `friend_requests(id, from_user, to_user, created_at, UNIQUE(from_user,to_user))`.
-- `friends(user_id, friend_id, created_at, PK(user_id,friend_id))` — two rows
-  per friendship for simple lookups.
-- `conversations(id, kind, created_by, created_at, dm_key UNIQUE)` — `dm_key` is
-  the sorted `min(uid):max(uid)` pair for DMs (NULL for groups), giving one DM per
-  pair via the UNIQUE index. (A legacy `manage_policy` column from an earlier
-  design still exists but is unused — admins always manage.)
-- `conversation_members(conversation_id, user_id, sealed_key, epoch DEFAULT 0,
-  last_read_seq DEFAULT 0, joined_at, role, PK(conversation_id,user_id))` —
-  `sealed_key` = the current epoch's JSON `SealedKey`; `role` is
-  `owner`|`admin`|`member`.
-- `conversation_keys(conversation_id, user_id, epoch, sealed_key,
-  PK(conversation_id,user_id,epoch))` — every epoch key a member can read (kept
-  so back-scroll survives a re-key + reload); a member's rows are deleted when
-  they leave/are removed, which cuts their future access.
-- `messages(id, conversation_id, sender_id, seq, epoch, ciphertext, iv,
-  created_at, edited_at, UNIQUE(conversation_id,seq))` + `idx_messages_conv_seq`.
-  `seq` is assigned `MAX(seq)+1` inside a transaction. `edited_at` is null until
-  the message is edited (`editMessage` updates ciphertext/iv + stamps it, guarded
-  by `sender_id` so only the author can edit).
-
-### REST routes (`routes/chat.ts`, all `requireAuth`)
-
-Invites/friends: `POST/GET /api/friend-invites`, `DELETE /api/friend-invites/:id`,
-`POST /api/friends/redeem` (rejects own/expired, dedupes existing friendship &
-either-direction request), `GET /api/friends/requests`,
-`POST /api/friends/requests/:id/accept|decline`, `GET /api/friends`,
-`DELETE /api/friends/:userId`.
-Profile: `GET/PUT /api/profile` (display name, 1..50 chars).
-Conversations: `GET /api/conversations`, `POST /api/conversations/dm`
-(idempotent on `dm_key`, members must be exactly {me, friend}),
-`POST /api/conversations/group` (creates a `kind:'group'` conversation of 3+
-members — me plus 2+ friends; **not** idempotent, every other member must be a
-current friend of the creator; the creator is the `owner`),
-`GET /api/conversations/:id/messages?before=&limit=` (DESC, ≤100),
-`POST /api/conversations/:id/messages` (assigns seq, fans out), 
-`PATCH /api/conversations/:id/messages/:seq` (edit: re-encrypted ciphertext/iv
-under the message's own epoch; **sender-only**, 403 otherwise; stamps `edited_at`
-and fans out a `message-edited` frame),
-`POST /api/conversations/:id/read` (advances `last_read_seq`, fans out a receipt).
-Group membership (Phase 2, all re-key-validated & permission-gated):
-`POST /api/conversations/:id/members` (add a friend, mints a new epoch sealed to
-everyone + joiner, `history: share|fresh`),
-`DELETE /api/conversations/:id/members/:userId` (remove, or leave when it's you;
-re-keys the remainder),
-`POST /api/conversations/:id/members/:userId/role` (owner/admin grants/revokes
-admin; the owner's role is immutable).
-
-### Realtime hub (`realtime.ts`)
-
-`createRealtime(db, config)` → `{ register(app), sendToUser, sendToUsers(ids,
-frame, exceptUserId?), isOnline }`. The `/api/ws` upgrade authenticates via the
-`notes_session` cookie (sha256 → session → user) and **requires** a matching
-`Origin`; unauthenticated sockets are closed before any frame. In-memory
-`Map<userId, Set<socket>>`; on open sends `{type:'hello'}` and broadcasts
-presence to online friends; heartbeat every 30s (ping/`isAlive`); per-user cap 8
-(evict oldest); `maxPayload` 64 KiB. Server→client `ServerFrame`s: `hello`,
-`message`, `message-edited`, `read`, `friend-request`, `friend-accepted`,
-`profile-updated`, `conversation-updated`, `conversation-removed`, `presence`.
-Send/read/edit go over REST; client→server frames are minimal (liveness is
-protocol ping/pong).
-
-### Client crypto & state
-
-- `chatCrypto.ts` — `generateConversationKey`, `sealConversationKey`,
-  `unsealConversationKey`, `encryptMessage`/`decryptMessage` (AES-256-GCM over a
-  JSON `MessagePayload {text, sentAt}`), plus the re-key helpers
-  `sealConversationKeyToMembers` (one new key → many members) and
-  `sealEpochKeysTo` (prior epoch keys → a share-history joiner).
-- **DM creation:** the client generates a conv key, seals it to **both** members'
-  public keys, and `POST`s. Because the create endpoint is **idempotent**, the
-  client always derives its in-memory key by **unsealing the server-returned
-  `sealedKey`**, never the locally-generated key — so an already-existing DM
-  (other device / race) resolves to the right key.
-- **Group creation** (`chat.openGroup`): same machinery as a DM but the conv key
-  is sealed to **me + every selected friend**. The **New chat** modal
-  (`NewChatModal.vue`, built on the reusable `AppModal`) lets you check one or
-  many friends — one → a DM, many → a group. Members discover a new group the
-  same way as a DM: the first `message` frame for an unknown conversation
-  triggers a `loadConversations()`.
-- **Group membership** (`chat.addMember`/`removeMember`/`setMemberRole`): the
-  actor mints a new conv key, seals it to the post-change member set, and (on a
-  share-history add) seals every prior epoch key to the joiner, then POSTs.
-  `ManageMembersDrawer.vue` — a slide-in drawer (the reusable `AppDrawer.vue`)
-  opened from a members button on the **right of the group header** — drives it:
-  member list with owner/admin badges, remove (X) and admin grant/revoke (gated
-  on `canManageMembers`), and **Leave**. An **Add friend** button at the top opens
-  `AddGroupMemberModal.vue` (the standard `AppModal` picker) with the per-add
-  share/start-fresh toggle. A `conversation-updated` frame triggers a
-  `loadConversations()` (picks up new members + epoch keys); `conversation-removed`
-  drops the conversation.
-- **Editing** (`chat.editMessage`): re-encrypts the new text under the message's
-  **own epoch key** (so the same recipients can read it) — preserving the original
-  non-text payload (gif/attachments/reply/preview) — and `PATCH`es it. The
-  inbound `message-edited` frame replaces the message in place by `seq` (never
-  advances unread); the bubble shows a muted **"(edited)"** marker. The hover
-  toolbar shows an **Edit** (pencil) action on your **own** decryptable text
-  messages; it loads the text into the composer with an **Editing** banner
-  (Enter saves, Esc / ✕ cancels). Pressing **↑ in an empty composer** starts
-  editing your most recent editable message (MarkdownEditor emits `editLast`).
-- **Touch actions** (`MessageActionsSheet.vue`): on a **coarse pointer**,
-  long-pressing a message (~500 ms, cancelled by scroll/lift) opens a **slide-up
-  bottom sheet** with quick reactions + the emoji picker, Reply, Edit (own), and
-  Open thread. Gated on `pointerType === 'touch'` — **mouse/pen keep the hover
-  toolbar** at every screen size. The OS long-press callout is suppressed on
-  touch; the sheet is a bottom-anchored reka Dialog at `z-modal`.
-- **System notices.** Adding a member also posts an ordinary **encrypted message**
-  carrying a `MessagePayload.system` event (`{kind:'member-joined', userId,
-  phrase}`) at the new epoch — so the joiner can read it and the server never sees
-  it. The client renders `system` messages as a **centered, muted line** (no
-  bubble/avatar) and picks a (sometimes silly) join phrase from
-  `lib/systemMessages.ts`; a join you made yourself reads "You joined the chat."
-- `chatSocket.ts` — reconnecting WS client (exponential backoff). `chat.ts`
-  store wires frames to both the chat and friends stores and backfills on every
-  (re)connect; `startChat()/stopChat()` are hooked to session unlock/lock.
-  Conversation keys are held in an in-memory `convId → epoch → key` `Map` only
-  (never persisted); each message decrypts under the key for its own epoch.
-- Self-echo dedupe by `seq`; an inbound message for an unknown conversation
-  triggers `loadConversations()` first (so a friend's opening DM appears).
-- **Infinite history scroll:** `ConversationView` auto-loads the next older page
-  (`loadHistory(convId, oldestSeq)`, `HISTORY_LIMIT` 50) when the user scrolls
-  near the top — no "load older" button. `loadHistory` returns the fetched count;
-  a page shorter than the limit sets `reachedStart`, which stops further loads
-  and shows an **"End of message history"** marker. Scroll anchoring is preserved
-  by measuring height before the loading indicator renders and restoring
-  `scrollTop = scrollHeight − prevHeight` after the rows prepend (no jump).
-- **Stick-to-bottom:** opening a chat (and any new message while already at the
-  bottom) scrolls to the latest message. Because images and avatars **decrypt
-  asynchronously** and only mount — growing the scroll height — *after* that first
-  scroll, a `ResizeObserver` re-pins to the bottom as the height settles. It
-  observes **both** the message-list content (late async growth) **and the
-  scroller itself** (so the bottom stays in view when the viewport shrinks — e.g.
-  the on-screen keyboard opening on mobile). It's gated on a `pinned` flag (set
-  from the scroll position), so a user who has scrolled up is never yanked back
-  down (and on a keyboard-open they're left where they were reading). The
-  scroller sets **`overflow-anchor: none`** so the app owns scroll position
-  outright: the browser's scroll anchoring otherwise adjusts `scrollTop`
-  mid-image-load and fires spurious scroll events that flip `pinned` off, which
-  used to leave a chat settled just above the latest message after images
-  decoded.
-
-### Security decisions from review
-
-- **Unfriending revokes DM access** but preserves history: a `canAccess` gate
-  requires membership **and**, for a DM, current friendship — re-friending
-  restores access. (No data deleted.)
-- WS upgrade **requires** a present, matching `Origin` (stricter than the REST
-  CSRF check, safe because browsers always send Origin on WS handshakes).
-- `accept` clears any reverse-direction friend request to avoid an orphan.
-- Confirmed safe in review: IDOR/membership on every conversation route, seq
-  atomicity, `dm_key` idempotency race-safety, fan-out membership scoping, SQL
-  parameterization, no real-name leakage (only the public handle is exposed).
-
-### Files
-
-Server: `db.ts`, `realtime.ts`, `routes/chat.ts`, `app.ts`, `index.ts`,
-`package.json` (+`@fastify/websocket`). Shared: chat types in `index.ts`.
-Web: `lib/chatCrypto.ts`, `lib/chatSocket.ts`, `lib/api.ts`, `stores/chat.ts`,
-`stores/friends.ts`, `components/AppSidebar.vue`, `pages/FriendsPage.vue`,
-`pages/ConversationPage.vue`, `components/AppLayout.vue`, `App.vue`, `router.ts`,
-`pages/SettingsPage.vue` (display-name field).
-
-### Not yet verified
-
-A true two-user browser flow (passkey login → friend → send an encrypted
-message, observing realtime delivery) — passkey ceremonies are browser-only, so
-this is the one check left and the first target in [testing.md](testing.md).
-
----
-
-## v3.1 — Chat polish (as built)
-
-Incremental polish on top of phase 1; each item below is the as-built record.
-
-### Composer — the v2.1 live editor reused
-
-The composer is the same `MarkdownEditor.vue` used in notes (CodeMirror live
-preview: code blocks, spoilers, colors, the selection toolbar), not a plain
-`<textarea>`. Two composer-only props keep the notes editor untouched:
-
-- **`submit-on-enter`** — binds **Enter → `submit`** (ahead of the default
-  keymap) and **Shift+Enter → newline**; also switches sizing from "fill the
-  pane" to **auto-grow up to `max-height: 40vh`, then scroll**. Inside a list,
-  **Enter continues the list** (new item, via `insertNewlineContinueMarkup`)
-  instead of sending; **Cmd/Ctrl+Enter sends** regardless of list context.
-  **On mobile** (`isMobile`) **Enter inserts a newline** instead of sending —
-  the on-screen keyboard's return key behaves as expected, and sending is done
-  with the visible Send button (below); **Cmd/Ctrl+Enter still sends**.
-- **`placeholder`** — composer shows `Message…`.
-
-On **desktop** there is **no visible Send button** — Enter sends, and an
-`sr-only` submit button remains for screen-reader/keyboard users. On **mobile**
-a **visible Send button** (paper-plane icon, disabled until there's text or a
-staged attachment) sits at the end of the composer row, since Enter inserts a
-newline there. It uses **`@mousedown.prevent`** so tapping it never blurs the
-editor, and `send` re-asserts `composer.focus()` after clearing the text — so the
-**on-screen keyboard stays open** for a follow-up message instead of dismissing
-after every send. The composer's other visible controls are attach (📎) and the
-emoji/GIF picker. The composer has browser **spell-check** enabled (via
-CodeMirror's `contentAttributes`, gated on `submit-on-enter`); the note editor
-stays spell-check-off.
-
-Messages already render through the same token renderer (`MarkdownView`), so a
-sent message renders with identical formatting to the live preview — no
-`v-html`, raw HTML inert by construction (see [security.md](security.md)).
-
-### GIF search — KLIPY, proxied
-
-GIFs are searched through a **server-side proxy** (`routes/gifs.ts`:
-`GET /api/gifs/search?q=&pos=`, `GET /api/gifs/trending?pos=`, both
-`requireAuth`). The proxy:
-
-- keeps the **`KLIPY_API_KEY`** server-side (from `.env`; never shipped to the
-  browser). With no key set, the routes return **503** and the picker shows
-  "GIF search isn't configured".
-- **normalizes** KLIPY's `size × format` matrix to `{id, title, url, previewUrl,
-  width, height}` — animated **webp** preferred (far smaller than gif), gif
-  fallback; `md` for the embed URL, `xs` for the picker thumbnail. Items with no
-  usable media are dropped. `next` is the next page number or null.
-- passes an opaque per-user `customer_id` (`sha256('klipy:'+userId)`), and maps
-  upstream errors to **502**.
-
-The chosen GIF is embedded in the **encrypted** `MessagePayload.gif`
-(`GifRef`) — a small CDN URL + dimensions, never inline bytes (the WS frame cap
-is 64 KiB). So **the server never learns which GIF was sent.** The recipient's
-client loads the animated media directly from KLIPY's CDN — a third-party
-metadata tradeoff (recipient IP/timing), documented in
-[security.md](security.md). GIF search is a **tab in the emoji picker**
-(`EmojiPicker.vue`, debounced, trending on open) — picking emits a `gif` event
-that sends the message; a purely-GIF message has empty `text`. (There is no
-separate GIF button and no visible Send button — see the composer note above.)
-
-### Encrypted attachments
-
-Chat attachments reuse the **note** attachment machinery unchanged: the client
-optimizes (images), encrypts the blob with a **fresh per-file AES-256-GCM key**
-(`encryptAndUploadFile` → `lib/attachments.ts`), uploads ciphertext to the
-capability-style `POST /api/attachments`, and embeds the resulting
-`AttachmentRef` (`{id, name, type, size, key, iv}`) in
-`MessagePayload.attachments`. Because that payload is itself sealed under the
-conversation key, only conversation members can read the per-file key — so the
-attachment is **effectively conversation-keyed** (the same indirection notes
-use), without a second key-distribution mechanism.
-
-The composer (`+` button) uploads each picked file immediately and stages it as
-a removable chip — image chips show a **thumbnail preview** (an object URL from
-the original picked bytes, revoked on remove/send/unmount), others an icon and
-name. Picking files also **moves focus to the composer** so Enter sends rather
-than re-triggering the attach button. **Send** embeds the staged refs with the
-(optional) text. The same staging path is reached by **pasting** a file/image
-into the composer and by **dragging a file from the OS file manager** onto the
-conversation (a "Drop to attach" overlay covers the whole pane while dragging) —
-both call `stageFiles`.
-Rendering splits a message's refs (`ChatAttachments.vue`): images collapse into a
-single **image grid**, **audio/video** play inline (`ChatMedia.vue` — audio loads
-eagerly into a **custom themed player** (`AudioPlayer.vue`: hidden `<audio>` driven
-by JS, with the app's own play/pause + seek-bar styling, filename, and time, so it
-matches the theme instead of the browser's native chrome); video is
-**click-to-load**, since the whole blob must be decrypted before it can play. The
-clip shows a **correctly-sized poster** beforehand — a frame captured at upload
-(`videoPoster` in `lib/attachments.ts`), downscaled, encrypted as a **separate
-attachment** (`AttachmentRef.poster`, plus intrinsic `width`/`height` for the
-aspect ratio), and decrypted eagerly while the full clip waits for a click; once
-loaded it plays in a **custom themed `VideoPlayer.vue`** (no native chrome: a
-centered play button while paused so it doesn't read as a static image, plus a
-hover/paused bottom bar with play/pause, seek, time, and fullscreen). Legacy
-clips with no poster fall back to a chip), and other files follow as download
-chips.
-Each blob is decrypted locally (`decryptAttachment` → `lib/attachments.ts`) to an
-object URL, so (like note attachments) there's **no remote fetch and no IP leak**.
-Other files keep the server's **32 MiB** ceiling, but **images (measured after
-optimization) and videos are capped client-side at `MAX_MEDIA_BYTES` (20 MiB)**
-via `attachmentCap(type)` — so a huge source image isn't still a big file once
-re-encoded. (Videos aren't transcoded — in-browser transcoding is too heavy — so
-the cap is the only guard on their size; the server can't tell media from any
-other ciphertext blob, so this limit is necessarily client-side.)
-
-A message's images render as a wrapping, **equal-height strip**
-(`ChatImageGrid.vue`): every thumbnail shares a fixed height (`TILE_HEIGHT`) and
-takes its **width from the image's aspect ratio**, so each shows **whole**
-(`object-contain`), letterboxed against the tile's slightly off-colored
-background. Widths are clamped to `[TILE_MIN_WIDTH, TILE_MAX_WIDTH]`: very
-tall/narrow images sit at the min width (letterboxed), and only images **too wide
-to show whole at the cap** are center-cropped (`object-cover`). Tiles **wrap** to
-the next line when they overflow the message width. Up to **4**
-(`MAX_GALLERY_TILES`) show inline; past that, the remainder collapse behind a
-**`+N`** badge on the last visible tile — clicking it opens the lightbox at that
-image so the arrows reveal the rest. Because thumbnails are uncropped, they match
-what the lightbox shows, so the open/close **morph stays true** (the deliberately
-cropped over-wide case aside). The visible-count / overflow math and the
-per-tile width/crop math are the pure, unit-tested `lib/imageGallery.ts`
-(`galleryLayout`, `tileMetrics`); `stepIndex` clamps lightbox paging to the batch
-(no wrap).
-
-Clicking a tile opens `ImageLightbox.vue`, a full-bleed viewer (reka-ui Dialog;
-Escape / overlay-click / close-button dismiss) shared across the batch:
-**left/right arrows** (and the **←/→ keys**) page through the message's images,
-hidden at the ends. Swapping the shown image resets zoom/pan. A plain
-**click toggles** between fit-to-screen and a zoomed-in view anchored on the
-cursor; **click-and-hold drags** to pan once zoomed (the wheel also zooms toward
-the cursor). The pan/zoom math is the pure, unit-tested `lib/imageZoom.ts`
-(`zoomToPoint` pins the cursor point across a scale change; `clampPan` keeps the
-scaled image from revealing a gap past its edges). A corner overlay shows the
-file metadata — name, pixel **dimensions** (read from the loaded image's natural
-size), **size**, and **format** (`formatBytes` / `formatMime` in
-`lib/fileMeta.ts`, also unit-tested).
-
-Opening/closing **morphs** the active thumbnail into the modal image via the View
-Transitions API: both elements share a temporary `view-transition-name` (keyed to
-the **currently-shown** image's attachment id, assigned only while a transition is
-in flight — so paging between photos doesn't morph, only open/close, and an image
-hidden behind `+N` simply cross-fades since it has no tile to pair with). The
-open/close state change is wrapped in `withViewTransition`
-(`lib/viewTransition.ts`, which feature-detects and respects
-`prefers-reduced-motion`, otherwise mutating directly). The lightbox is **fully
-controlled** by `ChatImageGrid` so it can't tear down before the morph captures
-its snapshot. The transition captures **only the image** (`excludeRoot` drops the
-default whole-page `root` snapshot); the backdrop and chrome stay live and fade
-with their own CSS, so the blur ramps smoothly and the chrome fades in after the
-image settles rather than being painted over by the morphing snapshot.
-
-### Replies
-
-A reply embeds a `ReplyRef` snapshot — `{seq, senderId, preview}` — in the
-sender's encrypted `MessagePayload.replyTo`. The `preview` is a short plaintext
-snippet the sender already holds (text, or `[GIF]` / `[N attachments]`), so the
-quote renders **even before the parent is loaded** and survives the parent
-becoming unreadable. No server change: replies are pure payload.
-
-UI (`ConversationPage.vue`): a hover **Reply** action stages a "replying to…"
-banner above the composer (cancellable); **Send** embeds the `ReplyRef`. Each
-message renders its quote as a clickable line that scrolls to the parent (`rows`
-carry `data-seq`).
-
-### Reactions (encrypted per-conversation)
-
-A reaction's **emoji is encrypted with the conversation key**, so the server
-stores opaque blobs and can't read which emoji was used; clients decrypt and
-aggregate. Server (`message_reactions` table + routes, all membership-gated):
-
-- `POST /api/conversations/:id/messages/:seq/reactions {ciphertext, iv}` — add;
-  fans out a `reaction` frame **and** sends the reacted message's author a
-  content-free `reaction` push when they're offline (see `spec/notifications.md`).
-- `DELETE /api/conversations/:id/reactions/:rid` — remove; **owner-only** (IDOR
-  guard) and scoped to the conversation; fans out `reaction-removed`.
-- `GET /api/conversations/:id/reactions` — list (clients decrypt + group).
-
-The emoji string (a unicode char, `:emote:`, or `:customName:`) is sealed via
-`encryptReaction` (same AES-GCM as messages). The store groups by emoji per
-message; `toggleReaction` removes my existing reaction with that emoji or adds
-one. UI: a hover **react** action (the emoji picker) and reaction pills under
-each message (count + highlighted when mine) that toggle on click. **Hovering a
-pill** shows the list of who used that emoji — a contact's real name when I can
-see it (`memberName`), otherwise their handle, and my own reaction as "You".
-
-### Threads
-
-A **thread is a child conversation** (`kind: 'thread'`) hung off a parent
-message — so it reuses the entire conversation machinery (its own key/epoch,
-messages, reactions, realtime fan-out, and `ConversationPage` itself) rather
-than inventing a parallel model. `conversations` gains `parent_id` +
-`parent_seq` (idempotent migration) with a **partial unique index** on
-`(parent_id, parent_seq)` → one thread per parent message.
-
-- `POST /api/conversations/:id/messages/:seq/thread {members}` — membership-gated,
-  idempotent. The thread key is sealed to **exactly the parent's members** (so
-  everyone who can see the parent can read the thread); the server validates the
-  member set matches. Rejects threading a thread, and an out-of-range `seq`. A
-  1:1 thread inherits the DM's friendship gate (unfriending revokes it too).
-- Threads are ordinary conversations in `GET /api/conversations`, so loading +
-  key-unseal + inbound delivery all work unchanged. The client (`openThread`)
-  seals the new key to all parent members, like a DM but for N members.
-
-UI: the conversation body is a reusable `ConversationView` (driven by a `convId`
-prop), so the parent and a thread render as two instances. A hover thread action
-(and a **"N replies"** link) opens the thread; `ConversationPage` holds the
-active-thread id, renders the **conversation name in a shared header above both
-panes** (the parent `ConversationView` is `hide-header`; the thread panel keeps
-its own header), and chooses the layout from the **chat region's** width
-(measured with a `ResizeObserver`, not the viewport, so the sidebar state
-counts). At **≥768px** the thread is a **resizable right-hand panel** — its own
-flex column defaulting to **half** the region, with a **drag handle** on the
-separating line (clamped so neither side collapses); below that it's a
-full-cover overlay with a close button. The sidebar **excludes** `thread`
-conversations (reached from their parent message, not listed top-level).
-
-This completes the v3.1 "reactions, replies, and threads" bullet.
-
-### Custom emoji — default 7TV set
-
-A few hundred of the most-used 7TV emotes back the default set. The binaries are
-**not committed**; instead the server **proxies and disk-caches** each image
-from 7TV's CDN on first request and serves it from our own origin
-(`server/routes/emoji.ts`, `GET /emoji/7tv/:id.webp`, `requireAuth`, validated
-26-char ULID only → never an open proxy; `Cache-Control: immutable`). That keeps
-the self-hosting privacy/offline posture (no per-render IP leak to 7TV;
-service-worker cacheable) without ~300 binaries in the repo. The **metadata set**
-(`web/src/lib/emoji/defaultEmoji.json`, names → 7TV ids, **in 7TV popularity
-order**) is refreshed from 7TV's GQL (`filter.category = TOP`) by
-`scripts/fetch-emojis.mjs` (now metadata-only). The bundled manifest seeds
-`resolveEmoji` synchronously; images load from `/emoji/7tv/…`, excluded from the
-PWA precache and cached on demand via a `CacheFirst` runtime rule.
-
-Messages use Discord-style **`:shortcode:`** syntax. The token renderer
-(`MdTokens.emojiText`) replaces a `:name:` run with an inline `<img.chat-emoji>`
-when `resolveEmoji(name)` matches; unknown shortcodes stay literal, and code
-spans/blocks are never substituted (so `` `:KEKW:` `` stays text). The set is
-global UI chrome, so notes render them too. Hovering any emote **scales it ~2x
-in place** (a 0.1s ease-in-out transform). A message that is **nothing but
-emote(s)/emoji** — no other text, GIF, or attachment — renders **enlarged**
-(Discord-style jumbo); `isEmoteOnly` (in `lib/emoji`) detects it across
-resolvable shortcodes and unicode emoji (including ZWJ/skin-tone sequences).
-`EmojiPicker.vue` is a searchable
-two-tab popover; picking inserts at the composer caret via the editor's exposed
-`insertText`. Picking from any tab **records a use** (see Most-used ranking
-below), and a **Frequently used** row sits at the top of the picker while not
-searching.
-
-### Unicode emoji search (emojibase)
-
-The picker's **Emoji** tab searches the local unicode set from `emojibase-data`
-(`lib/emoji/unicode.ts`). The ~1,900-entry dataset is **dynamically imported**
-the first time the tab opens (a lazy ~82 KB-gzip chunk, kept out of the main
-bundle) and cached; component glyphs (skin tones/hair, group 2) are excluded.
-Search is substring over label + tags; picking inserts the raw unicode
-character (no shortcode needed — it renders natively).
-
-> Hosting note: the default set's images are server-proxied + cached from 7TV's
-> CDN (above) rather than committed — resolved in v3.4.
-
-### Most-used ranking (synced, decayed)
-
-The picker and the `:`-autocomplete float **frequently-used** emoji to the top.
-`lib/emoji/usage.ts` keeps a per-emoji `{ score, lastUsed }` map: each use
-**decays** the prior score (exponential, 14-day half-life) then adds 1, so a
-recent burst overtakes an old habit within ~2 weeks. The map is a master-key-
-encrypted **settings blob** (key `emoji-usage`, same `wrapKey`/`settingPut`
-mechanism as the custom-emoji palette), so usage **follows the account across
-devices** and the server never sees it; it loads on connect (`loadEmojiUsage`)
-and clears on lock/logout (`resetEmojiUsage`). Entries are pruned to the top 300
-before each (debounced) save. Keys are **source-tagged** (`7tv:`/`custom:`/
-`uni:`) so the same name across sources — and the same glyph — never collide.
-
-`rankEmoji(query, unicodeList)` returns one merged, de-duped list ordered as: a
-**most-used tier** (positive decayed score, any source) on top, then **custom →
-7TV → unicode** in their natural order. Each result carries its insert text
-(`:shortcode:` or the glyph) and render data (image url or char).
-
-### `:` autocomplete (composer + note editor)
-
-`MarkdownEditor.vue` (the shared editor used by both the chat composer and the
-note editor) opens a **Discord-style inline completion** when you type `:abc`.
-The trigger (`lib/editor/emojiTrigger.ts`) requires the colon to start a line or
-follow whitespace and at least two name chars to follow — so `http://` and a
-bare `:` never pop it, and it's suppressed inside code. Results come from
-`rankEmoji` (most-used → custom → 7TV → unicode); the unicode set is lazy-loaded
-on first trigger. **↑/↓** move, **Enter/Tab** accept, **Esc** dismisses (a
-top-precedence keymap owns these only while the list is open, so Enter still
-sends/continues lists otherwise). Accepting replaces the typed `:abc` with the
-`:shortcode:` (or glyph) and **records a use**.
-
-### Link previews (v3.4)
-
-**Opt-in, off by default**, and only generated when **every** member of the
-conversation has them enabled (`users.link_previews`, surfaced on each
-`ConversationMember`; the sender's client gates on `members.every(linkPreviews)`).
-
-Because a browser can't fetch arbitrary cross-origin pages, the **sender's
-client** asks the server to fetch the URL via `GET /api/og?url=` and embeds the
-returned `LinkPreview {url,title,description,image,siteName}` inside the
-**encrypted** message payload (Signal-style) — so recipients render it from the
-decrypted payload and the server only ever saw the URL at proxy time. The
-preview image is a remote URL rendered with the usual **click-to-load**
-(`LinkPreviewCard.vue`). **This every-member gate exists because the og proxy is
-the one path that reveals a URL to the (self-hosted) server/admin** — not for
-recipient IP protection, which click-to-load already covers per viewer.
-
-**YouTube/Vimeo URLs are excluded from this proxy path entirely.** They render
-as **client-side embeds** (`MdTokens`/`EmbedFrame` via `parseVideoUrl`, building
-the `youtube-nocookie`/`player.vimeo` iframe from the client-parsed id), so they
-need no server fetch and leak nothing to the admin. They're gated solely on the
-separate, **personal** `clickToLoadEmbeds` setting (Settings → Privacy: "Video
-embeds") — independent of the every-member link-preview gate — so a video embed
-shows even when not everyone has opted into link previews. `send()` therefore
-skips `api.og()` for any URL `parseVideoUrl` recognizes.
-
-When previews are **not** allowed (not every member has them on) and a message
-contains a **non-video** URL, the message renders a small grey **hint** where the
-preview would have been, with an inline **"Enable link previews"** button that
-flips the viewer's own setting (or, when they already have it on and it's other
-members blocking, a short note) — distinct from a message that simply yielded no
-OG data. Video URLs show their embed, so they get no hint.
-
-The proxy (`server/routes/og.ts`) is an **SSRF surface** and is guarded: http(s)
-only; the host must resolve to a **public** IP (loopback/private/link-local/
-CGNAT/cloud-metadata/multicast all blocked, IPv4 + IPv6); redirects are followed
-**manually and re-validated each hop**; the response is **size- and
-time-capped** and must be HTML. OG/`<meta>` tags are parsed from the `<head>`
-with no HTML execution, and HTML entities are decoded in a **single pass** so
-escaped markup (e.g. `&amp;lt;`) can't be double-unescaped back into live tags.
-DNS rebinding is closed at the socket layer — the fetch uses an undici
-dispatcher whose lookup re-validates the resolved IP at connect time, so a host
-can't pass the pre-check and then connect to a private address.
-
-### Custom (encrypted) per-user emoji
-
-A user uploads their own emoji (Settings → Custom emoji). Each image is an
-**encrypted attachment** (fresh per-file key, via `encryptAndUploadFile`); the
-palette (`name → AttachmentRef`) is stored as a **master-key-encrypted settings
-blob** (`chat-emoji`, like tag colors), so the server never sees the names or
-images. `lib/emoji/custom.ts` loads + decrypts the palette on chat start and
-registers each as an object URL so `:name:` renders; the picker's **Custom** tab
-inserts them.
-
-When a message uses a custom emoji, its ref is embedded in the encrypted
-`MessagePayload.customEmoji` (name → ref). On decrypt, the recipient registers
-those (decrypting the blob to an object URL) **before** the message view is
-shown, so it renders for everyone — without sharing the whole palette. Names are
-registered into one global map, so across users the last-seen `:name:` wins (fine
-at this app's scale).
-
-## v4 — Chat sidebar + channels (as built)
-
-Groups gain Discord-style **channels**: separate message streams inside one
-conversation. A channel is purely an *organizational partition* — all channels
-of a conversation **share its key and epochs**, so adding a channel needs **no
-new key distribution** and a new group member can read every channel
-immediately. What a channel adds over the conversation is its own **message
-ordering and per-member read state** (so unread is tracked per channel).
-
-### The "general" channel is virtual
-
-Every conversation has a **general channel whose id equals the conversation id**
-(`channelId === conversationId`). It isn't a row anywhere — it's the
-conversation's original message stream. Extra channels (groups only) are rows in
-the `channels` table with distinct ids. This means **DMs and threads are
-completely unchanged** (their messages all sit in the general channel) and the
-v4 migration needed no data move beyond tagging existing rows.
-
-### Data model (server `db.ts`)
-
-- **`channels`** `(id, conversation_id → conversations ON DELETE CASCADE, name,
-  type ['text'|'voice'], position, created_at)` — only *extra* channels; the
-  general channel is virtual. Voice channels are structural placeholders (the
-  voice feature itself is v6).
-- **`messages.channel_id`** / **`message_reactions.channel_id`** — added by an
-  idempotent migration that backfills `channel_id = conversation_id` for all
-  existing rows. `seq` stays **monotonic per conversation** (the shared
-  generator) — it's the conversation-unique anchor for replies/threads/edits — so
-  pagination/ordering within a channel is just `WHERE channel_id = ? ORDER BY
-  seq`. Indexed by `(channel_id, seq)`.
-- **`channel_reads`** `(channel_id, user_id, last_read_seq)` — per-(channel,
-  member) read cursor for *extra* channels. The **general** channel's cursor
-  stays on `conversation_members.last_read_seq`, untouched.
-
-### REST routes (`routes/chat.ts`)
-
-- `POST /api/conversations/:id/channels` `{name, type}` — create (groups only,
-  gated on the same `canManageMembers` owner/admin permission as membership).
-- `PATCH /api/conversations/:id/channels/:channelId` `{name}` — rename.
-- `POST /api/conversations/:id/channels/reorder` `{order}` — reorder; `order`
-  must be a permutation of exactly the conversation's extra channels.
-- `DELETE /api/conversations/:id/channels/:channelId` — delete the channel and
-  all its messages/reactions/read cursors. The general channel can't be
-  renamed/reordered/deleted (it isn't a row → 404).
-- The **message / read / reaction** routes take an optional `channelId`
-  (query for GET, body for POST), validated to belong to the conversation
-  (`resolveChannel`; absent ⇒ general). A reaction's channel is derived
-  **server-side from the target message**, never trusted from the client.
-- A `Conversation` now carries `channels: ChannelInfo[]` (always including the
-  general channel at position 0, each with its own `lastSeq`/`lastReadSeq`).
-
-### Realtime
-
-`message` / `message-edited` / `reaction` frames carry the message's
-`channelId`; `read` and `reaction-removed` frames carry it too. A
-`channels-updated` frame (with an optional `deletedChannelId`) tells members to
-refetch the channel list after a create/rename/reorder/delete.
-
-### Client
-
-- The chat store keys `messages`/`reactions` by **channel id** (so DMs/threads
-  key by their conversation id exactly as before) and tracks per-channel
-  unread, with a conversation's unread = the **sum of its channels'** unread.
-  Channel actions (`createChannel`/`renameChannel`/`reorderChannels`/
-  `deleteChannel`) plus an `activeChannelId` for reconnect backfill.
-- Unread is surfaced as a **red** count badge on the conversation (rail) and
-  channel (`ChatSidebar`) rows. The store also exposes `totalUnread` (sum across
-  non-thread conversations); `App.vue` mirrors it into the **browser tab title**
-  (`(n) …`) and the installed-PWA **app-icon badge** (`navigator.setAppBadge`,
-  cleared at zero; a no-op where the Badging API is unavailable).
-- `ConversationView` takes a `channelId` prop (default = general) and
-  re-activates when the channel changes. The active channel lives in the **route**
-  (`/chat/:id` = general, `/chat/:id/:channelId` = an extra channel), so a refresh
-  keeps you in the channel; a stale/deleted channel id redirects to general.
-- `ChatSidebar` is a **unified tree** (like the notes tree): collapsible with a
-  persisted open/closed state (`localStorage` `chat:channels:open`) and a toggle
-  at the top. It lists **channels** (groups; per-channel unread badges; voice
-  channels listed but not selectable) and **pinned notes** as items, organized by
-  **chat folders**. Header buttons: pin a note, new folder, new channel
-  (managers). Channel rename/delete are inline hover actions (managers,
-  non-general). Everything is drag-and-drop — drag an item into a folder, onto
-  another item to reorder, or onto empty space to move it out; folders nest by
-  drag and collapse by clicking the folder row. A drop-indicator line marks the
-  insertion point while dragging (absolute; no layout shift). DMs show a
-  **pins-only** tree (their lone general channel isn't surfaced).
-- Clicking a pinned note **opens it over the chat window** (a `NoteEditor`
-  overlay with a close ✕), so notes — channel rules, D&D sheets, co-working docs
-  — live in the chat context. `ChatSidebar` emits `open-note`; `ConversationPage`
-  loads notes on unlock and renders the overlay.
-
-### Chat folders + pins (v4) — as built
-
-Chat folders are a **separate namespace** from note folders, **per conversation**
-and **personal** (stored in the org blob under `chat[convId]` —
-folders/itemFolder/itemOrder), so they don't touch the shared channel list or
-note payloads. They group both channels and pinned notes. Channel
-**create/rename/delete** stay server-side (managers); the **arrangement**
-(folders, order) and **pins** are personal — pinning a note into a chat does
-**not** share it (sharing is v5). See
-[notes.md](notes.md#folders--organization-v4) for the shared org-blob mechanism.
-
-`:emoji:` shortcodes (the same custom/7TV set as chat) render in channel names,
-note titles, and folder names via the `EmojiText` component; unicode emoji typed
-as glyphs pass through.
-
-### Not yet built (v4 follow-ups)
-
-- Renaming the general channel (extra channels rename/reorder/delete; the general
-  channel is fixed).
-
-## v5 — Private channels (as built)
-
-A channel is now either **open** or **private**:
-
-- **Open** (default, the general channel, and every pre-v5 channel) — encrypted
-  with the **conversation key** and visible to all conversation members, exactly
-  as in v4.
-- **Private** — has its **own key + explicit membership + epochs**, mirroring the
-  conversation key machinery at the channel level. Only its members can read it.
-  Private-from-creation: an open channel can't be retroactively privatised (you
-  create a new private channel instead), so a channel never mixes conv-key and
-  channel-key messages.
-
-### Data model (server)
-
-- `channels.private` flag. **`channel_members`** `(channel_id, user_id,
-  sealed_key, epoch, joined_at)` holds the current-epoch sealed channel key per
-  member; **`channel_keys`** `(channel_id, user_id, epoch, sealed_key)` keeps
-  every epoch for back-scroll — the same shape as `conversation_members` /
-  `conversation_keys`.
-
-### Routes / access
-
-- `POST …/channels` accepts `private:true` + `members:[{userId, sealedKey}]` (a
-  sealed channel key per initial member; must be ⊆ conversation members and
-  include the creator).
-- `POST …/channels/:id/members` (grant) and `DELETE …/channels/:id/members/:uid`
-  (revoke) re-key the channel: a new epoch sealed to the (remaining/expanded)
-  members; `history:'share'` also seals prior epoch keys to a joiner. Revoking
-  deletes the target's keys — they can't read future messages (prior plaintext
-  they held is a documented boundary).
-- A private channel is **only included in a member's conversation payload**;
-  message/read/reaction access is gated on channel membership, and fan-out
-  targets the channel's members (not the whole conversation).
-
-### Client
-
-The chat store keeps a `channelKeys` cache (channelId→epoch→key) unsealed from the
-conversation payload. Private-channel messages/reactions encrypt/decrypt with the
-channel key at the channel epoch; open/general channels use the conversation key.
-Actions: `createPrivateChannel`, `grantChannelMember`, `revokeChannelMember`.
-`ChannelModal` has a "Private channel" toggle + member picker; private channels
-show a lock icon and a Manage-members dialog (`ChannelMembersDialog`).
-
-### Not yet built (v5 follow-ups)
-
-- A chat-sidebar **"share folder"** that bulk-grants every note + private channel
-  in a chat folder to chosen participants in one action.
-- A **grant-on-pin** prompt (offer to grant participants when pinning a note).
-
-## v8 — friends & invites (as built)
-
-v8 **supersedes the friend-request-by-handle flow above**:
-
-- **Invite-only friendship.** Adding a friend = redeeming a self-describing
-  invite (`relay_invite_mint` / `relay_invite_redeem`). There is no "send
-  request to `Word#1234`" — no enumerable handle-reach surface at all. In
-  invite-registration mode the same invite both gates signup and carries the
-  friend request, so a new account is friends with its inviter on its first
-  authenticated call.
-- **Enforcement moves server → capability.** The legacy server checks the
-  friendship table on DM/share; the relay instead checks a **delivery token**
-  (derived from the profile key, issued on friending) with no identity attached.
-  The friends-gate invariant survives, enforced cryptographically: no token, no
-  delivery. See
-  [accounts-and-crypto.md](accounts-and-crypto.md#delivery-tokens-how-reach-is-gated-without-identity).
-- **Unfriend (= block)** rotates the profile key and re-issues tokens to
-  remaining friends — the relay then refuses the removed person's sends;
-  in-group blocking is a client-side hide.
-
-**Not built yet:** the QR / universal-link invite *carriers* (invites are
-minted and redeemed as codes today), the profile-key **rotation fan-out** on
-unfriend, and in-group block. See [roadmap.md](roadmap.md).
-
-### Invite carriers (design)
-
-An invite encodes `{relay routing hint + relay key fingerprint + one-time
-invite token}` so the recipient never manually picks a server. Two carriers are
-specified for the same token: **in-app** (shared through an existing chat; the
-client recognizes a known prefix and renders a tappable "add friend" button) and
-**out-of-app** (a universal/App Link with the token + relay fingerprint in the
-URL **`#fragment`**, which is never sent to any server, falling back to a static
-inert "open in Accord" page when the app isn't installed).
-
-**Redemption always runs through the app, never a browser session** — so no
-Referer / User-Agent / cookie / fingerprint leak, and the fragment keeps the
-token and relay fingerprint off the wire.
-
-## v8 — group authority (as built)
-
-With no authoritative server, something still has to arbitrate membership and
-roles. Signal's answer (GroupsV2) keeps the member list encrypted server-side
-behind zkgroup anonymous credentials, but that machinery buys us nothing: the
-relay **already learns group membership from fan-out queues**, and the
-zero-at-rest posture is about **content and media** — the legal and operational
-honeypot — not small membership metadata.
-
-So: a **relay-held, signed group-state record**. The relay stores the current
-membership + roles document (it needs the member list to fan out anyway),
-**versioned against rollback**, and accepts an update only if it is signed by
-the owner or an admin; members verify the same signatures client-side.
-
-- **Owner + admin roles are kept**, as shipped in v4 — no demotion. Owner-only
-  was considered and rejected: an offline owner would block all membership
-  changes, and total owner loss would freeze the group.
-- Offline admin races resolve by relay ordering.
-- **Documented trade:** the relay learns *which admin* performed each membership
-  change, because it must verify the signature.
-
-Client side, `group_create` mints the group key and the genesis record;
-`group_add_member` bumps and re-signs the record and hands the new member the
-group key via a DM-sealed group invite. The group key lives in the local
-`groups` table and derives the group delivery token. Content is encrypted under
-the shared group key, so the relay fans out opaque blobs.
-
-**Not built:** member *removal* with group-key rotation, and role changes after
-creation. See [roadmap.md](roadmap.md).
-
-### Message-envelope payload (v1, built)
-
-A chat message travels as a `kind = "msg"` envelope (spec/relay.md § Envelope
-versioning). The sealed **inner payload** is versioned JSON:
+# Chat (v8) — native, local-first E2EE messaging
+
+> **Status: as built.** Chat is a native-only surface. The **Rust core**
+> (`src-tauri/src/`) holds the keys, seals and opens the envelopes, and owns the
+> message log; the webview only renders what the core hands it. The **relay** is
+> a store-and-forward queue for opaque envelopes — it is not a chat server.
+>
+> The legacy browser chat is **gone**, not deprecated: server-mediated
+> conversations, conversation keys + membership epochs, per-conversation dense
+> `seq`, channels, threads, the `/api/ws` chat socket, server-held friend
+> requests and invite codes, and the whole `routes/chat.ts` + `realtime.ts`
+> surface were deleted with browser mode. Nothing below describes them.
+
+Related: the wire protocol in [relay.md](relay.md), the on-device schema and
+ordering rules in [local-store.md](local-store.md), key derivation and delivery
+tokens in [accounts-and-crypto.md](accounts-and-crypto.md), the shell and
+sidebar in [ui.md](ui.md), voice in [voice.md](voice.md).
+
+## The shape
+
+A conversation is either a **DM** between two friends or a **group**. Both are
+rows in the local `conversations` table and both carry their messages in the
+same local `messages` log; the difference is only how a message is sealed (per
+recipient vs under a shared group key) and how it is addressed on the relay.
+
+There is no server-side conversation object, no membership table the client
+reads back, and no channel model — a v8 group has exactly one room. Every list,
+every page of history and every unread count is answered from the **local
+encrypted store**, so the UI is instant and works offline; the relay is only how
+messages get between devices.
+
+## Friends & invites (D4b) — as built
+
+**Friendship is invite-only, and the invite is a bearer capability.** There is
+no "send a friend request to `Word#1234`": handles are not a reach surface at
+all, so there is nothing to enumerate. The `friends`/`friend_requests` tables and
+the ephemeral server-side invite codes of the legacy product no longer exist.
+
+An invite is a self-describing string built entirely client-side
+(`web/src/lib/invites.ts`), `accord://friend?i=<base64url(json)>`, carrying:
+
+```
+{ v:1, relayUrl, relayFp, token, handle, identityPub, sealingPub }
+```
+
+- `token` is a fresh 256-bit bearer capability. The relay only ever stores
+  `sha256(token)` (`POST /api/relay/invites`, device-token authed, TTL capped at
+  14 days) — the token itself never reaches it.
+- `relayUrl` + `relayFp` let a brand-new user join the inviter's relay without
+  choosing a server, and pin its identity.
+- `identityPub` + `sealingPub` are the inviter's **per-relay** directory keys,
+  carried in the invite so the invitee seals to keys it got from the (in-person)
+  invite channel rather than from the relay's directory.
+
+**The handshake** (`nativeInvites.ts` → the core → the drain):
+
+1. The invitee seals a `friend-accept` — `{handle, displayName?, deliveryToken,
+   sealingPub}` — to the inviter's `sealingPub` and posts it through
+   `POST /api/relay/invites/redeem`. That leg takes **no device token**:
+   requiring one would let the relay record "X redeemed Y's invite", which is
+   exactly the social-graph edge sealed sender exists to avoid.
+2. The inviter's next mailbox drain verifies the envelope, records the sender as
+   a friend (contact id = the **verified** sender identity key), and
+   **reciprocates** a `friend-confirm` carrying its own handle, display name and
+   delivery token.
+3. The invitee's drain records that confirm → mutual. Until then the invitee has
+   redeemed but has no friend: the accept simply waits in the inviter's queue
+   (hold-until-ack), so the handshake completes whenever the inviter next comes
+   online. ⚠ The confirm itself is **best-effort and not retried** — the drain
+   acks the accept whether or not the reciprocal send succeeded, so a confirm
+   that fails to deliver leaves a permanent half-friendship (inviter sees the
+   friend, invitee does not) with no recovery but a fresh invite.
+
+A new account can be onboarded by the same invite (`registerViaInvite`): the
+token gates signup **and** carries the friend handshake, so the account is
+friends with its inviter on its first authenticated call.
+
+**Reach is a capability, not a friendship check.** The relay has no friend
+graph to consult. A send is authorized by the recipient's **delivery token**
+(`hash(token) == verifier`), which is handed out only by the handshake above —
+no token, no delivery. That is how the friends-gate invariant survives the loss
+of a server: it is enforced cryptographically rather than by a table lookup. See
+[accounts-and-crypto.md](accounts-and-crypto.md#delivery-tokens).
+
+**Unfriend is local only, today.** `friend_remove` clears `is_friend` and drops
+the contact's addressing (so *we* can no longer reach *them*), but the delivery
+token is one per account, derived from the profile key — so the removed person
+keeps a working capability until the profile key is rotated and re-issued to the
+remaining friends. That rotation fan-out is **not built**; nor is in-group
+blocking. Until it lands, "unfriend" is "hide them and stop being able to reach
+them", not "revoke their reach to me". See
+[roadmap.md](roadmap.md#revocation--blocking-fan-out).
+
+UI: `FriendsPage.vue` (create an invite, copy it, paste one to redeem, unfriend)
+and the add panel in `NativeChat.vue`. Minted invites are listed **in memory for
+the session only** — the relay holds only the hash, so there is nothing to fetch
+back and nothing to revoke beyond letting it expire.
+
+### Invite carriers
+
+Built: the invite string itself, shared by copy/paste through any channel. The
+**QR / universal-link carriers** and the in-app "tappable invite" rendering are
+**not built** — see [roadmap.md](roadmap.md). The decided shape for them is that
+redemption always runs through the app (never a browser session), with the token
+and relay fingerprint in a URL `#fragment` so they are never sent to any server.
+
+### Multi-relay redemption is not built
+
+`relay_invite_redeem` posts to the **connected** relay, so redeeming an invite
+minted on a different relay does not work today even though the invite carries
+`relayUrl`/`relayFp` (those are used by the register-via-invite onboarding path,
+which connects to the invite's relay first). Multi-relay reachability is
+roadmap work.
+
+## Conversation identity
+
+- **DM:** `dm:<base64url(sha256(lo‖hi))>` over the two per-relay **identity
+  keys**, sorted so both sides derive the same id with no exchange
+  (`identity::dm_conversation_id`). This is a security property, not a
+  convenience: on ingest the receiver **recomputes** the conversation id from
+  `(me, verified sender)` and overwrites whatever the payload claimed, so a
+  sender cannot drop a message into a conversation they are not part of.
+- **Group:** `grp:<base64url(128 random bits)>`, minted by the creator. The id
+  must be unguessable — a genesis state PUT for an unknown id simply creates
+  that group (see [relay.md](relay.md#group-state-d14)).
+
+Conversation rows are created lazily (`ensure_conversation`) by the send path,
+the drain, and `dm_conversation_id_for`, so a DM exists for every friend by
+construction — which is why the rail can list a friend you have never messaged.
+
+## What the relay sees
+
+| Sees | Never sees |
+|---|---|
+| An opaque envelope, its size, and the arrival timestamp it stamps | Message text, attachments, reactions, emoji, display names |
+| Which **device queues** an envelope was copied into (= who the recipients are) | Who **sent** it — DM and group sends carry no device token, only a delivery/group token |
+| Group membership, from the group-state record it must read to fan out | The group key, the group's content, or any per-message sender |
+| `hash(deliveryToken)`, `hash(inviteToken)` | The tokens themselves |
+
+Sender anonymity is the point of the D6 envelope: the signed sender certificate
+lives **inside** the ciphertext. The relay is still trusted for **ordering and
+availability** — it can delay, drop, reorder or backdate — which is a real trust
+boundary, documented in [security.md](security.md) and
+[local-store.md](local-store.md#message-ordering-no-server-counter).
+
+## The envelope (D6/D11)
+
+`src-tauri/src/envelope.rs`. Two wrappings, one inner plaintext.
+
+- **DM envelope** — `{v:1, eph, nonce, ct}`: an ephemeral X25519 sealed box to
+  the recipient's sealing key. ECDH → HKDF-SHA256 (salted with the **ephemeral
+  public key**, so each envelope's content key is unique even if an ECDH output
+  ever repeated) → AES-256-GCM.
+- **Group envelope** — `{v:1, nonce, ct}`: encrypted **once** under the shared
+  group key and fanned out by the relay to every member, so a group send is one
+  upload rather than N. The AES key is HKDF-derived from the group key with a
+  distinct info string (`accord/group-envelope/v1`) because the same group key
+  also derives the **group token** that authorizes the send — neither is ever
+  used raw.
+- **Inner plaintext** (identical in both) — `{kind, payload_b64,
+  sender_identity_pub, sig, sent_at}`. `sig` is Ed25519 over
+  `"accord/envelope-sig/v1|" ‖ kind ‖ "|" ‖ payload`, so the signature is
+  domain-separated and covers the kind as well as the bytes. A member serving
+  history later therefore cannot forge or alter what someone else said (D11
+  backfill integrity).
+
+`open`/`open_group` verify the signature before returning; a caller only ever
+sees an `Opened` whose `sender_identity_pub` is authenticated. An unknown outer
+`v` is surfaced as `UnknownVersion` rather than an error the caller can confuse
+with tampering — the drain buffers those (below).
+
+## The sealed message payload (v1)
+
+`src-tauri/src/message.rs`. A chat message rides in a `kind = "msg"` envelope:
 
 ```
 { v:1, id, conversation_id, channel_id?, sent_at, kind, content?,
   reply_ref_json?, attachments_json? }
 ```
 
-(snake_case JSON — like the sibling sealed `Inner` cert, this payload is
-encoded/decoded only in the Rust core and never crosses the JS/HTTP boundary,
-so it skips the camelCase API convention.)
+snake_case JSON: like the sibling sealed `Inner`, this is encoded and decoded
+only in the Rust core and never crosses the IPC/HTTP boundary, so it does not
+follow the camelCase API convention.
 
-Two things are deliberately **absent** because trusting them would be a
+Two fields are **deliberately absent**, because trusting them would be a
 vulnerability:
 
-- **No sender field.** The sender is the signed cert *inside the envelope
-  ciphertext* (D6); the receiver stamps `sender_contact_id` from that
-  **verified** `sender_identity_pub`, never from the payload (interim: the
-  identity key itself is the contact id until contacts move to v8).
-- **No ordering field.** `sent_at` is a display hint; the ordering key is the
-  **relay's delivery `relay_ts`** (D11), applied by the receiver on drain.
+- **No sender field.** The sender is the signed certificate inside the
+  ciphertext; the drain stamps `sender_contact_id` from the *verified*
+  `sender_identity_pub`. (Interim: the identity key itself is the contact id.)
+- **No ordering field.** `sent_at` is a display hint only. The ordering key is
+  the relay's delivery stamp, applied by the receiver on drain.
 
-`id` is sender-assigned and globally unique — the idempotency key for ingest
-and for dedup across at-least-once delivery and history backfill.
+`id` is sender-assigned (128 random bits, base64url) and globally unique: it is
+the idempotency key for ingest, the dedup key across at-least-once delivery, and
+the anchor edits/deletes/reactions target. `kind` is the *message* kind
+(`text` today) — distinct from the *envelope* kind.
 
-**Inbound drain** (`relay_mailbox_drain`, triggered by the `relay:mail` nudge
-or on reconnect): fetch → `open`/verify → decode → ingest → ack. Ack policy is
-security-shaped: **buffer (leave queued)** only on version skew or a
-not-yet-handled kind, so nothing is dropped across an app update; **discard
-(ack)** anything permanently invalid — undecryptable, forged signature, or an
-authenticated-but-garbage payload — so a single malformed/forged inject can't
-wedge the queue. Rows are acked only after they are durably stored
-(hold-until-ack).
+`channel_id` is carried and stored but always `None` in v8: groups have no
+sub-channels. `reply_ref_json` is likewise a reserved column with no producer —
+replies are **not built** (see [Not built](#not-built)).
 
-### The native chat surface (v8) — as built
+## Ordering — `(relayTimestamp, senderId, messageId)`, no dense seq
 
-The native shell's chat lives at `/dm` (`NativeChatPage.vue`) and mirrors the
-legacy three-column layout, with the local store — not the server — behind it:
+The legacy server assigned a dense per-conversation `seq`. A zero-at-rest relay
+cannot own a durable counter, and no single relay sees every message, so the
+sort key is the tuple **`(relay_ts, sender_contact_id, id)`** — the relay's
+arrival stamp, tie-broken deterministically. `idx_messages_sort` indexes exactly
+that, and **no dense integer position is ever derived**: devices hold different
+subsets of a conversation (eviction, mid-history pairing), so any local "sort and
+number" would diverge between them. The rationale and the mixed-relay-clock
+consequences live in
+[local-store.md](local-store.md#message-ordering-no-server-counter).
 
-- **App rail** (`AppSidebar.vue`): every friend's DM + every group, ordered by
-  most recent activity. See [ui.md](ui.md) § The rail + chat sidebar in the
-  native shell.
-- **The conversation's sidebar** (`NativeChatSidebar.vue`): `#chat` at the top,
-  then pinned notes grouped into chat folders (personal; shares the org store's
-  chat namespace with the legacy sidebar). A pinned note opens over the messages.
-- **The messages** (`NativeChat.vue`): send / edit / delete / react / attach,
-  DMs and groups, off the local log (`messages_page`) with live updates on each
-  mailbox drain.
+History paging is `messages_page(conversation_id, channel_id, before, limit)`,
+newest-first, with the cursor taken from the oldest row of the previous page
+(`nativeChat.ts` keeps per-channel cursors and an `exhausted` flag, reset on a
+fresh open). ⚠ The paging cursor compares `(relay_ts, id)` while the query orders
+by `(relay_ts, sender_contact_id, id)`; the two only agree when no two messages
+share a millisecond, so a same-millisecond tie can drop or repeat a row across a
+page boundary. Cheap to fix by carrying the sender in the cursor.
 
-Read state and ordering come from the core: `dm_mark_read` on open, and
-`conversation_activity` (newest `relay_ts` + unread per conversation) for the
-rail's order and its unread badges.
+The sender's own copy is **teed** into the log at send time with
+`sender_contact_id = 'self'` and the `relay_ts` the relay returned, so the
+message renders immediately and orders correctly; the sender's fanned-out copy
+(groups) dedups against it by `id`.
+
+## Mutable state — the CRDT overlays
+
+The message log is append-only and stays outside Yjs. Everything mutable about a
+message is a separate small envelope of its own kind, applied to the row:
+
+| State | Model | Envelope kind | Payload | Authority |
+|---|---|---|---|---|
+| Edit | LWW register (single-author) | `edit` | `{id, content, editedAt}` | applied **only** if the verified sender equals the target's recorded author |
+| Delete | tombstone, delete-wins, for everyone | `delete` | `{id}` | same author check |
+| Reaction | add-wins set | `react` | `{id, emoji, op:"add"\|"remove"}` | any sender who can see the message; the reactor is the verified sender |
+| Read state | monotonic max register | — | — | local only; never leaves the device |
+
+- **Edits/deletes are author-gated at ingest, not at the relay.** The drain looks
+  up `message_sender(target)` and applies nothing unless it matches the verified
+  envelope sender, so a group member cannot delete or rewrite someone else's
+  message. A delete nulls `content` and sets `deleted = 1`; the row stays as the
+  "Message deleted" placeholder — there is no "delete for me", and the tombstone
+  is what stops an offline replica resurrecting the message on re-sync.
+- **"Last write" is arrival order, not a logical clock.** `message_apply_edit`
+  overwrites `content` and stamps `edited_at` from the payload without comparing
+  it to the stored one, so two edits from the same author converge on whichever
+  the relay delivered last. Single-author edits make that adequate today; it is
+  not a true LWW register and should not be treated as one if edits ever gain a
+  second writer. The UI renders `edited_at` as a muted "(edited)" marker.
+- **An edit/delete for a message we have never seen is dropped**, not queued:
+  FIFO delivery puts the send before its own edit, and holding unresolvable
+  mutations would need a second queue with its own expiry.
+- **Reactions** are rows in `message_reactions(message_id, reactor_id, emoji)`,
+  idempotent by that triple, `reactor_id = 'self'` for mine. They are ordinary
+  sealed envelopes, so the relay learns nothing about who reacted or with what —
+  unlike the legacy server, which stored (encrypted) reaction rows and knew the
+  shape of the graph.
+- **Read state never leaves the device.** `conversations.last_read_ts` advances
+  to the newest message's `relay_ts` on open (`dm_mark_read`), and unread is
+  "inbound, not deleted, newer than the marker". No read receipts are sent —
+  there is no wire format for one, and adding one would put per-message timing
+  metadata on the relay.
+
+## Inbound: the mailbox drain
+
+`relay_mailbox_drain` (`lib.rs`), triggered by the content-free `relay:mail`
+live nudge, on reconnect, and on unlock; idempotent and safe to call
+concurrently (`nativeRelay.ts` single-flights and coalesces it).
+
+Per queued row: **open → verify → decode → apply → ack**. A DM open is tried
+first; on failure each of my group keys is tried, and the key that opens it
+identifies the group (so the group conversation id comes from the key, never
+from the payload).
+
+`message::disposition` is a pure function over the open result, so the whole
+policy is unit-tested with no network or live crypto. Kinds handled:
+`msg`, `edit`, `delete`, `react`, `friend-accept`, `friend-confirm`,
+`group-invite`, `call-offer` ([voice.md](voice.md)), `kt-gossip`
+([key-transparency.md](key-transparency.md)).
+
+**Ack policy is security-shaped:**
+
+- **Buffer (leave queued)** — only for a *future envelope version* or a *payload
+  version we don't know yet*, and for a well-formed envelope of a kind we don't
+  handle yet. These become valid after an app update, so dropping them would
+  lose data ("buffer, never drop").
+- **Discard (ack)** — anything permanently invalid: undecryptable, forged
+  signature, or authenticated-but-garbage payload. Buffering those would let a
+  single malformed or forged inject wedge the queue forever.
+- Rows are acked **only after they are durably stored** (hold-until-ack), so a
+  crash mid-drain redelivers rather than loses.
+- `call-offer` and `kt-gossip` are ephemeral: always acked, never re-buffered —
+  a ring redelivered long after the caller gave up must not ring again.
+
+## Groups (D14) — as built
+
+With no authoritative server, something still has to arbitrate membership.
+Signal's answer (GroupsV2 + zkgroup) buys us nothing here: the relay **already**
+learns membership from fan-out, and the zero-at-rest posture is about content and
+media, not a small membership document. So: a **relay-held, signed group-state
+record**, `{groupId, version, members:[{identityPubKey, role}]}`, accepted only
+when signed by a current owner/admin and strictly version-incrementing
+(anti-rollback). The relay does ordering and availability, not trust; clients
+verify the same signatures. Documented trade: the relay learns **which admin**
+made each change, because it must verify the signature.
+
+Built today:
+
+- `group_create` — mint a 256-bit group key, PUT the genesis record (me = owner,
+  self-authorizing), register the group **verifier** derived from the group key,
+  store the key locally in `groups`, create the local conversation.
+- `group_add_member` — fetch the current record, append the friend's identity key
+  as `member`, bump `version`, re-sign, PUT; then hand them the group key in a
+  **DM-sealed `group-invite`** envelope. Their drain stores the key and creates
+  the conversation, which is what makes them a member locally.
+- `relay_send_group_message` / `relay_group_edit_message` /
+  `relay_group_delete_message` / `relay_group_react` — one group-sealed envelope
+  per action, authorized by the **group token** (derived from the group key), fanned
+  out by the relay to every current member's device queues.
+- Owner + admin roles are kept from the legacy model. Owner-only was considered
+  and rejected: an offline owner would block every membership change, and losing
+  the owner would freeze the group. Offline admin races resolve by relay
+  ordering.
+
+**Not built:** member **removal** (and therefore group-key rotation), role
+changes after creation, channels inside a group, and leaving a group. A member
+who has the group key keeps it — there is no revocation path yet. See
+[roadmap.md](roadmap.md).
+
+## Attachments in chat
+
+`attachment_upload` encrypts the file under a **fresh per-file key**, uploads
+only ciphertext to the relay's blob store (authorized by the friend's delivery
+token or the group token), and embeds `{blobId, key, iv, mime, name, size}` in
+the **sealed** message payload — so the per-file key never reaches the relay and
+is readable exactly by the people who can read the message. The ciphertext is
+also cached locally, because the relay deletes a blob once every recipient acks
+it (and on TTL), which would otherwise cost the *sender* the ability to reopen
+what they sent. Mechanics, caching and eviction:
+[local-store.md](local-store.md#attachments-on-device).
+
+⚠ The two ends of `attachments_json` currently disagree: the composer writes a
+**bare array** of refs (`JSON.stringify(refs)` in `NativeChat.vue`) while
+`rowToView` (`lib/nativeChat.ts`) reads a **wrapper object** `{attachments,
+system}`, so a sent attachment round-trips through the relay and the log intact
+but renders as nothing on either side. The unit tests mock at the view layer, so
+they pass. One of the two shapes has to win — the wrapper is the one the reserved
+`system` field needs.
+
+`NativeAttachment.vue` fetches + decrypts on demand: images render inline from an
+object URL (revoked on unmount), everything else is a download chip. There is no
+image grid, lightbox, video poster, audio player or client-side size cap in the
+native surface — all of that was legacy UI and is unbuilt here.
+
+## The native chat surface
+
+`/dm` → `NativeChatPage.vue`, three columns:
+
+- **The app rail** (`AppSidebar.vue`) — every friend's DM and every group,
+  ordered by most recent activity, with unread badges. See
+  [ui.md](ui.md#app-shell--side-rail).
+- **The conversation sidebar** (`NativeChatSidebar.vue`) — a fixed `#chat` row
+  plus pinned notes in chat folders (below).
+- **The messages** (`NativeChat.vue`) — one component for DMs and groups:
+  list, send (text and/or attachments), edit/delete own, 👍 react, add a friend
+  to a group, place a voice call in a DM. Embedded in the page with
+  `hide-list`, driven by the route (`?open=dm:<contactId>|grp:<groupId>`,
+  `?add=1`); standalone it also renders its own conversation list.
+
+It re-reads the page and the reaction rows on every drain that ingested
+something (`onMailIngested`), which is also what refreshes the rail's order and
+unread counts (`conversation_activity` — one query for every conversation's
+newest stamp + unread, so the rail costs one call, not one per row).
+
+### Chat folders & pinned notes
+
+A conversation's sidebar carries a fixed **`#chat`** row (the conversation
+itself, and the way back from an open note) and, under it, the personal tree of
+**pinned notes** grouped into **chat folders** — create / rename / delete /
+nest, drag-and-drop arrangement, pin/unpin through the pin picker. Clicking a
+pinned note opens it **over the messages** (`NoteEditor`, full pane), so house
+rules, session notes and co-working docs live in the chat's context.
+
+This is a **separate namespace from note folders**, keyed by conversation id in
+the org store's `chat` namespace, and it is **personal**: pinning a note into a
+chat does **not** share it (sharing is a note-level act — see
+[notes.md](notes.md)). In the native shell that blob is persisted to the
+**encrypted vault**, never `localStorage` — folder names are as sensitive as tag
+names. A v8 group has no sub-channels, so a group gets the same `#chat` + pins
+tree as a DM.
+
+### Composition
+
+**The composer is a plain text input and messages render as plain text.**
+Markdown, the CodeMirror composer, `:shortcode:` emotes, the emoji picker, GIF
+search, link previews, replies, threads and system notices are **not wired into
+the native surface**. The relay does host privacy-proxied GIF/emote/OG endpoints
+(see [relay.md](relay.md)), but no client calls them yet.
+
+## Security properties, and the gaps
+
+Real and enforced today:
+
+- **Sealed sender.** A DM or group send carries no device token; the relay
+  cannot attribute an envelope to an account.
+- **Sender authenticity.** Every payload is signed inside the ciphertext and
+  verified before ingest; the stored sender is the verified key, never a claim.
+- **Conversation binding.** An inbound DM is filed under the id recomputed from
+  `(me, verified sender)`; a group message under the group whose key opened it.
+- **Author-gated mutation.** Edits and deletes apply only when the verified
+  sender is the target's recorded author.
+- **Fail-closed decode.** Undecryptable/forged/garbage is dropped, version skew
+  is buffered — one bad inject cannot wedge the queue, and an app update cannot
+  lose mail.
+- **Nothing decrypted outlives the master key**: the conversation list, friend
+  names and paging cursors are all torn down on lock (`App.vue`,
+  `resetNativeChat`, `stopNativeConversations`).
+
+Known gaps, stated plainly rather than implied away:
+
+- **A `friend-accept` / `friend-confirm` is accepted from any sender.** The
+  drain records the verified sender as a friend, and for an *accept* it also
+  replies with **my handle and my delivery token**. Nothing ties the inbound
+  envelope to an invite I actually minted — the `identityPub` the invite carries
+  as a TOFU pin is parsed but never compared against the sender. Anyone able to
+  enqueue into my mailbox (an existing friend, a live-invite holder, or the relay
+  itself, which owns the queue) can therefore add themselves to my friends list
+  under a handle of their choosing and be handed my delivery token. Closing it
+  means remembering outstanding invites locally and matching the accept's
+  verified sender against the invite's pinned key — a design change, tracked as a
+  follow-up rather than silently assumed.
+- **Unfriend does not revoke reach** (above): the profile-key rotation fan-out is
+  unbuilt.
+- **No group-key rotation**, so a member cannot be removed.
+- The relay is trusted for ordering/delivery; see
+  [security.md](security.md).
+
+## Not built
+
+Deliberately absent from the native surface, tracked in
+[roadmap.md](roadmap.md) — none of it should be read into the sections above:
+
+- **Replies** (the `reply_ref_json` column and the shared `ReplyRef` type exist;
+  nothing writes or renders one — and the legacy `ReplyRef` still keys on `seq`,
+  which no longer exists, so it needs re-specifying against message ids).
+- **System notices** (`SystemEvent`): adding a member posts no in-band notice.
+- **Channels and threads**, in any form.
+- **Rich composition**: markdown rendering, emotes/emoji picker, GIF search,
+  link previews, spoilers — including wiring the relay's content proxies.
+- **Typing indicators and presence.** Neither the client nor the relay has any
+  of it: the `ephemeral: true` envelope flag [relay.md](relay.md) specifies for
+  this is **not implemented** in `routes/relay.ts`.
+- **History backfill from members' devices** for a new device or a new group
+  member — the signed-per-message design that makes it tamper-evident is in
+  [local-store.md](local-store.md#backfill-integrity).
+- **Message search in chat** (`messages_fts` exists and is populated; no UI).
+- **Group member removal, roles after creation, leaving a group.**
+- **In-group blocking** and the unfriend rotation fan-out.
+- **Multi-relay reach / invite redemption against a non-connected relay.**

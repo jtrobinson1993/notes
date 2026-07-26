@@ -3,6 +3,13 @@
 > **Status: as built.** The on-device data model and the webview↔Rust boundary.
 > The shell that hosts this core is described in
 > [native-app.md](native-app.md); the wire side in [relay.md](relay.md).
+>
+> This is the **only** storage path in the product. The browser client that once
+> cached notes in IndexedDB is deleted, along with `lib/idb.ts` and the service
+> worker — there is no second store to keep in step, no browser fallback, and
+> nothing durable outside the vault. A future web client would need its own
+> engine, which is exactly why it is deferred
+> ([roadmap.md](roadmap.md#d16--a-v8-web-client-deferred)).
 
 ## Architecture: the Rust core is a headless client
 
@@ -86,10 +93,19 @@ plain append-only log ordered by the sort tuple below; reactions live in
 **FTS5 availability was a build risk** (the vendored SQLCipher bundle had to
 support it) and is covered by a dedicated gate test.
 
+One column is schema ahead of behaviour and should not be read as a feature:
+`notes.shared_json` is only ever populated by `Store::import_notes` — the
+legacy-migration path, which is **no longer reachable** (it is registered as no
+IPC command, since the app it migrated from is deleted) — so in a running v8
+install every note is unshared. Note sharing itself is unbuilt; see
+[roadmap.md](roadmap.md#notes-under-v8).
+
 ## IPC command surface
 
-Tauri commands, all registered in `lib.rs`; events flow back to the UI
-(`relay:message`, `kt:alarm`, …). `web/src/lib/native.ts` is the typed wrapper.
+**79 Tauri commands**, all registered in `lib.rs`; events flow back to the UI
+(`relay:message`, `kt:alarm`, …). `web/src/lib/native.ts` is the typed wrapper,
+and it is the app's *entire* I/O surface — every read, write and network call
+the UI makes goes through this table.
 
 | Area | Commands |
 |---|---|
@@ -111,9 +127,10 @@ with no messages report `last_ts` 0 and still list.
 
 ## Message ordering (no server counter)
 
-The legacy server assigned a dense per-conversation `seq`. A zero-at-rest relay
-can't own a durable counter, and multipath delivery means no single relay even
-sees every message. So:
+The retired legacy server assigned a dense per-conversation `seq`; the relay that
+replaced it does not, and cannot. A zero-at-rest relay can't own a durable
+counter, and multipath delivery means no single relay even sees every message.
+So:
 
 - **Sort key = `(relayTimestamp, senderId, messageId)`.** The relay stamps each
   message at arrival (stateless); the tuple tiebreak makes same-millisecond
@@ -145,7 +162,17 @@ trust boundary — see [security.md](security.md).
 **Yjs** is the CRDT, chosen for its official `y-codemirror.next` binding (the
 app is CodeMirror 6), large-text performance, and the Matrix-proven pattern of
 relaying encrypted binary updates opaquely. Local persistence goes through the
-Rust core (`crdt_docs` / `crdt_updates`), *not* `y-indexeddb`.
+Rust core, *not* `y-indexeddb` — there is no IndexedDB in the product at all.
+
+What is built today is the **doc lineage, not collaborative editing**:
+`lib/nativeNotes.ts` keeps one `Y.Doc` per note in the webview, applies a body
+edit as a coarse delete+insert inside one transaction, and hands
+`Y.encodeStateAsUpdate(doc)` to `note_save`, which stores it in
+`crdt_docs.ydoc_state`. The `y-codemirror.next` binding is **not wired up** (the
+package isn't even a dependency yet) and nothing writes `crdt_updates` — the
+incremental-update table is schema laid down ahead of the sync engine. Real
+concurrent editing and update relay are unbuilt; see
+[roadmap.md](roadmap.md#notes-under-v8).
 
 The append-only message log stays **outside** Yjs (plain SQLite rows). Mutable
 overlays map as:
@@ -212,16 +239,16 @@ leave it stuck evicted with a NULL path), and a row claiming `present` whose
 file has vanished is **corrected to `evicted`** on the failed read rather than
 lying about what the device holds.
 
-**Note attachments never leave the device at all.** Notes are local-only in the
-native shell (no relay sync yet), so a note's attachment has no relay copy to
+**Note attachments never leave the device at all.** Notes are local-only (there
+is no note sync yet), so a note's attachment has no relay copy to
 upload to or fetch from: `putNoteAttachment` writes the ciphertext straight into
 the vault via `attachment_put` (`owner_kind = 'note'`, minting its own
 base64url id since no relay is there to assign one), and
-`getNoteAttachmentCiphertext` reads it back via `attachment_get`. In a browser
-the same helpers fall through to the legacy server endpoints, so notes behave
-identically in both shells. Because there is no remote copy, an evicted note
-attachment is **terminal** — it renders as missing rather than retrying a fetch
-that cannot succeed.
+`getNoteAttachmentCiphertext` reads it back via `attachment_get`. There is no
+other path: the legacy server endpoints these helpers used to fall through to in
+a browser are gone, so `lib/attachments.ts` now talks only to the Rust core.
+Because there is no remote copy, an evicted note attachment is **terminal** — it
+renders as missing rather than retrying a fetch that cannot succeed.
 
 `attachment_evict` is the local, per-device reclamation path (state `evicted`,
 file removed, row kept) — distinct from delete-for-everyone. Nothing calls it

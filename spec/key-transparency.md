@@ -7,9 +7,11 @@
 > (`ktMerkle.ts` — signed hash-chained roots + per-entry inclusion proofs over
 > the handle-ordered directory) remains as the fallback when no sidecar is
 > configured. **Not built:** SAS fingerprint verification (the server-trust-free
-> anchor — see [roadmap.md](roadmap.md)) and a WASM `akd_core` verifier for a
-> future web client. This is also the document D5 promises to *publish* so
-> independent parties can audit relays.
+> anchor — see [roadmap.md](roadmap.md#sas-fingerprint-verification-d5)), the
+> **heartbeat epoch** (see *Epochs* below), and a WASM `akd_core` verifier for the
+> deferred web client ([roadmap.md](roadmap.md#d16--a-v8-web-client-deferred)).
+> This is also the document D5 promises to *publish* so independent parties can
+> audit relays.
 
 ## What is logged
 
@@ -53,10 +55,12 @@ with **no published port** and its own volume. The relay is wired via
 token in `.env` → full AKD; leave it empty → the interim Merkle path**.
 
 **Relay integration is config-gated with graceful fallback** (`ktSidecar.ts`).
-With a sidecar present, `PUT /directory` publishes the handle→identity-key
-binding and signs/chains the resulting akd root, and `GET /directory/:handle`
-returns `{proof, epoch, rootHash, vrfPublicKey, kt:'akd'}`. With no URL set, the
-interim Merkle path is unchanged.
+With a sidecar present, `PUT /api/relay/directory` publishes the
+handle→identity-key binding and signs/chains the resulting akd root, and
+`GET /api/relay/directory/:handle` returns
+`{proof, epoch, rootHash, vrfPublicKey, kt:'akd'}`. With no URL set, the interim
+Merkle path is unchanged. A handle change (`POST /api/relay/handle`) republishes
+the same way, since the log is keyed by handle.
 
 ## Client verification (native, as built)
 
@@ -69,7 +73,8 @@ app binary.
   **`verify_key_history`** → every key the log ever bound to a handle
   (`src-tauri/src/kt.rs`).
 - **`kt_self_audit`** derives your own handle + identity key, fetches
-  `GET /directory/:handle/history`, verifies it, and applies
+  `GET /api/relay/directory/:handle/history` (AKD backend only — the interim
+  Merkle KT cannot prove history and answers 404), verifies it, and applies
   `self_audit_verdict(history_keys, my_keys)` — a key the log bound to *your*
   handle that you never minted is hard equivocation. On a clean, consistent
   result it advances the verified root; otherwise it raises a hard alarm.
@@ -89,8 +94,10 @@ app binary.
   non-dismissable banner distinguishing split-view from foreign-key.
 
 **Deferred:** a **WASM `akd_core` verifier** (plus a JS reimplementation of
-self-audit/gossip) for a future browser client — it needs wasm-bindgen/wasm-pack
-tooling and is off the critical path while native is the only client.
+self-audit/gossip) for the deferred browser client
+([roadmap.md](roadmap.md#d16--a-v8-web-client-deferred)) — it needs
+wasm-bindgen/wasm-pack tooling and is off the critical path while native is the
+only client.
 
 ## Log structure
 
@@ -98,9 +105,16 @@ tooling and is off the critical path while native is the only client.
 open-source `akd` crate running as the sidecar above — a separate service rather
 than a napi binding into Node.
 
-- **Epochs:** the relay batches directory changes and publishes a new epoch
-  **on change, at most every few minutes; at least daily** (heartbeat epoch
-  even with no changes, so staleness is detectable).
+- **Epochs:** *as built*, the relay publishes a new epoch **synchronously on
+  every directory change** — a registration, a directory PUT, or a handle change
+  signs and chains a root before the request returns. There is **no batching and
+  no heartbeat**: a relay with no key activity publishes nothing, so a quiet log
+  is indistinguishable from a stalled one. This matters because the reference
+  auditor's watch mode alarms when the newest epoch is older than its max gap
+  (default 24 h) — on a quiet relay that alarm is a false positive today. The
+  intended shape is coalescing (at most every few minutes) plus a **daily
+  heartbeat epoch even with no changes**, so staleness is detectable; it is
+  **unbuilt** ([roadmap.md](roadmap.md)).
 - **Labels are VRF-blinded** — auditors and other users can verify the tree
   without learning which handles exist (privacy-preserving directory).
 - **Signed root** per epoch: `{epoch, rootHash, prevRootHash, timestamp}`
@@ -131,7 +145,7 @@ than a napi binding into Node.
 ## Roots endpoint (public, unauthenticated)
 
 `GET /.well-known/accord/kt-roots?since=<epoch>` (alias of
-`/api/kt/roots`) →
+`/api/relay/kt/roots`) →
 
 ```json
 { "relayFp": "…", "roots": [ { "epoch": 41, "rootHash": "…",
@@ -155,13 +169,16 @@ A small open-source CLI (ships in this repo — `server/src/ktAuditCli.ts`, run
    history-tree structure; the current per-epoch snapshot Merkle root does not
    admit them.)
 2. **Watch mode:** poll the roots endpoint, keep seen roots, and alarm loudly on
-   a **rewrite** (a prior epoch's rootHash changed) or a **stall** (no fresh
-   heartbeat epoch within a max gap). **Built.**
+   a **rewrite** (a prior epoch's rootHash changed) or a **stall** (nothing newer
+   than `--max-gap-hours`, default 24). **Built** — but see *Epochs* above: with
+   no heartbeat epoch on the relay, the stall alarm fires on any relay that
+   simply had no key activity for a day.
 
 **Independence is the point:** an auditor run by the relay operator proves
-nothing. The root `README.md` gets a "Verifying this relay's key transparency"
-section at build (D5) recommending third parties — researchers, NGOs, power
-users, *other relay operators* — run it. Users already provide distributed
+nothing. The root `README.md` documents the endpoints and the `npm run kt-audit`
+invocation (§ *Key transparency*) and recommends third parties — researchers,
+NGOs, power users, *other relay operators* — run it. Users already provide
+distributed
 split-view detection via envelope gossip; dedicated auditors add always-on,
 whole-log coverage (an enhancement, not a dependency).
 
