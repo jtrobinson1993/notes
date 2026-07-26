@@ -1,38 +1,15 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { createHash, generateKeyPairSync, sign as edSign } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { createHash } from 'node:crypto';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
 
-function deviceKeys() {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  return { pubKey: spki.subarray(spki.length - 32).toString('base64'), privateKey };
-}
 
-/** Enroll a device for the cookie's user and get a bearer token for it. */
-async function deviceWithToken(cookie: string) {
-  const keys = deviceKeys();
-  const enroll = await ctx.app.inject({
-    method: 'POST',
-    url: '/api/relay/devices',
-    headers: { cookie },
-    payload: { pubKey: keys.pubKey },
-  });
-  expect(enroll.statusCode).toBe(200);
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const fp = info.json().identityFingerprint as string;
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(null, Buffer.from(`${nonce}|${fp}`), keys.privateKey).toString('base64');
-  const token = await ctx.app.inject({
-    method: 'POST',
-    url: '/api/relay/auth/token',
-    payload: { pubKey: keys.pubKey, nonce, signature },
-  });
-  expect(token.statusCode).toBe(200);
-  return { bearer: `Bearer ${token.json().token as string}`, deviceId: enroll.json().deviceId as string };
+/** Enroll a device for a user and get a bearer token for it. */
+async function deviceWithToken(userId: string) {
+  const { bearer, deviceId } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return { bearer, deviceId };
 }
 
 const DELIVERY_TOKEN = 'the-secret-delivery-token';
@@ -49,7 +26,7 @@ async function send(handle: string, deliveryToken = DELIVERY_TOKEN) {
 
 describe('sealed-sender mailbox', () => {
   it('verifier registration requires a device token', async () => {
-    ctx = await makeApp();
+    ctx = await makeRelayApp();
     const anon = await ctx.app.inject({
       method: 'PUT',
       url: '/api/relay/verifier',
@@ -59,10 +36,10 @@ describe('sealed-sender mailbox', () => {
   });
 
   it('delivers to every active device; ack removes only own rows', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const d1 = await deviceWithToken(alice.cookie);
-    const d2 = await deviceWithToken(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const d1 = await deviceWithToken(alice);
+    const d2 = await deviceWithToken(alice);
 
     const reg = await ctx.app.inject({
       method: 'PUT',
@@ -124,9 +101,9 @@ describe('sealed-sender mailbox', () => {
   });
 
   it('refuses delivery uniformly for bad token and unknown handle', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const d1 = await deviceWithToken(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const d1 = await deviceWithToken(alice);
     await ctx.app.inject({
       method: 'PUT',
       url: '/api/relay/verifier',
@@ -142,9 +119,9 @@ describe('sealed-sender mailbox', () => {
   });
 
   it('relay timestamps are strictly increasing across sends', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const d1 = await deviceWithToken(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const d1 = await deviceWithToken(alice);
     await ctx.app.inject({
       method: 'PUT',
       url: '/api/relay/verifier',
@@ -157,8 +134,8 @@ describe('sealed-sender mailbox', () => {
   });
 
   it('rejects oversized envelopes', async () => {
-    ctx = await makeApp();
-    seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
+    ctx = await makeRelayApp();
+    seedUser(ctx.db, { handle: 'Alice#0001' });
     const res = await ctx.app.inject({
       method: 'POST',
       url: '/api/relay/mailbox/send',

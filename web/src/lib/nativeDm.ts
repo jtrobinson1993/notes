@@ -7,7 +7,7 @@
 
 import { dmConversationId, dmMarkRead, dmUnread, friendsList, ktGossipSend, relaySendMessage } from './native';
 import { loadHistoryLocal } from './nativeChat';
-import type { ChatMessageView } from '../stores/chat';
+import type { ChatMessageView } from './chatView';
 
 export interface DmSummary {
   /** The friend's local contact id (their per-relay identity key, base64). */

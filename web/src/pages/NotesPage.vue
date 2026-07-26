@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { useQuery } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import NoteEditor from '../components/NoteEditor.vue';
 import EmojiText from '../components/EmojiText.vue';
-import FolderShareDialog from '../components/FolderShareDialog.vue';
 import ResizeHandle from '../components/ResizeHandle.vue';
 import { useResizable } from '../lib/useResizable';
 import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
@@ -13,21 +11,14 @@ import { loadTagColors, tagColor, tagTextColor } from '../lib/tagColors';
 import { toPlainText } from '../lib/transfer';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import { useOrgStore, type OrgFolder } from '../stores/organization';
-import { useSessionStore } from '../stores/session';
 import { isMobile, noteOpen } from '../lib/mobileNav';
-import { isNative } from '../lib/native';
 import IconFolderMinus from '~icons/mynaui/folder-minus';
 import IconFolderPlus from '~icons/mynaui/folder-plus';
 import IconNote from '~icons/mynaui/file-text';
 import IconPencil from '~icons/mynaui/pencil';
 import IconTrash from '~icons/mynaui/trash';
-import IconShare from '~icons/mynaui/share';
 import IconMenu from '~icons/mynaui/menu';
 
-// Folder being shared (opens FolderShareDialog).
-const shareFolder = ref<{ id: string; name: string } | null>(null);
-
-const session = useSessionStore();
 const notes = useNotesStore();
 const org = useOrgStore();
 const route = useRoute();
@@ -197,44 +188,15 @@ async function autoOpen() {
   selectedId.value = notes.sorted[0]?.id ?? (await notes.create());
 }
 
-// Notes are readable once the keys are: in the browser that's the unlocked
-// session (master key held), in the native shell it's the vault gate — which
-// only renders the app once the vault is open, and never populates the legacy
-// session's master key. Gating on `session.unlocked` alone would leave the
-// native notes list permanently empty.
-const notesReady = computed(() => isNative || session.unlocked);
-
-// Instant load from the encrypted local store (SQLite natively, IndexedDB in the
-// browser), then background sync.
-useQuery({
-  key: ['notes-sync'],
-  query: async () => {
-    if (!notesReady.value) return null;
-    if (!notes.loaded) await notes.loadFromCache();
-    await notes.sync();
-    void loadTagColors();
-    void org.load();
-    await autoOpen();
-    return notes.sorted.length;
-  },
-  refetchOnWindowFocus: true,
-  refetchOnReconnect: true,
-  staleTime: 30_000,
-});
-
-watch(
-  notesReady,
-  async (ready) => {
-    if (ready) {
-      await notes.loadFromCache();
-      await notes.sync();
-      void loadTagColors();
-      void org.load();
-      await autoOpen();
-    }
-  },
-  { immediate: true },
-);
+// Instant load from the encrypted local store (SQLite, via the Rust core). The
+// vault gate only renders the app once the vault is unlocked, so by the time
+// this page mounts the keys are available. All three loads are idempotent.
+void (async () => {
+  if (!notes.loaded) await notes.loadFromCache();
+  void loadTagColors();
+  void org.load();
+  await autoOpen();
+})();
 
 const selected = computed(() => (selectedId.value ? (notes.notes.get(selectedId.value) ?? null) : null));
 
@@ -371,7 +333,6 @@ function excerpt(body: string): string {
                   <span class="text-xs text-zinc-400">{{ notesInFolder(row.folder!.id) }}</span>
                 </button>
                 <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
-                  <button class="rounded p-1 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400" title="Share folder" @click="shareFolder = { id: row.folder!.id, name: row.folder!.name }"><IconShare class="h-3.5 w-3.5" /></button>
                   <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(row.folder!.id)"><IconFolderPlus class="h-3.5 w-3.5" /></button>
                   <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(row.folder!.id, row.folder!.name)"><IconPencil class="h-3.5 w-3.5" /></button>
                   <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete folder" @click="deleteFolder(row.folder!.id, row.folder!.name)"><IconTrash class="h-3.5 w-3.5" /></button>
@@ -462,12 +423,5 @@ function excerpt(body: string): string {
         </div>
       </section>
     </div>
-    <FolderShareDialog
-      v-if="shareFolder"
-      :open="true"
-      :folder-id="shareFolder.id"
-      :folder-name="shareFolder.name"
-      @update:open="(v) => { if (!v) shareFolder = null; }"
-    />
   </AppLayout>
 </template>

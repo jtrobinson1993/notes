@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   rankEmoji,
   recordEmojiUse,
@@ -7,8 +7,15 @@ import {
   usageKey,
   usageScore,
 } from '../../src/lib/emoji/usage';
-import { customEmoji } from '../../src/lib/emoji/custom';
+import { clearEmotes, registerEmote } from '../../src/lib/emoji';
 import type { UnicodeEmoji } from '../../src/lib/emoji/unicode';
+
+// The usage map persists into the encrypted vault via the Rust core; there is no
+// core under vitest, so stub the settings IPC out.
+vi.mock('../../src/lib/native', () => ({
+  settingsGet: vi.fn(async () => null),
+  settingsSet: vi.fn(async () => undefined),
+}));
 
 const HALF_LIFE_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -19,11 +26,11 @@ const unicodeList: UnicodeEmoji[] = [
 
 beforeEach(() => {
   resetEmojiUsage();
-  customEmoji.items = [];
+  clearEmotes();
 });
 afterEach(() => {
   resetEmojiUsage();
-  customEmoji.items = [];
+  clearEmotes();
 });
 
 describe('usage scoring + decay', () => {
@@ -35,7 +42,7 @@ describe('usage scoring + decay', () => {
     expect(usageScore(usageKey.unicode('🎉'), now)).toBeCloseTo(2);
   });
 
-  it('halves a use\'s weight after one half-life', () => {
+  it("halves a use's weight after one half-life", () => {
     const t0 = 1_000_000;
     recordEmojiUse(usageKey.unicode('🎉'), t0);
     expect(usageScore(usageKey.unicode('🎉'), t0 + HALF_LIFE_MS)).toBeCloseTo(0.5);
@@ -53,6 +60,10 @@ describe('usage scoring + decay', () => {
     expect(usageScore(fresh, later)).toBeGreaterThan(usageScore(old, later));
   });
 
+  it('keys are source-tagged so an emote and a glyph never collide', () => {
+    expect(usageKey.emote('party')).not.toBe(usageKey.unicode('party'));
+  });
+
   it('topUsed lists positive-score keys highest first', () => {
     const now = 1_000;
     recordEmojiUse(usageKey.unicode('🎉'), now);
@@ -65,22 +76,33 @@ describe('usage scoring + decay', () => {
 });
 
 describe('rankEmoji tiering', () => {
-  it('orders custom before unicode for a shared query (no usage yet)', () => {
-    customEmoji.items = [{ name: 'partyblob', ref: { id: 'a', name: 'a', type: 'image/png', size: 1, key: 'k', iv: 'v' } }];
-    const res = rankEmoji('party', unicodeList, 50, 1_000);
-    const custom = res.findIndex((c) => c.key === usageKey.custom('partyblob'));
+  it('orders emotes before unicode for a shared query (no usage yet)', () => {
+    registerEmote('partyblob', '/emoji/partyblob.webp');
+    const res = rankEmoji('party', unicodeList, 50, 1_000, ['partyblob']);
+    const emote = res.findIndex((c) => c.key === usageKey.emote('partyblob'));
     const uni = res.findIndex((c) => c.key === usageKey.unicode('🎉'));
-    expect(custom).toBeGreaterThanOrEqual(0);
+    expect(emote).toBeGreaterThanOrEqual(0);
     expect(uni).toBeGreaterThanOrEqual(0);
-    expect(custom).toBeLessThan(uni); // custom tier above unicode tier
+    expect(emote).toBeLessThan(uni); // emote tier above unicode tier
+  });
+
+  it('carries the registered url on an emote candidate', () => {
+    registerEmote('partyblob', '/emoji/partyblob.webp');
+    const res = rankEmoji('party', unicodeList, 50, 1_000, ['partyblob']);
+    const emote = res.find((c) => c.key === usageKey.emote('partyblob'));
+    expect(emote).toMatchObject({
+      source: 'emote',
+      insert: ':partyblob:',
+      url: '/emoji/partyblob.webp',
+    });
   });
 
   it('floats a most-used emoji to the very top, above its source tier', () => {
-    customEmoji.items = [{ name: 'partyblob', ref: { id: 'a', name: 'a', type: 'image/png', size: 1, key: 'k', iv: 'v' } }];
+    registerEmote('partyblob', '/emoji/partyblob.webp');
     const now = 1_000;
-    // 🎉 (unicode) is normally below custom, but heavy recent use floats it up
+    // 🎉 (unicode) is normally below emotes, but heavy recent use floats it up
     for (let i = 0; i < 5; i++) recordEmojiUse(usageKey.unicode('🎉'), now);
-    const res = rankEmoji('party', unicodeList, 50, now);
+    const res = rankEmoji('party', unicodeList, 50, now, ['partyblob']);
     expect(res[0]!.key).toBe(usageKey.unicode('🎉'));
   });
 
@@ -89,5 +111,11 @@ describe('rankEmoji tiering', () => {
     recordEmojiUse(usageKey.unicode('🎉'), now);
     const res = rankEmoji('party', unicodeList, 50, now);
     expect(res.filter((c) => c.key === usageKey.unicode('🎉')).length).toBe(1);
+  });
+
+  it('omits unicode entirely when the set has not loaded yet', () => {
+    registerEmote('partyblob', '/emoji/partyblob.webp');
+    const res = rankEmoji('party', null, 50, 1_000, ['partyblob']);
+    expect(res.map((c) => c.key)).toEqual([usageKey.emote('partyblob')]);
   });
 });

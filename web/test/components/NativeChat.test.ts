@@ -44,9 +44,23 @@ vi.mock('../../src/lib/native', () => nativeMod);
 const call = vi.hoisted(() => ({ placeCall: vi.fn() }));
 vi.mock('../../src/lib/callHost', () => ({ callHost: () => call }));
 
+// Standalone (no app router): the component reads `?open=`/`?add=` defensively.
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
+
 import NativeChat from '../../src/components/NativeChat.vue';
 
-const view = (over: Record<string, unknown>) => ({ seq: 0, senderId: '', text: '', ...over });
+// A local-log row as the UI sees it (lib/chatView.ts): `attachments` is always
+// an array on the happy path — rowToView defaults it to [].
+const view = (over: Record<string, unknown>) => ({
+  key: 'm0',
+  conversationId: 'dm:A',
+  channelId: null,
+  senderId: '',
+  sortKey: 0,
+  text: '',
+  attachments: [],
+  ...over,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -163,6 +177,28 @@ describe('NativeChat', () => {
     await w.find('[data-testid="dm-row"]').trigger('click');
     await flushPromises();
     expect(w.find('[data-testid="attach-download"]').text()).toContain('doc.pdf');
+  });
+
+  it('still renders a message whose payload carries a malformed attachments field', async () => {
+    // `attachments_json` is peer-authored and parsed without a schema check, so
+    // the field can be missing or a non-array. One such message must not take
+    // the whole conversation's render down (regression).
+    dm.openDm.mockResolvedValue({
+      conversationId: 'dm:A',
+      messages: [
+        { ...view({ key: 'm1', senderId: 'idA', text: 'first' }), attachments: undefined },
+        { ...view({ key: 'm2', senderId: 'idA', text: 'second' }), attachments: 5 },
+        view({ key: 'm3', senderId: 'idA', text: 'third', attachments: [null, 'nope'] }),
+      ],
+    });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+    expect(w.text()).toContain('first');
+    expect(w.text()).toContain('second');
+    expect(w.text()).toContain('third');
+    expect(w.find('[data-testid="attach-download"]').exists()).toBe(false);
   });
 
   it('shows an unread badge from the DM list', async () => {

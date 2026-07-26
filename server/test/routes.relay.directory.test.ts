@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createPublicKey, generateKeyPairSync, randomBytes, sign as edSign, verify as edVerify } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 import { leafHash, verifyInclusion, type ProofStep } from '../src/ktMerkle.js';
 
 let ctx: TestApp;
@@ -14,28 +14,9 @@ function deviceKeys() {
   return { pubKey: spki.subarray(spki.length - 32).toString('base64'), privateKey };
 }
 
-async function deviceBearer(cookie: string): Promise<string> {
-  const keys = deviceKeys();
-  await ctx.app.inject({
-    method: 'POST',
-    url: '/api/relay/devices',
-    headers: { cookie },
-    payload: { pubKey: keys.pubKey },
-  });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    keys.privateKey,
-  ).toString('base64');
-  const token = await ctx.app.inject({
-    method: 'POST',
-    url: '/api/relay/auth/token',
-    payload: { pubKey: keys.pubKey, nonce, signature },
-  });
-  return `Bearer ${token.json().token as string}`;
+async function deviceBearer(userId: string): Promise<string> {
+  const { bearer } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return bearer;
 }
 
 const identityKeys = () => ({
@@ -45,9 +26,9 @@ const identityKeys = () => ({
 
 describe('directory + KT roots (D5)', () => {
   it('registers keys, serves lookups, and publishes signed chained roots', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const keys = identityKeys();
 
     const put = await ctx.app.inject({
@@ -114,13 +95,13 @@ describe('directory + KT roots (D5)', () => {
   });
 
   it('returns a per-entry inclusion proof that verifies against the signed root', async () => {
-    ctx = await makeApp();
+    ctx = await makeRelayApp();
     // Several registered handles ⇒ a real Merkle path (not just a lone leaf).
     const handles = ['Alice#0001', 'Bravo#0002', 'Carol#0003', 'Delta#0004', 'Echo#0005'];
     const registered: Record<string, { identityPubKey: string; sealingPubKey: string }> = {};
     for (const handle of handles) {
-      const u = seedAuthedUser(ctx.db, { handle });
-      const bearer = await deviceBearer(u.cookie);
+      const u = seedUser(ctx.db, { handle });
+      const bearer = await deviceBearer(u);
       const keys = identityKeys();
       registered[handle] = keys;
       await ctx.app.inject({ method: 'PUT', url: '/api/relay/directory', headers: { authorization: bearer }, payload: keys });
@@ -162,9 +143,9 @@ describe('directory + KT roots (D5)', () => {
   });
 
   it('404s an unregistered handle and rejects malformed keys', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
 
     const missing = await ctx.app.inject({ method: 'GET', url: '/api/relay/directory/Alice%230001' });
     expect(missing.statusCode).toBe(404);

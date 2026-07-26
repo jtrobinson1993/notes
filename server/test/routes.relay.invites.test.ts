@@ -1,29 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash, generateKeyPairSync, randomBytes, sign as edSign } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
 
-async function deviceBearer(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await ctx.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    privateKey,
-  ).toString('base64');
-  const token = await ctx.app.inject({
-    method: 'POST',
-    url: '/api/relay/auth/token',
-    payload: { pubKey, nonce, signature },
-  });
-  return `Bearer ${token.json().token as string}`;
+async function deviceBearer(userId: string): Promise<string> {
+  const { bearer } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return bearer;
 }
 
 const hash = (t: string) => createHash('sha256').update(t).digest('base64url');
@@ -31,7 +15,7 @@ const envelopeB64 = () => Buffer.from('sealed friend-accept').toString('base64')
 
 describe('friend invites (D4b)', () => {
   it('mint requires a device token', async () => {
-    ctx = await makeApp();
+    ctx = await makeRelayApp();
     const res = await ctx.app.inject({
       method: 'POST',
       url: '/api/relay/invites',
@@ -41,9 +25,9 @@ describe('friend invites (D4b)', () => {
   });
 
   it('redeem drops one sealed envelope into the inviter mailbox, then is one-time', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const token = randomBytes(24).toString('base64url');
 
     const mint = await ctx.app.inject({
@@ -83,13 +67,13 @@ describe('friend invites (D4b)', () => {
   });
 
   it('refuses unknown / expired tokens uniformly (no enumeration)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
 
     // Expired invite (mint directly with a past expiry).
     const expiredToken = randomBytes(24).toString('base64url');
-    ctx.db.mintRelayInvite(hash(expiredToken), alice.id, Date.now() - 1000);
+    ctx.db.mintRelayInvite(hash(expiredToken), alice, Date.now() - 1000);
 
     const unknown = await ctx.app.inject({
       method: 'POST',
@@ -114,9 +98,9 @@ describe('friend invites (D4b)', () => {
   });
 
   it('validity check is non-consuming and reflects used/expired state', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const token = randomBytes(24).toString('base64url');
     await ctx.app.inject({
       method: 'POST',
@@ -140,9 +124,9 @@ describe('friend invites (D4b)', () => {
   });
 
   it('caps the invite TTL', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const mint = await ctx.app.inject({
       method: 'POST',
       url: '/api/relay/invites',

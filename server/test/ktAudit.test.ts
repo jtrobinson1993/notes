@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { generateKeyPairSync, randomBytes, sign as edSign } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 import {
   detectRewrite,
   detectStall,
@@ -12,27 +12,15 @@ import {
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
 
-async function deviceBearer(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await ctx.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    privateKey,
-  ).toString('base64');
-  const token = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/token', payload: { pubKey, nonce, signature } });
-  return `Bearer ${token.json().token as string}`;
+async function deviceBearer(userId: string): Promise<string> {
+  const { bearer } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return bearer;
 }
 
 /** Register a fresh handle with random directory keys, minting epochs. */
 async function publish(handle: string): Promise<void> {
-  const u = seedAuthedUser(ctx.db, { handle });
-  const bearer = await deviceBearer(u.cookie);
+  const u = seedUser(ctx.db, { handle });
+  const bearer = await deviceBearer(u);
   await ctx.app.inject({
     method: 'PUT',
     url: '/api/relay/directory',
@@ -49,7 +37,7 @@ async function fetchAudit(): Promise<{ identityPubKey: string; roots: SignedRoot
 
 describe('KT reference auditor', () => {
   it('verifies a genuine multi-epoch chain from the live relay', async () => {
-    ctx = await makeApp();
+    ctx = await makeRelayApp();
     await publish('Alice#0001');
     await publish('Bravo#0002');
     await publish('Carol#0003');
@@ -62,7 +50,7 @@ describe('KT reference auditor', () => {
   });
 
   it('rejects a forged signature', async () => {
-    ctx = await makeApp();
+    ctx = await makeRelayApp();
     await publish('Alice#0001');
     const { identityPubKey, roots } = await fetchAudit();
     const tampered = { ...roots[0]!, signature: randomBytes(64).toString('base64') };
@@ -71,7 +59,7 @@ describe('KT reference auditor', () => {
   });
 
   it('rejects a broken chain link (rootHash swapped mid-chain)', async () => {
-    ctx = await makeApp();
+    ctx = await makeRelayApp();
     await publish('Alice#0001');
     await publish('Bravo#0002');
     const { identityPubKey, roots } = await fetchAudit();
@@ -84,7 +72,7 @@ describe('KT reference auditor', () => {
   });
 
   it('rejects a chain that does not start at the expected checkpoint', async () => {
-    ctx = await makeApp();
+    ctx = await makeRelayApp();
     await publish('Alice#0001');
     const { identityPubKey, roots } = await fetchAudit();
     // Genesis chain must start from null; demanding a checkpoint it lacks fails.

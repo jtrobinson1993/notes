@@ -1,36 +1,23 @@
-import manifest from './defaultEmoji.json';
+// Named image emotes (":shortcode:" → image URL).
+//
+// The bundled 7TV manifest is gone: emote images now come from the relay's
+// proxying emote endpoints (it fetches + caches them, so no client ever talks to
+// a third-party CDN and leaks its IP). Nothing populates this registry yet — the
+// relay-backed emote search/fetch is wired up by the emoji rework — so today
+// `resolveEmoji` only resolves emotes a caller has explicitly registered, and
+// unicode emoji (which need no images at all) are the working set.
 
-export interface DefaultEmoji {
-  name: string;
-  file: string;
-  w: number;
-  h: number;
-  animated: boolean;
+const emoteUrls = new Map<string, string>();
+
+/** Make an emote renderable under `name`. `url` must be same-origin, a blob:/
+ *  data: URL, or a relay URL — never a third-party CDN (IP leak). */
+export function registerEmote(name: string, url: string): void {
+  emoteUrls.set(name, url);
 }
 
-/** Default 7TV emote set, in 7TV popularity order (most-used first). The bundled
- *  manifest is metadata only (names → 7TV ids); the images are fetched from 7TV
- *  and cached by our server, served from `/emoji/7tv/` (see server/routes/emoji
- *  and scripts/fetch-emojis.mjs, which refreshes this manifest from the API). */
-export const defaultEmoji = manifest as DefaultEmoji[];
-
-export function emojiUrl(file: string): string {
-  return `/emoji/7tv/${file}`;
-}
-
-const byName = new Map(defaultEmoji.map((e) => [e.name, emojiUrl(e.file)]));
-
-// Per-user custom emoji are registered here at runtime (decrypted to object
-// URLs by the custom-emoji store). Kept separate so a custom name shadows a
-// default one.
-const customByName = new Map<string, string>();
-
-export function registerCustomEmoji(name: string, url: string): void {
-  customByName.set(name, url);
-}
-
-export function clearCustomEmoji(): void {
-  customByName.clear();
+/** Drop every registered emote (on lock / account switch). */
+export function clearEmotes(): void {
+  emoteUrls.clear();
 }
 
 /** Shortcode pattern used both for rendering and for picker insertion. */
@@ -38,7 +25,7 @@ export const SHORTCODE_RE = /:([A-Za-z0-9_]{2,40}):/g;
 
 /** Resolve a :shortcode: name to a renderable image URL, or null if unknown. */
 export function resolveEmoji(name: string): string | null {
-  return customByName.get(name) ?? byName.get(name) ?? null;
+  return emoteUrls.get(name) ?? null;
 }
 
 // Unicode emoji run: a pictographic base plus optional variation selector
@@ -67,12 +54,4 @@ export function isEmoteOnly(text: string | null | undefined): boolean {
     return '';
   });
   return found && rest.trim() === '';
-}
-
-/** Filter the default set by substring (case-insensitive), preserving
- *  popularity order. */
-export function searchDefaultEmoji(query: string, limit = 90): DefaultEmoji[] {
-  const q = query.trim().toLowerCase();
-  const list = q ? defaultEmoji.filter((e) => e.name.toLowerCase().includes(q)) : defaultEmoji;
-  return list.slice(0, limit);
 }

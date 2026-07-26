@@ -1,26 +1,20 @@
 import { reactive } from 'vue';
-import { useSessionStore } from '../../stores/session';
-import { api } from '../api';
-import { unwrapKey, wrapKey } from '../crypto';
-import { defaultEmoji, emojiUrl, resolveEmoji, searchDefaultEmoji } from './index';
-import { customEmoji } from './custom';
+import { settingsGet, settingsSet } from '../native';
+import { resolveEmoji } from './index';
 import { searchUnicode, type UnicodeEmoji } from './unicode';
 
 // "Most-used" emoji tracking. Each use bumps a per-emoji score that decays over
 // time (recent favorites outrank stale all-time winners), so the autocomplete
-// and picker can float frequently-used emoji to the top. The map is stored as a
-// master-key-encrypted settings blob — same mechanism as the custom-emoji
-// palette — so usage follows the account across devices and the server never
-// sees it. Keys are source-tagged (`7tv:`/`custom:`/`uni:`) so the same name
-// across sources, and the same glyph, never collide.
+// can float frequently-used emoji to the top. The map lives in the encrypted
+// vault (SQLCipher `settings`, via the Rust core) — which emoji you use is
+// behavioural metadata, so it never leaves the device in the clear. Keys are
+// source-tagged (`emote:`/`uni:`) so a shortcode and a glyph never collide.
 
 const SETTING_KEY = 'emoji-usage';
-const INFO = 'notes:wrap:settings:v1';
 // Half-life of a use's weight. After this long, a single past use counts half
 // as much — so a burst of recent uses overtakes an old habit within ~2 weeks.
 const HALF_LIFE_MS = 14 * 24 * 60 * 60 * 1000;
-// Cap persisted entries (the settings blob is capped at 64KB server-side); keep
-// the highest-scoring ones.
+// Cap persisted entries so the blob stays small; keep the highest-scoring ones.
 const MAX_ENTRIES = 300;
 const PERSIST_DEBOUNCE_MS = 1500;
 
@@ -31,7 +25,7 @@ export interface UsageEntry {
 
 export const emojiUsage = reactive<{ map: Record<string, UsageEntry> }>({ map: {} });
 
-export type EmojiSource = 'custom' | '7tv' | 'unicode';
+export type EmojiSource = 'emote' | 'unicode';
 
 /** A renderable emoji candidate from any source, carrying its usage key and the
  *  exact text to insert (a `:shortcode:` for emotes, the glyph for unicode). */
@@ -45,8 +39,7 @@ export interface EmojiCandidate {
 }
 
 export const usageKey = {
-  sevenTv: (name: string) => `7tv:${name}`,
-  custom: (name: string) => `custom:${name}`,
+  emote: (name: string) => `emote:${name}`,
   unicode: (glyph: string) => `uni:${glyph}`,
 };
 
@@ -77,34 +70,35 @@ export function topUsed(now: number = Date.now()): { key: string; score: number 
 
 // ---- ranking --------------------------------------------------------------
 
-function customCandidate(name: string): EmojiCandidate {
-  return { source: 'custom', key: usageKey.custom(name), insert: `:${name}:`, label: `:${name}:`, url: resolveEmoji(name) ?? undefined };
-}
-function sevenTvCandidate(name: string, file: string): EmojiCandidate {
-  return { source: '7tv', key: usageKey.sevenTv(name), insert: `:${name}:`, label: `:${name}:`, url: emojiUrl(file) };
+function emoteCandidate(name: string): EmojiCandidate {
+  return {
+    source: 'emote',
+    key: usageKey.emote(name),
+    insert: `:${name}:`,
+    label: `:${name}:`,
+    url: resolveEmoji(name) ?? undefined,
+  };
 }
 function unicodeCandidate(e: UnicodeEmoji): EmojiCandidate {
   return { source: 'unicode', key: usageKey.unicode(e.unicode), insert: e.unicode, label: e.label, char: e.unicode };
 }
 
-function customMatches(query: string): EmojiCandidate[] {
-  const q = query.trim().toLowerCase();
-  const items = q ? customEmoji.items.filter((e) => e.name.toLowerCase().includes(q)) : customEmoji.items;
-  return items.map((e) => customCandidate(e.name));
-}
-
 /** Ranked candidates for a query: a most-used tier (decayed score, any source)
- *  on top, then custom → 7TV → unicode in their natural order, de-duped by key.
- *  `unicodeList` is the lazily-loaded unicode set, or null to omit unicode. */
+ *  on top, then registered emotes → unicode in their natural order, de-duped by
+ *  key. `unicodeList` is the lazily-loaded unicode set, or null to omit unicode.
+ *  `emoteNames` are the currently-registered emote shortcodes to match against. */
 export function rankEmoji(
   query: string,
   unicodeList: UnicodeEmoji[] | null,
   limit = 50,
   now: number = Date.now(),
+  emoteNames: string[] = [],
 ): EmojiCandidate[] {
+  const q = query.trim().toLowerCase();
   const tiers: EmojiCandidate[] = [
-    ...customMatches(query),
-    ...searchDefaultEmoji(query, limit).map((e) => sevenTvCandidate(e.name, e.file)),
+    ...(q ? emoteNames.filter((n) => n.toLowerCase().includes(q)) : emoteNames)
+      .slice(0, limit)
+      .map(emoteCandidate),
     ...(unicodeList ? searchUnicode(unicodeList, query, limit).map(unicodeCandidate) : []),
   ];
 
@@ -122,33 +116,11 @@ export function rankEmoji(
 }
 
 // Convenience builders for callers that already know the picked emoji.
-export function recordCustomUse(name: string): void {
-  recordEmojiUse(usageKey.custom(name));
-}
-export function recordSevenTvUse(name: string): void {
-  recordEmojiUse(usageKey.sevenTv(name));
+export function recordEmoteUse(name: string): void {
+  recordEmojiUse(usageKey.emote(name));
 }
 export function recordUnicodeUse(glyph: string): void {
   recordEmojiUse(usageKey.unicode(glyph));
-}
-
-/** Render data for a most-used key, or null if the source emoji is gone. Used by
- *  the picker's "Frequently used" row. */
-export function candidateForKey(key: string): EmojiCandidate | null {
-  if (key.startsWith('custom:')) {
-    const name = key.slice('custom:'.length);
-    return customEmoji.items.some((e) => e.name === name) ? customCandidate(name) : null;
-  }
-  if (key.startsWith('7tv:')) {
-    const name = key.slice('7tv:'.length);
-    const e = defaultEmoji.find((x) => x.name === name);
-    return e ? sevenTvCandidate(e.name, e.file) : null;
-  }
-  if (key.startsWith('uni:')) {
-    const glyph = key.slice('uni:'.length);
-    return { source: 'unicode', key, insert: glyph, label: glyph, char: glyph };
-  }
-  return null;
 }
 
 // ---- persistence (mirrors custom.ts) --------------------------------------
@@ -168,32 +140,23 @@ function prune(): void {
 }
 
 async function persist(): Promise<void> {
-  let mk: Uint8Array | null | undefined;
-  try {
-    mk = useSessionStore().mk;
-  } catch {
-    return; // no active store (e.g. tests) — nothing to sync
-  }
-  if (!mk) return;
   prune();
-  const wrapped = await wrapKey(mk, new TextEncoder().encode(JSON.stringify(emojiUsage.map)), INFO);
-  await api.settingPut(SETTING_KEY, JSON.stringify(wrapped)).catch(() => {});
+  // Best-effort: a locked vault (or no vault at all, e.g. the editor harness)
+  // just means the tally stays in memory for this session.
+  await settingsSet(SETTING_KEY, JSON.stringify(emojiUsage.map)).catch(() => {});
 }
 
 let loaded = false;
 
-/** Fetch + decrypt the usage map. Safe to call repeatedly. */
+/** Read the usage map out of the encrypted vault. Safe to call repeatedly. */
 export async function loadEmojiUsage(): Promise<void> {
-  const session = useSessionStore();
-  if (loaded || !session.mk) return;
+  if (loaded) return;
   loaded = true;
   try {
-    const remote = await api.settingGet(SETTING_KEY);
-    if (!remote) return;
-    const pt = await unwrapKey(session.mk, JSON.parse(remote.data), INFO);
-    emojiUsage.map = JSON.parse(new TextDecoder().decode(pt)) as Record<string, UsageEntry>;
+    const raw = await settingsGet(SETTING_KEY);
+    if (raw) emojiUsage.map = JSON.parse(raw) as Record<string, UsageEntry>;
   } catch {
-    loaded = false; // network/decrypt hiccup: retry next call
+    loaded = false; // transient: retry next call
   }
 }
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Native-shell vault wall (UI-3): blocks the app until the local vault is
-// created/unlocked and the account is onboarded. In the browser (isNative false)
-// it slots straight through.
+// created/unlocked and the account is onboarded. Native is the only shell, so
+// there is no browser bypass — the wall always applies.
 //
 // First run (uninitialized vault) opens on a splash with Sign up / Log in, so
 // the two paths are an explicit choice with back buttons; a returning device

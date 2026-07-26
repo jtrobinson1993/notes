@@ -87,7 +87,7 @@ export function createPush(db: DB, config: Config, presence: Presence): Push {
   const keys = resolveVapidKeys(config);
   if (!keys) return NOOP;
 
-  const subject = process.env.VAPID_SUBJECT?.trim() || `mailto:admin@${config.rpId}`;
+  const subject = process.env.VAPID_SUBJECT?.trim() || `mailto:admin@${config.originHost}`;
   webpush.setVapidDetails(subject, keys.publicKey, keys.privateKey);
 
   // Fan a content-free payload out to each recipient that isn't the actor and

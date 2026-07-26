@@ -1,39 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
-import { createHash, generateKeyPairSync, sign as edSign } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let t: TestApp;
 let port: number;
 
 beforeEach(async () => {
-  t = await makeApp();
+  t = await makeRelayApp();
   await t.app.listen({ port: 0, host: '127.0.0.1' });
   port = (t.app.server.address() as AddressInfo).port;
 });
 afterEach(() => t.cleanup());
 
-/** Enroll a device for an authed user and mint a short-lived bearer token. */
-async function enrollDevice(cookie: string): Promise<{ pubKey: string; bearer: string }> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await t.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await t.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await t.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    privateKey,
-  ).toString('base64');
-  const token = await t.app.inject({
-    method: 'POST',
-    url: '/api/relay/auth/token',
-    payload: { pubKey, nonce, signature },
-  });
-  return { pubKey, bearer: token.json().token as string };
+/** Enroll a device for a user and mint a short-lived bearer token. */
+async function enrollDevice(userId: string): Promise<{ deviceId: string; bearer: string }> {
+  const { token, deviceId } = await enrollRelayDevice(t.app, t.db, { userId });
+  return { deviceId, bearer: token };
 }
 
 /** A relay-WS client that records frames and resolves on demand. */
@@ -87,8 +71,8 @@ class LiveClient {
 
 describe('relay live delivery (/api/relay/ws)', () => {
   it('greets an authenticated device', async () => {
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const { bearer } = await enrollDevice(alice.cookie);
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const { bearer } = await enrollDevice(alice);
     const c = new LiveClient(bearer);
     const hello = await c.waitFor((f) => f.type === 'hello');
     expect(hello).toEqual({ type: 'hello' });
@@ -102,18 +86,17 @@ describe('relay live delivery (/api/relay/ws)', () => {
   });
 
   it('rejects a revoked device token', async () => {
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const { pubKey, bearer } = await enrollDevice(alice.cookie);
-    const deviceId = createHash('sha256').update(Buffer.from(pubKey, 'base64')).digest('base64url');
-    expect(t.db.revokeRelayDevice(alice.id, deviceId)).toBe(true);
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const { deviceId, bearer } = await enrollDevice(alice);
+    expect(t.db.revokeRelayDevice(alice, deviceId)).toBe(true);
     const c = new LiveClient(bearer);
     await c.waitClose();
     expect(c.frames).toHaveLength(0);
   });
 
   it('nudges a connected recipient device when a sealed send is enqueued', async () => {
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const { bearer } = await enrollDevice(alice.cookie);
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const { bearer } = await enrollDevice(alice);
 
     // Alice registers a delivery-token verifier so a sealed send can target her.
     const deliveryToken = 'delivery-secret-token';
@@ -145,8 +128,8 @@ describe('relay live delivery (/api/relay/ws)', () => {
   });
 
   it('evicts the oldest socket past the per-device cap (4)', async () => {
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const { bearer } = await enrollDevice(alice.cookie);
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const { bearer } = await enrollDevice(alice);
     const clients: LiveClient[] = [];
     for (let i = 0; i < 4; i++) {
       const c = new LiveClient(bearer);

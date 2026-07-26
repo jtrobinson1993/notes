@@ -6,20 +6,12 @@ import { createPinia, setActivePinia } from 'pinia';
 // localStorage.
 const vault = vi.hoisted(() => new Map<string, string>());
 const native = vi.hoisted(() => ({
-  isNative: true,
   settingsGet: vi.fn(async (k: string) => vault.get(k) ?? null),
   settingsSet: vi.fn(async (k: string, v: string) => {
     vault.set(k, v);
   }),
 }));
 vi.mock('../../src/lib/native', () => native);
-
-const api = vi.hoisted(() => ({
-  settingGet: vi.fn().mockResolvedValue(null),
-  settingPut: vi.fn().mockResolvedValue({ updatedAt: 0 }),
-}));
-vi.mock('../../src/lib/api', () => ({ api }));
-vi.mock('../../src/stores/session', () => ({ useSessionStore: () => ({ mk: null }) }));
 
 import { useOrgStore } from '../../src/stores/organization';
 
@@ -42,9 +34,9 @@ describe('organization store — native (vault-backed) persistence', () => {
     org1.setChatItemFolder('dm:alice', 'n:n1', folder);
 
     await vi.waitFor(() => expect(native.settingsSet).toHaveBeenCalled(), { timeout: 3000 });
-    expect(api.settingPut).not.toHaveBeenCalled(); // no server in the native shell
     // Folder names are as sensitive as tag names: nothing in the clear on disk.
     expect(localStorage.getItem('notes:org')).toBeNull();
+    expect(localStorage.length).toBe(0);
     expect(vault.get('notes-org')).toContain('Reference'); // SQLCipher encrypts at rest
 
     // A fresh store (new launch) reads it back out of the vault.

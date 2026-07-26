@@ -68,6 +68,26 @@ export function issueDeviceToken(
   return { token: `${base}.${mac}`, expiresInSec: DEVICE_TOKEN_TTL_SEC };
 }
 
+/** The slice of the DB the bearer-token guard needs (keeps this module free of
+ *  a db.ts import). */
+export interface DeviceLookup {
+  getRelayDeviceById(id: string): { id: string; userId: string; revoked: boolean } | undefined;
+}
+
+/** Resolve an `Authorization: Bearer <token>` header to a live, non-revoked
+ *  device. The single definition of "is this request device-authed" — every
+ *  device-gated relay route goes through it. */
+export function deviceFromAuthHeader(
+  header: string | string[] | undefined,
+  lookup: DeviceLookup,
+): { id: string; userId: string } | null {
+  const raw = Array.isArray(header) ? header[0] : header;
+  const token = raw?.startsWith('Bearer ') ? raw.slice(7) : null;
+  const deviceId = token ? verifyDeviceToken(token) : null;
+  const device = deviceId ? lookup.getRelayDeviceById(deviceId) : undefined;
+  return device && !device.revoked ? { id: device.id, userId: device.userId } : null;
+}
+
 /** Returns the device id for a valid, unexpired token; null otherwise. */
 export function verifyDeviceToken(token: string, now = Date.now()): string | null {
   const parts = token.split('.');

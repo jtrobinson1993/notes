@@ -77,12 +77,16 @@ beforeEach(() => {
 });
 
 describe('NativeGate', () => {
-  it('slots straight through in the browser', async () => {
-    native.isNative = false;
+  it('never slots the app through before the vault probe resolves', async () => {
+    // Native is the only shell now — there is no browser bypass. Until
+    // initGate() has classified the vault the gate must keep the app hidden.
+    let settle: (s: string) => void = () => {};
+    native.vaultStatus.mockReturnValue(new Promise<string>((r) => (settle = r)));
     const w = mountGate();
     await flushPromises();
-    expect(w.find('[data-testid="app"]').exists()).toBe(true);
-    expect(native.vaultStatus).not.toHaveBeenCalled();
+    expect(native.vaultStatus).toHaveBeenCalled();
+    expect(w.find('[data-testid="app"]').exists()).toBe(false);
+    settle('locked');
   });
 
   it('unlocks silently via the keychain when locked', async () => {

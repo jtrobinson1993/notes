@@ -1,6 +1,6 @@
 import type { LookupAddress } from 'node:dns';
 import { describe, expect, it } from 'vitest';
-import { publicOnlyLookup } from '../src/routes/og.js';
+import { publicOnlyLookup } from '../src/ssrf.js';
 
 // The connect-time DNS guard that closes the rebinding TOCTOU: every outbound
 // link-preview connection resolves through this, so an IP that turns out to be

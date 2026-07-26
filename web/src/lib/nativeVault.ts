@@ -10,12 +10,12 @@
 // per-platform follow-up; idle timeout is the portable mechanism.
 
 import { ref } from 'vue';
-import { isNative, settingsGet, vaultLock, vaultStatus, vaultUnlockKeychain } from './native';
+import { settingsGet, vaultLock, vaultStatus, vaultUnlockKeychain } from './native';
 import { reconnectRelay, stopRelayDelivery } from './nativeRelay';
 
 export type GateState = 'checking' | 'setup' | 'recovery' | 'locked' | 'onboarding' | 'ready';
 
-export const gateState = ref<GateState>(isNative ? 'checking' : 'ready');
+export const gateState = ref<GateState>('checking');
 
 /** Device settings that together mark the account as onboarded: a relay to talk
  *  to and the handle it assigned us. Absent on a freshly-created vault. */
@@ -31,10 +31,6 @@ async function isOnboarded(): Promise<boolean> {
 
 /** Initial status probe + silent keychain unlock (D3 primary path). */
 export async function initGate(): Promise<void> {
-  if (!isNative) {
-    gateState.value = 'ready';
-    return;
-  }
   const status = await vaultStatus();
   if (status === 'uninitialized') {
     gateState.value = 'setup';
@@ -51,15 +47,15 @@ export async function initGate(): Promise<void> {
 }
 
 /** Call after any successful unlock/create: opens the gate + arms re-lock, and
- *  (native) reconnects the relay so live delivery resumes after a cold start.
- *  A native vault with no relay account yet routes to the onboarding step
- *  instead of straight to 'ready'. */
+ *  reconnects the relay so live delivery resumes after a cold start. A vault
+ *  with no relay account yet routes to the onboarding step instead of straight
+ *  to 'ready'. */
 export function markUnlocked(): void {
   void openGate();
 }
 
 async function openGate(): Promise<void> {
-  if (isNative && !(await isOnboarded())) {
+  if (!(await isOnboarded())) {
     gateState.value = 'onboarding';
     return;
   }
@@ -106,7 +102,6 @@ function onActivity(): void {
 }
 
 export async function applyRelockPolicy(): Promise<void> {
-  if (!isNative) return;
   teardownIdleRelock();
   if (gateState.value !== 'ready') return;
   const policy = (await settingsGet('relock.policy')) ?? 'stay';

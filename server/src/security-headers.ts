@@ -90,7 +90,12 @@ export function registerSecurityHeaders(
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('X-Frame-Options', 'DENY');
     reply.header('Cross-Origin-Opener-Policy', 'same-origin');
-    reply.header('Cross-Origin-Resource-Policy', 'same-origin');
+    // same-origin by default; a route may opt out by setting CORP itself (the
+    // emote image proxy has to be loadable as an <img> from the native shell's
+    // own origin). Only an explicit per-route decision can relax it.
+    if (!reply.getHeader('Cross-Origin-Resource-Policy')) {
+      reply.header('Cross-Origin-Resource-Policy', 'same-origin');
+    }
     reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), interest-cohort=()');
     if (isHttps) {
       reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');

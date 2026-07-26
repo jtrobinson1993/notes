@@ -12,7 +12,7 @@ import {
   relaySendGroupMessage,
 } from './native';
 import { loadHistoryLocal } from './nativeChat';
-import type { ChatMessageView } from '../stores/chat';
+import type { ChatMessageView } from './chatView';
 
 export interface GroupItem {
   groupId: string;

@@ -1,96 +1,32 @@
-// Native-shell chat/local-log glue (D11 interim wiring).
+// Local-log history reader (D11).
 //
-// While the legacy WebSocket remains the transport (until phase 3), the
-// native shell (a) serves history back-scroll from the local SQLite log —
-// instant and offline — and (b) tees every live message/edit into the log so
-// it stays current after migration. Ids reuse the migration composition
-// `legacy:{convId}:{seq}`, so tees and migrated rows dedupe naturally.
-// Reactions/read-state move to the per-conversation Yjs overlay in phase 4.
+// Chat history is served from the local encrypted SQLite log — instant and
+// offline. The Rust core writes it (the mailbox drain opens/verifies envelopes
+// and ingests rows); this module only pages it back out and shapes rows into
+// the view the chat UI renders.
 
-import type { ChatMessageView } from '../stores/chat';
-import {
-  messageEdit,
-  messagesIngest,
-  messagesPage,
-  type ImportMessage,
-  type MessageRow,
-} from './native';
-
-export function legacyMessageId(convId: string, seq: number): string {
-  return `legacy:${convId}:${seq}`;
-}
-
-/** Serialize a decrypted view into a local-log row (same extras bag as the
- *  migrator: attachments/gif/system/linkPreview ride one JSON column). */
-export function viewToRow(view: ChatMessageView): ImportMessage {
-  const extras =
-    view.attachments?.length || view.gif || view.system || view.linkPreview
-      ? JSON.stringify({
-          attachments: view.attachments ?? [],
-          gif: view.gif ?? null,
-          system: view.system ?? null,
-          linkPreview: view.linkPreview ?? null,
-        })
-      : null;
-  return {
-    id: legacyMessageId(view.conversationId, view.seq),
-    conversation_id: view.conversationId,
-    channel_id: view.channelId === view.conversationId ? null : view.channelId,
-    sender_contact_id: view.senderId,
-    relay_ts: view.createdAt,
-    content: view.text,
-    kind: view.system ? 'system' : 'text',
-    reply_ref_json: view.replyTo ? JSON.stringify(view.replyTo) : null,
-    attachments_json: extras,
-    edited_at: view.editedAt ?? null,
-  };
-}
+import type { ChatMessageView } from './chatView';
+import { messagesPage, type MessageAttachment, type MessageRow } from './native';
 
 export function rowToView(row: MessageRow): ChatMessageView {
-  const seq = Number(row.id.split(':').pop());
   const extras = row.attachments_json
     ? (JSON.parse(row.attachments_json) as {
-        attachments?: ChatMessageView['attachments'];
-        gif?: ChatMessageView['gif'];
+        attachments?: MessageAttachment[];
         system?: ChatMessageView['system'];
-        linkPreview?: ChatMessageView['linkPreview'];
       })
     : {};
   return {
+    key: row.id,
     conversationId: row.conversation_id,
-    channelId: row.channel_id ?? row.conversation_id,
-    seq,
+    channelId: row.channel_id,
     senderId: row.sender_contact_id ?? '',
-    epoch: 0, // local rows are plaintext; epoch only matters for wire crypto
-    ciphertext: '',
-    iv: '',
-    createdAt: row.relay_ts,
-    editedAt: row.edited_at ?? undefined,
+    sortKey: row.relay_ts,
     text: row.deleted ? null : row.content,
-    gif: extras.gif ?? null,
     attachments: extras.attachments ?? [],
     replyTo: row.reply_ref_json ? JSON.parse(row.reply_ref_json) : undefined,
-    linkPreview: extras.linkPreview ?? undefined,
     system: extras.system ?? undefined,
-    // v8 relay-native identity/order (D11): the local-log row id is globally
-    // unique and `relay_ts` is the ordering stamp — so v8 rows (whose id has no
-    // legacy `seq`) render in the right place and dedup by id.
-    key: row.id,
-    sortKey: row.relay_ts,
+    editedAt: row.edited_at ?? undefined,
   };
-}
-
-/** Fire-and-forget tee of a live (or just-sent) message into the local log. */
-export function teeMessage(view: ChatMessageView): void {
-  void messagesIngest([viewToRow(view)]).catch(() => {});
-}
-
-export function teeEdit(view: ChatMessageView): void {
-  void messageEdit(
-    legacyMessageId(view.conversationId, view.seq),
-    view.text,
-    view.editedAt ?? Date.now(),
-  ).catch(() => {});
 }
 
 // Back-scroll cursors, keyed by channel id. `reset` (a fresh open, no
@@ -121,6 +57,7 @@ export async function loadHistoryLocal(
   return rows.map(rowToView);
 }
 
+/** Drop the paging cursors — on lock, or when switching account. */
 export function resetNativeChat(): void {
   cursors.clear();
   exhausted.clear();

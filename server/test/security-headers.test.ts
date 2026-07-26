@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, it, expect, afterEach } from 'vitest';
 import { buildCsp, inlineScriptHashes } from '../src/security-headers.js';
 import type { Config } from '../src/config.js';
-import { makeApp, type TestApp } from '../../test/helpers/server.js';
+import { makeRelayApp, type TestApp } from '../../test/helpers/server.js';
 
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
@@ -13,9 +13,7 @@ function cfg(over: Partial<Config> = {}): Config {
     host: '127.0.0.1',
     dataDir: '/tmp',
     appOrigin: 'https://notes.example.com',
-    rpId: 'notes.example.com',
-    appName: 'Notes',
-    webDist: null,
+    originHost: 'notes.example.com',
     klipyApiKey: null,
     rateLimitMax: 1000,
     ...over,
@@ -76,27 +74,19 @@ describe('buildCsp', () => {
 });
 
 describe('security headers (served)', () => {
-  it('sets CSP with the served index.html inline-script hash + hardening headers', async () => {
-    ctx = await makeApp(); // fixture webdist has one inline script
-    const res = await ctx.app.inject({ method: 'GET', url: '/' });
+  it('sets CSP + hardening headers on API (JSON) responses', async () => {
+    ctx = await makeRelayApp();
+    const res = await ctx.app.inject({ method: 'GET', url: '/api/health' });
     expect(res.statusCode).toBe(200);
     const csp = res.headers['content-security-policy'] as string;
-    expect(csp).toBeTruthy();
-    // The fixture's inline theme script is allowed by hash, not unsafe-inline.
-    const inline = `(function(){try{document.documentElement.classList.add('x');}catch(e){}})();`;
-    const hash = `'sha256-${createHash('sha256').update(inline, 'utf8').digest('base64')}'`;
-    expect(csp).toContain(hash);
+    expect(csp).toContain(`default-src 'self'`);
+    // The relay serves no HTML, so there is no inline script to allow at all.
     expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/);
+    expect(csp).not.toMatch(/script-src[^;]*sha256-/);
     expect(res.headers['x-content-type-options']).toBe('nosniff');
     expect(res.headers['referrer-policy']).toBe('no-referrer');
     expect(res.headers['x-frame-options']).toBe('DENY');
     expect(res.headers['cross-origin-opener-policy']).toBe('same-origin');
-  });
-
-  it('also sets CSP on API (JSON) responses', async () => {
-    ctx = await makeApp();
-    const res = await ctx.app.inject({ method: 'GET', url: '/api/health' });
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-security-policy']).toContain(`default-src 'self'`);
+    expect(res.headers['cross-origin-resource-policy']).toBe('same-origin');
   });
 });

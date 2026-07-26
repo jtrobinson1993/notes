@@ -1,44 +1,31 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
+import { ref } from 'vue';
 
-const api = vi.hoisted(() => ({
-  conversations: vi.fn().mockResolvedValue([]),
-  friends: vi.fn().mockResolvedValue([]),
+// Rail chrome: collapse/expand + the fixed bottom navigation. The conversation
+// list itself (and its unread badges) is covered by AppSidebar.native.test.ts.
+vi.mock('../../src/lib/nativeConversations', async () => {
+  const { ref: r } = await import('vue');
+  return {
+    nativeConversations: r([]),
+    refreshNativeConversations: vi.fn(),
+    startNativeConversations: vi.fn(),
+  };
+});
+vi.mock('../../src/lib/nativeVault', () => ({ lockVault: vi.fn() }));
+vi.mock('../../src/components/AccountSwitcher.vue', () => ({
+  default: { name: 'AccountSwitcher', template: '<div />' },
 }));
-vi.mock('../../src/lib/api', () => ({ api }));
-vi.mock('../../src/stores/session', () => ({ useSessionStore: () => ({ user: { id: 'me' } }) }));
+
+const currentRoute = ref({ path: '/', query: {} as Record<string, unknown> });
 vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: vi.fn(), currentRoute: { value: { path: '/chat/c1' } } }),
-}));
-// The new-chat modal (and its reka-ui Dialog internals) isn't relevant here.
-vi.mock('../../src/components/NewChatModal.vue', () => ({
-  default: { name: 'NewChatModal', template: '<div />' },
+  useRouter: () => ({ push: vi.fn(), get currentRoute() { return currentRoute; } }),
 }));
 
 import AppSidebar from '../../src/components/AppSidebar.vue';
-import { useChatStore } from '../../src/stores/chat';
 
 const stubs = { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } };
-
-function seedUnread() {
-  const chat = useChatStore();
-  chat.conversations = [
-    {
-      id: 'c1',
-      kind: 'dm',
-      members: [
-        { userId: 'me', displayName: 'Me', publicKey: null },
-        { userId: 'friend', displayName: 'Friend', publicKey: null },
-      ],
-      sealedKey: { epk: '', iv: '', ct: '' },
-      epoch: 0,
-      lastSeq: 5,
-      lastReadSeq: 2,
-      createdAt: 0,
-    },
-  ];
-}
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -69,25 +56,11 @@ describe('AppSidebar collapse / expand', () => {
   });
 });
 
-describe('AppSidebar unread badge', () => {
-  it('renders the unread count (lastSeq - lastReadSeq)', () => {
-    seedUnread();
+describe('AppSidebar sign out', () => {
+  it('locks the vault (there is no server session to end)', async () => {
+    const { lockVault } = await import('../../src/lib/nativeVault');
     const w = mount(AppSidebar, { global: { stubs } });
-    // unread = 5 - 2 = 3, shown in the badge.
-    expect(w.text()).toContain('3');
-  });
-
-  it('shows no badge once fully read', () => {
-    const chat = useChatStore();
-    chat.conversations = [
-      {
-        id: 'c1', kind: 'dm',
-        members: [{ userId: 'me', displayName: 'Me', publicKey: null }, { userId: 'friend', displayName: 'Friend', publicKey: null }],
-        sealedKey: { epk: '', iv: '', ct: '' }, epoch: 0, lastSeq: 5, lastReadSeq: 5, createdAt: 0,
-      },
-    ];
-    const w = mount(AppSidebar, { global: { stubs } });
-    const badges = w.findAll('.bg-blue-600').filter((n) => /^\d+$/.test(n.text().trim()));
-    expect(badges).toHaveLength(0);
+    await w.get('button[aria-label="Sign out"]').trigger('click');
+    expect(lockVault).toHaveBeenCalled();
   });
 });

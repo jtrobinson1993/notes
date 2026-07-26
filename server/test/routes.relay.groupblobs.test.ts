@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash, generateKeyPairSync, sign as edSign, type KeyObject } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
@@ -12,25 +12,9 @@ function makeKey(): Key {
   return { pub: spki.subarray(spki.length - 32).toString('base64'), priv: privateKey };
 }
 
-async function deviceBearer(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await ctx.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    privateKey,
-  ).toString('base64');
-  const token = await ctx.app.inject({
-    method: 'POST',
-    url: '/api/relay/auth/token',
-    payload: { pubKey, nonce, signature },
-  });
-  return `Bearer ${token.json().token as string}`;
+async function deviceBearer(userId: string): Promise<string> {
+  const { bearer } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return bearer;
 }
 
 const GROUP_TOKEN = 'shared-group-token';
@@ -65,10 +49,10 @@ async function seedGroup(aliceId: string, aliceBearer: string, owner: Key): Prom
 
 describe('group blobs (D6/D14)', () => {
   it('a member uploads with the group token and downloads by blobId', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
-    await seedGroup(alice.id, bearer, makeKey());
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
+    await seedGroup(alice, bearer, makeKey());
 
     const ciphertext = Buffer.from('sealed group attachment');
     const up = await uploadGroup('g1', GROUP_TOKEN, ciphertext);
@@ -85,23 +69,23 @@ describe('group blobs (D6/D14)', () => {
   });
 
   it('refuses upload with a wrong group token (uniform 401)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
-    await seedGroup(alice.id, bearer, makeKey());
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
+    await seedGroup(alice, bearer, makeKey());
     expect((await uploadGroup('g1', 'wrong', Buffer.from('x'))).statusCode).toBe(401);
     // Unknown group (no verifier) is also 401 — no distinction.
     expect((await uploadGroup('ghost', GROUP_TOKEN, Buffer.from('x'))).statusCode).toBe(401);
   });
 
   it('a non-member cannot download (uniform 404)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bob = seedAuthedUser(ctx.db, { handle: 'Bob#0002' });
-    const aliceBearer = await deviceBearer(alice.cookie);
-    const bobBearer = await deviceBearer(bob.cookie);
-    await seedGroup(alice.id, aliceBearer, makeKey());
-    ctx.db.setRelayDirectoryEntry(bob.id, makeKey().pub, makeKey().pub); // not in g1
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bob = seedUser(ctx.db, { handle: 'Bob#0002' });
+    const aliceBearer = await deviceBearer(alice);
+    const bobBearer = await deviceBearer(bob);
+    await seedGroup(alice, aliceBearer, makeKey());
+    ctx.db.setRelayDirectoryEntry(bob, makeKey().pub, makeKey().pub); // not in g1
 
     const blobId = (await uploadGroup('g1', GROUP_TOKEN, Buffer.from('secret'))).json().blobId as string;
     expect((await ctx.app.inject({
@@ -112,13 +96,13 @@ describe('group blobs (D6/D14)', () => {
   });
 
   it('a non-member cannot set the group verifier (403)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bob = seedAuthedUser(ctx.db, { handle: 'Bob#0002' });
-    const aliceBearer = await deviceBearer(alice.cookie);
-    const bobBearer = await deviceBearer(bob.cookie);
-    await seedGroup(alice.id, aliceBearer, makeKey());
-    ctx.db.setRelayDirectoryEntry(bob.id, makeKey().pub, makeKey().pub);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bob = seedUser(ctx.db, { handle: 'Bob#0002' });
+    const aliceBearer = await deviceBearer(alice);
+    const bobBearer = await deviceBearer(bob);
+    await seedGroup(alice, aliceBearer, makeKey());
+    ctx.db.setRelayDirectoryEntry(bob, makeKey().pub, makeKey().pub);
 
     const res = await ctx.app.inject({
       method: 'PUT',
@@ -130,10 +114,10 @@ describe('group blobs (D6/D14)', () => {
   });
 
   it('download requires a device token', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
-    await seedGroup(alice.id, bearer, makeKey());
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
+    await seedGroup(alice, bearer, makeKey());
     const blobId = (await uploadGroup('g1', GROUP_TOKEN, Buffer.from('x'))).json().blobId as string;
     const anon = await ctx.app.inject({ method: 'GET', url: `/api/relay/groups/g1/blobs/${blobId}` });
     expect(anon.statusCode).toBe(401);

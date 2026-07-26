@@ -1,7 +1,12 @@
-# Production compose for self-hosted "notes".
+# Production compose for a self-hosted Accord relay (spec/relay.md).
+#
+# The `notes` service is the v8 relay — an API-only, zero-knowledge message
+# relay. It serves no web app: clients are the native desktop app, which points
+# at APP_ORIGIN. Operator tasks (invites, devices) are the relay CLI:
+#   docker compose exec notes node server/dist/relay-cli.js status
 #
 # Caddy terminates HTTPS (automatic Let's Encrypt) and reverse-proxies to the
-# app; nothing but Caddy is exposed to the internet. Everything is configured
+# relay; nothing but Caddy is exposed to the internet. Everything is configured
 # through .env — copy .env.example to .env and set APP_ORIGIN, then:
 #
 #   docker compose up -d            # pulls the published image (no build on prod)
@@ -15,8 +20,8 @@ services:
     build: .
     container_name: notes
     restart: unless-stopped
-    # No plaintext host port — Caddy fronts the app over HTTPS. 3000 stays on the
-    # internal compose network only.
+    # No plaintext host port — Caddy fronts the relay over HTTPS. 3000 stays on
+    # the internal compose network only.
     expose:
       - '3000'
     ports:
@@ -29,8 +34,11 @@ services:
     env_file:
       - .env
     environment:
-      # Must exactly match the URL you open the app at (passkeys are bound to it).
+      # The public origin clients reach this relay at (also drives HSTS/CSP).
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      # Who may create an account: 'invite' (default, closed — the operator mints
+      # invites with the CLI) or 'public' (anyone may register).
+      RELAY_REGISTRATION_MODE: ${RELAY_REGISTRATION_MODE:-invite}
       # Voice: the public/LAN IP clients reach this host at (required for calls
       # to connect off-localhost). Leave unset for local-only testing.
       VOICE_ANNOUNCED_IP: ${VOICE_ANNOUNCED_IP:-127.0.0.1}

@@ -1,67 +1,53 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
-import type { Friend } from '@notes/shared';
+import type { FriendSummary } from '../../src/lib/native';
 
-const api = vi.hoisted(() => ({
-  friends: vi.fn(),
-  friendRequests: vi.fn(),
-  friendInvites: vi.fn(),
-  friendInviteCreate: vi.fn(),
-  friendInviteDelete: vi.fn(),
-  friendRedeem: vi.fn(),
-  friendRequestAccept: vi.fn(),
-  friendRequestDecline: vi.fn(),
-  unfriend: vi.fn(),
+// The name-overlay invariant: a friend is shown by their public handle unless we
+// hold their end-to-end-encrypted display name, which the core hands over in
+// `display_name` (it never comes from a server-readable field).
+const native = vi.hoisted(() => ({
+  friendsList: vi.fn(async () => [] as FriendSummary[]),
+  friendRemove: vi.fn(async () => {}),
 }));
-vi.mock('../../src/lib/api', () => ({ api }));
-
-const profile = vi.hoisted(() => ({
-  hydrate: vi.fn(),
-  displayNameFor: vi.fn(),
-}));
-vi.mock('../../src/stores/profile', () => ({ useProfileStore: () => profile }));
+vi.mock('../../src/lib/native', () => native);
+vi.mock('../../src/lib/nativeFriends', () => ({ createInvite: vi.fn(), redeemInvite: vi.fn() }));
 
 import { useFriendsStore } from '../../src/stores/friends';
 
-const friend = (over: Partial<Friend> = {}): Friend => ({ userId: 'u1', displayName: 'Word#1234', publicKey: 'pk', online: false, ...over });
+const summary = (over: Partial<FriendSummary> = {}): FriendSummary => ({
+  contact_id: 'u1',
+  handle: 'Wolf#0001',
+  display_name: null,
+  identity_pub: 'aWQ=',
+  ...over,
+});
 
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
-  profile.hydrate.mockResolvedValue(undefined);
 });
 
-describe('hydrateNames', () => {
-  it('overlays the decrypted real name only when it differs from the current handle', async () => {
-    const store = useFriendsStore();
-    store.friends = [
-      friend({ userId: 'a', displayName: 'Word#0001' }), // gets a real name -> overlay
-      friend({ userId: 'b', displayName: 'Word#0002' }), // no real name -> keep handle
-      friend({ userId: 'c', displayName: 'Carol' }), //      real name equals current -> no-op
-    ];
-    profile.displayNameFor.mockImplementation((id: string) =>
-      id === 'a' ? 'Alice' : id === 'c' ? 'Carol' : null,
-    );
-
-    await store.hydrateNames();
-
-    expect(profile.hydrate).toHaveBeenCalledWith(['a', 'b', 'c']);
-    expect(store.friends.map((f) => f.displayName)).toEqual(['Alice', 'Word#0002', 'Carol']);
-  });
-
-  it('load() triggers a name hydration pass for the fetched friends', async () => {
-    api.friends.mockResolvedValue([friend({ userId: 'a', displayName: 'Word#0001' })]);
-    api.friendRequests.mockResolvedValue([]);
-    api.friendInvites.mockResolvedValue([]);
-    profile.displayNameFor.mockReturnValue('Alice');
-
+describe('display names', () => {
+  it('overlays the decrypted real name, and keeps the handle when there is none', async () => {
+    native.friendsList.mockResolvedValue([
+      summary({ contact_id: 'a', handle: 'Word#0001', display_name: 'Alice' }), // overlay
+      summary({ contact_id: 'b', handle: 'Word#0002', display_name: null }), //     keep handle
+      summary({ contact_id: 'c', handle: 'Word#0003', display_name: '   ' }), //    blank → handle
+    ]);
     const store = useFriendsStore();
     await store.load();
-    // load() fires hydrateNames() as void; await a microtask turn so it settles.
-    await Promise.resolve();
-    await Promise.resolve();
+    expect(store.friends.map((f) => f.displayName)).toEqual(['Alice', 'Word#0002', 'Word#0003']);
+    // The handle stays available alongside the overlay (shown as the secondary id).
+    expect(store.friends.map((f) => f.handle)).toEqual(['Word#0001', 'Word#0002', 'Word#0003']);
+  });
 
-    expect(profile.hydrate).toHaveBeenCalledWith(['a']);
+  it('re-reads names on every load, so a renamed friend updates', async () => {
+    const store = useFriendsStore();
+    native.friendsList.mockResolvedValue([summary({ contact_id: 'a', display_name: null })]);
+    await store.load();
+    expect(store.friends[0]!.displayName).toBe('Wolf#0001');
+    native.friendsList.mockResolvedValue([summary({ contact_id: 'a', display_name: 'Alice' })]);
+    await store.load();
     expect(store.friends[0]!.displayName).toBe('Alice');
   });
 });

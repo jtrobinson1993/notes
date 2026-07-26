@@ -1,31 +1,20 @@
-import type { SealedKey } from '@notes/shared';
-import { generateConversationKey, sealConversationKey, unsealConversationKey } from './chatCrypto';
+import { randomBytes } from './crypto';
 
 // End-to-end frame encryption for voice (WebRTC Encoded Transform / insertable
 // streams). Each encoded Opus frame is sealed with AES-256-GCM under the call's
 // per-epoch **media key**, which the SFU never has — so it forwards opaque
-// frames. The media key is distributed/rotated using the same X25519 sealing
-// primitive as chat conversation keys (see chatCrypto). The wire format of an
-// encrypted frame payload is:
+// frames. The media key is minted by the caller and sealed to the
+// callee inside the call-offer envelope by the Rust core, so it never reaches
+// the relay. The wire format of an encrypted frame payload is:
 //
 //   [ epoch: 4 bytes big-endian ][ iv: 12 bytes ][ AES-GCM ciphertext+tag ]
 //
 // The epoch prefix lets a receiver pick the right key across a rekey, and is
 // safe to prepend because the SFU treats the audio payload as opaque.
 
-/** Generate a fresh 32-byte media key (same primitive as a conversation key). */
+/** Generate a fresh 32-byte media key. */
 export function generateMediaKey(): Uint8Array {
-  return generateConversationKey();
-}
-
-/** Seal the media key to a member's X25519 public key (base64). */
-export function sealMediaKey(memberPublicKeyB64: string, mediaKey: Uint8Array): Promise<SealedKey> {
-  return sealConversationKey(memberPublicKeyB64, mediaKey);
-}
-
-/** Unseal a media key sealed to me. */
-export function unsealMediaKey(sealed: SealedKey, myPrivateKey: Uint8Array, myPublicKey: Uint8Array): Promise<Uint8Array> {
-  return unsealConversationKey(sealed, myPrivateKey, myPublicKey);
+  return randomBytes(32);
 }
 
 /** Import a raw media key as a non-extractable AES-GCM CryptoKey. */

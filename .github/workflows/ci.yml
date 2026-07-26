@@ -39,7 +39,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Build server + web
+      - name: Build the relay
         run: npm run build
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
@@ -70,16 +70,16 @@ jobs:
           tags: notes:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Boot it and probe the app
+      - name: Boot it and probe the relay
         run: |
           docker run -d --name notes-ci -e APP_ORIGIN=http://localhost:3000 \
             -p 3000:3000 notes:ci
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/health || true)
             if [ "$code" = "200" ]; then echo "healthy (HTTP $code)"; exit 0; fi
             sleep 1
           done
-          echo "::error::server did not serve / within 30s — see logs below"
+          echo "::error::relay did not answer /api/health within 30s — see logs below"
           docker logs notes-ci
           exit 1
       - name: Tear down

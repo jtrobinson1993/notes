@@ -1,36 +1,20 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash, generateKeyPairSync, randomBytes, sign as edSign } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
 
-async function deviceBearer(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await ctx.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    privateKey,
-  ).toString('base64');
-  const token = await ctx.app.inject({
-    method: 'POST',
-    url: '/api/relay/auth/token',
-    payload: { pubKey, nonce, signature },
-  });
-  return `Bearer ${token.json().token as string}`;
+async function deviceBearer(userId: string): Promise<string> {
+  const { bearer } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return bearer;
 }
 
 describe('escrow (D15)', () => {
   it('uploads with a device token and fetches with the matching auth key', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
 
     const authKey = randomBytes(32);
     const authHash = createHash('sha256').update(authKey).digest('base64url');
@@ -57,9 +41,9 @@ describe('escrow (D15)', () => {
   });
 
   it('refuses uniformly: wrong key, wrong kind, unknown handle', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const authKey = randomBytes(32);
     await ctx.app.inject({
       method: 'PUT',
@@ -94,9 +78,9 @@ describe('escrow (D15)', () => {
   });
 
   it('serves real KDF params for an escrow, pseudo-params otherwise (no enumeration)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const authKey = randomBytes(32);
     const kdfParams = { kdfSalt: [...randomBytes(16)], kdfMKib: 19456, kdfT: 2, kdfP: 1 };
     await ctx.app.inject({
@@ -137,9 +121,9 @@ describe('escrow (D15)', () => {
   });
 
   it('re-upload replaces the bundle', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const authKey = randomBytes(32);
     const authHash = createHash('sha256').update(authKey).digest('base64url');
     for (const version of ['one', 'two']) {

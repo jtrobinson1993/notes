@@ -13,11 +13,6 @@ import {
   wrapKey,
 } from '../../src/lib/crypto';
 import { b64, ub64 } from '../../src/lib/b64';
-import {
-  deriveRecoveryAuthKey,
-  generateRecoveryCode,
-  parseRecoveryCode,
-} from '../../src/lib/recovery';
 
 /** Flip one ciphertext byte to simulate tampering (keeps it valid base64). */
 function tamper(ctB64: string): string {
@@ -161,34 +156,8 @@ describe('sha256b64', () => {
   });
 });
 
-describe('recovery codes', () => {
-  it('formats as 8 groups of 4 base32 chars', () => {
-    const { code } = generateRecoveryCode();
-    expect(code).toMatch(/^([A-Z2-7]{4}-){7}[A-Z2-7]{4}$/);
-  });
-
-  it('parse(format) recovers the original 20-byte secret', () => {
-    const { code, secret } = generateRecoveryCode();
-    expect(parseRecoveryCode(code)).toEqual(secret);
-  });
-
-  it('parsing is case-insensitive and ignores separators/spaces', () => {
-    const { code, secret } = generateRecoveryCode();
-    expect(parseRecoveryCode(code.toLowerCase().replace(/-/g, ' '))).toEqual(secret);
-  });
-
-  it('rejects a wrong-length code', () => {
-    expect(() => parseRecoveryCode('ABCD')).toThrow();
-  });
-
-  it('derives a stable auth key independent of the wrap path', async () => {
-    const { secret } = generateRecoveryCode();
-    const a = await deriveRecoveryAuthKey(secret);
-    const b = await deriveRecoveryAuthKey(secret);
-    expect(a).toEqual(b);
-    expect(a.length).toBe(32);
-    // Different secret → different auth key.
-    const other = await deriveRecoveryAuthKey(generateRecoveryCode().secret);
-    expect(a).not.toEqual(other);
-  });
-});
+// Recovery codes now live in the Rust core (`src-tauri/src/keys.rs`:
+// `generate_recovery_code` / `normalize_recovery_code` / `derive_auth_key` with
+// `INFO_AUTH_RECOVERY`, wrapping MK under `INFO_MK_WRAP_RECOVERY` in
+// `vault.rs`). They are covered by the Rust unit tests there; the web client no
+// longer handles the recovery secret at all.

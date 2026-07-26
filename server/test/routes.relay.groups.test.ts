@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { generateKeyPairSync, sign as edSign, type KeyObject } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
@@ -15,25 +15,9 @@ function makeKey(): Key {
   return { pub: spki.subarray(spki.length - 32).toString('base64'), priv: privateKey };
 }
 
-async function deviceBearer(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await ctx.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    privateKey,
-  ).toString('base64');
-  const token = await ctx.app.inject({
-    method: 'POST',
-    url: '/api/relay/auth/token',
-    payload: { pubKey, nonce, signature },
-  });
-  return `Bearer ${token.json().token as string}`;
+async function deviceBearer(userId: string): Promise<string> {
+  const { bearer } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return bearer;
 }
 
 /** Build a signed group-state PUT body. */
@@ -54,12 +38,12 @@ const get = (bearer: string, id: string) =>
 
 describe('group state (D14)', () => {
   it('genesis stores a self-signed record; a member reads it back', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const owner = makeKey();
     // Alice's directory identity == the owner key, so she's recognised as a member.
-    ctx.db.setRelayDirectoryEntry(alice.id, owner.pub, makeKey().pub);
+    ctx.db.setRelayDirectoryEntry(alice, owner.pub, makeKey().pub);
 
     const g1 = record('g1', 1, [{ identityPubKey: owner.pub, role: 'owner' }], owner);
     const created = await put(bearer, 'g1', g1);
@@ -73,12 +57,12 @@ describe('group state (D14)', () => {
   });
 
   it('accepts an update signed by a current admin and advances the version', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const owner = makeKey();
     const member = makeKey();
-    ctx.db.setRelayDirectoryEntry(alice.id, owner.pub, makeKey().pub);
+    ctx.db.setRelayDirectoryEntry(alice, owner.pub, makeKey().pub);
 
     await put(bearer, 'g1', record('g1', 1, [{ identityPubKey: owner.pub, role: 'owner' }], owner));
     const v2 = record(
@@ -96,12 +80,12 @@ describe('group state (D14)', () => {
   });
 
   it('rejects an update not signed by a current admin (403)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const owner = makeKey();
     const attacker = makeKey();
-    ctx.db.setRelayDirectoryEntry(alice.id, owner.pub, makeKey().pub);
+    ctx.db.setRelayDirectoryEntry(alice, owner.pub, makeKey().pub);
 
     await put(bearer, 'g1', record('g1', 1, [{ identityPubKey: owner.pub, role: 'owner' }], owner));
     // Attacker signs a v2 naming themselves owner — not a current admin.
@@ -111,12 +95,12 @@ describe('group state (D14)', () => {
   });
 
   it('rejects a plain member escalating themselves (403)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const owner = makeKey();
     const member = makeKey();
-    ctx.db.setRelayDirectoryEntry(alice.id, owner.pub, makeKey().pub);
+    ctx.db.setRelayDirectoryEntry(alice, owner.pub, makeKey().pub);
 
     await put(
       bearer,
@@ -138,11 +122,11 @@ describe('group state (D14)', () => {
   });
 
   it('rejects a stale/equal version (anti-rollback, 409)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const owner = makeKey();
-    ctx.db.setRelayDirectoryEntry(alice.id, owner.pub, makeKey().pub);
+    ctx.db.setRelayDirectoryEntry(alice, owner.pub, makeKey().pub);
     const members = [{ identityPubKey: owner.pub, role: 'owner' }];
 
     await put(bearer, 'g1', record('g1', 2, members, owner));
@@ -151,14 +135,14 @@ describe('group state (D14)', () => {
   });
 
   it('hides the group from non-members and from anon (uniform 404 / 401)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bob = seedAuthedUser(ctx.db, { handle: 'Bob#0002' });
-    const aliceBearer = await deviceBearer(alice.cookie);
-    const bobBearer = await deviceBearer(bob.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bob = seedUser(ctx.db, { handle: 'Bob#0002' });
+    const aliceBearer = await deviceBearer(alice);
+    const bobBearer = await deviceBearer(bob);
     const owner = makeKey();
-    ctx.db.setRelayDirectoryEntry(alice.id, owner.pub, makeKey().pub);
-    ctx.db.setRelayDirectoryEntry(bob.id, makeKey().pub, makeKey().pub); // not a member
+    ctx.db.setRelayDirectoryEntry(alice, owner.pub, makeKey().pub);
+    ctx.db.setRelayDirectoryEntry(bob, makeKey().pub, makeKey().pub); // not a member
     await put(aliceBearer, 'g1', record('g1', 1, [{ identityPubKey: owner.pub, role: 'owner' }], owner));
 
     expect((await get(bobBearer, 'g1')).statusCode).toBe(404); // non-member
@@ -168,9 +152,9 @@ describe('group state (D14)', () => {
   });
 
   it('rejects a groupId/url mismatch and a version-less record (400)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const owner = makeKey();
     const mismatch = record('other', 1, [{ identityPubKey: owner.pub, role: 'owner' }], owner);
     expect((await put(bearer, 'g1', mismatch)).statusCode).toBe(400);

@@ -5,25 +5,31 @@ import type { Config } from './config.js';
 import type { DB } from './db.js';
 import { registerSecurityHeaders } from './security-headers.js';
 import { relayRoutes } from './routes/relay.js';
+import { relayContentRoutes } from './routes/relayContent.js';
 import { createRelayLive } from './relayLive.js';
 import { createVoiceSignal } from './voiceSignal.js';
 import { createVoiceSfu } from './voiceSfu.js';
 import { createKtSidecar } from './ktSidecar.js';
 import { createPush } from './push.js';
-import { WS_MAX_PAYLOAD } from './realtime.js';
+import { WS_MAX_PAYLOAD } from './util.js';
 
 /**
  * The standalone v8 relay (spec/relay.md): a zero-knowledge message relay that
  * mounts ONLY the `/api/relay/*` surface (device auth, directory + KT, mailbox,
- * blobs, groups, voice signaling/SFU, escrow, registration) plus a health probe.
+ * blobs, groups, voice signaling/SFU, escrow, registration, plus the content
+ * proxies for GIF search / link previews / 7TV emotes) and a health probe.
+ *
+ * The content proxies are here because they are a PRIVACY primitive: the relay
+ * makes the outbound request so the client's IP never reaches Klipy, 7TV or an
+ * arbitrary link target. See routes/relayContent.ts.
  *
  * Deliberately excludes the entire legacy web-app stack — WebAuthn/sessions,
- * notes/chat/friends REST, admin, GIF/emoji/OG proxies, the legacy realtime hub,
+ * notes/chat/friends REST, admin, the legacy realtime hub,
  * and SPA static serving. The relay is operator-controlled (see the relay CLI),
- * not driven by any frontend, so none of that belongs here. The vestigial
- * session-gated `/api/relay/devices` endpoints in relayRoutes simply 401 here
- * (no session layer) — account creation is `/api/relay/register`, device
- * management is the CLI, and multi-device pairing (D8) will be device-authed.
+ * not driven by any frontend, so none of that belongs here. The session-gated
+ * `/api/relay/devices` bootstrap endpoints went with the session layer —
+ * account creation is `/api/relay/register`, device management is the CLI, and
+ * multi-device pairing (D8) will be device-authed.
  */
 export async function buildRelayApp(db: DB, config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
@@ -54,6 +60,7 @@ export async function buildRelayApp(db: DB, config: Config): Promise<FastifyInst
     ? createKtSidecar(config.akdSidecarUrl, config.akdSidecarToken ?? '')
     : undefined;
   relayRoutes(app, db, relayLive, config, voiceSignal, voiceSfu, ktSidecar, push);
+  relayContentRoutes(app, db, config);
 
   return app;
 }

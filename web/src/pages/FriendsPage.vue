@@ -1,13 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
-import { useChatStore } from '../stores/chat';
 import { useFriendsStore } from '../stores/friends';
-import { isNative } from '../lib/native';
 
 const friends = useFriendsStore();
-const chat = useChatStore();
 const router = useRouter();
 
 const loading = ref(true);
@@ -26,9 +23,6 @@ onMounted(async () => {
     loading.value = false;
   }
 });
-
-const incoming = computed(() => friends.requests.filter((r) => r.direction === 'incoming'));
-const outgoing = computed(() => friends.requests.filter((r) => r.direction === 'outgoing'));
 
 // --- Invites ---
 const copiedId = ref('');
@@ -63,7 +57,7 @@ async function redeem() {
   try {
     await friends.redeem(token);
     redeemOk.value = true;
-    redeemMsg.value = 'Request sent.';
+    redeemMsg.value = 'Friend added.';
     redeemCode.value = '';
   } catch (e) {
     redeemOk.value = false;
@@ -73,32 +67,10 @@ async function redeem() {
   }
 }
 
-// --- Requests ---
-async function accept(id: string) {
-  await friends.accept(id);
-}
-async function decline(id: string) {
-  await friends.decline(id);
-}
-
 // --- Friends list ---
-const dmError = ref('');
-async function openDm(userId: string) {
-  dmError.value = '';
-  // Native: DMs live on the self-contained native chat surface (/dm); open it
-  // with the friend preselected. The legacy chat store (below) is browser-only.
-  if (isNative) {
-    router.push({ path: '/dm', query: { open: userId } });
-    return;
-  }
-  const friend = friends.friends.find((f) => f.userId === userId);
-  if (!friend) return;
-  try {
-    const convId = await chat.openDm(friend);
-    router.push(`/chat/${convId}`);
-  } catch (e) {
-    dmError.value = e instanceof Error ? e.message : 'could not open chat';
-  }
+/** DMs live on the chat surface (/dm); open it with the friend preselected. */
+function openDm(userId: string) {
+  void router.push({ path: '/dm', query: { open: `dm:${userId}` } });
 }
 
 function fmtExpiry(ts: number): string {
@@ -128,7 +100,7 @@ function fmtExpiry(ts: number): string {
       <section class="space-y-3">
         <h2 class="text-lg font-semibold">Add a friend</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
-          Paste a friend invite code someone shared with you to send them a friend request.
+          Paste a friend invite code someone shared with you to become friends.
         </p>
         <form class="flex gap-2" @submit.prevent="redeem">
           <input
@@ -141,7 +113,7 @@ function fmtExpiry(ts: number): string {
             :disabled="redeemBusy || !redeemCode.trim()"
             class="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
-            Send request
+            Add friend
           </button>
         </form>
         <p v-if="redeemMsg" class="text-sm" :class="redeemOk ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'">
@@ -153,7 +125,7 @@ function fmtExpiry(ts: number): string {
       <section class="space-y-3">
         <h2 class="text-lg font-semibold">Your invite codes</h2>
         <p class="text-sm text-zinc-500 dark:text-zinc-400">
-          Share a code with someone so they can send you a friend request. Codes expire after 24 hours.
+          Share a code with someone so they can add you. Codes expire after 24 hours.
         </p>
         <button
           :disabled="inviteBusy"
@@ -182,38 +154,9 @@ function fmtExpiry(ts: number): string {
         </ul>
       </section>
 
-      <!-- Incoming requests -->
-      <section v-if="incoming.length" class="space-y-3">
-        <h2 class="text-lg font-semibold">Friend requests</h2>
-        <ul class="divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-900 dark:border-zinc-800">
-          <li v-for="req in incoming" :key="req.id" class="flex items-center gap-3 p-3">
-            <p class="grow text-sm font-medium">{{ req.displayName }}</p>
-            <button
-              class="shrink-0 rounded-lg bg-blue-600 px-3 py-1 text-sm font-medium text-white hover:bg-blue-700"
-              @click="accept(req.id)"
-            >
-              Accept
-            </button>
-            <button class="shrink-0 text-sm text-zinc-500 hover:underline" @click="decline(req.id)">Decline</button>
-          </li>
-        </ul>
-      </section>
-
-      <!-- Outgoing requests -->
-      <section v-if="outgoing.length" class="space-y-3">
-        <h2 class="text-lg font-semibold">Pending</h2>
-        <ul class="divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-900 dark:border-zinc-800">
-          <li v-for="req in outgoing" :key="req.id" class="flex items-center gap-3 p-3">
-            <p class="grow text-sm font-medium">{{ req.displayName }}</p>
-            <span class="shrink-0 text-xs text-zinc-400">request sent</span>
-          </li>
-        </ul>
-      </section>
-
       <!-- Friends list -->
       <section class="space-y-3">
         <h2 class="text-lg font-semibold">Your friends</h2>
-        <p v-if="dmError" class="text-sm text-red-600 dark:text-red-400">{{ dmError }}</p>
         <ul class="divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-900 dark:border-zinc-800">
           <li v-for="f in friends.friends" :key="f.userId" class="flex items-center gap-3 p-3">
             <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-sm font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
@@ -221,9 +164,7 @@ function fmtExpiry(ts: number): string {
             </span>
             <div class="grow">
               <p class="text-sm font-medium">{{ f.displayName }}</p>
-              <p class="text-xs" :class="f.online ? 'text-green-600 dark:text-green-400' : 'text-zinc-400'">
-                {{ f.online ? 'online' : 'offline' }}
-              </p>
+              <p class="text-xs text-zinc-400">{{ f.handle }}</p>
             </div>
             <button
               class="shrink-0 rounded-lg border border-zinc-300 px-3 py-1 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"

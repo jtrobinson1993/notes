@@ -2,31 +2,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const native = vi.hoisted(() => ({
   messagesPage: vi.fn(),
-  messagesIngest: vi.fn(),
-  messageEdit: vi.fn(),
 }));
 vi.mock('../../src/lib/native', () => native);
 
-import {
-  loadHistoryLocal,
-  resetNativeChat,
-  rowToView,
-  viewToRow,
-} from '../../src/lib/nativeChat';
-import type { ChatMessageView } from '../../src/stores/chat';
+import { loadHistoryLocal, resetNativeChat, rowToView } from '../../src/lib/nativeChat';
 import type { MessageRow } from '../../src/lib/native';
 
-const view = (over: Partial<ChatMessageView> = {}): ChatMessageView => ({
-  conversationId: 'c1',
-  channelId: 'c1',
-  seq: 7,
-  senderId: 'u1',
-  epoch: 2,
-  ciphertext: 'x',
-  iv: 'x',
-  createdAt: 5000,
-  editedAt: null,
-  text: 'hello',
+const row = (over: Partial<MessageRow> = {}): MessageRow => ({
+  id: 'r1',
+  conversation_id: 'c1',
+  channel_id: null,
+  sender_contact_id: 'u1',
+  relay_ts: 5000,
+  content: 'hello',
+  kind: 'text',
+  reply_ref_json: null,
+  attachments_json: null,
+  deleted: false,
+  edited_at: null,
   ...over,
 });
 
@@ -35,69 +28,86 @@ beforeEach(() => {
   resetNativeChat();
 });
 
-describe('viewToRow / rowToView', () => {
-  it('round-trips a message with extras through the log row shape', () => {
-    const v = view({
-      gif: { id: 'g', url: 'https://static.klipy.com/x.gif' } as ChatMessageView['gif'],
-      system: { kind: 'member-added' } as ChatMessageView['system'],
-      replyTo: { seq: 3, senderId: 'u2', preview: 'p' } as ChatMessageView['replyTo'],
-    });
-    const row = viewToRow(v);
-    expect(row.id).toBe('legacy:c1:7');
-    expect(row.kind).toBe('system');
-
-    const back = rowToView({ ...row, deleted: false } as unknown as MessageRow);
-    expect(back.seq).toBe(7);
-    expect(back.channelId).toBe('c1'); // null channel → general
-    expect(back.text).toBe('hello');
-    expect(back.gif).toMatchObject({ id: 'g' });
-    expect(back.system).toMatchObject({ kind: 'member-added' });
-    expect(back.replyTo).toMatchObject({ seq: 3 });
-    // v8 relay-native identity/order: id → key, relay_ts → sortKey.
-    expect(back.key).toBe('legacy:c1:7');
-    expect(back.sortKey).toBe(row.relay_ts);
+describe('rowToView', () => {
+  it('shapes a log row into the view the chat UI renders', () => {
+    const v = rowToView(row());
+    // v8 identity/order: the log row id is the key, relay_ts is the sort key —
+    // there is no seq/epoch/ciphertext in the webview at all.
+    expect(v.key).toBe('r1');
+    expect(v.sortKey).toBe(5000);
+    expect(v.conversationId).toBe('c1');
+    expect(v.channelId).toBeNull(); // null = the conversation's general channel
+    expect(v.senderId).toBe('u1');
+    expect(v.text).toBe('hello');
+    expect(v.attachments).toEqual([]);
+    expect(v.replyTo).toBeUndefined();
+    expect(v.system).toBeUndefined();
+    expect(v.editedAt).toBeUndefined();
   });
 
-  it('renders deleted rows as text: null (tombstone placeholder)', () => {
-    const row = { ...viewToRow(view()), deleted: true } as unknown as MessageRow;
-    expect(rowToView(row).text).toBeNull();
+  it('unpacks attachments, a system event and a reply ref out of their json', () => {
+    const attachment = {
+      blobId: 'b1',
+      key: 'k',
+      iv: 'i',
+      mime: 'image/webp',
+      name: 'pic.webp',
+      size: 12,
+    };
+    const v = rowToView(
+      row({
+        attachments_json: JSON.stringify({
+          attachments: [attachment],
+          system: { kind: 'member-added' },
+        }),
+        reply_ref_json: JSON.stringify({ seq: 3, senderId: 'u2', preview: 'p' }),
+        channel_id: 'ch2',
+        edited_at: 9000,
+      }),
+    );
+    expect(v.attachments).toEqual([attachment]);
+    expect(v.system).toMatchObject({ kind: 'member-added' });
+    expect(v.replyTo).toMatchObject({ seq: 3, senderId: 'u2' });
+    expect(v.channelId).toBe('ch2');
+    expect(v.editedAt).toBe(9000);
+  });
+
+  it('renders a deleted row as text: null (tombstone placeholder)', () => {
+    expect(rowToView(row({ deleted: true })).text).toBeNull();
+  });
+
+  it('falls back to an empty sender id when the row has no verified sender', () => {
+    expect(rowToView(row({ sender_contact_id: null })).senderId).toBe('');
   });
 });
 
 describe('loadHistoryLocal', () => {
   const rows = (ids: number[]): MessageRow[] =>
-    ids.map((i) => ({
-      id: `legacy:c1:${i}`,
-      conversation_id: 'c1',
-      channel_id: null,
-      sender_contact_id: 'u1',
-      relay_ts: i * 100,
-      content: `m${i}`,
-      kind: 'text',
-      reply_ref_json: null,
-      attachments_json: null,
-      deleted: false,
-      edited_at: null,
-    }));
+    ids.map((i) => row({ id: `m${i}`, content: `m${i}`, relay_ts: i * 100 }));
 
   it('pages with a cursor and stops at exhaustion', async () => {
     native.messagesPage.mockResolvedValueOnce(rows([5, 4])).mockResolvedValueOnce(rows([3]));
 
     const page1 = await loadHistoryLocal('c1', 'c1', 2, true);
-    expect(page1.map((v) => v.seq)).toEqual([5, 4]);
+    expect(page1.map((v) => v.key)).toEqual(['m5', 'm4']);
+    // The general channel is stored as a null channel_id on the wire.
+    expect(native.messagesPage).toHaveBeenLastCalledWith('c1', null, undefined, 2);
+
     // Second call passes the oldest row's (ts,id) as the cursor.
     const page2 = await loadHistoryLocal('c1', 'c1', 2, false);
-    expect(native.messagesPage).toHaveBeenLastCalledWith(
-      'c1',
-      null,
-      { ts: 400, id: 'legacy:c1:4' },
-      2,
-    );
-    expect(page2.map((v) => v.seq)).toEqual([3]);
+    expect(native.messagesPage).toHaveBeenLastCalledWith('c1', null, { ts: 400, id: 'm4' }, 2);
+    expect(page2.map((v) => v.key)).toEqual(['m3']);
+
     // Short page ⇒ exhausted: no further IPC.
     const page3 = await loadHistoryLocal('c1', 'c1', 2, false);
     expect(page3).toEqual([]);
     expect(native.messagesPage).toHaveBeenCalledTimes(2);
+  });
+
+  it('passes a non-general channel through as its own id', async () => {
+    native.messagesPage.mockResolvedValue(rows([5]));
+    await loadHistoryLocal('c1', 'ch2', 2, true);
+    expect(native.messagesPage).toHaveBeenLastCalledWith('c1', 'ch2', undefined, 2);
   });
 
   it('reset restarts from the newest page', async () => {
@@ -105,5 +115,14 @@ describe('loadHistoryLocal', () => {
     await loadHistoryLocal('c1', 'c1', 2, true);
     await loadHistoryLocal('c1', 'c1', 2, true);
     expect(native.messagesPage).toHaveBeenLastCalledWith('c1', null, undefined, 2);
+  });
+
+  it('keeps cursors per channel so back-scroll in one does not skip the other', async () => {
+    native.messagesPage.mockResolvedValue(rows([5, 4]));
+    await loadHistoryLocal('c1', 'c1', 2, true);
+    await loadHistoryLocal('c1', 'ch2', 2, true);
+    expect(native.messagesPage).toHaveBeenLastCalledWith('c1', 'ch2', undefined, 2);
+    await loadHistoryLocal('c1', 'c1', 2, false);
+    expect(native.messagesPage).toHaveBeenLastCalledWith('c1', null, { ts: 400, id: 'm4' }, 2);
   });
 });

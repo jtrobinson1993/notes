@@ -1,26 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { generateKeyPairSync, sign as edSign } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
 
 /** Enroll a device for an authed user and mint a bearer token. */
-async function deviceBearer(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await ctx.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    privateKey,
-  ).toString('base64');
-  const token = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/token', payload: { pubKey, nonce, signature } });
-  return token.json().token as string;
+async function deviceBearer(userId: string): Promise<string> {
+  const { token } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return token; // raw token; call sites add the `Bearer ` prefix
 }
 
 const CALL_ID = 'call-abcdefgh12345';
@@ -33,9 +21,9 @@ const join = (callId: string, bearer?: string) =>
 
 describe('v8 voice SFU — capability-authed join', () => {
   it('joins a call room and returns real mediasoup router RTP capabilities', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
 
     const res = await join(CALL_ID, bearer);
     expect(res.statusCode).toBe(200);
@@ -47,20 +35,20 @@ describe('v8 voice SFU — capability-authed join', () => {
   }, 20_000);
 
   it('rejects a join without a device token (401) and a malformed call id (400)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
 
     expect((await join(CALL_ID)).statusCode).toBe(401);
     expect((await join('short', bearer)).statusCode).toBe(400);
   }, 20_000);
 
   it('shows the peer roster to the second joiner (no identities leaked)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bob = seedAuthedUser(ctx.db, { handle: 'Bob#0002' });
-    const aBearer = await deviceBearer(alice.cookie);
-    const bBearer = await deviceBearer(bob.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bob = seedUser(ctx.db, { handle: 'Bob#0002' });
+    const aBearer = await deviceBearer(alice);
+    const bBearer = await deviceBearer(bob);
 
     await join(CALL_ID, aBearer); // Alice first
     const second = await join(CALL_ID, bBearer);
@@ -73,15 +61,15 @@ describe('v8 voice SFU — capability-authed join', () => {
   }, 20_000);
 
   it('caps the room and rejects the overflow joiner (409)', async () => {
-    ctx = await makeApp();
+    ctx = await makeRelayApp();
     const bearers: string[] = [];
     for (let i = 0; i < 8; i++) {
-      const u = seedAuthedUser(ctx.db, { handle: `User#${1000 + i}` });
-      bearers.push(await deviceBearer(u.cookie));
+      const u = seedUser(ctx.db, { handle: `User#${1000 + i}` });
+      bearers.push(await deviceBearer(u));
     }
     for (const b of bearers) expect((await join(CALL_ID, b)).statusCode).toBe(200);
 
-    const overflow = seedAuthedUser(ctx.db, { handle: 'Over#9999' });
+    const overflow = seedUser(ctx.db, { handle: 'Over#9999' });
     const res = await join(CALL_ID, await deviceBearer(overflow.cookie));
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toBe('call full');
@@ -101,9 +89,9 @@ const post = (path: string, bearer?: string, payload?: unknown) =>
 
 describe('v8 voice SFU — media endpoints', () => {
   it('creates real send + recv WebRtcTransports for a member', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     await join(CALL_ID, bearer);
 
     for (const direction of ['send', 'recv'] as const) {
@@ -118,9 +106,9 @@ describe('v8 voice SFU — media endpoints', () => {
   }, 20_000);
 
   it('rejects media calls from a non-member (401) and a bad direction (400)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
 
     // Not joined yet → not in call.
     expect((await post('transport', bearer, { direction: 'send' })).statusCode).toBe(401);
@@ -130,9 +118,9 @@ describe('v8 voice SFU — media endpoints', () => {
   }, 20_000);
 
   it('404s connect/produce/consume against an unknown transport', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     await join(CALL_ID, bearer);
 
     expect((await post('transport/connect', bearer, { transportId: 'nope', dtlsParameters: {} })).statusCode).toBe(404);
@@ -141,9 +129,9 @@ describe('v8 voice SFU — media endpoints', () => {
   }, 20_000);
 
   it('leave drops membership (subsequent media calls 401)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     await join(CALL_ID, bearer);
     expect((await post('leave', bearer)).statusCode).toBe(200);
     expect((await post('transport', bearer, { direction: 'send' })).statusCode).toBe(401);

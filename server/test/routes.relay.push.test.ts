@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash, generateKeyPairSync, sign as edSign } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 // Mock web-push so createPush is "enabled" with fixed keys and sendNotification
 // is an assertable spy (no real network to the push endpoint).
@@ -17,26 +17,18 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-async function deviceBearer(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await ctx.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(null, Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`), privateKey).toString('base64');
-  const token = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/token', payload: { pubKey, nonce, signature } });
-  return token.json().token as string;
+async function deviceBearer(userId: string): Promise<string> {
+  const { token } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return token; // raw token; call sites add the `Bearer ` prefix
 }
 
 const SUB = { endpoint: 'https://push.example/abc', p256dh: 'p256', auth: 'authk' };
 
 describe('v8 content-free push (D7)', () => {
   it('serves the VAPID key and registers/unregisters a subscription (device-token authed)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
 
     expect((await ctx.app.inject({ method: 'GET', url: '/api/relay/push/key' })).json().publicKey).toBe('VAPID_PUB');
 
@@ -50,7 +42,7 @@ describe('v8 content-free push (D7)', () => {
       payload: SUB,
     });
     expect(sub.statusCode).toBe(200);
-    expect(ctx.db.listPushSubscriptions(alice.id)).toHaveLength(1);
+    expect(ctx.db.listPushSubscriptions(alice)).toHaveLength(1);
 
     await ctx.app.inject({
       method: 'POST',
@@ -58,13 +50,13 @@ describe('v8 content-free push (D7)', () => {
       headers: { authorization: `Bearer ${bearer}` },
       payload: { endpoint: SUB.endpoint },
     });
-    expect(ctx.db.listPushSubscriptions(alice.id)).toHaveLength(0);
+    expect(ctx.db.listPushSubscriptions(alice)).toHaveLength(0);
   });
 
   it('sends a content-free {type:mail} wake to an offline recipient on mailbox send', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     // Alice registers a delivery verifier (so a sealed send targets her) + a push sub.
     const deliveryToken = 'deliv-secret';
     await ctx.app.inject({

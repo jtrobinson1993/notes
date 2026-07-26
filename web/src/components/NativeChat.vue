@@ -38,7 +38,7 @@ import {
   type ReactionRow,
 } from '../lib/native';
 import { onMailIngested } from '../lib/nativeRelay';
-import type { ChatMessageView } from '../stores/chat';
+import type { ChatMessageView } from '../lib/chatView';
 
 const PAGE = 50;
 
@@ -99,9 +99,19 @@ async function open(conv: Conv): Promise<void> {
   void refreshNativeConversations();
 }
 
-/** A message's attachments (the payload's attachments_json, parsed in rowToView). */
+/** A message's attachments (the payload's attachments_json, parsed in rowToView).
+ *  The field originates in a peer-authored payload that is JSON.parsed without a
+ *  schema check, so it is *not* guaranteed to be an array at runtime: a peer that
+ *  ships `{"attachments": 5}` would otherwise blow up this list's render and take
+ *  the whole conversation view down with it. Anything that isn't an array of
+ *  attachment objects is dropped, so the message still renders. */
 function msgAttachments(m: ChatMessageView): MessageAttachment[] {
-  return (m.attachments ?? []) as unknown as MessageAttachment[];
+  const raw: unknown = m.attachments;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (a): a is MessageAttachment =>
+      !!a && typeof a === 'object' && typeof (a as MessageAttachment).blobId === 'string',
+  );
 }
 
 function onFilePick(e: Event): void {
@@ -404,7 +414,7 @@ watch(() => [route?.query?.open, route?.query?.add], () => void openFromRoute())
         <li v-if="!dms.length" class="px-2 py-1 text-xs opacity-60">Add friends first.</li>
       </ul>
       <ul class="flex-1 space-y-2 overflow-y-auto p-3">
-        <li v-for="m in messages" :key="m.key ?? String(m.seq)" class="flex flex-col" :class="m.senderId === 'self' ? 'items-end' : 'items-start'">
+        <li v-for="m in messages" :key="m.key" class="flex flex-col" :class="m.senderId === 'self' ? 'items-end' : 'items-start'">
           <div class="group flex items-center gap-1">
             <form v-if="editingId === m.key" data-testid="edit-form" class="flex items-center gap-1" @submit.prevent="saveEdit(m.key!)">
               <input v-model="editDraft" data-testid="edit-input" class="rounded border border-neutral-500/30 bg-transparent px-2 py-1 text-sm" />

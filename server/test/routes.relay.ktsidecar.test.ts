@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { generateKeyPairSync, sign as edSign } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let ctx: TestApp;
 let sidecar: Server | undefined;
@@ -51,17 +51,9 @@ function fakeSidecar(): Promise<{ url: string; state: SidecarState }> {
   });
 }
 
-async function deviceBearer(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await ctx.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(null, Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`), privateKey).toString('base64');
-  const token = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/token', payload: { pubKey, nonce, signature } });
-  return token.json().token as string;
+async function deviceBearer(userId: string): Promise<string> {
+  const { token } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return token; // raw token; call sites add the `Bearer ` prefix
 }
 
 const KEY = Buffer.alloc(32, 1).toString('base64');
@@ -69,9 +61,9 @@ const KEY = Buffer.alloc(32, 1).toString('base64');
 describe('relay ↔ akd KT sidecar integration', () => {
   it('publishes directory updates to the sidecar and serves its akd proof', async () => {
     const { url, state } = await fakeSidecar();
-    ctx = await makeApp({ akdSidecarUrl: url, akdSidecarToken: 'sc-secret' });
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp({ akdSidecarUrl: url, akdSidecarToken: 'sc-secret' });
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
 
     const put = await ctx.app.inject({
       method: 'PUT',
@@ -100,7 +92,7 @@ describe('relay ↔ akd KT sidecar integration', () => {
 
   it('serves the sidecar key-history proof for self-audit (404 without a sidecar)', async () => {
     const { url } = await fakeSidecar();
-    ctx = await makeApp({ akdSidecarUrl: url, akdSidecarToken: 'sc-secret' });
+    ctx = await makeRelayApp({ akdSidecarUrl: url, akdSidecarToken: 'sc-secret' });
     const hist = await ctx.app.inject({ method: 'GET', url: '/api/relay/directory/Alice%230001/history' });
     expect(hist.statusCode).toBe(200);
     const body = hist.json();
@@ -108,16 +100,16 @@ describe('relay ↔ akd KT sidecar integration', () => {
     expect(body.vrfPublicKey).toBe(Buffer.alloc(32, 9).toString('base64'));
 
     // No sidecar → the interim KT has no history.
-    const noCtx = await makeApp();
+    const noCtx = await makeRelayApp();
     const noHist = await noCtx.app.inject({ method: 'GET', url: '/api/relay/directory/Alice%230001/history' });
     expect(noHist.statusCode).toBe(404);
     await noCtx.cleanup();
   });
 
   it('without a sidecar configured, the interim Merkle KT still serves', async () => {
-    ctx = await makeApp(); // no akdSidecarUrl
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp(); // no akdSidecarUrl
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     await ctx.app.inject({
       method: 'PUT',
       url: '/api/relay/directory',

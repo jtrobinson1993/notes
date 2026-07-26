@@ -1,7 +1,7 @@
 /**
  * Thin wrapper around the View Transitions API used for the chat image → modal
- * morph (`ChatImageGrid.vue` / `ImageLightbox.vue`). Kept DOM-light and
- * dependency-injectable so the support/motion gating is unit-testable.
+ * morph. Kept DOM-light and dependency-injectable so the support/motion gating
+ * is unit-testable.
  */
 
 interface ViewTransition {
@@ -18,7 +18,8 @@ export interface ViewTransitionEnv {
 export function viewTransitionsEnabled(env: ViewTransitionEnv = {}): boolean {
   const doc = env.doc ?? document;
   const win = env.win ?? window;
-  const supported = typeof (doc as { startViewTransition?: unknown }).startViewTransition === 'function';
+  const supported =
+    typeof (doc as { startViewTransition?: unknown }).startViewTransition === 'function';
   const reduced = win.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
   return supported && !reduced;
 }

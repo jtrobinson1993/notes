@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash, generateKeyPairSync, sign as edSign, type KeyObject } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let t: TestApp;
 afterEach(async () => t && t.cleanup());
@@ -13,25 +13,9 @@ function makeKey(): Key {
 }
 
 /** Enroll a device for an authed user; return its bearer (for mailbox reads). */
-async function deviceBearer(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await t.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await t.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await t.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    privateKey,
-  ).toString('base64');
-  const token = await t.app.inject({
-    method: 'POST',
-    url: '/api/relay/auth/token',
-    payload: { pubKey, nonce, signature },
-  });
-  return `Bearer ${token.json().token as string}`;
+async function deviceBearer(userId: string): Promise<string> {
+  const { bearer } = await enrollRelayDevice(t.app, t.db, { userId });
+  return bearer;
 }
 
 const GROUP_TOKEN = 'shared-group-token';
@@ -39,17 +23,17 @@ const groupVerifier = () => createHash('sha256').update(GROUP_TOKEN).digest('bas
 
 describe('group send fan-out (D6/D14)', () => {
   it('fans one group-token-authed envelope to every member device', async () => {
-    t = await makeApp();
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const bob = seedAuthedUser(t.db, { handle: 'Bob#0002' });
-    const aBearer = await deviceBearer(alice.cookie);
-    const bBearer = await deviceBearer(bob.cookie);
+    t = await makeRelayApp();
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const bob = seedUser(t.db, { handle: 'Bob#0002' });
+    const aBearer = await deviceBearer(alice);
+    const bBearer = await deviceBearer(bob);
 
     const kAlice = makeKey();
     const kBob = makeKey();
     // Directory entries map identity key → account → devices.
-    t.db.setRelayDirectoryEntry(alice.id, kAlice.pub, makeKey().pub);
-    t.db.setRelayDirectoryEntry(bob.id, kBob.pub, makeKey().pub);
+    t.db.setRelayDirectoryEntry(alice, kAlice.pub, makeKey().pub);
+    t.db.setRelayDirectoryEntry(bob, kBob.pub, makeKey().pub);
 
     // Group state g1 with both members, signed by the owner (Alice).
     const rec = JSON.stringify({
@@ -91,11 +75,11 @@ describe('group send fan-out (D6/D14)', () => {
   });
 
   it('refuses a wrong/unknown group token (401)', async () => {
-    t = await makeApp();
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const aBearer = await deviceBearer(alice.cookie);
+    t = await makeRelayApp();
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const aBearer = await deviceBearer(alice);
     const kAlice = makeKey();
-    t.db.setRelayDirectoryEntry(alice.id, kAlice.pub, makeKey().pub);
+    t.db.setRelayDirectoryEntry(alice, kAlice.pub, makeKey().pub);
     const rec = JSON.stringify({ groupId: 'g1', version: 1, members: [{ identityPubKey: kAlice.pub, role: 'owner' }] });
     await t.app.inject({
       method: 'PUT',

@@ -3,11 +3,10 @@ import { randomBytes } from 'node:crypto';
 import { deviceToken } from './helpers/deviceToken';
 
 // Voice E2E foundation (spec/voice.md § v8, spec/testing.md Layer E). Drives the
-// real running server + a real mediasoup worker over HTTP: two independent peers
-// obtain device tokens (via the test-auth seam) and join the same v8 SFU call
-// room. This validates the whole capability path end-to-end — test-session →
-// device enroll → challenge/token → SFU join — that the browser CallMedia will
-// build on. The in-browser media round-trip (getUserMedia → produce → consume
+// real running relay + a real mediasoup worker over HTTP: two independent peers
+// obtain device tokens and join the same v8 SFU call room. This validates the
+// whole capability path end-to-end — register → challenge/token → SFU join —
+// that the native CallMedia builds on. The media round-trip (produce → consume
 // with frame E2EE) lands with the CallMedia impl, driven through this harness.
 
 const callId = (): string => `e2e-${randomBytes(9).toString('hex')}`;
@@ -16,8 +15,8 @@ test('two peers obtain device tokens and join the same v8 SFU call room', async 
   const apiA = await playwright.request.newContext({ baseURL });
   const apiB = await playwright.request.newContext({ baseURL });
   try {
-    const a = await deviceToken(apiA, 'Alice#0001');
-    const b = await deviceToken(apiB, 'Bob#0002');
+    const a = await deviceToken(apiA);
+    const b = await deviceToken(apiB);
     expect(a.token).toBeTruthy();
     expect(b.token).toBeTruthy();
     expect(a.userId).not.toBe(b.userId);

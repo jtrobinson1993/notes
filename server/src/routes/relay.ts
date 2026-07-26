@@ -1,9 +1,14 @@
-// v8 relay surface, phase 3 (spec/relay.md): relay info, device enrollment
-// (via the legacy session — the migration bootstrap path), and the
-// challenge → signed-nonce → short-lived-token auth flow (D4/D4b).
+// v8 relay surface (spec/relay.md): relay info, account/device registration,
+// and the challenge → signed-nonce → short-lived-token auth flow (D4/D4b).
+//
+// Every authenticated endpoint here is gated on a DEVICE bearer token. There is
+// no session/cookie layer on the relay: a device joins the relay through
+// `POST /api/relay/register` (open or invite-gated, see registrationMode), and
+// an operator manages enrolled devices with the relay CLI (`npm run relay --
+// list-devices | revoke-device`).
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { createHash, createPrivateKey, randomBytes, sign as edSign } from 'node:crypto';
+import { createHash, createPrivateKey, randomBytes, sign as edSign, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
@@ -14,11 +19,11 @@ import type { VoiceSignal } from '../voiceSignal.js';
 import type { VoiceSfu } from '../voiceSfu.js';
 import type { KtSidecar } from '../ktSidecar.js';
 import type { Push } from '../push.js';
-import { requireAuth } from '../session.js';
 import { newId, newToken } from '../util.js';
 import { isValidHandle } from '../handles.js';
 import { directoryRoot, inclusionProof, leafHash } from '../ktMerkle.js';
 import {
+  deviceFromAuthHeader,
   fingerprintB64url,
   generateRelayIdentity,
   issueDeviceToken,
@@ -58,6 +63,16 @@ const MAILBOX_TTL_MS = 30 * 24 * 60 * 60_000; // D6: undelivered ~30 days
 const MAILBOX_FETCH_LIMIT = 200;
 const MAX_ENVELOPE_B64 = 256 * 1024; // messages only; blobs get their own store
 
+/** Constant-time comparison of two base64url digests (delivery/group verifiers
+ *  and escrow auth-key hashes). These are SHA-256 digests of high-entropy
+ *  secrets behind tight rate limits, so a timing oracle was never realistically
+ *  exploitable — but comparing secrets in constant time is free, so we do. */
+function digestsEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
 function rawKey(b64: string): Buffer | null {
   try {
     const buf = Buffer.from(b64, 'base64');
@@ -93,15 +108,12 @@ export function relayRoutes(
     request: FastifyRequest,
     reply: FastifyReply,
   ): { id: string; userId: string } | null {
-    const header = request.headers.authorization;
-    const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
-    const deviceId = token ? verifyDeviceToken(token) : null;
-    const device = deviceId ? db.getRelayDeviceById(deviceId) : undefined;
-    if (!device || device.revoked) {
+    const device = deviceFromAuthHeader(request.headers.authorization, db);
+    if (!device) {
       void reply.code(401).send({ error: 'device token required' });
       return null;
     }
-    return { id: device.id, userId: device.userId };
+    return device;
   }
 
   // Live-delivery nudge socket (device-token authed). Optional so tests that
@@ -397,30 +409,10 @@ export function relayRoutes(
     return { handle: b.handle, epoch };
   });
 
-  // Enrollment rides the legacy session for now — exactly the migration
-  // bootstrap ("sign in with existing credentials → device key enrolled");
-  // QR pairing (D8) becomes the second enrollment path later.
-  app.post('/api/relay/devices', { preHandler: requireAuth }, async (request, reply) => {
-    const b = request.body as { pubKey?: string; name?: string } | null;
-    const raw = b?.pubKey ? rawKey(b.pubKey) : null;
-    if (!raw) return reply.code(400).send({ error: 'pubKey must be a base64 32-byte Ed25519 key' });
-    const id = fingerprintB64url(raw);
-    const enrolled = db.enrollRelayDevice(request.user!.id, id, b!.pubKey!, b?.name ?? null);
-    if (!enrolled) return reply.code(409).send({ error: 'device key already enrolled to another account' });
-    return { deviceId: enrolled };
-  });
-
-  app.get('/api/relay/devices', { preHandler: requireAuth }, async (request) =>
-    db.listRelayDevices(request.user!.id),
-  );
-
-  app.delete('/api/relay/devices/:id', { preHandler: requireAuth }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    if (!db.revokeRelayDevice(request.user!.id, id)) {
-      return reply.code(404).send({ error: 'unknown device' });
-    }
-    return { ok: true };
-  });
+  // NOTE: device enrollment used to be exposed here as session-gated
+  // `/api/relay/devices` endpoints (the legacy-web migration bootstrap). The
+  // session layer is gone, so those are gone too: a device now enrolls via
+  // `POST /api/relay/register` and is listed/revoked with the relay CLI.
 
   // ---- sealed-sender mailbox (D6) ----
 
@@ -453,7 +445,7 @@ export function relayRoutes(
     const user = db.getUserByHandle(b.recipientHandle);
     const verifier = user ? db.getRelayVerifier(user.id) : undefined;
     const presented = createHash('sha256').update(b.deliveryToken).digest('base64url');
-    if (!user || !verifier || presented !== verifier) {
+    if (!user || !verifier || !digestsEqual(presented, verifier)) {
       return reply.code(401).send({ error: 'delivery refused' });
     }
     const devices = db.activeRelayDeviceIds(user.id);
@@ -693,7 +685,7 @@ export function relayRoutes(
         const user = db.getUserByHandle(recipientHandle);
         const verifier = user ? db.getRelayVerifier(user.id) : undefined;
         const presented = createHash('sha256').update(deliveryToken).digest('base64url');
-        if (!user || !verifier || presented !== verifier) {
+        if (!user || !verifier || !digestsEqual(presented, verifier)) {
           return reply.code(401).send({ error: 'upload refused' });
         }
         const blobId = newToken();
@@ -759,7 +751,7 @@ export function relayRoutes(
         }
         const verifier = db.getRelayGroupVerifier(id);
         const presented = createHash('sha256').update(groupToken).digest('base64url');
-        if (!verifier || presented !== verifier) {
+        if (!verifier || !digestsEqual(presented, verifier)) {
           return reply.code(401).send({ error: 'upload refused' });
         }
         const blobId = newToken();
@@ -906,7 +898,7 @@ export function relayRoutes(
     }
     const verifier = db.getRelayGroupVerifier(id);
     const presented = createHash('sha256').update(b.groupToken).digest('base64url');
-    if (!verifier || presented !== verifier) {
+    if (!verifier || !digestsEqual(presented, verifier)) {
       return reply.code(401).send({ error: 'send refused' });
     }
     // Fan out to every current member's devices (members are listed by identity
@@ -993,7 +985,7 @@ export function relayRoutes(
       const escrow = user ? db.getRelayEscrow(user.id) : undefined;
       const stored = b.authKind === 'password' ? escrow?.passwordAuthHash : escrow?.recoveryAuthHash;
       const presented = createHash('sha256').update(Buffer.from(b.authKey, 'base64')).digest('base64url');
-      if (!escrow || !stored || presented !== stored) {
+      if (!escrow || !stored || !digestsEqual(presented, stored)) {
         return reply.code(401).send({ error: 'escrow fetch refused' });
       }
       return { payload: escrow.payload };

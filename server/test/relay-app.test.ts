@@ -59,10 +59,14 @@ describe('standalone relay app', () => {
     expect(spa.headers['content-type']).toContain('application/json');
   });
 
-  it('has no legacy session layer — the vestigial device endpoints 401', async () => {
+  it('has no legacy session layer — the session-gated device endpoints are gone', async () => {
     const a = await makeRelay();
-    // requireAuth with no session hooks → 401 (not a crash, not 200).
-    const res = await a.inject({ method: 'GET', url: '/api/relay/devices' });
-    expect(res.statusCode).toBe(401);
+    // The bootstrap enrollment surface was removed with the session layer, so
+    // it must not exist at all: accounts register via /api/relay/register and
+    // devices are managed by the relay CLI.
+    for (const m of ['GET', 'POST'] as const) {
+      const res = await a.inject({ method: m, url: '/api/relay/devices', payload: {} });
+      expect(res.statusCode).toBe(404);
+    }
   });
 });

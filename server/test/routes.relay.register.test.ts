@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash, generateKeyPairSync, randomBytes, sign as edSign } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
@@ -22,26 +22,21 @@ function register(payload: Record<string, unknown>) {
 
 /** Enroll a device for an existing (legacy-session) user and return its bearer —
  *  used to give an inviter a mailbox so friend-accept delivery is observable. */
-async function deviceBearer(cookie: string): Promise<string> {
-  const { pubKey, privateKey } = deviceKey();
-  await ctx.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const nonce = (await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' })).json().nonce as string;
-  const signature = edSign(null, Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`), privateKey).toString('base64');
-  const token = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/token', payload: { pubKey, nonce, signature } });
-  return `Bearer ${token.json().token as string}`;
+async function deviceBearer(userId: string): Promise<string> {
+  const { bearer } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return bearer;
 }
 
 describe('account registration (v8 native bootstrap)', () => {
   it('exposes the registration mode via /api/relay/info', async () => {
-    ctx = await makeApp({ registrationMode: 'public' });
+    ctx = await makeRelayApp({ registrationMode: 'public' });
     const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
     expect(info.json().registrationMode).toBe('public');
   });
 
   it('public mode: anyone can register, and the returned token authenticates', async () => {
-    ctx = await makeApp({ registrationMode: 'public' });
-    seedAuthedUser(ctx.db, { handle: 'Existing#0001' }); // not the first user
+    ctx = await makeRelayApp({ registrationMode: 'public' });
+    seedUser(ctx.db, { handle: 'Existing#0001' }); // not the first user
     const { pubKey } = deviceKey();
 
     const res = await register({ pubKey, name: 'Laptop' });
@@ -62,7 +57,7 @@ describe('account registration (v8 native bootstrap)', () => {
   });
 
   it('claims a chosen (valid) handle at registration', async () => {
-    ctx = await makeApp({ registrationMode: 'public' });
+    ctx = await makeRelayApp({ registrationMode: 'public' });
     const { pubKey } = deviceKey();
     const res = await register({ pubKey, handle: 'Otter#0421' });
     expect(res.statusCode).toBe(200);
@@ -70,7 +65,7 @@ describe('account registration (v8 native bootstrap)', () => {
   });
 
   it('ignores a malformed / non-wordlist handle and auto-assigns instead', async () => {
-    ctx = await makeApp({ registrationMode: 'public' });
+    ctx = await makeRelayApp({ registrationMode: 'public' });
     const { pubKey } = deviceKey();
     const res = await register({ pubKey, handle: 'not a real handle!!' });
     expect(res.statusCode).toBe(200);
@@ -79,7 +74,7 @@ describe('account registration (v8 native bootstrap)', () => {
   });
 
   it('changes the handle to another valid generated one (device-authed)', async () => {
-    ctx = await makeApp({ registrationMode: 'public' });
+    ctx = await makeRelayApp({ registrationMode: 'public' });
     const { pubKey } = deviceKey();
     const bearer = `Bearer ${(await register({ pubKey, handle: 'Otter#0421' })).json().token as string}`;
     const res = await ctx.app.inject({
@@ -96,7 +91,7 @@ describe('account registration (v8 native bootstrap)', () => {
   });
 
   it('handle change rejects a malformed handle (400) and a taken one (409)', async () => {
-    ctx = await makeApp({ registrationMode: 'public' });
+    ctx = await makeRelayApp({ registrationMode: 'public' });
     const { pubKey } = deviceKey();
     const bearer = `Bearer ${(await register({ pubKey })).json().token as string}`;
     const bad = await ctx.app.inject({
@@ -121,7 +116,7 @@ describe('account registration (v8 native bootstrap)', () => {
   it('invite mode: registration always requires an invite (no first-user bypass)', async () => {
     // Even on a fresh, empty relay there is no admin/first-user free pass — the
     // operator must mint an invite (via CLI) to seed the first account.
-    ctx = await makeApp({ registrationMode: 'invite' });
+    ctx = await makeRelayApp({ registrationMode: 'invite' });
     expect(ctx.db.userCount()).toBe(0);
     const { pubKey } = deviceKey();
     const res = await register({ pubKey });
@@ -129,7 +124,7 @@ describe('account registration (v8 native bootstrap)', () => {
   });
 
   it('invite mode: an operator registration invite lets an account register (no friendship)', async () => {
-    ctx = await makeApp({ registrationMode: 'invite' });
+    ctx = await makeRelayApp({ registrationMode: 'invite' });
     const token = randomBytes(24).toString('base64url');
     ctx.db.mintRegistrationInvite(hash(token), Date.now() + 60_000);
 
@@ -154,11 +149,11 @@ describe('account registration (v8 native bootstrap)', () => {
   });
 
   it('invite mode: a valid invite registers the account, is consumed, and delivers a friend-accept', async () => {
-    ctx = await makeApp({ registrationMode: 'invite' });
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const aliceBearer = await deviceBearer(alice.cookie); // gives Alice a mailbox
+    ctx = await makeRelayApp({ registrationMode: 'invite' });
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const aliceBearer = await deviceBearer(alice); // gives Alice a mailbox
     const token = randomBytes(24).toString('base64url');
-    ctx.db.mintRelayInvite(hash(token), alice.id, Date.now() + 60_000);
+    ctx.db.mintRelayInvite(hash(token), alice, Date.now() + 60_000);
 
     // Bob registers via the invite.
     const { pubKey } = deviceKey();
@@ -197,15 +192,15 @@ describe('account registration (v8 native bootstrap)', () => {
   });
 
   it('invite mode: an invalid invite is refused (uniform 401)', async () => {
-    ctx = await makeApp({ registrationMode: 'invite' });
-    seedAuthedUser(ctx.db, { handle: 'Admin#0001' });
+    ctx = await makeRelayApp({ registrationMode: 'invite' });
+    seedUser(ctx.db, { handle: 'Admin#0001' });
     const { pubKey } = deviceKey();
     const res = await register({ pubKey, inviteToken: 'never-minted' });
     expect(res.statusCode).toBe(401);
   });
 
   it('rejects a device key that is already enrolled (no duplicate account)', async () => {
-    ctx = await makeApp({ registrationMode: 'public' });
+    ctx = await makeRelayApp({ registrationMode: 'public' });
     const { pubKey } = deviceKey();
     expect((await register({ pubKey })).statusCode).toBe(200);
     const dup = await register({ pubKey });
@@ -214,7 +209,7 @@ describe('account registration (v8 native bootstrap)', () => {
   });
 
   it('public signup has no pending inviter — friend-accept is a no-op', async () => {
-    ctx = await makeApp({ registrationMode: 'public' });
+    ctx = await makeRelayApp({ registrationMode: 'public' });
     const { pubKey } = deviceKey();
     const bearer = `Bearer ${(await register({ pubKey })).json().token as string}`;
     const fa = await ctx.app.inject({

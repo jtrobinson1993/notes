@@ -9,7 +9,7 @@
 // drain.
 
 import { ref } from 'vue';
-import { conversationActivity, isNative } from './native';
+import { conversationActivity } from './native';
 import { listDms } from './nativeDm';
 import { listGroups } from './nativeGroup';
 import { onMailIngested } from './nativeRelay';
@@ -42,7 +42,6 @@ function byActivity(a: NativeConvItem, b: NativeConvItem): number {
 }
 
 export async function refreshNativeConversations(): Promise<void> {
-  if (!isNative) return;
   const [dms, groups, activity] = await Promise.all([
     listDms(),
     listGroups(),
@@ -80,11 +79,20 @@ export async function refreshNativeConversations(): Promise<void> {
   nativeConversations.value = items.sort(byActivity);
 }
 
-let started = false;
+let offIngested: (() => void) | null = null;
+
 /** Begin keeping the rail's list current: load once + refresh on each drain. */
 export function startNativeConversations(): void {
-  if (!isNative || started) return;
-  started = true;
+  if (offIngested) return;
+  offIngested = onMailIngested(() => void refreshNativeConversations());
   void refreshNativeConversations();
-  onMailIngested(() => void refreshNativeConversations());
+}
+
+/** Stop refreshing and clear the list. Called when the vault re-locks: the
+ *  titles are friends' decrypted display names, so they must not survive the
+ *  master key (and a later unlock re-subscribes via startNativeConversations). */
+export function stopNativeConversations(): void {
+  offIngested?.();
+  offIngested = null;
+  nativeConversations.value = [];
 }

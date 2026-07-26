@@ -1,29 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash, generateKeyPairSync, sign as edSign } from 'node:crypto';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let ctx: TestApp;
 afterEach(async () => ctx && ctx.cleanup());
 
-async function deviceBearer(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await ctx.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await ctx.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    privateKey,
-  ).toString('base64');
-  const token = await ctx.app.inject({
-    method: 'POST',
-    url: '/api/relay/auth/token',
-    payload: { pubKey, nonce, signature },
-  });
-  return `Bearer ${token.json().token as string}`;
+async function deviceBearer(userId: string): Promise<string> {
+  const { bearer } = await enrollRelayDevice(ctx.app, ctx.db, { userId });
+  return bearer;
 }
 
 const DELIVERY = 'alice-delivery-token';
@@ -49,9 +33,9 @@ const upload = (headers: Record<string, string>, body: Buffer) =>
 
 describe('transient blob store (D6)', () => {
   it('uploads with a delivery token and the recipient downloads by blobId', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     await setVerifier(bearer);
 
     const ciphertext = Buffer.from('sealed-attachment-bytes');
@@ -73,9 +57,9 @@ describe('transient blob store (D6)', () => {
   });
 
   it('refuses upload with a wrong delivery token (uniform 401)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     await setVerifier(bearer);
 
     const wrong = await upload(
@@ -92,11 +76,11 @@ describe('transient blob store (D6)', () => {
   });
 
   it('a non-recipient device cannot download (uniform 404)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bob = seedAuthedUser(ctx.db, { handle: 'Bob#0002' });
-    const aliceBearer = await deviceBearer(alice.cookie);
-    const bobBearer = await deviceBearer(bob.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bob = seedUser(ctx.db, { handle: 'Bob#0002' });
+    const aliceBearer = await deviceBearer(alice);
+    const bobBearer = await deviceBearer(bob);
     await setVerifier(aliceBearer);
 
     const up = await upload(
@@ -121,9 +105,9 @@ describe('transient blob store (D6)', () => {
   });
 
   it('download requires a device token', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     await setVerifier(bearer);
     const up = await upload(
       { 'x-delivery-token': DELIVERY, 'x-recipient-handle': 'Alice#0001' },
@@ -137,9 +121,9 @@ describe('transient blob store (D6)', () => {
   });
 
   it('rejects a traversal id and unknown id uniformly', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     const traversal = await ctx.app.inject({
       method: 'GET',
       url: '/api/relay/blobs/..%2f..%2fetc%2fpasswd',
@@ -155,9 +139,9 @@ describe('transient blob store (D6)', () => {
   });
 
   it('serves a byte range (resumable download) with 206 + content-range', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     await setVerifier(bearer);
 
     const ciphertext = Buffer.from('0123456789abcdef'); // 16 bytes
@@ -201,9 +185,9 @@ describe('transient blob store (D6)', () => {
   });
 
   it('advertises accept-ranges on a whole-blob GET and 416s an unsatisfiable range', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     await setVerifier(bearer);
     const ciphertext = Buffer.from('short');
     const up = await upload(
@@ -238,9 +222,9 @@ describe('transient blob store (D6)', () => {
   });
 
   it('ack deletes the blob (recipient only)', async () => {
-    ctx = await makeApp();
-    const alice = seedAuthedUser(ctx.db, { handle: 'Alice#0001' });
-    const bearer = await deviceBearer(alice.cookie);
+    ctx = await makeRelayApp();
+    const alice = seedUser(ctx.db, { handle: 'Alice#0001' });
+    const bearer = await deviceBearer(alice);
     await setVerifier(bearer);
     const up = await upload(
       { 'x-delivery-token': DELIVERY, 'x-recipient-handle': 'Alice#0001' },

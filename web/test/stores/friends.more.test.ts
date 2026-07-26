@@ -1,69 +1,74 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
-import type { Friend, FriendInvite, FriendRequest } from '@notes/shared';
+import type { FriendSummary } from '../../src/lib/native';
 
-const api = vi.hoisted(() => ({
-  friends: vi.fn(),
-  friendRequests: vi.fn(),
-  friendInvites: vi.fn(),
-  friendInviteCreate: vi.fn(),
-  friendInviteDelete: vi.fn(),
-  friendRedeem: vi.fn(),
-  friendRequestAccept: vi.fn(),
-  friendRequestDecline: vi.fn(),
-  unfriend: vi.fn(),
+const native = vi.hoisted(() => ({
+  friendsList: vi.fn(async () => [] as FriendSummary[]),
+  friendRemove: vi.fn(async () => {}),
 }));
-vi.mock('../../src/lib/api', () => ({ api }));
+vi.mock('../../src/lib/native', () => native);
+
+const nativeFriends = vi.hoisted(() => ({
+  createInvite: vi.fn(),
+  redeemInvite: vi.fn(),
+}));
+vi.mock('../../src/lib/nativeFriends', () => nativeFriends);
 
 import { useFriendsStore } from '../../src/stores/friends';
 
-const friend = (id: string): Friend => ({ userId: id, displayName: id, publicKey: 'pk', online: false });
-const request = (id: string): FriendRequest => ({ id, userId: 'u', displayName: 'U', direction: 'incoming', createdAt: 0 });
-const invite = (id: string): FriendInvite => ({ id, token: `tok-${id}`, createdAt: 0, expiresAt: 1 });
+const summary = (id: string, over: Partial<FriendSummary> = {}): FriendSummary => ({
+  contact_id: id,
+  handle: `Wolf#${id}`,
+  display_name: null,
+  identity_pub: 'aWQ=',
+  ...over,
+});
 
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
+  native.friendsList.mockResolvedValue([]);
 });
 
 describe('load', () => {
-  it('fetches friends, requests, and invites in parallel into the store', async () => {
-    api.friends.mockResolvedValue([friend('a'), friend('b')]);
-    api.friendRequests.mockResolvedValue([request('r1')]);
-    api.friendInvites.mockResolvedValue([invite('i1')]);
+  it('maps the core friend list into store entries', async () => {
+    native.friendsList.mockResolvedValue([summary('a'), summary('b')]);
     const store = useFriendsStore();
     await store.load();
     expect(store.friends.map((f) => f.userId)).toEqual(['a', 'b']);
-    expect(store.requests.map((r) => r.id)).toEqual(['r1']);
-    expect(store.invites.map((i) => i.id)).toEqual(['i1']);
+    expect(store.friends.map((f) => f.handle)).toEqual(['Wolf#a', 'Wolf#b']);
+  });
+
+  it('replaces the previous list rather than appending to it', async () => {
+    const store = useFriendsStore();
+    native.friendsList.mockResolvedValue([summary('a'), summary('b')]);
+    await store.load();
+    native.friendsList.mockResolvedValue([summary('b')]); // 'a' unfriended elsewhere
+    await store.load();
+    expect(store.friends.map((f) => f.userId)).toEqual(['b']);
   });
 });
 
 describe('invites', () => {
-  it('createInvite prepends the new invite', async () => {
-    api.friendInviteCreate.mockResolvedValue(invite('new'));
+  it('createInvite prepends the minted invite (token comes from the core)', async () => {
+    nativeFriends.createInvite.mockResolvedValue({ invite: 'tok-new', expiresAt: 42 });
     const store = useFriendsStore();
-    store.invites = [invite('old')];
     const created = await store.createInvite();
-    expect(created.id).toBe('new');
-    expect(store.invites.map((i) => i.id)).toEqual(['new', 'old']);
+    expect(created.token).toBe('tok-new');
+    expect(created.expiresAt).toBe(42);
+
+    nativeFriends.createInvite.mockResolvedValue({ invite: 'tok-newer', expiresAt: 43 });
+    await store.createInvite();
+    expect(store.invites.map((i) => i.token)).toEqual(['tok-newer', 'tok-new']);
   });
 
-  it('deleteInvite removes it from the store', async () => {
-    api.friendInviteDelete.mockResolvedValue(undefined);
+  it('deleteInvite removes it from the local list', async () => {
+    nativeFriends.createInvite.mockResolvedValueOnce({ invite: 'tok-a', expiresAt: 1 });
+    nativeFriends.createInvite.mockResolvedValueOnce({ invite: 'tok-b', expiresAt: 1 });
     const store = useFriendsStore();
-    store.invites = [invite('a'), invite('b')];
-    await store.deleteInvite('a');
-    expect(api.friendInviteDelete).toHaveBeenCalledWith('a');
-    expect(store.invites.map((i) => i.id)).toEqual(['b']);
-  });
-});
-
-describe('handleFrame ignores unrelated frames', () => {
-  it('does nothing for a non-friends frame type', () => {
-    const store = useFriendsStore();
-    store.friends = [friend('a')];
-    store.handleFrame({ type: 'message', message: {} as any });
-    expect(store.friends.map((f) => f.userId)).toEqual(['a']); // unchanged
+    const a = await store.createInvite();
+    await store.createInvite();
+    store.deleteInvite(a.id);
+    expect(store.invites.map((i) => i.token)).toEqual(['tok-b']);
   });
 });

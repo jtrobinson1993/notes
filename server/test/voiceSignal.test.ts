@@ -1,34 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
-import { generateKeyPairSync, randomBytes, sign as edSign } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import { makeApp, seedAuthedUser, type TestApp } from '../../test/helpers/server.js';
+import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp } from '../../test/helpers/server.js';
 
 let t: TestApp;
 let port: number;
 
 beforeEach(async () => {
-  t = await makeApp();
+  t = await makeRelayApp();
   await t.app.listen({ port: 0, host: '127.0.0.1' });
   port = (t.app.server.address() as AddressInfo).port;
 });
 afterEach(() => t.cleanup());
 
-async function enrollDevice(cookie: string): Promise<string> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const pubKey = spki.subarray(spki.length - 32).toString('base64');
-  await t.app.inject({ method: 'POST', url: '/api/relay/devices', headers: { cookie }, payload: { pubKey } });
-  const info = await t.app.inject({ method: 'GET', url: '/api/relay/info' });
-  const challenge = await t.app.inject({ method: 'POST', url: '/api/relay/auth/challenge' });
-  const nonce = challenge.json().nonce as string;
-  const signature = edSign(
-    null,
-    Buffer.from(`${nonce}|${info.json().identityFingerprint as string}`),
-    privateKey,
-  ).toString('base64');
-  const token = await t.app.inject({ method: 'POST', url: '/api/relay/auth/token', payload: { pubKey, nonce, signature } });
-  return token.json().token as string;
+async function enrollDevice(userId: string): Promise<string> {
+  const { token } = await enrollRelayDevice(t.app, t.db, { userId });
+  return token;
 }
 
 interface Frame {
@@ -93,8 +81,8 @@ const callId = (): string => randomBytes(24).toString('base64url');
 
 describe('voice signaling (/api/relay/voice)', () => {
   it('greets an authenticated device and rejects an anonymous one', async () => {
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const bearer = await enrollDevice(alice.cookie);
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const bearer = await enrollDevice(alice);
     const c = new VoiceClient(bearer);
     expect(await c.waitFor((f) => f.type === 'hello')).toEqual({ type: 'hello' });
     c.close();
@@ -105,10 +93,10 @@ describe('voice signaling (/api/relay/voice)', () => {
   });
 
   it('relays a sealed signal between two devices joined to the same call id', async () => {
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const bob = seedAuthedUser(t.db, { handle: 'Bob#0002' });
-    const a = new VoiceClient(await enrollDevice(alice.cookie));
-    const b = new VoiceClient(await enrollDevice(bob.cookie));
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const bob = seedUser(t.db, { handle: 'Bob#0002' });
+    const a = new VoiceClient(await enrollDevice(alice));
+    const b = new VoiceClient(await enrollDevice(bob));
     await a.waitFor((f) => f.type === 'hello');
     await b.waitFor((f) => f.type === 'hello');
 
@@ -131,10 +119,10 @@ describe('voice signaling (/api/relay/voice)', () => {
   });
 
   it('does not relay a signal for a call the sender never joined', async () => {
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const bob = seedAuthedUser(t.db, { handle: 'Bob#0002' });
-    const a = new VoiceClient(await enrollDevice(alice.cookie));
-    const b = new VoiceClient(await enrollDevice(bob.cookie));
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const bob = seedUser(t.db, { handle: 'Bob#0002' });
+    const a = new VoiceClient(await enrollDevice(alice));
+    const b = new VoiceClient(await enrollDevice(bob));
     await a.waitFor((f) => f.type === 'hello');
     await b.waitFor((f) => f.type === 'hello');
 
@@ -150,10 +138,10 @@ describe('voice signaling (/api/relay/voice)', () => {
   });
 
   it('notifies peers when a device leaves the call', async () => {
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const bob = seedAuthedUser(t.db, { handle: 'Bob#0002' });
-    const a = new VoiceClient(await enrollDevice(alice.cookie));
-    const b = new VoiceClient(await enrollDevice(bob.cookie));
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const bob = seedUser(t.db, { handle: 'Bob#0002' });
+    const a = new VoiceClient(await enrollDevice(alice));
+    const b = new VoiceClient(await enrollDevice(bob));
     await a.waitFor((f) => f.type === 'hello');
     await b.waitFor((f) => f.type === 'hello');
 
@@ -171,8 +159,8 @@ describe('voice signaling (/api/relay/voice)', () => {
   });
 
   it('caps a call room so a leaked call id cannot pack in extra listeners', async () => {
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const bearer = await enrollDevice(alice.cookie);
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const bearer = await enrollDevice(alice);
     const id = callId();
     const clients: VoiceClient[] = [];
     for (let i = 0; i < 8; i++) {
@@ -191,8 +179,8 @@ describe('voice signaling (/api/relay/voice)', () => {
   });
 
   it('rejects a malformed (low-entropy) call id', async () => {
-    const alice = seedAuthedUser(t.db, { handle: 'Alice#0001' });
-    const a = new VoiceClient(await enrollDevice(alice.cookie));
+    const alice = seedUser(t.db, { handle: 'Alice#0001' });
+    const a = new VoiceClient(await enrollDevice(alice));
     await a.waitFor((f) => f.type === 'hello');
     a.send({ type: 'join', callId: 'short' }); // fails CALL_ID_RE (min 8 chars)
     await expect(a.waitFor((f) => f.type === 'joined', 300)).rejects.toThrow();
