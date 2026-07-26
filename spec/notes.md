@@ -29,6 +29,12 @@ See [accounts-and-crypto.md](accounts-and-crypto.md) for the key model,
   added via the attach button (appended to the end), or by **pasting** / **drag-
   and-dropping** from the OS file manager — the latter two insert the image
   markup **at the caret** (the editor moves the caret to the drop point first).
+  **Where the ciphertext lives depends on the shell:** the browser uses the
+  legacy server's attachment endpoints, while the native app keeps it in the
+  local encrypted blob store, because notes don't sync through the relay yet —
+  see [local-store.md](local-store.md#attachments-on-device). Both go through
+  the same `putNoteAttachment` / `getNoteAttachmentCiphertext` helpers, so the
+  editor and reader are shell-agnostic.
 - **Version history** — the server snapshots ciphertext on update, coalesced to
   one per 10 min, max 50; restore from the History dialog.
 - **Offline editing** — an IndexedDB outbox flushed before sync; server-side

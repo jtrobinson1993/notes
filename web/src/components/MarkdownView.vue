@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { marked, type Tokens } from 'marked';
 import type { AttachmentRef } from '@notes/shared';
-import { api } from '../lib/api';
+import { getNoteAttachmentCiphertext } from '../lib/attachments';
 import { decryptBlob } from '../lib/crypto';
 import MdTokens from './MdTokens';
 
@@ -60,7 +60,8 @@ function resolveAttachment(id: string): Promise<string | null> {
       const ref = props.attachments?.find((a) => a.id === id);
       if (!ref) return null;
       try {
-        const ct = await api.attachmentDownload(ref.id);
+        const ct = await getNoteAttachmentCiphertext(ref.id);
+        if (!ct) return null;
         const data = await decryptBlob(ct, ref.key, ref.iv);
         const url = URL.createObjectURL(new Blob([data as BlobPart], { type: ref.type }));
         objectUrls.push(url);

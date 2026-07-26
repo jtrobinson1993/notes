@@ -212,6 +212,17 @@ leave it stuck evicted with a NULL path), and a row claiming `present` whose
 file has vanished is **corrected to `evicted`** on the failed read rather than
 lying about what the device holds.
 
+**Note attachments never leave the device at all.** Notes are local-only in the
+native shell (no relay sync yet), so a note's attachment has no relay copy to
+upload to or fetch from: `putNoteAttachment` writes the ciphertext straight into
+the vault via `attachment_put` (`owner_kind = 'note'`, minting its own
+base64url id since no relay is there to assign one), and
+`getNoteAttachmentCiphertext` reads it back via `attachment_get`. In a browser
+the same helpers fall through to the legacy server endpoints, so notes behave
+identically in both shells. Because there is no remote copy, an evicted note
+attachment is **terminal** — it renders as missing rather than retrying a fetch
+that cannot succeed.
+
 `attachment_evict` is the local, per-device reclamation path (state `evicted`,
 file removed, row kept) — distinct from delete-for-everyone. Nothing calls it
 automatically yet; the retention policy that would is in

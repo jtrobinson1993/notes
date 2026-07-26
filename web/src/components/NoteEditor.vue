@@ -16,7 +16,7 @@ import type { AttachmentRef } from '@notes/shared';
 import { api } from '../lib/api';
 import { decryptBlob, encryptBlob } from '../lib/crypto';
 import { optimizeImage } from '../lib/imageOptimize';
-import { attachmentCap } from '../lib/attachments';
+import { attachmentCap, getNoteAttachmentCiphertext, putNoteAttachment } from '../lib/attachments';
 import { optimizeImages } from '../lib/privacy';
 import { clearTagColor, setTagColor, tagColor, tagTextColor } from '../lib/tagColors';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
@@ -102,7 +102,8 @@ function resolveAttachment(id: string): Promise<string | null> {
       const ref = attachments.value.find((a) => a.id === id);
       if (!ref) return null;
       try {
-        const ct = await api.attachmentDownload(ref.id);
+        const ct = await getNoteAttachmentCiphertext(ref.id);
+        if (!ct) return null;
         const data = await decryptBlob(ct, ref.key, ref.iv);
         const url = URL.createObjectURL(new Blob([data as BlobPart], { type: ref.type }));
         objectUrls.push(url);
@@ -182,7 +183,12 @@ async function attachFiles(files: FileList | File[], atCursor = false) {
         continue;
       }
       const { ciphertext, key, iv } = await encryptBlob(data);
-      const { id } = await api.attachmentUpload(ciphertext);
+      const id = await putNoteAttachment(props.note.id, ciphertext, {
+        key,
+        iv,
+        type,
+        size: data.length,
+      });
       attachments.value.push({ id, name: file.name, type, size: data.length, key, iv });
       if (type.startsWith('image/')) {
         const markup = `![${file.name}](attachment:${id})`;
