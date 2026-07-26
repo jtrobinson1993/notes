@@ -7,7 +7,7 @@
 import { Device } from 'mediasoup-client';
 import { createCallMedia, type MsDevice, type VoiceMedia } from './voiceMedia';
 import { nativeSfuControl } from './nativeSfu';
-import { decryptReceiver, encryptSender, voiceE2eeSupported } from './voiceTransform';
+import { decryptReceiver, encryptSender } from './voiceTransform';
 
 const MIC_CONSTRAINTS: MediaTrackConstraints = {
   echoCancellation: true,
@@ -31,11 +31,12 @@ function playRemote(track: MediaStreamTrack): void {
   void audio.play().catch(() => {}); // autoplay policy: harmless if deferred
 }
 
-/** Build the app VoiceMedia. Frame E2EE hooks are attached only when the
- *  browser supports insertable streams (else media flows unencrypted — the key
- *  is still exchanged, but the transform can't be installed). */
+/** Build the app VoiceMedia. Frame E2EE hooks are ALWAYS attached: there is no
+ *  unencrypted mode. If the webview lacks insertable streams, encryptSender
+ *  throws and the call fails rather than streaming plaintext to the SFU —
+ *  callers gate on voiceE2eeSupported() first (lib/callHost) so the user gets
+ *  the VOICE_E2EE_UNSUPPORTED toast instead of a raw failure. */
 export function createNativeCallMedia(): VoiceMedia {
-  const e2ee = voiceE2eeSupported();
   return createCallMedia({
     control: nativeSfuControl,
     createDevice: () => new Device() as unknown as MsDevice,
@@ -44,7 +45,7 @@ export function createNativeCallMedia(): VoiceMedia {
       return stream.getAudioTracks()[0]!;
     },
     onRemoteTrack: playRemote,
-    encryptSender: e2ee ? encryptSender : undefined,
-    decryptReceiver: e2ee ? decryptReceiver : undefined,
+    encryptSender,
+    decryptReceiver,
   });
 }

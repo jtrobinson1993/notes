@@ -44,13 +44,20 @@ type Transformable = { transform?: unknown };
 /** Encrypt this sender's outgoing audio frames. */
 export function encryptSender(sender: RTCRtpSender): void {
   const Ctor = scriptTransform();
-  if (Ctor) (sender as Transformable).transform = new Ctor(getWorker(), { operation: 'encrypt' });
+  // Fail closed. Skipping the transform here would hand the SFU plaintext Opus
+  // while the UI still showed an ordinary call, so an unsupported webview must
+  // break the call instead. Callers gate on voiceE2eeSupported() first
+  // (lib/callHost) so a user sees VOICE_E2EE_UNSUPPORTED, not an exception.
+  if (!Ctor) throw new Error('VOICE_E2EE_UNSUPPORTED');
+  (sender as Transformable).transform = new Ctor(getWorker(), { operation: 'encrypt' });
 }
 
-/** Decrypt this receiver's incoming audio frames. */
+/** Decrypt this receiver's incoming audio frames. Throws if unsupported —
+ *  see encryptSender; we never fall back to reading plaintext frames. */
 export function decryptReceiver(receiver: RTCRtpReceiver): void {
   const Ctor = scriptTransform();
-  if (Ctor) (receiver as Transformable).transform = new Ctor(getWorker(), { operation: 'decrypt' });
+  if (!Ctor) throw new Error('VOICE_E2EE_UNSUPPORTED');
+  (receiver as Transformable).transform = new Ctor(getWorker(), { operation: 'decrypt' });
 }
 
 /** Tear down the worker (on leaving all calls). */

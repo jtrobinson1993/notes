@@ -16,6 +16,7 @@ import { resetTagColors } from './lib/tagColors';
 import NativeGate from './components/NativeGate.vue';
 import NativeCallHost from './components/NativeCallHost.vue';
 import KtAlarm from './components/KtAlarm.vue';
+import AppToasts from './components/AppToasts.vue';
 
 const notes = useNotesStore();
 const profile = useProfileStore();
@@ -84,5 +85,7 @@ watch(
       <!-- Key-transparency hard-alarm banner (self-audit on connect). -->
       <KtAlarm />
     </NativeGate>
+    <!-- Outside the gate: a failure raised before unlock must still be seen. -->
+    <AppToasts />
   </div>
 </template>

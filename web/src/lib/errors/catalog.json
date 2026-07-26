@@ -1,0 +1,15 @@
+{
+  "$comment": "User-facing error catalogue. One entry per stable error code shown to a user. Keyed by code so accord's website can publish a page per code (e.g. /errors/VOICE_E2EE_UNSUPPORTED) and a toast can link straight to it. Adding a code here is required whenever a new user-visible failure is introduced — see CLAUDE.md.",
+  "VOICE_E2EE_UNSUPPORTED": {
+    "readableName": "This device can't encrypt calls",
+    "description": "Accord refused to start or answer a voice call because it could not turn on end-to-end encryption for the audio.",
+    "cause": "Voice calls are encrypted frame by frame on your device, so the relay server only ever forwards ciphertext it cannot decode. That needs the WebRTC Encoded Transform API (RTCRtpScriptTransform), which this device's webview does not provide. Rather than place the call unencrypted — which would expose your audio to the server — Accord stops.",
+    "stepsToFix": [
+      "Update Accord to the latest version; newer builds ship a newer webview.",
+      "On Linux, update webkit2gtk (for example `sudo apt update && sudo apt install libwebkit2gtk-4.1-0`) and restart Accord.",
+      "On Windows, update the Microsoft Edge WebView2 Runtime.",
+      "On macOS, install pending system updates — the webview ships with the OS.",
+      "If it still fails, use another device for the call and report it, including your OS version."
+    ]
+  }
+}

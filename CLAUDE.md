@@ -39,11 +39,30 @@ Working rules for this repo. See the **`spec-and-tests`** skill for the how/when
   See `web/dev/README.md`. (HMR doesn't rebuild the mounted editor's keymap —
   full-reload after editor changes.)
 
-- **Keep specs current.** When business logic or technical behavior changes,
-  update the matching file under `spec/` in the same change: edit it to match
-  reality, **delete** a removed feature's section/file, or **add** a new
-  `spec/<area>.md` for a new app surface — and update the `SPEC.md` table and
-  `spec/README.md` index accordingly.
+- **Specs describe what exists; the roadmap describes what doesn't.** This split
+  is strict, and keeping it is part of every change — not a cleanup pass later.
+  - **Every feature that is built lives in a `spec/` file.** If a surface has no
+    spec, add `spec/<area>.md` for it and register it in the `SPEC.md` table and
+    the `spec/README.md` index. A shipped feature documented nowhere is a bug.
+  - **`spec/roadmap.md` contains ONLY unimplemented work.** The moment something
+    ships, delete it from the roadmap and describe it in its area spec. Never
+    leave a built feature listed as planned.
+  - **Update the spec in the same change as the code**, including decisions:
+    when you pick an approach, reject an alternative, or discover a constraint,
+    write that into the spec while the reasoning is fresh. Specs record *why*,
+    not just *what*. When behavior changes, edit the spec to match reality;
+    when a feature is removed, **delete** its section or file.
+  - Do not describe planned behavior in an area spec as though it exists — say
+    plainly that it is unbuilt and point at the roadmap.
+
+- **Document every user-facing error** in `web/src/lib/errors/catalog.json`, a
+  map of stable `SCREAMING_SNAKE` code → `{readableName, description, cause,
+  stepsToFix[]}`. It is the single source of truth for error text: the app
+  toasts `readableName` via `toastError('CODE')` (see `web/src/lib/toast.ts`)
+  and the website publishes the full entry at a per-code URL so a user who hits
+  a message can look it up. Adding a new user-visible failure means adding its
+  entry in the same change — `web/test/lib/errors.test.ts` fails the build if a
+  raised code is missing, or if an entry is too thin to help anyone.
 
 - **Keep the README current.** When a change adds, removes, or meaningfully
   reshapes a user-facing feature, update the root `README.md` in the same change
