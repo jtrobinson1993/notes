@@ -186,11 +186,36 @@ backfill *order* is only as trustworthy as the relay stamp.
 Each attachment gets a fresh **random per-file key**; only the **ciphertext**
 leaves the device, while the per-file key + metadata (name, size, mime) ride
 *inside* the E2E message under the conversation/group key — never to the relay.
-`attachment_upload` encrypts and uploads; `attachment_fetch` downloads and
-decrypts. Both **persist the ciphertext into the local blob store on the way
-through**, so media survives the relay's blob TTL and is served locally on later
-views. `attachment_evict` is the local, per-device reclamation path (state
-`evicted`, file removed, row kept) — distinct from delete-for-everyone.
+
+**The relay is not a durable store.** It deletes a blob once every recipient
+acks it, and on TTL regardless, so media fetched only over the network would
+become permanently unavailable — including for the *sender*, who would lose the
+ability to open what they sent. Both transfer paths therefore keep a local copy:
+
+- `attachment_upload` encrypts, uploads, and **caches the ciphertext locally**.
+- `attachment_fetch` **reads the local store first** — a cached attachment
+  decrypts with no network at all, so old media keeps working offline — and
+  anything it does pull from the relay is persisted on the way through, so it is
+  downloaded once.
+
+What is stored is the **ciphertext exactly as it travels**, under the same
+per-file key, so the filesystem never holds plaintext; the key sits in the
+SQLCipher-protected row. Caching is **best-effort**: the transfer has already
+succeeded by the time it runs, so a cache failure logs and is ignored rather
+than failing a send or a view. Fetched bytes are **decrypted before being
+cached**, so a blob that doesn't authenticate under the message's ref can't
+overwrite a good row.
+
+Two states are kept honest deliberately: re-fetching an **evicted** attachment
+restores its row to `present` with the new path (a plain insert-or-ignore would
+leave it stuck evicted with a NULL path), and a row claiming `present` whose
+file has vanished is **corrected to `evicted`** on the failed read rather than
+lying about what the device holds.
+
+`attachment_evict` is the local, per-device reclamation path (state `evicted`,
+file removed, row kept) — distinct from delete-for-everyone. Nothing calls it
+automatically yet; the retention policy that would is in
+[roadmap.md](roadmap.md#local-retention--the-storage-screen).
 
 ## Retention & eviction
 

@@ -1100,6 +1100,38 @@ impl Store {
         Ok(())
     }
 
+    /// Insert an attachment, or bring an existing row back to `present` with a
+    /// fresh path/key. Unlike `insert_attachment` (INSERT OR IGNORE, which the
+    /// batch importer wants), this is the caching path: re-fetching an evicted
+    /// attachment must re-point the row at the newly written blob, otherwise the
+    /// row would claim `evicted` (or hold a stale NULL path) forever.
+    pub fn upsert_attachment(&self, a: &AttachmentMeta, path: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO attachments(
+               id, owner_kind, owner_id, file_key, iv, path, thumb, size, mime, content_hash, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'present')
+             ON CONFLICT(id) DO UPDATE SET
+               file_key = excluded.file_key, iv = excluded.iv, path = excluded.path,
+               thumb = COALESCE(excluded.thumb, attachments.thumb),
+               size = excluded.size, mime = excluded.mime,
+               content_hash = COALESCE(excluded.content_hash, attachments.content_hash),
+               state = 'present'",
+            (
+                &a.id,
+                &a.owner_kind,
+                &a.owner_id,
+                &a.file_key,
+                &a.iv,
+                path,
+                &a.thumb,
+                a.size,
+                &a.mime,
+                &a.content_hash,
+            ),
+        )?;
+        Ok(())
+    }
+
     pub fn has_attachment(&self, id: &str) -> Result<bool, StoreError> {
         Ok(self.attachment_meta(id)?.is_some())
     }

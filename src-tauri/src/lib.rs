@@ -1016,9 +1016,41 @@ struct AttachmentRef {
     size: usize,
 }
 
+/// Cache an attachment's ciphertext in the unlocked vault (best-effort — see
+/// `attachment::cache_locally`).
+fn cache_attachment_locally(
+    vault: &VaultState<'_>,
+    id: &str,
+    kind: &str,
+    target_id: &str,
+    key: &[u8],
+    iv: &[u8],
+    mime: &str,
+    plaintext_len: usize,
+    ciphertext: &[u8],
+) -> bool {
+    let meta = store::AttachmentMeta {
+        id: id.to_string(),
+        owner_kind: kind.to_string(),
+        owner_id: target_id.to_string(),
+        file_key: key.to_vec(),
+        iv: Some(iv.to_vec()),
+        thumb: None,
+        size: Some(plaintext_len as i64),
+        mime: Some(mime.to_string()),
+        content_hash: None,
+    };
+    let Ok(guard) = vault.lock() else { return false };
+    let Ok(store) = guard.store() else { return false };
+    attachment::cache_locally(store, guard.blobs(), &meta, ciphertext)
+}
+
 /// Encrypt a file with a fresh per-file key and upload the ciphertext to the
 /// blob store (D6). `kind` = "dm" (uploads with the friend's delivery token) or
 /// "group" (uploads with the group token). Returns the ref to embed in a message.
+///
+/// The ciphertext is also kept locally, so the sender can still open what they
+/// sent once the relay has dropped the blob.
 #[tauri::command]
 async fn attachment_upload(
     kind: String,
@@ -1045,7 +1077,7 @@ async fn attachment_upload(
                 .ok_or("not a member of this group")?
         };
         let (token, _v) = keys::group_token_verifier(&group_key).map_err(|e| e.to_string())?;
-        relay.group_blob_upload(&target_id, &token, enc.ciphertext).await?
+        relay.group_blob_upload(&target_id, &token, enc.ciphertext.clone()).await?
     } else {
         let (handle, delivery_token) = {
             let vault = vault.lock().unwrap();
@@ -1056,8 +1088,20 @@ async fn attachment_upload(
                 .ok_or("not a friend on this relay")?;
             (a.handle, a.delivery_token)
         };
-        relay.blob_upload(&handle, &delivery_token, enc.ciphertext).await?
+        relay.blob_upload(&handle, &delivery_token, enc.ciphertext.clone()).await?
     };
+
+    cache_attachment_locally(
+        &vault,
+        &blob_id,
+        &kind,
+        &target_id,
+        &enc.key,
+        &enc.iv,
+        &mime,
+        size,
+        &enc.ciphertext,
+    );
 
     Ok(AttachmentRef {
         blob_id,
@@ -1069,8 +1113,22 @@ async fn attachment_upload(
     })
 }
 
-/// Download + decrypt an attachment (D6). `kind` "dm"/"group" selects the blob
+/// Read an attachment's ciphertext from the unlocked vault (see
+/// `attachment::cached_ciphertext`).
+fn cached_attachment_bytes(vault: &VaultState<'_>, id: &str) -> Option<Vec<u8>> {
+    let guard = vault.lock().ok()?;
+    let store = guard.store().ok()?;
+    attachment::cached_ciphertext(store, guard.blobs(), id)
+}
+
+/// Decrypt + return an attachment (D6). `kind` "dm"/"group" selects the blob
 /// route; the per-file key/iv come from the message's AttachmentRef.
+///
+/// **Local store first.** The relay drops blobs once every recipient acks (and
+/// on TTL regardless), so a fetch that always hit the network would fail
+/// permanently on old media. A cached copy is decrypted locally — no network,
+/// works offline — and anything fetched from the relay is persisted on the way
+/// through, so it is only downloaded once.
 #[tauri::command]
 async fn attachment_fetch(
     kind: String,
@@ -1081,15 +1139,6 @@ async fn attachment_fetch(
 ) -> Result<Vec<u8>, String> {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
-    let signing = {
-        let vault = vault.lock().unwrap();
-        vault.device_signing_key().map_err(|e| e.to_string())?
-    };
-    let ciphertext = if kind == "group" {
-        relay.group_blob_download(&signing, &target_id, &attachment.blob_id).await?
-    } else {
-        relay.blob_download(&signing, &attachment.blob_id).await?
-    };
     let key: [u8; 32] = b64
         .decode(&attachment.key)
         .ok()
@@ -1100,7 +1149,36 @@ async fn attachment_fetch(
         .ok()
         .and_then(|v| v.try_into().ok())
         .ok_or("bad attachment iv")?;
-    attachment::decrypt_file(&ciphertext, &key, &iv)
+
+    if let Some(ciphertext) = cached_attachment_bytes(&vault, &attachment.blob_id) {
+        return attachment::decrypt_file(&ciphertext, &key, &iv);
+    }
+
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    let ciphertext = if kind == "group" {
+        relay.group_blob_download(&signing, &target_id, &attachment.blob_id).await?
+    } else {
+        relay.blob_download(&signing, &attachment.blob_id).await?
+    };
+
+    // Decrypt before caching: ciphertext that doesn't authenticate under this
+    // ref is not worth keeping, and a bad blob shouldn't overwrite a good row.
+    let plaintext = attachment::decrypt_file(&ciphertext, &key, &iv)?;
+    cache_attachment_locally(
+        &vault,
+        &attachment.blob_id,
+        &kind,
+        &target_id,
+        &key,
+        &iv,
+        &attachment.mime,
+        plaintext.len(),
+        &ciphertext,
+    );
+    Ok(plaintext)
 }
 
 /// Add a friend to a group I administer (D14): add them to the signed group
