@@ -39,6 +39,29 @@ against the alternative (Capacitor for mobile + Electron for desktop).
 - **Fallback if a later blocker appears:** Capacitor + Electron, still one web
   codebase behind two native shells.
 
+### The development loop
+
+`npm run dev:native` (`tauri dev`) starts Vite on :5173 and points the native
+window at it rather than at built assets, so **the frontend hot-reloads into the
+running native app** — no rebuild, no relaunch, and the unlocked vault survives
+the reload. Changes under `src-tauri/` trigger an incremental `cargo` rebuild and
+relaunch the window instead. The webview's console output is piped to the
+`dev:native` terminal, so client errors are visible without devtools.
+
+The frontend is therefore iterated **in the native shell**, not in a browser.
+Loading :5173 in a browser gives the *legacy* client, because `isNative`
+(`isTauri()`) is false there and every v8 surface — the vault gate, the local
+store, relay chat, friends — branches on it. Two consequences worth stating:
+
+- **v8 UI has no browser-drivable form**, so the Playwright suite in `e2e/`
+  covers the legacy stack only. Automated coverage of native surfaces would need
+  either a dev-only fake of the ~73 IPC commands or a real driver; neither
+  exists, and a fake would have to be strictly dev-gated (in a shipped build it
+  would be a vault-gate bypass).
+- **The exception is editor work**, which is browser-testable by design: the
+  harness in `web/dev/` mounts the real `<MarkdownEditor>` with no auth or
+  stores. See [testing.md](testing.md#the-webkit-editor-harness).
+
 ## The Rust core is the client
 
 The core is a **headless client**, not a storage plugin. It owns:

@@ -167,12 +167,45 @@ the token empty to stay on the interim log. See
 
 ## Running locally
 
+### The native app (v8 — this is the product)
+
 **Dev mode** (hot reload, two terminals):
 
 ```sh
 npm install
 npm run build -w shared                              # build shared types once
 
+# terminal 1 — the relay on :3000 (tsx watch, data in an ABSOLUTE DATA_DIR)
+DATA_DIR=$PWD/relay-data npm run relay:dev
+
+# terminal 2 — the native window, frontend served by Vite with HMR
+npm run dev:native
+```
+
+`dev:native` starts Vite on :5173 and points the native window at it, so **the
+whole frontend hot-reloads into the running app** — edit a `.vue`/`.ts` file and
+the change lands without a rebuild or restart. Editing anything under
+`src-tauri/` triggers an incremental `cargo` rebuild and relaunches the window
+(a few seconds); the vault survives, since it lives in the app data dir.
+
+The webview's console output is piped to the terminal running `dev:native`, so
+client-side errors show up there — no need to open devtools to catch them.
+
+> **<http://localhost:5173> in a browser is *not* the native app.** The Vite
+> server is shared, but `isNative` is false there, so the browser gets the
+> **legacy** passkey/server client below — no vault, no local store, no relay
+> chat. Every v8 surface is native-only until a v8 web client exists (deferred;
+> see [spec/roadmap.md](spec/roadmap.md)). Use the native window to verify v8 work.
+
+**Release build** (installers into `src-tauri/target/release/bundle/`):
+
+```sh
+npm run build:native
+```
+
+### The legacy web app (being retired)
+
+```sh
 # terminal 1 — API on :3000 (tsx watch, SQLite in server/data/)
 APP_ORIGIN=http://localhost:5173 npm run dev:server
 

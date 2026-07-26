@@ -13,6 +13,8 @@
     "typecheck": "npm run build -w shared && npm run typecheck -w server && npm run typecheck -w web",
     "dev:server": "npm run dev -w server",
     "dev:web": "npm run dev -w web",
+    "dev:native": "tauri dev",
+    "build:native": "tauri build",
     "relay:dev": "npm run relay:dev -w server",
     "relay:start": "node server/dist/relay-index.js",
     "relay": "npm run relay -w server --",
