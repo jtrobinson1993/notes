@@ -16,7 +16,7 @@ End-to-end-encrypted **real-time voice** over WebRTC, in two surfaces:
 - **Direct voice calls** — 1:1 (and small-group) calls with a **ringtone** and an
   **answer / ignore** prompt on the callee's side.
 
-No video (that's [v7](roadmap.md#v7--video-streaming-in-voice-channels)). Crypto
+No video (that's [v12](roadmap.md#v12--video-streaming-in-voice-channels)). Crypto
 reuses the sealing + epoch-rekey machinery from
 [accounts-and-crypto.md](accounts-and-crypto.md) and [chat.md](chat.md); the call
 signalling rides the existing chat WebSocket; incoming-call wake-ups reuse
@@ -328,10 +328,14 @@ Per [testing.md](testing.md) and `CLAUDE.md`:
   becomes a problem; reintroduces a speech-timing leak that decoy traffic
   (also deferred) would then mitigate (see [§ Security & privacy](#security--privacy)).
 
-## v8 changes (partially built)
+## v8 changes (as built)
 
 Voice survives v8 nearly untouched — the SFU/STUN/TURN stack and frame E2EE
-are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
+are unchanged, and voice has no at-rest data. The v8 path runs **end-to-end**:
+signaling socket → ring → call engine → SFU control → media with frame E2EE →
+call UI. It is **functionally complete and unit/e2e-tested, but has not yet been
+exercised on real devices with real microphones** — that validation is the
+outstanding item ([roadmap.md](roadmap.md)).
 
 - **Auth — built.** A **dedicated** device-token-authed signaling socket
   `GET /api/relay/voice` (`server/src/voiceSignal.ts`), separate from the legacy
@@ -382,10 +386,29 @@ are unchanged, and voice has no at-rest data ([roadmap D7](roadmap.md)):
     the `CallMedia` interface. Every browser-only dep is **injected** (`SfuControl`
     control plane, mediasoup-client Device factory, mic track, frame-E2EE
     encrypt/decrypt hooks), so the orchestration is unit-tested with fakes; the
-    app wires the real deps and e2e drives real browser media. *Remaining:* the
-    real `SfuControl` (Rust-IPC-proxied control), wiring CallMedia in the app
-    (real Device + getUserMedia + voiceTransform E2EE + the 1:1 media-key seal via
-    the call-offer envelope), the browser produce→consume e2e, and mounting the UI.
+    app wires the real deps and e2e drives real browser media.
+  - **Real `SfuControl` — built.** The six control calls are proxied through the
+    Rust core (`relay_client.rs` `sfu_*` → device-token-authed POSTs, opaque
+    mediasoup JSON passthrough) and exposed as `sfu_*` IPC commands; web
+    `nativeSfu.ts` implements `SfuControl` via `invoke`. **The device token never
+    crosses IPC** — media/RTP still flows webview↔SFU directly.
+  - **1:1 frame-key exchange — built.** `relay_call_offer` mints a fresh 256-bit
+    frame key and seals `{callId, mediaKey}` *inside* the already-sealed offer
+    envelope, so the **SFU never sees the media key**. The caller arms its key on
+    placing the ring, the callee from the received ring; a missing or short key
+    is discarded rather than trusted.
+  - **App wiring — built.** `nativeCallMedia.ts` assembles the real deps
+    (nativeSfuControl, mediasoup-client `Device`, `getUserMedia` mic with
+    echo-cancel/NS/AGC, remote tracks → `<audio>`, voiceTransform frame E2EE when
+    supported); `callHost.ts` installs the call key as epoch 0 (1:1 = one epoch);
+    `NativeCallHost.vue` mounts the panel app-wide (native only), and the DM
+    header carries the call button. The panel resolves the peer's **display name**
+    from the friend list rather than showing a raw pubkey.
+  - **Test posture:** the SFU control/media plane is covered by a Playwright
+    spec driving two independent device-token peers against a **real mediasoup
+    worker**. The in-browser media round-trip (getUserMedia → produce → consume
+    with frame E2EE) is **deferred** — it needs a bundled same-origin harness page
+    and is timing-sensitive; real-device testing comes first.
 - **Ringing — single-relay built; cross-relay (D4c) follow-up.** *Built:* the
   caller mints a fresh unguessable **call id** and seals a `call-offer {callId}`
   envelope (`KIND_CALL_OFFER`) into the callee's **mailbox** (`relay_call_offer`

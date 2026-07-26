@@ -1911,7 +1911,8 @@ fn attachment_evict(id: String, vault: VaultState) -> Result<(), String> {
     store.set_attachment_state(&id, "evicted").map_err(|e| e.to_string())
 }
 
-// ---- first-run legacy import (spec/migration.md) ----
+// ---- legacy import (vestigial; slated for the post-launch cleanup in
+// spec/roadmap.md — the v8 launch is greenfield, with no migration) ----
 // The webview decrypts with the existing v1 crypto and streams plaintext
 // batches down; each command is transactional and idempotent.
 

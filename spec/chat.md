@@ -873,22 +873,73 @@ show a lock icon and a Manage-members dialog (`ChannelMembersDialog`).
   in a chat folder to chosen participants in one action.
 - A **grant-on-pin** prompt (offer to grant participants when pinning a note).
 
-## v8 — friends & invites (design, not yet built)
+## v8 — friends & invites (as built)
 
-v8 (roadmap D4b/D6) **supersedes the friend-request-by-handle flow above**:
+v8 **supersedes the friend-request-by-handle flow above**:
 
 - **Invite-only friendship.** Adding a friend = redeeming a self-describing
-  invite (QR / universal link / in-app button). There is no "send request to
-  `Word#1234`" — no enumerable handle-reach surface at all.
-- **Enforcement moves server → capability.** Today the server checks the
-  friendship table on DM/share; in v8 the relay checks a **delivery token**
-  (issued on friending, derived from the profile key) with no identity
-  attached. The friends-gate invariant survives, enforced cryptographically:
-  no token, no delivery.
+  invite (`relay_invite_mint` / `relay_invite_redeem`). There is no "send
+  request to `Word#1234`" — no enumerable handle-reach surface at all. In
+  invite-registration mode the same invite both gates signup and carries the
+  friend request, so a new account is friends with its inviter on its first
+  authenticated call.
+- **Enforcement moves server → capability.** The legacy server checks the
+  friendship table on DM/share; the relay instead checks a **delivery token**
+  (derived from the profile key, issued on friending) with no identity attached.
+  The friends-gate invariant survives, enforced cryptographically: no token, no
+  delivery. See
+  [accounts-and-crypto.md](accounts-and-crypto.md#delivery-tokens-how-reach-is-gated-without-identity).
 - **Unfriend (= block)** rotates the profile key and re-issues tokens to
   remaining friends — the relay then refuses the removed person's sends;
-  in-group blocking stays a client-side hide. Friend requests, the pending
-  list, and `POST /api/friends/request`-style routes are removed at cutover.
+  in-group blocking is a client-side hide.
+
+**Not built yet:** the QR / universal-link invite *carriers* (invites are
+minted and redeemed as codes today), the profile-key **rotation fan-out** on
+unfriend, and in-group block. See [roadmap.md](roadmap.md).
+
+### Invite carriers (design)
+
+An invite encodes `{relay routing hint + relay key fingerprint + one-time
+invite token}` so the recipient never manually picks a server. Two carriers are
+specified for the same token: **in-app** (shared through an existing chat; the
+client recognizes a known prefix and renders a tappable "add friend" button) and
+**out-of-app** (a universal/App Link with the token + relay fingerprint in the
+URL **`#fragment`**, which is never sent to any server, falling back to a static
+inert "open in Accord" page when the app isn't installed).
+
+**Redemption always runs through the app, never a browser session** — so no
+Referer / User-Agent / cookie / fingerprint leak, and the fragment keeps the
+token and relay fingerprint off the wire.
+
+## v8 — group authority (as built)
+
+With no authoritative server, something still has to arbitrate membership and
+roles. Signal's answer (GroupsV2) keeps the member list encrypted server-side
+behind zkgroup anonymous credentials, but that machinery buys us nothing: the
+relay **already learns group membership from fan-out queues**, and the
+zero-at-rest posture is about **content and media** — the legal and operational
+honeypot — not small membership metadata.
+
+So: a **relay-held, signed group-state record**. The relay stores the current
+membership + roles document (it needs the member list to fan out anyway),
+**versioned against rollback**, and accepts an update only if it is signed by
+the owner or an admin; members verify the same signatures client-side.
+
+- **Owner + admin roles are kept**, as shipped in v4 — no demotion. Owner-only
+  was considered and rejected: an offline owner would block all membership
+  changes, and total owner loss would freeze the group.
+- Offline admin races resolve by relay ordering.
+- **Documented trade:** the relay learns *which admin* performed each membership
+  change, because it must verify the signature.
+
+Client side, `group_create` mints the group key and the genesis record;
+`group_add_member` bumps and re-signs the record and hands the new member the
+group key via a DM-sealed group invite. The group key lives in the local
+`groups` table and derives the group delivery token. Content is encrypted under
+the shared group key, so the relay fans out opaque blobs.
+
+**Not built:** member *removal* with group-key rotation, and role changes after
+creation. See [roadmap.md](roadmap.md).
 
 ### Message-envelope payload (v1, built)
 

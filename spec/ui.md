@@ -243,3 +243,72 @@ The rail (`AppSidebar`) is a fixed `w-14` icon strip on mobile (never the deskto
 - **No focus zoom on iOS.** A `@media (pointer: coarse)` rule bumps editable
   controls (`input`, `textarea`, `select`, `.cm-content`) to `text-base` (1rem),
   at/above the 16px threshold below which iOS Safari auto-zooms on focus.
+
+## v8 UI model (decisions)
+
+Foundational choices for the native client. Where a decision is built, the
+implementing surface is named; the rest is tracked in
+[roadmap.md](roadmap.md).
+
+- **Multi-relay presentation = unified aggregate.** Several connected relays
+  appear as **one** friends list, chat inbox and notes space; relays are
+  background connectivity, not separate worlds. A subtle "via Relay X" indicator
+  appears only when relevant, and relay management lives in Settings. The
+  Discord-style per-relay switcher was rejected: it fights the cross-relay
+  contact model and adds friction.
+  - **Forced consequence — same-handle disambiguation.** Because each relay
+    mints handles independently, `Alice#1234` on two relays may be **two
+    different people**. Contacts are therefore keyed on **verified identity, not
+    the handle string**: linked identities merge into one entry, unlinked
+    same-handle contacts stay distinct, disambiguated by display name, avatar and
+    verification state, with a relay tag surfaced whenever two entries would
+    otherwise look identical. *(Multi-relay itself is not built — one relay
+    today.)*
+- **Navigation shell = keep the inherited one.** Top-level stays **Notes · Chat ·
+  Friends · Settings** with the responsive desktop rail / mobile drawer. All new
+  v8 surfaces live **under Settings** — Relays, Devices, Verification,
+  Notifications, Storage, Backup — with contextual entry points elsewhere.
+  Promoting them to top-level was rejected as heavier nav for rarely-used
+  screens. *(Built: the shell, plus Settings → Security device lock, change
+  handle and account switching. The other Settings surfaces don't exist yet.)*
+- **Onboarding = a single smart entry** (Welcome → New / Existing). A new user
+  mints a handle, then sets up unlock with **all factors front-loaded**
+  (biometric primary + mandatory password + recovery code shown and confirmed),
+  because the recovery code is both the cold-start path and the backup-export
+  key. An existing user on a new device should get **pairing as the highlighted
+  primary path**, with recovery code and backup import as clearly secondary
+  fallbacks. *(Built: sign up, log in, and escrow recovery — see
+  [native-app.md](native-app.md#onboarding). Not built: device pairing, the
+  ≥2-device nudge, backup import.)*
+- **Add someone / connect a relay.** "Add friend" generates an invite (QR +
+  copyable link + in-app share); "I have an invite" pastes, scans or taps one.
+  Redeeming an invite for a relay you're not on shows an inline "Join [relay] to
+  connect with [name]?" that joins and *then* adds the friend, so it is never a
+  separate step. A relay declares its **own name**, and joining offers a **local
+  nickname** ("Bob's server") that overrides the display locally. A **default
+  relay is deliberately deferred** — until one exists, a new user joins a relay
+  during onboarding to mint their handle. *(Built: mint/redeem an invite code.
+  Not built: QR and link carriers, the inline join-then-add flow, relay
+  nicknames.)*
+- **Contact surface = promote to a full contact page.** Today the only
+  per-contact UI is the small read-only `ProfileDialog`. v8 adds surfaces with
+  nowhere to live — verification/SAS, multipath reachability, block, shared notes
+  and mutual groups, per-conversation notification override — so `ProfileDialog`
+  stays a **quick peek** (avatar · name · handle · verified badge · "View full
+  profile") and a **dedicated contact page** holds the detail. Chosen over
+  cramming everything into the modal. *(Not built.)*
+
+### Key-integrity warnings — two tiers
+
+The severity split matters because crying wolf trains users to dismiss alarms:
+
+- **Soft** — a *contact's key changed* with valid proofs (often just a new
+  device): a non-blocking inline notice plus an "unverified again" badge,
+  cleared by redoing SAS.
+- **Hard** — a *split view, self-audit failure, or inconsistent roots*: a real
+  relay-compromise signal, so it renders as a **blocking, non-dismissable
+  banner** that halts sending to affected contacts and offers SAS re-verification
+  or disconnecting the relay.
+
+The hard tier is built (`KtAlarm.vue`, driven by `nativeKt.ts`). The soft tier
+and the SAS flow it points at are not.

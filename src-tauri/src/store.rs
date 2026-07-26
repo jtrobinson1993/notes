@@ -433,7 +433,8 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
 
-    /// Batch-import legacy notes (spec/migration.md): the webview decrypts
+    /// Batch-import legacy notes (vestigial — see the post-launch cleanup in
+    /// spec/roadmap.md): the webview decrypts
     /// with the existing v1 crypto and seeds each note as a Yjs doc binary;
     /// the core stores rows + opaque doc state. `INSERT OR IGNORE` keeps
     /// re-runs after a partial failure idempotent (first copy wins; the FTS

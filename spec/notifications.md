@@ -140,3 +140,54 @@ remains the way to change the choice later.
 - Delivery is best-effort and platform-dependent (browser push services, OS
   battery policy). The WebSocket remains the primary, instant delivery path; push
   is the fallback for when the app isn't connected.
+
+## v8 — content-free relay push
+
+The v8 relay keeps the same **content-free** posture, reduced further: the push
+is a pure **wake-and-sync** signal carrying no content and no routing hint.
+
+**Built (server + service worker):**
+
+- `Push.notifyMailbox(userId)` sends a content-free `{type:'mail'}` web-push
+  wake. Relay endpoints: `GET /push/key` (VAPID public key) plus device-token-
+  authed `POST /push/subscribe` and `/push/unsubscribe`.
+- The wake fires **only when no recipient device is live** — online devices
+  already get the live-delivery nudge over the WebSocket.
+- The service worker handles a `mail` wake by posting `relay-mail` to open
+  clients and showing a generic "New messages" notification (never content);
+  `main.ts` drains the mailbox on that message.
+
+**Not built — client registration.** Nothing calls `POST /push/subscribe` yet.
+Which client holds the device token to register is entangled with the client
+model: a browser satellite would register directly, the native desktop app would
+need a `relay_push_subscribe` IPC (and Tauri-webview push support is uncertain,
+while the live nudge already covers the app-open case), and mobile needs
+APNs/FCM. Registration therefore lands with the mobile shell — see
+[roadmap.md](roadmap.md#push-registration-d7).
+
+**Not built — rich notifications & the preview key.** The design: a content-free
+push wakes a Notification Service Extension (iOS) / background handler
+(Android), which fetches the queued ciphertext and decrypts **on-device**, so
+the relay never sees content even under sealed sender. Because the extension
+runs with no biometric prompt, decryption uses a **dedicated preview key** — not
+MK, not content keys — to which the sender additionally encrypts a small
+`{name, snippet}` blob. A compromised preview key therefore exposes **future
+previews only**, never history or full content, and any failure falls back to a
+generic notification.
+
+The **notification-privacy toggle** is a real security control rather than a
+cosmetic one: it picks the preview key's keychain protection class — *Rich
+always* (default; AfterFirstUnlock), *Rich only when unlocked* (WhenUnlocked, so
+the key is never available while locked), or *Generic* (no extension decryption
+at all) — plus a per-conversation override. A fresh boot is always generic until
+the first unlock.
+
+**Push credentials.** APNs/FCM sends require the app vendor's push keys, so the
+first-party relay holds them directly in a gitignored `.env`; they are **never
+embedded in source or binaries**. **Per-operator push keys are impossible** —
+APNs/FCM credentials are bound to the *app* (bundle id / Firebase project), not
+the server, so only the publisher's developer account can mint them. That
+app-binding is exactly why Matrix built Sygnal, and a vendor-run gateway for
+third-party relays is the post-v8 answer. Partial exception: **Android
+UnifiedPush** lets an operator self-host a distributor once the app supports it;
+**iOS has no equivalent**.

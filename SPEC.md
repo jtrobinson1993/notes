@@ -3,19 +3,22 @@
 The spec is split by app area under [`spec/`](spec/). Start at
 **[spec/README.md](spec/README.md)** for the index and tech stack.
 
+Specs describe **what is built**. Work not yet built lives in
+[spec/roadmap.md](spec/roadmap.md).
+
 | File | Area |
 |---|---|
-| [spec/accounts-and-crypto.md](spec/accounts-and-crypto.md) | Accounts, passkeys, recovery, the crypto model, the sharing primitive |
-| [spec/notes.md](spec/notes.md) | Notes app + the Obsidian-style live editor + v4 folders/organization |
-| [spec/ui.md](spec/ui.md) | Theming + the app shell / sidebar |
-| [spec/chat.md](spec/chat.md) | v3 E2EE chat (friends, DMs, groups w/ membership + epoch re-keying) + v4 channels, as built |
-| [spec/voice.md](spec/voice.md) | v6 E2EE voice (embedded mediasoup SFU, insertable-streams frame E2EE, voice channels + 1:1 calls) — shipped |
-| [spec/profiles.md](spec/profiles.md) | v3.2 E2EE editable profiles (bio + avatar), visibility, key distribution |
-| [spec/notifications.md](spec/notifications.md) | Foreground chime + tab/badge unread + v3 phase 3 PWA install + content-free background Web Push |
-| [spec/security.md](spec/security.md) | Rendering/XSS safety, CSP, metadata, threat model |
-| [spec/relay.md](spec/relay.md) | v8 relay design — wire protocol, endpoints, and the complete state inventory (not yet built) |
-| [spec/local-store.md](spec/local-store.md) | v8 local store design — SQLite/SQLCipher schema, Rust-core IPC boundary, backup format (not yet built) |
-| [spec/key-transparency.md](spec/key-transparency.md) | v8 KT design — log format, proofs, roots endpoint, reference auditor (not yet built) |
-| [spec/migration.md](spec/migration.md) | v8 cutover runbook — per-user migration, purge timeline, stragglers (design) |
-| [spec/roadmap.md](spec/roadmap.md) | Phasing + future versions (v3.1 – v9) |
-| [spec/testing.md](spec/testing.md) | The unit + e2e test plan (Vitest + Playwright) |
+| [spec/accounts-and-crypto.md](spec/accounts-and-crypto.md) | Accounts, recovery, the crypto model, the v8 key hierarchy + escrow, the sharing primitive |
+| [spec/native-app.md](spec/native-app.md) | The v8 native app — Tauri shell, the vault & unlock, onboarding, multi-account, distribution |
+| [spec/local-store.md](spec/local-store.md) | The v8 local store — SQLCipher schema, the Rust-core IPC boundary, ordering, CRDTs, retention |
+| [spec/relay.md](spec/relay.md) | The v8 relay — wire protocol, endpoints, and the complete state inventory |
+| [spec/key-transparency.md](spec/key-transparency.md) | The v8 KT log — AKD sidecar, proofs, client verification, gossip, reference auditor |
+| [spec/notes.md](spec/notes.md) | Notes app + the Obsidian-style live editor + folders/organization + sharing |
+| [spec/chat.md](spec/chat.md) | E2EE chat — friends, DMs, groups, channels, and the v8 messaging model |
+| [spec/voice.md](spec/voice.md) | E2EE voice — embedded mediasoup SFU, frame E2EE, voice channels + 1:1 calls |
+| [spec/profiles.md](spec/profiles.md) | E2EE editable profiles (bio + avatar), visibility, key distribution |
+| [spec/notifications.md](spec/notifications.md) | Foreground chime + unread + PWA push + the v8 content-free relay wake |
+| [spec/ui.md](spec/ui.md) | Theming, the app shell / sidebar, and the v8 UI model |
+| [spec/security.md](spec/security.md) | Rendering/XSS safety, CSP, metadata, threat model, v8 trust boundaries |
+| [spec/testing.md](spec/testing.md) | The unit + e2e test plan (Vitest + Playwright + cargo) and the WebKit editor harness |
+| [spec/roadmap.md](spec/roadmap.md) | **Everything not built yet** — remaining v8 work, distribution, v9, v12 |

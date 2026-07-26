@@ -133,30 +133,75 @@ Run against a real built server + web with a temp `DATA_DIR`, seeded.
 - Add `vitest`, `@vitest/coverage-v8`, `@vue/test-utils`, `@playwright/test` as
   dev deps; remove the ad-hoc `jsdom`/`tsx` harness pattern once Vitest lands.
 
-## v8 additions (design — not yet built)
+## v8 additions
 
-New layers the local-first rework requires (roadmap D1–D15;
-[relay.md](relay.md), [local-store.md](local-store.md)):
+New layers the local-first rework requires ([relay.md](relay.md),
+[local-store.md](local-store.md), [native-app.md](native-app.md)).
 
-- **Layer F — Rust core unit (cargo test) · P0.** Crypto vectors (seal/unseal,
-  sign, Argon2id, KDF domains — cross-checked against the existing TS
-  implementations during the port), SQLCipher open/lock/zeroize, schema
-  migrations, backup export/restore round-trip, eviction watermarks.
-- **Layer G — multi-device sync simulation (cargo test, in-process) · P0.**
-  Two+ headless cores against an in-process mock relay: at-least-once delivery
-  + dedupe by message id, D11 tuple ordering (incl. same-ms tiebreak and
-  cross-relay clock skew), offline queue/drain, tombstone delete-wins,
-  evicted-watermark no-refetch, D4c multipath failover + cross-path dedup.
-- **Layer H — CRDT convergence properties · P0.** Property tests: random
-  concurrent op interleavings (edits/reactions/read-state/notes) converge to
-  identical state on all replicas; overlay projection is deterministic.
-- **Layer I — relay integration (Vitest `server` project, extended) · P0.**
-  Sealed-send auth matrix (valid/revoked/absent token; no device token on
-  send), group-state signature + version anti-rollback, escrow fetch rate
-  limits, KT inclusion/consistency proofs served correctly, blob TTL/ack
-  deletion, ephemeral-flag never queued.
-- **Layer J — KT auditor · P1.** Reference auditor detects a forked/rewritten/
-  stalled root chain (fixture logs with deliberate tampering).
-- **Layer K — native e2e (tauri-driver/WebDriver, Linux CI) · P2.** Unlock →
-  send → receive → search smoke; the existing Playwright e2e continues to
-  cover the web satellite.
+- **Layer F — Rust core unit (`cargo test`) · P0. Built.** The largest v8 suite:
+  crypto and key derivation (wrap/unwrap, per-relay identity determinism +
+  cross-relay unlinkability, delivery tokens), SQLCipher open/reopen/wrong-key,
+  schema migrations (idempotent, forward-only), the envelope and message
+  disposition matrix, group state, KT verification cores, and the blob store
+  (including a path-traversal guard). Run with `cargo test` in `src-tauri/`;
+  the AKD sidecar has its own suite in `akd-sidecar/`.
+- **Layer G — multi-device sync simulation · not built.** Two+ headless cores
+  against an in-process mock relay: at-least-once delivery + dedupe by message
+  id, tuple ordering (same-ms tiebreak, cross-relay clock skew), offline
+  queue/drain, tombstone delete-wins, evicted-watermark no-refetch, multipath
+  failover.
+- **Layer H — CRDT convergence properties · not built.** Property tests that
+  random concurrent op interleavings converge to identical state on all
+  replicas.
+- **Layer I — relay integration (Vitest `server` project) · P0. Built.** The
+  sealed-send auth matrix, registration modes and invite gating, handle change,
+  group-state signature + version anti-rollback, escrow endpoints, KT
+  publish/lookup against a fake sidecar, blob routes, and the content-free push
+  wake.
+- **Layer J — KT auditor · P1. Built.** `ktAudit.ts` + `ktAuditCli.ts` detect a
+  rewritten or stalled root chain against fixture logs.
+- **Layer K — native e2e (tauri-driver/WebDriver) · not built.** Unlock → send →
+  receive → search smoke against a real built app.
+
+**Voice** has a Playwright spec driving two device-token peers against a real
+mediasoup worker (`e2e/voice.spec.ts`). It depends on a **hard-off-by-default**
+test-auth seam: `E2E_TEST_AUTH=1` **and** `NODE_ENV !== 'production'`, with the
+module refusing to load under production as defence in depth, and the route
+returning 404 whenever the flag is unset. The in-browser media round-trip is
+deliberately not covered — see [voice.md](voice.md).
+
+## The WebKit editor harness
+
+The editor conceals Markdown markers as **atomic** ranges, so visual caret
+motion depends on layout geometry that **jsdom does not model** — a Vitest case
+can pass while a real browser misbehaves. `web/dev/` mounts the real
+`<MarkdownEditor>` with no auth or stores so caret behaviour can be observed for
+real; `web/dev/README.md` documents day-to-day use.
+
+`web/dev/webkit-render-check.mjs` additionally drives that harness in **Linux
+Chromium vs Linux WebKit** (the engine Tauri uses on Linux), doing a
+caret-offset parity check, a per-construct probe, and screenshots. This is the
+check that cleared Tauri for the editor, and it is worth re-running after
+editor changes:
+
+1. Serve the harness bound so a container can reach it. Vite **403s** the
+   `host.docker.internal` Host header, so use the host **LAN IP**:
+   ```sh
+   npm run dev -w web -- --host 0.0.0.0 --port 5173
+   ```
+2. If Docker is Colima-backed, start the VM: `colima start --cpu 4 --memory 4`.
+3. Run it in the Playwright image (LAN IP from Vite's "Network:" line):
+   ```sh
+   docker run --rm --ipc=host \
+     -e HARNESS_URL=http://<LAN-IP>:5173/dev/editor-harness.html \
+     -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+     -v "$PWD:/work" -w /work \
+     mcr.microsoft.com/playwright:v1.60.0-noble \
+     node web/dev/webkit-render-check.mjs
+   ```
+
+**Gotchas that have bitten before:** a stale Vite from *another worktree* can
+squat port 5173 (`lsof -ti tcp:5173`); `npm --prefix web` does **not** set cwd
+(use `-w web`); the Playwright image tag must match the installed Playwright
+version; and "type errors" in `sw.ts` usually mean a **stale `shared/dist`** —
+build `shared` first (the root `npm run build` does; `-w web` alone doesn't).

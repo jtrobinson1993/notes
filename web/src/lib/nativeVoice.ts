@@ -6,9 +6,8 @@
 // ring (relayCallOffer) go straight through the IPC wrappers in native.ts.
 //
 // Frame payloads (SDP/ICE inside `signal`) are opaque here — they are E2E-sealed
-// between the call peers; this seam only routes them. The actual WebRTC/media
-// wiring (getUserMedia + RTCPeerConnection) is a follow-up that consumes these
-// frames; see LOCAL-FIRST-LOG.
+// between the call peers; this seam only routes them. The media wiring that
+// consumes these frames lives in voiceMedia.ts / nativeCallMedia.ts (spec/voice.md).
 
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { isNative, voiceJoin, voiceLeave, voiceSignal } from './native';

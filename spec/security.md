@@ -160,7 +160,7 @@ the **PWA cache** (an installed client resists per-session swapping until it
 updates). A **signed native / desktop client** is the strongest answer and is
 out of scope today.
 
-## v8 relay — retention & metadata posture (design)
+## v8 relay — retention & metadata posture (as built)
 
 v8 replaces the content-storing server with a **zero-at-rest relay**: it holds
 ciphertext only until a device acks delivery and never learns message senders
@@ -190,3 +190,37 @@ record); a recipient's *device count*; and — because delivery rides plain HTTP
 graph that sealed-sender does *not* erase (mitigated only by the operator not
 logging, or users fronting with a VPN/Tor — not by protocol). Hiding those needs
 mixnets / PIR / enclaves — out of scope, as above.
+
+### v8 trust boundaries worth stating plainly
+
+Four places where the v8 design accepts a bounded risk rather than eliminating
+it. Each is deliberate; none should be discovered by surprise later.
+
+- **Sealed sender is partial against an *actively correlating* relay.** It
+  removes the explicit, logged sender field — strong against casual logging, a
+  log subpoena, and an honest-but-curious operator. But the sender's device uses
+  the **same IP** for its authenticated fetch session and its sealed send, so
+  A→B can still be inferred by IP correlation. True sender anonymity needs
+  network-layer decoupling (Tor/mixnet) and is out of scope.
+- **The relay is trusted for message *order*.** It stamps arrival time, so it
+  could reorder or backdate. Impact is bounded — content is authenticated,
+  replies embed a snapshot of their context, and a relay can already withhold or
+  delay delivery — but nothing may treat relay ordering as adversary-proof. See
+  [local-store.md](local-store.md#message-ordering-no-server-counter).
+- **Escrow is an explicit carve-out from zero-at-rest.** The relay holds the
+  password- and recovery-wrapped MK. Zero-at-rest means zero *content* at rest;
+  key blobs encrypted under secrets only the user holds are not the honeypot the
+  posture exists to avoid. The residual is an **offline brute-force against the
+  password-wrapped blob**, bounded by Argon2id (m≈19 MiB, t=2) and the 16-char
+  minimum. See
+  [accounts-and-crypto.md](accounts-and-crypto.md#account-escrow--cold-start).
+- **History backfill can be *incomplete*, not forged.** Per-message sender
+  signatures mean a member serving history cannot alter what someone else said,
+  but it **can omit** messages. Not fully preventable; mitigated by preferring
+  the owner's or multiple devices as backfill sources.
+
+**Key-transparency caveat:** SAS fingerprint verification — the
+server-trust-free anchor that covers a young relay before a gossip/auditor
+ecosystem exists — is **specified but not built**
+([key-transparency.md](key-transparency.md#bootstrap-honesty)). Until it ships,
+MITM defence rests on the KT log plus gossip alone.

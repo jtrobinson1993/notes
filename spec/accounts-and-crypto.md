@@ -4,6 +4,15 @@ The identity and key-management foundation everything else builds on. All
 encryption/decryption happens **client-side** (WebCrypto + `@noble/curves`);
 the server only ever stores ciphertext, wrapped keys, and WebAuthn public keys.
 
+> **Two models live here.** Everything up to "Server-side identity tables"
+> describes the **v1 model as shipped in the legacy web app** — passkey/PRF
+> wrapping, server sessions, server-side identity tables. **[v8 — the native key
+> hierarchy](#v8--the-native-key-hierarchy-as-built)** at the bottom is the
+> as-built model for the native client, where keys live in the Rust core and the
+> relay holds no session. The v1 *primitives* (sealed box, HKDF domains,
+> Argon2id parameters, the recovery-code format) carry over unchanged; the
+> *account and unlock model* does not.
+
 ## Cryptography model
 
 Priorities: modern, boring, widely supported (Chrome, Firefox-based Zen, Safari).
@@ -116,47 +125,145 @@ unlocks MK independently. Two ways to onboard a new device today:
   cross-device bridge for a non-syncing authenticator, and each use spends and
   re-issues the code.
 
-### Device linking (proposed — not yet built)
+### Device linking (not built)
 
-A smoother path: add a passkey to a new device *from an already-unlocked device*,
-without spending the recovery code.
+QR + SAS device pairing — adding a device from an already-unlocked one, and
+streaming history to it — is **not implemented**. The design (and its security
+invariants) lives in [roadmap.md](roadmap.md#device-pairing--history-transfer-d8).
+Until it lands, a fresh v8 device re-establishes **identity** from the relay-held
+escrow (below) and starts with **no history**.
 
-**Core invariant — MK only ever crosses the wire _sealed to a key held by the
-receiving device_; the server (and any network observer) sees ciphertext only,
-never plaintext MK.** MK living on the new device is not new — it is required
-(every device needs MK) and the recovery flow already does it. This is the same
-trust posture as the existing sealed-box sharing primitive, which it reuses:
+## v8 — the native key hierarchy (as built)
 
-1. The **new** device generates an ephemeral X25519 keypair and shows its
-   *public* key (e.g. a QR code). The private key never leaves the device.
-2. The **logged-in** device runs `sealKey(newDevicePublicKey, MK)` and posts the
-   sealed blob to a short-lived, single-use relay endpoint.
-3. The new device fetches the blob, `unsealKey`s MK with its ephemeral private
-   key, registers its own passkey (its own `wrapped_mk`), and discards the
-   ephemeral key.
+One derivation tree covers every key v8 introduces or keeps. The load-bearing
+split is **derived** (re-derivable from the seed; *cannot* rotate without
+rotating the seed) vs **random-and-wrapped** (independently rotatable) —
+anything that must rotate on revocation is random.
 
-A variant with the same invariant: the logged-in device wraps MK under a
-high-entropy one-time **link code** (effectively an ephemeral recovery code)
-that the new device enters to unwrap a short-TTL server blob — no new primitive.
+```
+MK / master seed (random, per user — every full device holds it)
+│
+│  at-rest wrappings (ways to open the vault):
+│    ← OS-keychain vault key (biometric-gated; per device)
+│    ← Argon2id(password)                                  [portable fallback]
+│    ← KDF(recovery code)                                  [cold start]
+│
+├─ DERIVED (deterministic, domain-separated KDF):
+│    └─ per-relay identity keypair = KDF(MK, "relay-id" ‖ relay-fp)
+│
+└─ RANDOM, wrapped under MK (rotatable):
+     ├─ profile key                 rotates on: unfriend ("block"), device revocation
+     │   └─ delivery token = KDF(profile key, "delivery") → hash → relay verifier
+     ├─ per-conversation epoch keys rotates on: membership change, device revocation
+     ├─ per-note keys               rotates on: share revocation, device revocation
+     └─ preview key (sealed to contacts; for push previews — not built)
 
-**The real risk is authenticating the _target_ device, not the transport.** An
-attacker who substitutes their own public key (or intercepts the link code) would
-receive MK. Required mitigations:
+Per-device (random, OS keychain, never leaves the device):
+     ├─ device keypair — signs relay challenges → short-lived token;
+     │                    pairing target for sealed MK
+     └─ SQLCipher key — local DB at rest
 
-- **Human-verified, out-of-band channel:** an in-person QR scan and/or a short
-  comparison string (SAS) shown on both screens that the user confirms matches.
-  The public key / link code must be bound to the user's real device by a human,
-  never trusted from the network alone.
-- **Single-use, short TTL** (seconds–minutes); the relay blob is deleted on
-  pickup and the ephemeral key discarded.
-- **Notify + audit:** linking raises a "new device linked" notice, and the new
-  passkey appears in the credential list for revocation.
+Standalone:
+     ├─ per-file attachment keys (random per file, carried inside the E2E message)
+     └─ backup export key = KDF(recovery code / passphrase, "backup")  [not built]
+```
 
-Done with channel authentication, linking has **no durable transferable secret**
-(unlike the written-down recovery code, which is itself an off-device,
-MK-equivalent secret), so it is equal-to-or-better than recovery codes — not a
-step down. Skipping either invariant — a plaintext relay, or an unauthenticated
-channel — **is** a compromise and is out of scope.
+Rust-side derivation lives in `keys.rs` (HKDF-SHA256 → AES-256-GCM wrap; info
+strings `accord/mk-wrap/{vault-key,password,recovery}/v1`) and `identity.rs`
+(`accord/relay-id/{ed25519,x25519}/v1`).
+
+### Per-relay derived identities
+
+Each relay gets a **distinct identity keypair derived from the one master seed**,
+so independent relays **cannot collude to correlate** the same user across
+servers — chosen over presenting one shared key everywhere. Handles are minted
+per relay, so "same handle everywhere" was never guaranteed anyway.
+
+To authenticate, the device **signs the relay's challenge**: the relay issues a
+random nonce, and the device signs a payload containing both the nonce **and the
+relay's own identity**, so a malicious relay cannot replay your signature to
+authenticate as you to a different relay. The relay returns a short-lived bearer
+token that the device silently re-signs — see [relay.md](relay.md#auth-d4d4b).
+
+**Two independent layers, deliberately:** vault unlock (local, user-facing) and
+the relay token (network, under the hood). Because the token refreshes on the
+*device key* rather than MK, the relay connection stays alive to receive queued
+traffic **while the vault is locked** — you re-unlock only to *read*.
+
+### Delivery tokens (how reach is gated without identity)
+
+The **profile key** is the access root: `delivery token = KDF(profile_key,
+"delivery")`. The recipient registers a **verifier** (a hash of the token) with
+the relay; a sender presents the **token**, and the relay checks
+`hash(token) == verifier` → authorizes delivery **without learning who sent it**.
+The sender's signed identity certificate rides *inside* the sealed envelope, so
+the recipient learns the sender and the relay never does.
+
+**Granularity: one shared token per recipient** (not per friend), so the relay
+never learns your friend count. The cost is that unfriending **rotates the
+profile key and re-issues to all remaining friends** (O(friends) sealed
+messages — Signal's model), accepted because blocks are rare and friend counts
+are modest. Groups use an analogous group delivery token.
+
+"Block" is therefore **not a separate mechanism**: a 1:1 block is unfriend →
+profile-key rotation → delivery-token revocation, and an in-group block is a
+client-side hide.
+
+### Account escrow & cold start
+
+A password or recovery code alone would have **nothing to decrypt** on a fresh,
+unpaired device against a stateless relay — MK is random and the identity keys
+derive from it. So the relay stores the **password-wrapped and recovery-wrapped
+MK** (a few hundred bytes — the same blobs as the shipped v1 model), registered
+on **every relay the user joins** so a dead relay never strands the escrow.
+
+This is a deliberate carve-out: zero-at-rest means zero **content** at rest. The
+relay already persists the directory, KT log, delivery verifiers and push tokens;
+key blobs encrypted under secrets only the user holds are not the honeypot the
+posture exists to avoid.
+
+**Why it's safe.** Argon2id runs **client-side and the password never leaves the
+device** — the relay stores only a domain-separated auth-key hash, useless for
+unwrapping (different HKDF domain). The historical caveat was *served code* (a
+malicious server shipping JS that exfiltrates the password), and the signed
+native app closes exactly that hole. Residual risk: a malicious relay can mount
+an **offline brute-force against the password-wrapped blob** — bounded by
+Argon2id (m≈19 MiB, t=2) plus the enforced 16-char minimum. The
+recovery-code-wrapped blob (160-bit random) is computationally out of reach.
+
+### Device revocation — two named tiers
+
+So the UI and docs never oversell what revocation covers:
+
+- **Tier 1 — "revoke lost device"** (the realistic case: lost or stolen but
+  locked; keychain and SQLCipher intact). Stop honoring the device's token
+  refresh — its relay access dies within the token window — **and rotate
+  everything it could decrypt**: profile key (re-issuing delivery tokens to all
+  friends), every conversation/group epoch key it was in, every shared-note key,
+  and the preview key. Past content is compromised regardless, since the device
+  held plaintext.
+- **Tier 2 — "identity compromise"** (device compromised while *unlocked*). The
+  attacker holds the master seed itself, so they can re-derive the per-relay
+  identity keys — the one thing rotation cannot fix — and could even sign a
+  fraudulent key-rotation attestation. Recovery = **new seed, new identity,
+  re-verified with contacts out-of-band via SAS**. Tier 1 must never be presented
+  as covering this case.
+
+Neither tier is wired to a UI yet — see [roadmap.md](roadmap.md).
+
+### What happened to passkeys
+
+Native shells make WebAuthn **PRF** unreliable (broken on Linux), so v8
+**re-scopes** passkeys rather than dropping them:
+
+1. **Bootstrap/recovery authentication** to a relay where the shell supports
+   WebAuthn — a synced passkey makes fresh-device sign-in phishing-resistant.
+2. **Opportunistic PRF wrap** where PRF actually works — never load-bearing.
+3. **Day-to-day relay auth stays the device key**; passkeys are not involved.
+
+Registration therefore stops rejecting non-PRF passkeys (the auth role doesn't
+need PRF). The **password is mandatory** in v8 because, absent reliable PRF, it
+is the only universal MK-decryption factor; the recovery code stays break-glass.
 
 ## Server-side identity tables
 
