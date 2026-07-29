@@ -11,10 +11,10 @@ work, known defects, distribution, a future web client, v9 — lives in
 
 | File | Area |
 |---|---|
-| [accounts-and-crypto.md](accounts-and-crypto.md) | Accounts and the **key hierarchy** — master key, vault unlock (keychain / Argon2id password / recovery code), domain separation, the sealed envelope, per-relay derived identities, delivery tokens, escrow, revocation, and why passkeys are gone |
+| [accounts-and-crypto.md](accounts-and-crypto.md) | Accounts and the **key hierarchy** — master key, vault unlock (keychain / Argon2id password / recovery code), domain separation, the sealed envelope, per-relay derived identities, delivery tokens, why there is no cold start, revocation, and why passkeys are gone |
 | [native-app.md](native-app.md) | **The native app** — why native, Tauri v2, the Rust core as the real client, the vault gate + unlock paths, idle re-lock, onboarding, multi-account, distribution & signing |
-| [local-store.md](local-store.md) | **The local store** — SQLCipher schema as built, the 79-command Rust-core IPC surface, message ordering, CRDT/mutable-state mapping, attachments on device, backfill integrity, eviction |
-| [relay.md](relay.md) | **The relay** — posture and complete state inventory, device-token auth, registration, escrow, sealed-sender mailbox, blob store, directory/KT, group state, invites, and the privacy content proxies |
+| [local-store.md](local-store.md) | **The local store** — SQLCipher schema as built, the 81-command Rust-core IPC surface, message ordering, CRDT/mutable-state mapping, attachments on device, backfill integrity, eviction |
+| [relay.md](relay.md) | **The relay** — posture and complete state inventory, device-token auth, registration, sealed-sender mailbox, blob store, directory/KT, group state, invites, and the privacy content proxies |
 | [key-transparency.md](key-transparency.md) | **The KT log** — the AKD sidecar, proof types, native self-audit, gossip split-view detection, the public roots endpoint, the reference auditor |
 | [notes.md](notes.md) | **Local-only notes** and the Obsidian-style live editor — formatting, code blocks, tables/checkboxes, attachments, media optimization, zip import/export, folders and organization |
 | [chat.md](chat.md) | **E2EE chat** — invite-only friends as a capability handshake, DMs and groups, the sealed envelope + payload, ordering without a server counter, the CRDT overlays, the mailbox drain, and the native chat surface |
@@ -23,7 +23,7 @@ work, known defects, distribution, a future web client, v9 — lives in
 | [notifications.md](notifications.md) | **Unread surfaces, in-app toasts and the error catalogue** — plus the relay's content-free push wake, which is built but has no client half |
 | [ui.md](ui.md) | **Theming** (brand / pastel / high-contrast), the app shell and side rail, the per-chat sidebar, modals, toasts, Settings, narrow-viewport navigation, and the UI model |
 | [security.md](security.md) | **Cross-cutting security** — rendering/XSS safety, click-to-load remote media, the relay content proxies and their SSRF defences, voice failing closed, rate limits, threat model, trust boundaries |
-| [testing.md](testing.md) | **How the product is tested** — the Vitest projects, cargo tests and the relay Playwright suite as they run today, the four-layer native strategy (L1 built, L2–L4 not), and the WebKit editor harness |
+| [testing.md](testing.md) | **How the product is tested** — the Vitest projects, cargo tests and the relay Playwright suite as they run today, the four-layer native strategy (L1–L3 built and in CI, L4 evaluated and deferred), and the WebKit editor harness |
 | [roadmap.md](roadmap.md) | **Everything not built yet** |
 
 ## Tech stack (decisions)
@@ -37,7 +37,7 @@ work, known defects, distribution, a future web client, v9 — lives in
 | Local store | SQLite + **SQLCipher** whole-DB in the Rust core; encrypted blob files on disk |
 | Realtime | `@fastify/websocket` — relay live-delivery nudge + voice signaling |
 | Auth | **Device-key challenge/token** to the relay; local unlock via OS keychain + password (Argon2id) + recovery code. **No passkeys, no server session, no cookie** |
-| Account recovery | Relay-held **wrapped-MK escrow** (password- and recovery-code-wrapped), plus the mandatory recovery code shown once at signup — the client half is not wired yet, see [roadmap.md](roadmap.md#escrow--upload-cold-start-and-device-re-enrolment) |
+| Account recovery | **Local only** — the mandatory recovery code shown once at signup unlocks a vault this device already holds. Relay-held escrow was [removed](roadmap.md#escrow--removed), so **losing every device loses the account** ([security.md](security.md#total-device-loss-is-unrecoverable-by-design)); pairing and an offline backup export are the planned answers ([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)) |
 | Registration | Relay registration mode: `public` or `invite`-only (operator-minted invites, or a friend invite that also friends you). No admin role and no first-user bypass |
 | Distribution | Native app, **unsigned-first** for the initial group; relay as a Docker image |
 | Repo | **Public** GitHub repo `jtrobinson1993/notes`, licensed **AGPL-3.0-only** |

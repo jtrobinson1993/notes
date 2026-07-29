@@ -115,6 +115,21 @@ export function rankEmoji(
   return [...scored.map((x) => x.c), ...unique.filter((c) => !usedKeys.has(c.key))].slice(0, limit);
 }
 
+/** Rebuild the candidate a usage key stands for, or null when it no longer
+ *  resolves (an emote whose registration is gone — e.g. a relay you are not
+ *  connected to any more). Used for the picker's "frequently used" tier. */
+export function candidateForKey(key: string): EmojiCandidate | null {
+  if (key.startsWith('emote:')) {
+    const name = key.slice('emote:'.length);
+    return resolveEmoji(name) ? emoteCandidate(name) : null;
+  }
+  if (key.startsWith('uni:')) {
+    const glyph = key.slice('uni:'.length);
+    return { source: 'unicode', key, insert: glyph, label: glyph, char: glyph };
+  }
+  return null;
+}
+
 // Convenience builders for callers that already know the picked emoji.
 export function recordEmoteUse(name: string): void {
   recordEmojiUse(usageKey.emote(name));

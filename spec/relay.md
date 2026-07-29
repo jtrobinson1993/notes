@@ -5,12 +5,14 @@
 > SPA serving) has been deleted, along with the browser client it served. What
 > remains is `buildRelayApp`: `/api/relay/*`, the KT auditor alias, and a health
 > probe. Device auth, directory + KT roots, sealed-sender mailbox + live-delivery
-> WS, escrow, registration + friend-invite redemption, DM + group blobs, signed
+> WS, registration + friend-invite redemption, DM + group blobs, signed
 > group state, voice signaling/SFU and the **content proxies** are implemented;
 > the endpoint shapes below are as-built. **Not built:** client-side push
 > registration (the send path exists; nothing subscribes), the satellite-link
-> session (D12), and any client consumer of the content proxies — all in
-> [roadmap.md](roadmap.md).
+> session (D12), and clients for the GIF and link-preview proxies — all in
+> [roadmap.md](roadmap.md). The **emote** proxies do have a client: the Rust
+> core consumes both (see
+> [local-store.md](local-store.md#emoji-on-device-the-used-emoji-cache)).
 
 ## Posture
 
@@ -19,6 +21,11 @@ ciphertext only until delivery is acknowledged, never learns message senders
 (sealed-sender, D6), and never sees plaintext, CRDT structure, note content, or
 media. Everything it *does* persist is enumerated below — nothing else may be
 added without updating this inventory and [security.md](security.md).
+
+It also stores **no key material, wrapped or otherwise**. The one carve-out from
+that rule — the password-wrapped master key held for cold-start recovery — was
+[removed](roadmap.md#escrow--removed) on 2026-07-27, so there is nothing on a
+relay that any amount of offline work could turn into an account.
 
 The one deliberate exception to "sees nothing" is the **content proxies**: to
 keep the *client's* IP away from Klipy, 7TV and arbitrary link targets, the relay
@@ -30,8 +37,10 @@ under [Content proxies](#content-proxies-privacy-not-features) below.
 **Deployment.** The relay runs as a **standalone process**
 (`buildRelayApp` / `npm run relay:start`, entrypoint `server/src/relay-index.ts`).
 There is no static file serving and no frontend of any kind: the security headers
-are registered in API-only mode (`registerSecurityHeaders(app, config, null)` —
-no SPA shell, so no inline-script hashes to thread into the CSP). It is
+are registered in API-only mode, and because the process never emits HTML its CSP
+is only a floor (`default-src 'none'` and friends) — the policy that defends the
+app is the **native webview's**
+([security.md](security.md#the-native-webviews-csp)). It is
 **operator-controlled** via the relay CLI (`npm run relay -- create-invite |
 list-devices | revoke-device | status | prune`), which acts directly on the
 database: there is no in-app admin account and no admin route.
@@ -47,7 +56,6 @@ database: there is no in-app admin account and no admin route.
 | Device records | `relay_devices` | `id` (= b64url SHA-256 of the device pubkey), owner, device pubkey, optional name, created-at, `revoked` | Relay auth (D4b), mailbox fan-out per device |
 | Auth challenges | `relay_challenges` | single-use nonces; deleted on use, only valid for 2 min, and rows older than 10 min are swept on every new challenge | Replay-free device auth |
 | Delivery-token verifiers | `relay_verifiers`, `relay_group_verifiers` | `hash(delivery token)` per recipient account; one per group | Sealed-sender send authorization (D6) |
-| Escrow blobs | `relay_escrow` | wrapped-MK payload, public KDF params, domain-separated auth-key hashes | Cold-start recovery (D15) |
 | Group-state records | `relay_group_state` | signed `{groupId, version, members[], roles[], channels[]}` docs | Group authority (D14); fan-out needs the member list |
 | Invites | `relay_invites`, `relay_registration_invites` | one-time friend invites and operator registration invites (token **hash**, expiry, used-by) | Invite-only reach (D4b) |
 | Pending friend bindings | `relay_register_pending_friend` | one-shot `new account → inviter`, consumed by the first authed call | Completes the D4b handshake for invite signups |
@@ -106,9 +114,10 @@ correlation is documented there).
   `revoke-device` kills live tokens at once, not merely at the next challenge.
 - **Device enrollment** happens only at account registration (below). The
   session-gated `/api/relay/devices` bootstrap endpoints went with the session
-  layer; multi-device pairing (D8) is unbuilt ([roadmap.md](roadmap.md)), so today
-  the CLI lists/revokes devices and escrow recovery is the only route onto a
-  second device.
+  layer; multi-device pairing (D8) is unbuilt ([roadmap.md](roadmap.md)), and
+  relay-held escrow — the former cold-start route — has been
+  [removed](roadmap.md#escrow--removed). **So there is no route onto a second
+  device at all**: the CLI can list and revoke devices, and nothing can add one.
 
 ## Registration (account creation)
 
@@ -166,38 +175,30 @@ opens it):
   the inviter. Operator invites and public signups have no inviter (no-op,
   `{ delivered: false }`).
 
-## Escrow & account bootstrap (D15)
+## Account bootstrap — the relay holds no key material
 
-- `PUT /api/relay/escrow` (device-token auth) — upload/update the wrapped-MK
-  payload (≤8 KB), the **public** KDF params, and the password/recovery auth-key
-  hashes. Same blobs on every relay the user joins.
-- `POST /api/relay/escrow/kdf` `{ handle }` → the Argon2 salt + cost. Served
-  pre-auth because a cold-start device needs the salt to derive its fetch auth
-  key, and a salt is not secret. **Anti-enumeration:** a handle with no escrow
-  gets a *deterministic pseudo-salt* (`SHA-256("escrow-pseudo|relayFp|handle")`)
-  with real Argon2 costs, so a prober can't distinguish registered from
-  unregistered accounts. 10/min.
-- `POST /api/relay/escrow/fetch` `{ handle, authKind: 'password'|'recovery',
-  authKey }` — proves knowledge of the **domain-separated auth key** derived from
-  the password or the recovery code (a different HKDF domain than the wrap key,
-  so it can't unwrap anything). Uniform 401 for unknown handle / no escrow / bad
-  key. Hard-limited to **5/min per IP** because these blobs are offline
-  brute-force targets (D15).
-  *There is no WebAuthn/passkey path any more* — passkeys died with the browser
-  client; password or recovery code are the only two proofs.
+There is **no escrow and no cold-start path.** `PUT /api/relay/escrow`,
+`POST /api/relay/escrow/kdf` and `POST /api/relay/escrow/fetch` existed until
+2026-07-27 and have been [removed](roadmap.md#escrow--removed) along with the
+`relay_escrow` table: a permanently stored, password-wrapped MK is an offline
+brute-force target and contradicts the zero-at-rest posture. A route test asserts
+all three now 404, so the surface cannot creep back unnoticed.
 
-**Escrow fetch returns the payload and nothing else — it does not enroll the
-recovering device.** `vault_restore_from_escrow` rebuilds the vault (same MK, same
-identity) from the wrapped blob, but the device signing key is fresh random per
-device, so the restored device's pubkey is in no `relay_devices` row and
-`auth/token` answers `401 unknown or revoked device`. Recovery therefore restores
-*local* identity, not relay access; closing that needs either enrollment-on-escrow-
-proof or device pairing (D8) — see
-[roadmap.md](roadmap.md#device-pairing--history-transfer-d8).
+**Boot drops the table, blobs included.** Removing the schema definition only
+stops *new* rows; a relay upgraded across the removal would keep every blob it
+already held — on disk and in every backup, still crackable offline, and no
+longer usable by any client. Since that is precisely the liability the removal
+retires, `openDb` runs an idempotent `DROP TABLE IF EXISTS relay_escrow` next to
+the other boot migrations. It is a no-op on a relay that never had escrow, and
+`server/test/db.migrations.escrow.test.ts` pins both that and the fact the drop
+takes no neighbouring relay table with it.
 
-The relay accepts `authKind: 'recovery'` and stores a recovery auth hash, but the
-client only ever sends `'password'`: the recovery-code cold start is a
-server-side capability with no caller.
+Consequently a device can reach an account **only** by having been the device
+that registered it. Adding a second device needs pairing
+([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)), which is unbuilt
+and launch-blocking; note that pairing must also solve *device enrolment*, since
+a new device's signing key is in no `relay_devices` row and `auth/token` would
+answer `401 unknown or revoked device`.
 
 ## Mailbox (D6, D11)
 
@@ -481,11 +482,26 @@ The emote image route is the **only** response that opts out of
 native shell's webview origin is not the relay's origin and the `<img>` would
 otherwise be blocked.
 
-**No client calls any of these endpoints yet.** The emote registry in
-`web/src/lib/emoji/index.ts` is empty at runtime, and nothing fetches GIFs or link
-previews. The picker/composer wiring, and the designed-but-unbuilt on-device
-**used-emoji cache** (an offline store plus a shared render component that
-persists what it renders), are in [roadmap.md](roadmap.md).
+**Who calls these.** Both emote endpoints have a client: the Rust core proxies
+search through `emote_search` (so the device token stays off the IPC boundary)
+and fetches image bytes through `emote_get`, caching them in the vault's
+size-bounded used-emoji store —
+[local-store.md](local-store.md#emoji-on-device-the-used-emoji-cache). Two
+consequences worth knowing on the relay side:
+
+- The core fetches images with its **device token**, using a placeholder `sig`
+  segment — the "either credential" branch the image route already implements,
+  and the reason it exists. Only `<img src>` loads (the picker rendering search
+  results) use the real capability.
+- The core treats a result's `url` as **untrusted**: it accepts only a
+  site-relative `/api/relay/emote/<sig>/<id>.webp` for the emote being
+  described and re-joins it onto the pinned relay base, and it re-enforces the
+  1 MiB image cap against the streamed body. A relay that returned a 7TV CDN
+  link would otherwise undo the proxy entirely.
+
+**GIFs and link previews still have no client.** Nothing fetches either, and
+the recipient-side host allowlist those features require is in
+[roadmap.md](roadmap.md).
 
 ## Push (D7)
 
@@ -523,8 +539,8 @@ client now **fails closed** if the webview can't attach the frame transforms).
 
 - **IP-based rate limiting** everywhere — a liberal global ceiling
   (`RATE_LIMIT_MAX`, default 600/min) plus tighter per-route buckets on
-  `register` (20/min), `invites/check` (30/min), `escrow/kdf` (10/min),
-  `escrow/fetch` (5/min), blobs, and each content proxy. These are identity-free
+  `register` (20/min), `invites/check` (30/min), blobs, and each content proxy
+  (the tighter escrow buckets went with the routes). These are identity-free
   volumetric caps; no sender-based limiting exists (there is no sender).
 - Send requires a valid delivery/group token — there is **no stranger-reach
   surface**: revoked token (unfriend/kick → key rotation, D6/D13) = relay refuses

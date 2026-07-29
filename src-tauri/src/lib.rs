@@ -1,16 +1,23 @@
-mod accounts;
-mod attachment;
-mod blobs;
-mod envelope;
-mod identity;
-mod kt;
-mod keys;
-mod message;
-mod relay_client;
-mod relay_live;
-mod store;
-mod vault;
-mod voice_live;
+// The core's modules are `pub` so the **L2 integration tests**
+// (`src-tauri/tests/`, spec/testing.md § L2) can drive the real engine —
+// vault, identity, envelope, relay client, store — against a real spawned
+// relay. Nothing outside this crate links it as a library, so the wider
+// surface costs nothing; a private module would instead force L2 to
+// re-implement the client, which would test the test.
+pub mod accounts;
+pub mod attachment;
+pub mod blobs;
+pub mod emoji;
+pub mod envelope;
+pub mod identity;
+pub mod kt;
+pub mod keys;
+pub mod message;
+pub mod relay_client;
+pub mod relay_live;
+pub mod store;
+pub mod vault;
+pub mod voice_live;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -206,12 +213,21 @@ async fn relay_register(
 /// Invite signups only: deliver the sealed friend-accept to whoever invited us
 /// (the follow-up leg of the D4b handshake, now that we hold a device token).
 /// Returns whether the relay delivered it.
+///
+/// KT (D5): the invite's pinned `identity_pub` is checked against the
+/// transparency log for `handle` **before** the envelope leaves this device —
+/// the accept carries my delivery token, so a verdict reached afterwards would
+/// arrive too late to matter.
 #[tauri::command]
 async fn relay_register_friend_accept(
     envelope: Vec<u8>,
+    handle: String,
+    identity_pub: String,
+    app: tauri::AppHandle,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<bool, String> {
+    require_contact_key_ok(&app, &vault, &relay, &handle, &identity_pub).await?;
     let signing = {
         let vault = vault.lock().unwrap();
         vault.device_signing_key().map_err(|e| e.to_string())?
@@ -249,15 +265,201 @@ async fn relay_directory_publish(
 #[derive(serde::Serialize, Clone)]
 struct KtAuditReport {
     ok: bool,
-    /// Alarm reason when `!ok`: "self-audit-failed" (foreign key) or "split-view".
+    /// Alarm reason when `!ok`: "self-audit-failed" (foreign key), "split-view"
+    /// (inconsistent roots), or "contact-key-mismatch" (the log contradicts a
+    /// contact key we were asked to trust).
     reason: Option<String>,
     epoch: i64,
 }
 
+/// Alarm reason for "the log does not vouch for a contact key we were about to
+/// trust". Every `kt::Rejected` variant lands here: whether the relay served a
+/// different key, an unverifiable proof, a root it never signed, or a swapped
+/// VRF key, the user-facing fact is the same — this contact's key is not the one
+/// the transparency log published.
+const ALARM_CONTACT_KEY: &str = "contact-key-mismatch";
+
+/// Where a relay's pinned VRF public key lives (per relay, in the vault).
+fn kt_vrf_pin_key(relay_fp: &str) -> String {
+    format!("kt.vrfPub.{relay_fp}")
+}
+
+/// A contact key we are about to trust, to be checked against the log.
+pub struct ContactKeyCheck {
+    pub handle: String,
+    pub identity_pub: Vec<u8>,
+}
+
+/// **The directory-lookup path (D5).** Ask the relay's transparency log which
+/// identity key it published for each handle and compare it with the key we were
+/// handed (an invite's TOFU pin, or the verified sender of a friend-accept).
+///
+/// Order is the whole point, and it is enforced in `kt::contact_verdict`: the
+/// root that the inclusion proof is checked against must first appear in the
+/// relay's **signed** `/kt/roots` chain — the same signature the gossip path
+/// verifies. A proof always verifies against the root it shipped with, so
+/// trusting that root would let a hostile relay serve a self-consistent
+/// `(proof, root)` pair for a key it chose.
+///
+/// Infallible by design: a relay we cannot reach yields `Unverified`, never a
+/// block — Accord has to keep working offline. Only an *active* contradiction
+/// (`Rejected`) fails closed, and this is where its hard alarm is raised, so
+/// every caller reports it identically.
+pub async fn verify_contact_keys(
+    vault: &Mutex<Vault>,
+    relay: &relay_client::RelayClient,
+    checks: &[ContactKeyCheck],
+    on_kt_alarm: KtAlarmSink<'_>,
+) -> Vec<kt::ContactTrust> {
+    use kt::{ContactTrust, Unverified};
+    if checks.is_empty() {
+        return Vec::new();
+    }
+    let unverified = |u: Unverified| vec![ContactTrust::Unverified(u); checks.len()];
+
+    let Some((_base, relay_fp)) = relay.session_info() else {
+        return unverified(Unverified::RelayUnreachable);
+    };
+    // Root signatures are checked against the relay identity key pinned at
+    // connect — the same key the gossip path uses.
+    let Some(relay_pub) = relay.relay_identity_pub() else {
+        return unverified(Unverified::NoRelayKey);
+    };
+    // The VRF public key is pinned per relay on first use. It decides which leaf
+    // a handle maps to, so a relay free to swap it could aim any handle at a leaf
+    // holding a key of its choosing and still produce a valid proof under a
+    // genuinely signed root. It is not covered by the relay's root signature
+    // (see key-transparency.md § Contact verification), hence TOFU.
+    let pinned_vrf = {
+        let vault = vault.lock().unwrap();
+        vault
+            .store()
+            .ok()
+            .and_then(|s| s.get_setting(&kt_vrf_pin_key(&relay_fp)).ok().flatten())
+    };
+    let roots = match relay.kt_roots(0).await {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("kt: signed roots unavailable ({e}) — contacts stay unverified");
+            return unverified(Unverified::RelayUnreachable);
+        }
+    };
+
+    let mut verdicts = Vec::with_capacity(checks.len());
+    let mut vrf_to_pin: Option<String> = None;
+    let mut observed: Vec<(i64, String)> = Vec::new();
+    for c in checks {
+        let verdict = match relay.directory_lookup(&c.handle).await {
+            Ok(Some(entry)) => {
+                let v = kt::contact_verdict(
+                    &relay_pub,
+                    &roots,
+                    pinned_vrf.as_deref(),
+                    &c.handle,
+                    &c.identity_pub,
+                    &entry,
+                );
+                // Only ever pin a VRF key that just produced a proof verifying
+                // under a root the relay signed.
+                if pinned_vrf.is_none() && matches!(v, ContactTrust::Verified { .. }) {
+                    vrf_to_pin.get_or_insert(entry.vrf_public_key.clone());
+                }
+                v
+            }
+            // 404: the relay says the handle has no entry. Never a match — but
+            // not a block either (key-transparency.md § The 404 case).
+            Ok(None) => ContactTrust::Unverified(Unverified::NotInLog),
+            Err(e) => {
+                log::warn!("kt: directory lookup failed ({e}) — {} stays unverified", c.handle);
+                ContactTrust::Unverified(Unverified::RelayUnreachable)
+            }
+        };
+        if let ContactTrust::Verified { epoch, root } = &verdict {
+            observed.push((*epoch, root.clone()));
+        }
+        if let Some(r) = verdict.rejected() {
+            log::error!("kt: REJECTED contact key for {} ({})", c.handle, r.as_str());
+        }
+        verdicts.push(verdict);
+    }
+
+    // Store side-effects last, so the vault mutex never spans an await.
+    let mut split_epoch = None;
+    {
+        let vault = vault.lock().unwrap();
+        if let Ok(store) = vault.store() {
+            if let Some(vrf) = &vrf_to_pin {
+                if let Err(e) = store.set_setting(&kt_vrf_pin_key(&relay_fp), vrf) {
+                    log::warn!("kt: could not pin the relay VRF key: {e}");
+                }
+            }
+            // Every root we verified is also evidence for split-view detection:
+            // a different root at an epoch we have already seen is equivocation.
+            // (Before the relay row exists — the very first drain of a new
+            // account — the insert is refused by the FK and the observation is
+            // simply skipped; the verdict above is unaffected.)
+            for (epoch, root) in &observed {
+                match store.kt_observe_root(&relay_fp, *epoch, root) {
+                    Ok(store::KtObserve::SplitView { .. }) => split_epoch = Some(*epoch),
+                    Ok(_) => {}
+                    Err(e) => log::debug!("kt: could not record observed root: {e}"),
+                }
+            }
+        }
+    }
+    if let Some(epoch) = split_epoch {
+        on_kt_alarm("split-view", epoch);
+    }
+    if let Some(i) = verdicts.iter().position(|v| v.rejected().is_some()) {
+        // A hard alarm, raised centrally so every caller reports it the same.
+        on_kt_alarm(ALARM_CONTACT_KEY, verdicts[i].epoch().unwrap_or(0));
+    }
+    verdicts
+}
+
+/// Verify one contact key before anything is sealed to it or recorded (invite
+/// redeem / register-time friend-accept). `Err` = fail closed.
+async fn require_contact_key_ok(
+    app: &tauri::AppHandle,
+    vault: &Mutex<Vault>,
+    relay: &relay_client::RelayClient,
+    handle: &str,
+    identity_pub_b64: &str,
+) -> Result<(), String> {
+    use base64::Engine as _;
+    let identity_pub = base64::engine::general_purpose::STANDARD
+        .decode(identity_pub_b64)
+        .map_err(|_| "bad contact identity key".to_string())?;
+    if identity_pub.len() != 32 {
+        return Err("bad contact identity key".into());
+    }
+    let checks = [ContactKeyCheck { handle: handle.to_string(), identity_pub }];
+    let app = app.clone();
+    let sink = move |reason: &str, epoch: i64| {
+        use tauri::Emitter as _;
+        let _ = app.emit(
+            "kt:alarm",
+            KtAuditReport { ok: false, reason: Some(reason.to_string()), epoch },
+        );
+    };
+    let verdicts = verify_contact_keys(vault, relay, &checks, &sink).await;
+    match verdicts.first().and_then(|v| v.rejected()) {
+        // The catalogued code the webview turns into a user-facing error.
+        Some(r) => Err(format!("KT_CONTACT_KEY_MISMATCH: {}", r.as_str())),
+        None => Ok(()),
+    }
+}
+
 /// Self-audit my own handle against the relay's KT log (D5, full-AKD): fetch its
-/// key-history proof, verify it, and confirm every key it mapped my handle to is
-/// one I actually minted. Also records the root (split-view detection) and, on a
+/// key-history proof, **check the root's relay signature**, verify the proof
+/// against that signed root, and confirm every key it mapped my handle to is one
+/// I actually minted. Also records the root (split-view detection) and, on a
 /// clean pass, advances my verified root. A failure emits a hard `kt:alarm`.
+///
+/// The signature check is not optional: a history proof verifies against
+/// whatever root it is handed, so a relay could otherwise answer with a
+/// self-consistent (proof, root) pair for a directory that hides a foreign key
+/// — the self-audit would pass while the relay equivocates.
 #[tauri::command]
 async fn kt_self_audit(
     app: tauri::AppHandle,
@@ -279,9 +481,34 @@ async fn kt_self_audit(
     };
 
     let hist = relay.directory_history(&handle).await?;
+    // Anchor first: the root must be one this relay actually signed, and the
+    // *relay* epoch of that signed root is what the client records — the akd
+    // epoch in the proof is the sidecar's own counter and does not line up with
+    // the signed root chain that gossip and the auditor speak in.
+    let relay_pub = relay
+        .relay_identity_pub()
+        .ok_or("no relay identity key — cannot verify the KT root signature")?;
+    let roots = relay.kt_roots(0).await?;
+    let epoch = kt::signed_root_epoch(&relay_pub, &roots, &hist.root)
+        .ok_or("KT root is not signed by this relay")?;
+    // Same reasoning as contact verification: an unpinned VRF key lets the relay
+    // choose which leaf a handle resolves to.
+    if let Some(pin) = {
+        let vault = vault.lock().unwrap();
+        vault
+            .store()
+            .ok()
+            .and_then(|s| s.get_setting(&kt_vrf_pin_key(&relay_fp)).ok().flatten())
+    } {
+        if pin != hist.vrf_public_key {
+            use tauri::Emitter as _;
+            let report = KtAuditReport { ok: false, reason: Some("self-audit-failed".into()), epoch };
+            let _ = app.emit("kt:alarm", report.clone());
+            return Ok(report);
+        }
+    }
     let keys = kt::verify_key_history(&hist.vrf_public_key, &hist.root, hist.epoch, &handle, &hist.proof_json)?;
     let verdict = kt::self_audit_verdict(&keys, std::slice::from_ref(&my_key));
-    let epoch = hist.epoch as i64;
 
     let observe = {
         let vault = vault.lock().unwrap();
@@ -298,11 +525,95 @@ async fn kt_self_audit(
         let vault = vault.lock().unwrap();
         let store = vault.store().map_err(|e| e.to_string())?;
         store.kt_set_verified(&relay_fp, epoch, &hist.root).map_err(|e| e.to_string())?;
+        // First clean audit pins the relay's VRF key (see `verify_contact_keys`).
+        let pin = kt_vrf_pin_key(&relay_fp);
+        if store.get_setting(&pin).ok().flatten().is_none() && !hist.vrf_public_key.is_empty() {
+            let _ = store.set_setting(&pin, &hist.vrf_public_key);
+        }
     } else {
         use tauri::Emitter as _;
         let _ = app.emit("kt:alarm", KtAuditReport { ok: false, reason: reason.clone(), epoch });
     }
     Ok(KtAuditReport { ok: reason.is_none(), reason, epoch })
+}
+
+/// Outcome of the contact re-verification sweep.
+#[derive(serde::Serialize, Clone, Default, Debug)]
+pub struct KtContactSweep {
+    /// Contacts newly proven against the log on this pass.
+    pub verified: usize,
+    /// Contacts still unproven (relay unreachable, handle absent from the log,
+    /// or an interim-KT relay). They stay recorded, and stay unverified.
+    pub unverified: usize,
+    /// Contacts the log actively contradicted — their verification is cleared
+    /// and a hard alarm is raised. The friendship itself is left alone; the
+    /// alarm, not a silent deletion, is what the user acts on.
+    pub rejected: usize,
+}
+
+/// Re-check every contact whose key was never proven against the log (D5).
+/// Run on relay connect: an add that happened offline, or while the relay's
+/// directory was unavailable, is recorded UNVERIFIED and settled here.
+#[tauri::command]
+async fn kt_verify_contacts(
+    app: tauri::AppHandle,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<KtContactSweep, String> {
+    let sink_app = app.clone();
+    let sink = move |reason: &str, epoch: i64| {
+        use tauri::Emitter as _;
+        let _ = sink_app.emit(
+            "kt:alarm",
+            KtAuditReport { ok: false, reason: Some(reason.to_string()), epoch },
+        );
+    };
+    verify_recorded_contacts(&vault, &relay, &sink).await
+}
+
+/// The sweep itself, free of Tauri state so the **real** one can be driven by
+/// the L2 integration tests as well as by the command above.
+pub async fn verify_recorded_contacts(
+    vault: &Mutex<Vault>,
+    relay: &relay_client::RelayClient,
+    on_kt_alarm: KtAlarmSink<'_>,
+) -> Result<KtContactSweep, String> {
+    let (_base, relay_fp) = relay.session_info().ok_or("not connected to a relay")?;
+    let pending = {
+        let vault = vault.lock().unwrap();
+        let store = vault.store().map_err(|e| e.to_string())?;
+        store.kt_unverified_contacts(&relay_fp).map_err(|e| e.to_string())?
+    };
+    if pending.is_empty() {
+        return Ok(KtContactSweep::default());
+    }
+    let checks: Vec<ContactKeyCheck> = pending
+        .iter()
+        .map(|c| ContactKeyCheck { handle: c.handle.clone(), identity_pub: c.identity_pub.clone() })
+        .collect();
+    let verdicts = verify_contact_keys(vault, relay, &checks, on_kt_alarm).await;
+
+    let mut sweep = KtContactSweep::default();
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    for (c, verdict) in pending.iter().zip(verdicts.iter()) {
+        match verdict {
+            kt::ContactTrust::Verified { epoch, .. } => {
+                store
+                    .kt_mark_contact_verified(&c.contact_id, &relay_fp, &c.identity_pub, *epoch)
+                    .map_err(|e| e.to_string())?;
+                sweep.verified += 1;
+            }
+            kt::ContactTrust::Rejected(_) => {
+                store
+                    .kt_clear_contact_verified(&c.contact_id, &relay_fp)
+                    .map_err(|e| e.to_string())?;
+                sweep.rejected += 1;
+            }
+            kt::ContactTrust::Unverified(_) => sweep.unverified += 1,
+        }
+    }
+    Ok(sweep)
 }
 
 /// Seal an E2E envelope to a recipient's sealing key (envelope v1).
@@ -427,6 +738,29 @@ async fn relay_mailbox_drain(
     app: tauri::AppHandle,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<message::DrainReport, String> {
+    mailbox_drain(&vault, &relay, &move |reason: &str, epoch: i64| {
+        use tauri::Emitter as _;
+        let _ = app.emit(
+            "kt:alarm",
+            KtAuditReport { ok: false, reason: Some(reason.to_string()), epoch },
+        );
+    })
+    .await
+}
+
+/// Where the drain reports a hard KT alarm (`reason`, `epoch`). In the app this
+/// emits `kt:alarm` to the webview; the L2 integration tests pass a recorder.
+pub type KtAlarmSink<'a> = &'a (dyn Fn(&str, i64) + Send + Sync);
+
+/// The drain itself, free of Tauri state so the **real** one can be driven by
+/// the L2 integration tests (spec/testing.md § L2) as well as by the command
+/// above. `vault`/`relay` are the same values the command holds — a
+/// `tauri::State` derefs to them.
+pub async fn mailbox_drain(
+    vault: &Mutex<Vault>,
+    relay: &relay_client::RelayClient,
+    on_kt_alarm: KtAlarmSink<'_>,
 ) -> Result<message::DrainReport, String> {
     let (base_url, relay_fp) = relay.session_info().ok_or("not connected to a relay")?;
     // Take the device key (for fetch/ack), the sealing secret (to open
@@ -558,6 +892,43 @@ async fn relay_mailbox_drain(
         }
     }
 
+    // KT (D5) — check every inbound contact key against the transparency log
+    // BEFORE anything is recorded and, critically, before any reply is sealed:
+    // a friend-accept is answered with my delivery token, so verifying after
+    // replying would hand that token to an impostor whatever the verdict said.
+    // `verify_contact_keys` never fails the drain; an unreachable relay leaves
+    // the contact unverified, to be re-checked on the next connect.
+    let friend_trust = verify_contact_keys(
+        vault,
+        relay,
+        &friends
+            .iter()
+            .map(|f| ContactKeyCheck { handle: f.handle.clone(), identity_pub: f.identity_pub.clone() })
+            .collect::<Vec<_>>(),
+        on_kt_alarm,
+    )
+    .await;
+    // Fail closed on a contradiction: the rejected sender is neither recorded
+    // nor answered. Their envelope is still acked — it is permanently
+    // unusable, and re-draining it would only replay the same rejection.
+    let mut kt_rejected = 0usize;
+    let mut friend_epochs: Vec<Option<i64>> = Vec::with_capacity(friends.len());
+    let friends: Vec<message::FriendAcceptData> = friends
+        .into_iter()
+        .zip(friend_trust.iter())
+        .filter_map(|(f, trust)| match trust.rejected() {
+            Some(r) => {
+                log::error!("kt: refusing friend {} — {}", f.handle, r.as_str());
+                kt_rejected += 1;
+                None
+            }
+            None => {
+                friend_epochs.push(trust.epoch());
+                Some(f)
+            }
+        })
+        .collect();
+
     // Persist first; only ack once durably stored (hold-until-ack). Friends
     // (D4b): record the verified sender's addressing so we can reach them, and
     // read my own handle (persisted at invite creation) for reciprocation.
@@ -571,20 +942,20 @@ async fn relay_mailbox_drain(
         store
             .upsert_relay(&relay_fp, &base_url, &relay_fp, &my_identity_pub)
             .map_err(|e| e.to_string())?;
-        if !friends.is_empty() {
-            for f in &friends {
-                store
-                    .record_friend(&store::FriendRecord {
-                        contact_id: f.contact_id.clone(),
-                        display_name: f.display_name.clone(),
-                        relay_id: relay_fp.clone(),
-                        handle: f.handle.clone(),
-                        identity_pub: f.identity_pub.clone(),
-                        sealing_pub: f.sealing_pub.clone(),
-                        delivery_token: f.delivery_token.clone(),
-                    })
-                    .map_err(|e| e.to_string())?;
-            }
+        for (f, kt_epoch) in friends.iter().zip(friend_epochs.iter()) {
+            store
+                .record_friend(&store::FriendRecord {
+                    contact_id: f.contact_id.clone(),
+                    display_name: f.display_name.clone(),
+                    relay_id: relay_fp.clone(),
+                    handle: f.handle.clone(),
+                    identity_pub: f.identity_pub.clone(),
+                    sealing_pub: f.sealing_pub.clone(),
+                    delivery_token: f.delivery_token.clone(),
+                    // Some(epoch) only when the log proved this exact key.
+                    kt_verified_epoch: *kt_epoch,
+                })
+                .map_err(|e| e.to_string())?;
         }
         // Messages FK to a conversation row — ensure each exists first (v8 DMs).
         for m in &imports {
@@ -658,11 +1029,7 @@ async fn relay_mailbox_drain(
                 }
             }
             if let Some(epoch) = split_epoch {
-                use tauri::Emitter as _;
-                let _ = app.emit(
-                    "kt:alarm",
-                    KtAuditReport { ok: false, reason: Some("split-view".into()), epoch },
-                );
+                on_kt_alarm("split-view", epoch);
             }
         }
     }
@@ -671,6 +1038,10 @@ async fn relay_mailbox_drain(
     // with my addressing back to the new friend's sealing key and send it via
     // their now-known delivery token, so they record me too → mutual (D4b).
     // Best-effort; a dropped confirm is retried by the invitee re-drawing later.
+    //
+    // `friends` here is the KT-admitted list: a sender the log contradicted was
+    // dropped above, so this reply — which carries MY delivery token — is never
+    // sealed to a key the transparency log refused to vouch for.
     if let Some(handle) = my_handle {
         use base64::Engine as _;
         let my_sealing_b64 = base64::engine::general_purpose::STANDARD.encode(ident.sealing_public());
@@ -701,7 +1072,14 @@ async fn relay_mailbox_drain(
     } else {
         relay.mailbox_ack(&signing, ack_ids).await? as usize
     };
-    Ok(message::DrainReport { ingested, acked, buffered, friends: friend_count, calls: call_rings })
+    Ok(message::DrainReport {
+        ingested,
+        acked,
+        buffered,
+        friends: friend_count,
+        calls: call_rings,
+        kt_rejected,
+    })
 }
 
 /// Mint a friend invite (D4b): the client hashes its own random token and this
@@ -722,12 +1100,23 @@ async fn relay_invite_mint(
 
 /// Redeem a friend invite (D4b): drop the pre-sealed friend-accept envelope
 /// into the inviter's mailbox. Capability only — no device key involved.
+///
+/// KT (D5): the invite's TOFU pin (`handle` + `identity_pub`) is checked against
+/// the transparency log first. The accept seals my delivery token to the
+/// inviter, so the check has to gate the *send*: if the log publishes a
+/// different key for that handle, the invite is not from who it claims and the
+/// redeem fails closed.
 #[tauri::command]
 async fn relay_invite_redeem(
     token: String,
     envelope: Vec<u8>,
+    handle: String,
+    identity_pub: String,
+    app: tauri::AppHandle,
+    vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<i64, String> {
+    require_contact_key_ok(&app, &vault, &relay, &handle, &identity_pub).await?;
     relay.invite_redeem(&token, envelope).await
 }
 
@@ -1343,6 +1732,18 @@ async fn relay_send_message(
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<String, String> {
+    send_dm(&vault, &relay, &contact_id, &content, attachments_json).await
+}
+
+/// The DM send itself, free of Tauri state so the **real** send path can be
+/// driven by the L2 integration tests as well as by the command above.
+pub async fn send_dm(
+    vault: &Mutex<Vault>,
+    relay: &relay_client::RelayClient,
+    contact_id: &str,
+    content: &str,
+    attachments_json: Option<String>,
+) -> Result<String, String> {
     use base64::Engine as _;
     let status = relay.status();
     let relay_fp = status.relay_fp.ok_or("not connected to a relay")?;
@@ -1355,7 +1756,7 @@ async fn relay_send_message(
         let ident = identity::derive_relay_identity(mk, &relay_fp).map_err(|e| e.to_string())?;
         let store = vault.store().map_err(|e| e.to_string())?;
         let addressing = store
-            .friend_addressing(&contact_id, &relay_fp)
+            .friend_addressing(contact_id, &relay_fp)
             .map_err(|e| e.to_string())?
             .ok_or("not a friend on this relay")?;
         let conversation_id =
@@ -1379,7 +1780,7 @@ async fn relay_send_message(
         msg_id.clone(),
         conversation_id,
         None,
-        content,
+        content.to_string(),
         sent_at,
         attachments_json,
     );
@@ -1767,43 +2168,6 @@ fn conversation_reactions(
         .map_err(|e| e.to_string())
 }
 
-/// Register the wrapped-MK escrow with the connected relay (D15).
-#[tauri::command]
-async fn relay_escrow_upload(
-    vault: VaultState<'_>,
-    relay: tauri::State<'_, relay_client::RelayClient>,
-) -> Result<(), String> {
-    let (signing, bundle) = {
-        let vault = vault.lock().unwrap();
-        let signing = vault.device_signing_key().map_err(|e| e.to_string())?;
-        let bundle = vault.escrow_bundle().map_err(|e| e.to_string())?;
-        (signing, bundle)
-    };
-    relay.escrow_upload(&signing, bundle).await
-}
-
-/// Cold-start restore on a fresh device (D15/D3a): fetch public KDF params by
-/// handle, derive the escrow fetch auth key from the password, fetch the
-/// escrow, then rebuild the vault. No session/device key needed — this runs
-/// before any local vault exists.
-#[tauri::command]
-async fn vault_restore_from_escrow(
-    url: String,
-    handle: String,
-    password: String,
-    vault: VaultState<'_>,
-) -> Result<(), String> {
-    let (salt, m, t, p) = relay_client::RelayClient::escrow_kdf(&url, &handle).await?;
-    let auth_key_b64 = Vault::derive_escrow_auth_key_b64(&password, &salt, m, t, p)
-        .map_err(|e| e.to_string())?;
-    let payload =
-        relay_client::RelayClient::escrow_fetch(&url, &handle, "password", &auth_key_b64).await?;
-    let mut vault = vault.lock().unwrap();
-    vault
-        .restore_from_escrow(&payload, &password)
-        .map_err(|e| e.to_string())
-}
-
 #[tauri::command]
 fn relay_status(
     relay: tauri::State<'_, relay_client::RelayClient>,
@@ -1989,6 +2353,150 @@ fn attachment_evict(id: String, vault: VaultState) -> Result<(), String> {
     store.set_attachment_state(&id, "evicted").map_err(|e| e.to_string())
 }
 
+// ---- emoji (relay-proxied 7TV search + the on-device used-emoji cache) ----
+//
+// Both legs go through the core so the **device token never crosses IPC**, the
+// same reason the SFU control calls are proxied here. Search results are
+// *browsing*: the picker renders them straight from the relay's capability URL
+// and nothing is cached. Only emotes actually **encountered in content** get
+// their bytes persisted, via `emote_get`/`emote_cache_put`.
+
+/// An emote's bytes plus what the renderer needs to lay it out.
+#[derive(serde::Serialize)]
+struct EmoteImage {
+    id: String,
+    name: String,
+    mime: Option<String>,
+    width: Option<i64>,
+    height: Option<i64>,
+    animated: bool,
+    bytes: Vec<u8>,
+    /// True when this call had to go to the relay (the caller's per-message
+    /// fetch cap counts these).
+    fetched: bool,
+}
+
+/// Proxied 7TV search — device-token authed inside the core. An empty query
+/// returns the relay's top emotes, which is the picker's default set.
+#[tauri::command]
+async fn emote_search(
+    query: String,
+    page: Option<u32>,
+    limit: Option<u32>,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<relay_client::EmoteSearchResponse, String> {
+    if query.chars().count() > 100 {
+        return Err("emote query too long".into());
+    }
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    let page = page.unwrap_or(1).clamp(1, 1000);
+    let limit = limit.unwrap_or(60).clamp(1, 100);
+    relay.emote_search(&signing, &query, page, limit).await
+}
+
+/// Persist an emote's image bytes the caller already holds. Used when the
+/// composer inserts an emote it just rendered, so the sender's own copy is
+/// cached without a second fetch.
+#[tauri::command]
+fn emote_cache_put(
+    meta: store::EmoteMeta,
+    bytes: Vec<u8>,
+    vault: VaultState,
+) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    emoji::cache_emote(store, vault.emote_blobs(), &meta, &bytes, now_ms())
+}
+
+/// The bytes for a known emote: cache first, relay on a miss.
+///
+/// A hit needs no network and works offline; a miss fetches through the relay's
+/// image proxy (so 7TV never sees this device) and caches the result on the way
+/// through, evicting least-recently-used entries to stay inside the byte budget.
+/// Reading touches the LRU stamp, so the emotes that actually render are the
+/// ones that survive.
+#[tauri::command]
+async fn emote_get(
+    id: String,
+    name: String,
+    vault: VaultState<'_>,
+    relay: tauri::State<'_, relay_client::RelayClient>,
+) -> Result<EmoteImage, String> {
+    if !emoji::valid_emote_id(&id) {
+        return Err("invalid emote id".into());
+    }
+    if !emoji::valid_emote_name(&name) {
+        return Err("invalid emote name".into());
+    }
+
+    // Cache hit: no relay, no token, no network.
+    {
+        let guard = vault.lock().unwrap();
+        let store = guard.store().map_err(|e| e.to_string())?;
+        if let Some(bytes) = emoji::cached_image(store, guard.emote_blobs(), &id, now_ms()) {
+            let row = store.emote_row(&id).map_err(|e| e.to_string())?;
+            return Ok(EmoteImage {
+                name: row.as_ref().map(|r| r.name.clone()).unwrap_or(name),
+                mime: row.as_ref().and_then(|r| r.mime.clone()),
+                width: row.as_ref().and_then(|r| r.width),
+                height: row.as_ref().and_then(|r| r.height),
+                animated: row.as_ref().is_some_and(|r| r.animated),
+                id,
+                bytes,
+                fetched: false,
+            });
+        }
+    }
+
+    let signing = {
+        let vault = vault.lock().unwrap();
+        vault.device_signing_key().map_err(|e| e.to_string())?
+    };
+    let (bytes, mime) = relay.emote_image(&signing, &id).await?;
+
+    // Caching is best-effort: the image is already in hand, so failing the
+    // render over a cache write would be strictly worse than re-fetching later.
+    let meta = store::EmoteMeta {
+        id: id.clone(),
+        name: name.clone(),
+        mime: Some(mime.clone()),
+        width: None,
+        height: None,
+        animated: false,
+    };
+    {
+        let guard = vault.lock().unwrap();
+        if let Ok(store) = guard.store() {
+            if let Err(e) = emoji::cache_emote(store, guard.emote_blobs(), &meta, &bytes, now_ms()) {
+                log::warn!("emote {id}: not cached: {e}");
+            }
+        }
+    }
+    Ok(EmoteImage {
+        id,
+        name,
+        mime: Some(mime),
+        width: None,
+        height: None,
+        animated: false,
+        bytes,
+        fetched: true,
+    })
+}
+
+/// Every emote this device can render with no relay at all, most recently used
+/// first — what the picker falls back to offline.
+#[tauri::command]
+fn emote_cached_list(vault: VaultState) -> Result<Vec<store::CachedEmote>, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault.store().map_err(|e| e.to_string())?;
+    store.list_cached_emotes().map_err(|e| e.to_string())
+}
+
 // ---- legacy import (vestigial; slated for the post-launch cleanup in
 // spec/roadmap.md — the v8 launch is greenfield, with no migration) ----
 // The webview decrypts with the existing v1 crypto and streams plaintext
@@ -2026,7 +2534,6 @@ pub fn run() {
             vault_unlock_keychain,
             vault_unlock,
             vault_unlock_recovery,
-            vault_restore_from_escrow,
             vault_lock,
             settings_get,
             settings_set,
@@ -2035,7 +2542,6 @@ pub fn run() {
             relay_register,
             relay_register_friend_accept,
             relay_status,
-            relay_escrow_upload,
             relay_invite_mint,
             relay_invite_redeem,
             relay_my_directory_keys,
@@ -2079,6 +2585,7 @@ pub fn run() {
             sfu_consume,
             sfu_leave,
             kt_self_audit,
+            kt_verify_contacts,
             kt_gossip_send,
             conversation_reactions,
             messages_page,
@@ -2095,7 +2602,11 @@ pub fn run() {
             attachment_put,
             attachment_get,
             attachment_has,
-            attachment_evict
+            attachment_evict,
+            emote_search,
+            emote_get,
+            emote_cache_put,
+            emote_cached_list
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

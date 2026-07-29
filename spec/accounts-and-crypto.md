@@ -54,7 +54,7 @@ no rotation; the **preview key** for rich push previews; the **backup export
 key**. All three are in [roadmap.md](roadmap.md).
 
 Files: `keys.rs` (wrap/unwrap, domain constants, recovery-code format),
-`vault.rs` (the three unlock paths, escrow, delivery token), `identity.rs`
+`vault.rs` (the three unlock paths, delivery token), `identity.rs`
 (per-relay identities), `envelope.rs` (the sealed envelope), `attachment.rs`
 (per-file keys).
 
@@ -68,9 +68,10 @@ The reason is multi-device reach: every device of an account must present the
 *same* delivery token, or a friend who reaches one device silently fails to
 reach another. There is no device-to-device key sync yet (D8 pairing is
 unbuilt), so a random per-device value would diverge. Derivation makes the token
-identical on every device — including one rebuilt from escrow, which starts with
-an empty store — with no distribution step at all. A regression test in
-`vault.rs` pins exactly that.
+identical on every device — including one that arrives with an empty store —
+with no distribution step at all. A regression test in `vault.rs` pins exactly
+that: the token is `KDF(KDF(MK, profile), delivery)`, a pure function of MK, so
+any device holding MK computes the same value without being told it.
 
 The cost is that rotation is no longer free: rotating means writing a new random
 value into `profile.key` *and* getting it to the account's other devices, which
@@ -98,9 +99,13 @@ network call can fail.
 An account with no relay yet is a real state: the vault unlocks and the gate
 routes to onboarding rather than the app (`nativeVault.ts`).
 
-**A second device** can only be added by escrow restore today, which brings
-identity and no history. Pairing is unbuilt —
-[roadmap.md](roadmap.md#device-pairing--history-transfer-d8).
+**A second device cannot be added at all today.** Relay-held escrow — the one
+cold-start path — was removed
+([roadmap.md](roadmap.md#escrow--removed)), and pairing, which replaces it, is
+unbuilt ([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)). An
+account therefore lives only on the device that created it, and losing that
+device loses the identity
+([security.md](security.md#total-device-loss-is-unrecoverable-by-design)).
 
 ## Unlocking: the vault (`vault.rs`)
 
@@ -110,10 +115,14 @@ SQLCipher database is open and MK is in the core's memory. `lock()` drops both;
 MK is `Zeroizing`, so it is wiped rather than left in a freed allocation.
 
 **At rest**, MK exists only as three wrapped copies in `vault.meta.json`, a
-plaintext sidecar next to the database. Every field in it is a public parameter
-(the Argon2id salt and cost), MK encrypted under a secret the file does not
-contain, or a hash of an escrow auth key — so the sidecar holds no secret of its
-own.
+plaintext sidecar next to the database. Every field in it is either a public
+parameter (the Argon2id salt and cost) or MK encrypted under a secret the file
+does not contain — so the sidecar holds no secret of its own. A test pins the
+exact field set, because anything added there is published to whoever can read
+the disk. Sidecars written before escrow was removed carry an extra `escrow`
+object of auth-key hashes; the field is simply ignored on load (a test covers
+that those vaults still open on all three paths), and it is dropped the next
+time the file is rewritten.
 
 Wrapping is uniform: `HKDF-SHA256(ikm = secret, info = domain)` → AES-256-GCM
 with a fresh 12-byte nonce. The three domains are
@@ -147,12 +156,16 @@ two accounts on one machine share no key material (`accounts.rs`; see
 `nativeVault.ts` owns the timer and, on lock, also stops the mailbox drain
 (without MK there is nothing to open envelopes with).
 
-**No password reset.** Lose the password, the recovery code, and every device
-and the account is gone — nobody, including a relay operator, can decrypt it.
-The recover screen says this in plain words rather than offering a dead end.
+**No password reset, and no remote login.** Both the password and the recovery
+code are *local* keys: they unwrap MK from this device's sidecar. Neither is a
+credential any server can check, so neither opens an account on a device that
+does not already hold it. Lose every device and the account is gone — nobody,
+including a relay operator, can decrypt it
+([security.md](security.md#total-device-loss-is-unrecoverable-by-design)). The
+recover screen says exactly this rather than offering a dead end.
 
-There is **no "change password" flow** yet: changing it means re-wrapping MK and
-re-uploading the escrow blob. Unbuilt — [roadmap.md](roadmap.md).
+There is **no "change password" flow** yet: changing it means re-wrapping MK
+under the new Argon2id secret. Unbuilt — [roadmap.md](roadmap.md).
 
 ## Domain-separated derivation
 
@@ -164,8 +177,6 @@ can be substituted for another (`keys.rs`, `identity.rs`, `envelope.rs`):
 | `accord/mk-wrap/vault-key/v1` | MK under the keychain vault key |
 | `accord/mk-wrap/password/v1` | MK under Argon2id(password) |
 | `accord/mk-wrap/recovery/v1` | MK under the recovery code |
-| `accord/auth/password/v1` | escrow **fetch** key from the password |
-| `accord/auth/recovery/v1` | escrow **fetch** key from the recovery code |
 | `accord/profile-key/v1` | the account profile key, from MK |
 | `accord/delivery/v1` | delivery token, from the profile key |
 | `accord/group-token/v1` | group delivery token, from the group key |
@@ -174,9 +185,11 @@ can be substituted for another (`keys.rs`, `identity.rs`, `envelope.rs`):
 | `accord/envelope/v1` | envelope content key from the ephemeral ECDH |
 | `accord/envelope-sig/v1` | signature domain inside the envelope |
 
-The auth/wrap split matters: the secret a client presents to *fetch* its escrow
-is derived under a different domain than the key that *unwraps* it, so the relay
-learns nothing that could open the blob it hands back.
+The auth/wrap split matters: a secret handed out as a *capability* — a delivery
+or group token the relay checks — is derived under an auth domain, never a wrap
+domain, so possessing one can never unwrap anything.
+(`accord/auth/{password,recovery}/v1` were the escrow fetch keys and are gone
+with it.)
 
 ## The sealed envelope (`envelope.rs`)
 
@@ -199,8 +212,9 @@ Each relay sees a **distinct identity keypair derived from the one master seed**
 and that relay's pinned fingerprint, so independent relays **cannot collude to
 correlate** the same user — chosen over presenting one shared key everywhere.
 Handles are minted per relay anyway, so "same handle everywhere" was never on
-offer. Derivation is deterministic, which is what lets a device restored from
-escrow re-appear as the *same* user with nothing but MK.
+offer. Derivation is deterministic, which is what lets any device holding MK
+re-appear as the *same* user with nothing else — the property pairing will rely
+on ([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)).
 
 To authenticate, the device signs the relay's challenge: the relay issues a
 random nonce, the device signs `nonce ‖ relay-fingerprint` with its **device
@@ -239,64 +253,33 @@ are modest. Groups use the analogous group token derived from the shared group
 key: every member derives the same pair, and any current member may register the
 verifier (a non-member gets a 403).
 
-## Account escrow & cold start
+## There is no cold start
 
-A password or a recovery code alone would have **nothing to decrypt** on a fresh
-device talking to a stateless relay — MK is random and every identity derives
-from it. So the relay stores the **password-wrapped and recovery-wrapped MK**
-(a few hundred bytes) plus the public Argon2id parameters.
+A password or a recovery code alone has **nothing to decrypt** on a fresh device
+— MK is random and every identity derives from it — so a brand-new device cannot
+reach an existing account by any means the app offers. This is the current
+state, and it is deliberate.
 
-This is a deliberate carve-out from zero-at-rest: zero at rest means zero
-**content** at rest. The relay already persists the directory, the KT log,
-delivery verifiers and push tokens; key blobs encrypted under secrets only the
-user holds are not the honeypot the posture exists to avoid.
+Escrow used to fill the gap: the relay stored the password-wrapped and
+recovery-wrapped MK plus public Argon2id parameters, and a fresh device fetched
+it by handle. **It was removed on 2026-07-27** — the reasoning, and the removal
+inventory, are in [roadmap.md](roadmap.md#escrow--removed). In short: a
+permanently stored blob wrapped under one human-chosen password is an offline
+brute-force target and a standing at-rest liability on a relay whose whole
+posture is zero-at-rest, and it only ever bought what pairing buys better
+whenever any device survives. The relay now stores no key material of any kind.
 
-The flow, as built:
+What follows from that, and must not be softened anywhere in the UI:
 
-1. `PUT /api/relay/escrow` (device-token authed) uploads
-   `{payload, kdfParams, passwordAuthHash, recoveryAuthHash}`. The payload is
-   opaque to the relay and never contains the **vault-key** wrap — that one
-   never leaves the device (asserted in a test).
-2. `POST /api/relay/escrow/kdf {handle}` returns the public KDF params — the
-   pre-auth step that breaks the chicken-and-egg (the fetch key needs the salt,
-   which lives in the escrow). Unknown handles get a **deterministic
-   pseudo-salt** (HMAC over the relay identity), so probing cannot distinguish a
-   registered handle from an unregistered one. Rate-limited 10/min.
-3. `POST /api/relay/escrow/fetch {handle, authKind, authKey}` compares
-   `sha256(authKey)` against the stored hash and returns the payload. Uniform
-   401 for every failure, constant-time compare, rate-limited 5/min — these
-   blobs are offline brute-force targets.
-4. `Vault::restore_from_escrow` unwraps MK with the password, then re-wraps it
-   under a **fresh local key set** (new vault key + new SQLCipher key in this
-   device's keychain) and carries the original recovery wrap forward, so the
-   user's existing recovery code still opens the new device.
-
-Escrow restores **identity, not history**: the new vault is empty. History
-arrives by device pairing or a backup import, both unbuilt
-([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)).
-
-**Why the escrow is safe.** Argon2id runs client-side and the password never
-leaves the device; the relay stores only a hash of a *differently domained* auth
-key, useless for unwrapping. The classic caveat was served code — a malicious
-server shipping JS that exfiltrates the password — and a signed native app with
-no web login closes exactly that hole. Residual risk: a malicious relay can
-mount an **offline brute-force against the password-wrapped blob**, bounded by
-Argon2id and the 16-character minimum. The recovery-wrapped blob (160 random
-bits) is out of reach.
-
-**Gaps, stated plainly.**
-
-- Nothing calls `relayEscrowUpload()` — the core command and the relay route
-  both exist and are tested, but no UI or onboarding path invokes it. Until it
-  is wired, a fresh install's "Log in" screen cannot actually restore an
-  account, because the relay has no blob to serve.
-- The client only ever fetches with `authKind: 'password'`; the relay supports
-  `'recovery'`, but there is no recovery-code cold-start path in the app.
-- After `restore_from_escrow`, the local metadata's `recovery_auth_hash` is
-  empty (the code isn't available to re-derive it). If that device later
-  re-uploads its escrow it overwrites the relay's stored hash with an empty
-  string. This fails **closed** — the fetch route rejects an empty stored hash —
-  but it silently disables recovery-code cold start for the account.
+- **The gate offers no "Log in".** A first run can only sign up. `NativeGate.vue`
+  states plainly that an existing account cannot be pulled onto a new device
+  yet; tests assert both the absent affordance and the wording.
+- **Losing every device loses the identity, permanently** — an accepted design
+  constraint, not a gap
+  ([security.md](security.md#total-device-loss-is-unrecoverable-by-design)).
+- **Pairing is therefore launch-blocking**
+  ([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)), together with
+  the offline encrypted backup export for the no-surviving-device case.
 
 ## Revocation
 
@@ -317,8 +300,8 @@ revocation covers.
 **What is actually built:** the relay half of tier 1. An operator revokes a
 device with the relay CLI (`revoke-device <id>`), and every device-token-authed
 route re-checks the `revoked` flag on each request — so a revoked device loses
-mailbox fetch, blob access and escrow upload **immediately**, not merely when
-its 15-minute token expires. Its mailbox queue also stops receiving fan-out
+mailbox fetch and blob access **immediately**, not merely when its 15-minute
+token expires. Its mailbox queue also stops receiving fan-out
 (`activeRelayDeviceIds` filters revoked devices).
 
 **What is not built:** all of the rotation. `friend_remove` only drops the local
@@ -342,8 +325,7 @@ MK-decryption factor, and the recovery code stays break-glass.
 Re-scoping passkeys to what they *are* good at — phishing-resistant bootstrap
 authentication to a relay, and an opportunistic (never load-bearing) PRF wrap
 where PRF genuinely works — is future work, in
-[roadmap.md](roadmap.md). The escrow fetch route accepts only the
-password/recovery auth key; there is no assertion path.
+[roadmap.md](roadmap.md). No relay route accepts a WebAuthn assertion.
 
 ## What the relay stores about an account
 
@@ -359,5 +341,6 @@ Identity-adjacent state only; the full inventory is in
   ([key-transparency.md](key-transparency.md)).
 - the **delivery verifier** — `sha256(delivery token)`, and nothing about who
   holds it.
-- the **escrow row** — the opaque wrapped-MK payload, public KDF params, and the
-  two auth-key hashes.
+
+**No key material.** Since escrow was removed the relay holds nothing —
+wrapped or otherwise — that could reconstruct an account.

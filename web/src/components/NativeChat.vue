@@ -14,6 +14,8 @@ import IconUsers from '~icons/mynaui/users';
 import IconPaperclip from '~icons/mynaui/paperclip';
 import IconPhone from '~icons/mynaui/telephone-call-solid';
 import NativeAttachment from './NativeAttachment.vue';
+import EmojiPicker from './EmojiPicker.vue';
+import EmojiText from './EmojiText.vue';
 import { callHost } from '../lib/callHost';
 import { listDms, openDm, sendDm, type DmSummary } from '../lib/nativeDm';
 import {
@@ -152,6 +154,14 @@ async function send(): Promise<void> {
   } finally {
     busy.value = false;
   }
+}
+
+/** Insert a picked emoji into the draft (a `:shortcode:` for an emote, the
+ *  glyph for unicode). It only becomes a *cached* emote once the sent message
+ *  renders — see EmojiText. */
+function insertEmoji(text: string): void {
+  const sep = draft.value && !/\s$/.test(draft.value) ? ' ' : '';
+  draft.value = `${draft.value}${sep}${text} `;
 }
 
 async function toggleReaction(msgKey: string, emoji: string): Promise<void> {
@@ -430,7 +440,10 @@ watch(() => [route?.query?.open, route?.query?.add], () => void openFromRoute())
                 </template>
               </span>
               <span v-if="m.text === null" class="max-w-[75%] rounded-2xl bg-neutral-500/10 px-3 py-1.5 text-sm italic opacity-60">Message deleted</span>
-              <span v-else class="max-w-[75%] break-words rounded-2xl px-3 py-1.5 text-sm" :class="m.senderId === 'self' ? 'bg-blue-600 text-white' : 'bg-neutral-500/15'">{{ m.text }}<span v-if="m.editedAt" class="ml-1 text-[10px] opacity-60">(edited)</span></span>
+              <!-- Message text goes through the shared emoji renderer, scoped
+                   to this message id: that scope is what bounds how many
+                   distinct emotes one message may pull from the relay. -->
+              <span v-else class="max-w-[75%] break-words rounded-2xl px-3 py-1.5 text-sm" :class="m.senderId === 'self' ? 'bg-blue-600 text-white' : 'bg-neutral-500/15'"><EmojiText :text="m.text ?? ''" :scope="m.key ?? false" /><span v-if="m.editedAt" class="ml-1 text-[10px] opacity-60">(edited)</span></span>
             </template>
           </div>
           <div
@@ -463,6 +476,7 @@ watch(() => [route?.query?.open, route?.query?.add], () => void openFromRoute())
           <input type="file" multiple data-testid="file-input" class="hidden" @change="onFilePick" />
         </label>
         <input v-model="draft" data-testid="draft" placeholder="Message" class="flex-1 rounded-full border border-neutral-500/30 bg-transparent px-4 py-2 text-sm" />
+        <EmojiPicker @pick="insertEmoji" />
         <button type="submit" data-testid="send" :disabled="busy || (!draft.trim() && !pendingFiles.length)" class="rounded-full bg-blue-600 p-2 text-white disabled:opacity-50">
           <IconSend class="h-5 w-5" />
         </button>

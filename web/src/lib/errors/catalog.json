@@ -11,5 +11,29 @@
       "On macOS, install pending system updates — the webview ships with the OS.",
       "If it still fails, use another device for the call and report it, including your OS version."
     ]
+  },
+  "EMOTE_SEARCH_UNAVAILABLE": {
+    "readableName": "Emoji search isn't available right now",
+    "description": "The emoji picker could not load any emotes: the search request to your relay failed, and this device has no saved emotes to fall back on.",
+    "cause": "Emote search runs through your relay on purpose — Accord never contacts the emote provider directly, because that would show your IP address and which emotes you browse to a third party. So when the relay is unreachable, misconfigured, or has emote search switched off, the picker has nothing to search. It normally falls back to the emotes already saved on this device, but that set is empty until you have sent or received some.",
+    "stepsToFix": [
+      "Check that you are online and that your relay is reachable, then reopen the picker.",
+      "If other parts of Accord are also failing to reach the relay, sign out and back in to re-connect.",
+      "If you self-host the relay, confirm its emote proxy is configured (see the relay's content-proxy settings) and that it can reach the internet.",
+      "Unicode emoji are unaffected — switch to the Emoji tab, which needs no network at all.",
+      "Emotes you have already been sent keep working offline, so this clears up on its own once the relay is back."
+    ]
+  },
+  "KT_CONTACT_KEY_MISMATCH": {
+    "readableName": "This contact's key doesn't match the public key log",
+    "description": "Accord stopped adding this contact: the encryption key in the invite (or in the friend request) is not the key the relay's public key-transparency log publishes for that handle. Nothing was saved, and nothing was sent back to whoever sent it.",
+    "cause": "Every account's identity key is published in an append-only, publicly auditable log, so that a relay cannot quietly hand you its own key in place of your friend's and read everything between you. Before trusting a new contact, Accord asks the log which key belongs to that handle and checks the answer against a log root the relay has signed. A disagreement means the key you were given is not the one the log published — either the invite did not come from the person it names, or the relay is tampering with keys. Continuing would set up an encrypted conversation with whoever holds that key instead, so Accord refuses.",
+    "stepsToFix": [
+      "Do not retry with the same invite — ask the person for a fresh one over a channel you trust (in person, or a call where you recognise their voice).",
+      "Check the handle you were given is exactly right, including the number after the #.",
+      "Compare their handle and key with them directly before adding them again.",
+      "If a fresh invite from the same person fails the same way, treat the relay as untrusted: stop sending anything sensitive through it and tell the other people on it.",
+      "Report it to the relay's operator (and, if it is not your relay, consider moving) — a key that disagrees with the log is exactly what this log exists to catch."
+    ]
   }
 }

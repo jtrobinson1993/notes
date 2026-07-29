@@ -505,6 +505,11 @@ pub struct DrainReport {
     /// Incoming voice call rings from verified call-offer envelopes (v8 voice).
     #[serde(default)]
     pub calls: Vec<CallRing>,
+    /// Friend handshakes refused because the transparency log does not publish
+    /// that key for that handle (D5 — key-transparency.md § Contact
+    /// verification). Nothing was recorded and nothing was sealed back.
+    #[serde(default)]
+    pub kt_rejected: usize,
 }
 
 #[cfg(test)]

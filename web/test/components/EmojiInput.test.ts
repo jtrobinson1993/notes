@@ -27,10 +27,14 @@ vi.mock('../../src/lib/native', () => ({
 }));
 
 import EmojiInput from '../../src/components/EmojiInput.vue';
+import { clearEmotes, registerEmote } from '../../src/lib/emoji';
 import { resetEmojiUsage } from '../../src/lib/emoji/usage';
 
 beforeEach(() => resetEmojiUsage());
-afterEach(() => resetEmojiUsage());
+afterEach(() => {
+  resetEmojiUsage();
+  clearEmotes();
+});
 
 /** Type `text` and put the caret at its end, then fire the keyup the component
  *  listens on. The unicode set loads lazily on the first trigger, so the popup
@@ -63,6 +67,18 @@ describe('EmojiInput — : autocomplete', () => {
     const w = mount(EmojiInput);
     await type(w, ':p');
     expect(w.find('ul').exists()).toBe(false);
+  });
+
+  it('offers emotes already registered this session, and never searches while typing', async () => {
+    // Typing must not trigger a relay search per keystroke — that would hand
+    // the relay a keylogger's worth of prefixes. Only the registered set.
+    registerEmote('partyblob', 'blob:mock/party', '01F6MEP1ZG000CSNPPXHJPRW1J');
+    const w = mount(EmojiInput);
+    await type(w, ':party');
+
+    expect(w.text()).toContain(':partyblob:');
+    await w.find('ul button').trigger('mousedown');
+    expect(w.emitted('update:modelValue')!.at(-1)).toEqual([':partyblob:']);
   });
 
   it('suppresses autocomplete when readonly', async () => {

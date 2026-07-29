@@ -51,10 +51,15 @@ export async function loadHistoryLocal(
     cursors.get(channelId),
     limit,
   );
+  // `messages_page` is a BACKWARDS pager: it returns newest-first so the cursor
+  // can walk into history. The cursor therefore comes off the end of that array
+  // (the oldest row on this page)...
   const oldest = rows.at(-1);
   if (oldest) cursors.set(channelId, { ts: oldest.relay_ts, id: oldest.id });
   if (rows.length < limit) exhausted.add(channelId);
-  return rows.map(rowToView);
+  // ...but a thread reads top-to-bottom, oldest first. Returning the pager's
+  // order unchanged put the newest message at the top of the conversation.
+  return rows.map(rowToView).reverse();
 }
 
 /** Drop the paging cursors — on lock, or when switching account. */

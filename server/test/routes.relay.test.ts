@@ -146,6 +146,25 @@ describe('challenge \u2192 token', () => {
   });
 });
 
+describe('removed surface: relay-held escrow', () => {
+  // Escrow put a permanently stored, password-wrapped MK on a zero-at-rest
+  // relay — an offline brute-force target — and was removed (roadmap.md
+  // § "Escrow — removed"). These routes must stay gone: a relay that still
+  // answers them is storing key material it has no business holding.
+  it('no longer exposes any escrow endpoint', async () => {
+    ctx = await makeRelayApp();
+    const gone = [
+      { method: 'PUT' as const, url: '/api/relay/escrow' },
+      { method: 'POST' as const, url: '/api/relay/escrow/kdf' },
+      { method: 'POST' as const, url: '/api/relay/escrow/fetch' },
+    ];
+    for (const route of gone) {
+      const res = await ctx.app.inject({ ...route, payload: {} });
+      expect(res.statusCode).toBe(404);
+    }
+  });
+});
+
 describe('device tokens', () => {
   it('round-trips and expires', () => {
     const { token } = issueDeviceToken('dev1');

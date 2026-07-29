@@ -63,8 +63,8 @@ const MAILBOX_TTL_MS = 30 * 24 * 60 * 60_000; // D6: undelivered ~30 days
 const MAILBOX_FETCH_LIMIT = 200;
 const MAX_ENVELOPE_B64 = 256 * 1024; // messages only; blobs get their own store
 
-/** Constant-time comparison of two base64url digests (delivery/group verifiers
- *  and escrow auth-key hashes). These are SHA-256 digests of high-entropy
+/** Constant-time comparison of two base64url digests (delivery/group
+ *  verifiers). These are SHA-256 digests of high-entropy
  *  secrets behind tight rate limits, so a timing oracle was never realistically
  *  exploitable — but comparing secrets in constant time is free, so we do. */
 function digestsEqual(a: string, b: string): boolean {
@@ -917,80 +917,6 @@ export function relayRoutes(
     db.pruneRelayMailbox(MAILBOX_TTL_MS);
     return { relayTs };
   });
-
-  // ---- account escrow (D15) ----
-
-  // Upload/refresh the wrapped-MK escrow bundle. The payload is opaque to
-  // the relay: MK wrapped under user-held secrets, plus public KDF params.
-  app.put('/api/relay/escrow', async (request, reply) => {
-    const device = requireDevice(request, reply);
-    if (!device) return;
-    const b = request.body as
-      | { payload?: string; kdfParams?: unknown; passwordAuthHash?: string; recoveryAuthHash?: string }
-      | null;
-    if (!b?.payload || b.payload.length > 8192) {
-      return reply.code(400).send({ error: 'payload required (max 8KB)' });
-    }
-    // KDF params (salt + Argon2 cost) are public and served pre-auth so a
-    // cold-start device can derive its fetch auth key. Store them separately.
-    const kdfParams = b.kdfParams ? JSON.stringify(b.kdfParams).slice(0, 512) : null;
-    db.setRelayEscrow(
-      device.userId,
-      b.payload,
-      kdfParams,
-      b.passwordAuthHash ?? null,
-      b.recoveryAuthHash ?? null,
-    );
-    return { ok: true };
-  });
-
-  // KDF params by handle — the pre-auth step that breaks the cold-start
-  // chicken-and-egg (the fetch auth key needs the salt, which lives in the
-  // escrow). Salt is not secret. Anti-enumeration: an escrow-less handle
-  // gets a **deterministic pseudo-salt** (HMAC over the relay identity), so
-  // a prober can't tell registered from unregistered. Rate-limited.
-  app.post(
-    '/api/relay/escrow/kdf',
-    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
-    async (request, reply) => {
-      const b = request.body as { handle?: string } | null;
-      if (!b?.handle) return reply.code(400).send({ error: 'handle required' });
-      const real = db.getRelayEscrowKdfByHandle(b.handle);
-      if (real) return JSON.parse(real);
-      // Deterministic per-handle pseudo-params: stable across probes, and the
-      // subsequent fetch still returns a uniform 401 (real Argon2 cost so
-      // timing matches). The salt is HMAC(relay privkey fingerprint, handle).
-      const pseudoSalt = createHash('sha256')
-        .update(`escrow-pseudo|${relayFp}|${b.handle.toLowerCase()}`)
-        .digest();
-      return { kdfSalt: [...pseudoSalt.subarray(0, 16)], kdfMKib: 19 * 1024, kdfT: 2, kdfP: 1 };
-    },
-  );
-
-  // Cold-start fetch: prove knowledge of the domain-separated auth key
-  // (derived from the password or recovery code — a different HKDF domain
-  // than the wrap key, so it can't unwrap anything). Uniform 401; tight
-  // per-IP rate limit because these blobs are offline brute-force targets.
-  app.post(
-    '/api/relay/escrow/fetch',
-    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
-    async (request, reply) => {
-      const b = request.body as
-        | { handle?: string; authKind?: 'password' | 'recovery'; authKey?: string }
-        | null;
-      if (!b?.handle || !b?.authKey || (b.authKind !== 'password' && b.authKind !== 'recovery')) {
-        return reply.code(400).send({ error: 'handle, authKind, authKey required' });
-      }
-      const user = db.getUserByHandle(b.handle);
-      const escrow = user ? db.getRelayEscrow(user.id) : undefined;
-      const stored = b.authKind === 'password' ? escrow?.passwordAuthHash : escrow?.recoveryAuthHash;
-      const presented = createHash('sha256').update(Buffer.from(b.authKey, 'base64')).digest('base64url');
-      if (!escrow || !stored || !digestsEqual(presented, stored)) {
-        return reply.code(401).send({ error: 'escrow fetch refused' });
-      }
-      return { payload: escrow.payload };
-    },
-  );
 
   // Unauthenticated by design: the challenge is the first step of auth.
   app.post('/api/relay/auth/challenge', async () => {

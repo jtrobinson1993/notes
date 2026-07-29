@@ -53,6 +53,33 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
+  ui-e2e:
+    name: App UI over a faked IPC (Playwright, L3)
+    runs-on: ubuntu-latest
+    # spec/testing.md § L3. Deliberately its own job rather than a step in
+    # `e2e`: the two Playwright configs both write `playwright-report/`, so
+    # sharing a job would have the second run clobber the first one's report.
+    # No relay and no Rust here — the config boots `shared` + the Vite dev
+    # server itself, so `npm ci` + Chromium is the whole setup.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Run Playwright against the fake core
+        run: npm run e2e:ui
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-ui
+          path: playwright-report/
+          retention-days: 7
+
   image-boot:
     name: Production image boots
     runs-on: ubuntu-latest
@@ -97,6 +124,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - name: cargo test
+      # `tauri` (default features) pulls wry → webkit2gtk-sys/atk/soup3 on
+      # Linux, and their build scripts are pkg-config lookups: without these
+      # the job fails while *compiling*, long before a test runs. Same list as
+      # native-build.yml — keep them in sync.
+      - name: Linux webview/system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf
+      # The L2 integration tests (src-tauri/tests/) spawn a REAL relay, which is
+      # Node — without a toolchain they would skip, and a skip that still reports
+      # green is worse than no test. ACCORD_L2_REQUIRE=1 makes any skip a failure.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: cargo test (unit + L2 against a real relay)
         working-directory: src-tauri
+        env:
+          ACCORD_L2_REQUIRE: '1'
         run: cargo test --locked

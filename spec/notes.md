@@ -266,7 +266,10 @@ UI:
   it, or onto empty space to unfile it. A **compact** toggle (beside the
   new-folder button) shows note rows as name-only; otherwise rows show tags + a
   preview. Searching or filtering by a tag swaps the tree for a flat result list.
-  `:emoji:` shortcodes render in note titles and folder names (`EmojiText`).
+  `:emoji:` shortcodes render in note titles and folder names through the shared
+  `EmojiText` renderer, each scoped to the note/folder id it belongs to — the
+  same component and the same per-item emote fetch budget the note body and chat
+  messages use ([chat.md](chat.md#emoji-emotes-the-picker-and-the-cap)).
 - **NoteEditor** — shows the note's folder as a read-only pill; assignment is by
   dragging in the tree.
 - **Chat sidebar** — a Pinned section + a pin picker that toggles pins for

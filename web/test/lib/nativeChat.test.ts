@@ -89,7 +89,11 @@ describe('loadHistoryLocal', () => {
     native.messagesPage.mockResolvedValueOnce(rows([5, 4])).mockResolvedValueOnce(rows([3]));
 
     const page1 = await loadHistoryLocal('c1', 'c1', 2, true);
-    expect(page1.map((v) => v.key)).toEqual(['m5', 'm4']);
+    // The core pages BACKWARDS (newest-first) so the cursor can walk into
+    // history, but a thread reads oldest-at-the-top — so a page comes back
+    // reversed for display. Returning the pager's order unchanged put the
+    // newest message at the top of the conversation.
+    expect(page1.map((v) => v.key)).toEqual(['m4', 'm5']);
     // The general channel is stored as a null channel_id on the wire.
     expect(native.messagesPage).toHaveBeenLastCalledWith('c1', null, undefined, 2);
 

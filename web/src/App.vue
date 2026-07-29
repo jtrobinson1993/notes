@@ -13,6 +13,7 @@ import {
   stopNativeConversations,
 } from './lib/nativeConversations';
 import { resetTagColors } from './lib/tagColors';
+import { initEmoji, teardownEmoji } from './lib/emoji/session';
 import NativeGate from './components/NativeGate.vue';
 import NativeCallHost from './components/NativeCallHost.vue';
 import KtAlarm from './components/KtAlarm.vue';
@@ -40,6 +41,7 @@ function dropDecryptedState(): void {
   friends.reset();
   org.reset();
   resetTagColors();
+  teardownEmoji(); // emote blob: URLs are decrypted bytes; the tally is metadata
 }
 
 // The vault gate is the "signed in + unlocked" signal. When it opens, load the
@@ -50,6 +52,7 @@ watch(
   (s) => {
     if (s === 'ready') {
       void profile.load();
+      void initEmoji(); // relay origin + usage tally + the offline emote set
       startNativeConversations(); // keep the sidebar chat list current
     } else {
       dropDecryptedState();

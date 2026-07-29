@@ -39,11 +39,33 @@ pub struct KtHistory {
 }
 
 /// A signed KT epoch root the client gossips to friends (split-view detection).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignedRoot {
     pub epoch: i64,
     pub root: String,
     pub prev: String,
     pub sig: String,
+}
+
+/// A handle's directory entry plus the KT material needed to verify it: the
+/// relay's claimed keys, the inclusion proof, and the (epoch, root) the proof is
+/// against. **Every field here is relay-supplied and untrusted** — the root only
+/// counts once its *signature* has been checked against the relay's identity key
+/// (`kt::signed_root_epoch`), which is why the raw response is handed to the
+/// verifier rather than interpreted here.
+#[derive(Clone, Debug)]
+pub struct DirectoryEntry {
+    pub identity_pub_b64: String,
+    pub sealing_pub_b64: String,
+    /// The akd epoch the inclusion proof is for.
+    pub epoch: u64,
+    /// base64 akd root the proof verifies against.
+    pub root: String,
+    pub proof_json: String,
+    pub vrf_public_key: String,
+    /// `Some("akd")` when the relay runs the full AKD backend; `None` on the
+    /// interim Merkle KT, whose proofs this client cannot verify.
+    pub kt: Option<String>,
 }
 
 /// Cap on consecutive *no-progress* reconnects before a resumable download
@@ -144,6 +166,76 @@ pub struct MailboxRow {
     pub queue_id: i64,
     pub relay_ts: i64,
     pub envelope: Vec<u8>,
+}
+
+/// One emote as the picker consumes it. `url` is absolute **against this
+/// relay** — the whole point of the proxy is that no client ever resolves a
+/// third-party CDN host.
+#[derive(serde::Serialize)]
+pub struct EmoteSearchResult {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub width: i64,
+    pub height: i64,
+    pub animated: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct EmoteSearchResponse {
+    pub results: Vec<EmoteSearchResult>,
+    pub next: Option<String>,
+}
+
+/// The relay's own shape (its `url` is a site-relative capability path).
+#[derive(serde::Deserialize)]
+struct RawEmoteSearch {
+    #[serde(default)]
+    results: Vec<RawEmote>,
+    #[serde(default)]
+    next: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawEmote {
+    id: String,
+    name: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    width: i64,
+    #[serde(default)]
+    height: i64,
+    #[serde(default)]
+    animated: bool,
+}
+
+/// Validate the relay-supplied image path before it becomes a URL the webview
+/// will load. **The relay does not get to choose the origin**: only a
+/// site-relative `/api/relay/emote/<sig>/<id>.webp` for the emote actually being
+/// described is accepted, so a compromised or hostile relay cannot hand back a
+/// third-party CDN link and re-create exactly the IP leak the proxy exists to
+/// prevent. Also drops anything whose id/name the client would refuse to render
+/// anyway. Returns the path to join onto the relay base, or None to drop the
+/// result.
+fn emote_url_path(url: &str, id: &str, name: &str) -> Option<String> {
+    if !crate::emoji::valid_emote_id(id) || !crate::emoji::valid_emote_name(name) {
+        return None;
+    }
+    let rest = url.strip_prefix("/api/relay/emote/")?;
+    let (sig, file) = rest.split_once('/')?;
+    // The capability must be an opaque base64url token, and the file must be
+    // the emote we were told this result is.
+    if sig.is_empty()
+        || sig.len() > 64
+        || !sig
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        || file != format!("{id}.webp")
+    {
+        return None;
+    }
+    Some(format!("/api/relay/emote/{sig}/{id}.webp"))
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -375,65 +467,6 @@ impl RelayClient {
         }
         let guard = self.session.lock().unwrap();
         Ok(guard.as_ref().ok_or("not connected to a relay")?.token.clone())
-    }
-
-    /// Upload the D15 escrow bundle (device-token authed).
-    pub async fn escrow_upload(
-        &self,
-        signing: &SigningKey,
-        bundle: crate::vault::EscrowUploadBundle,
-    ) -> Result<(), String> {
-        let bearer = self.bearer(signing).await?;
-        let base = self.base_url()?;
-        let kdf_params: serde_json::Value =
-            serde_json::from_str(&bundle.kdf_params).map_err(|e| format!("bad kdf params: {e}"))?;
-        let res = reqwest::Client::new()
-            .put(format!("{base}/api/relay/escrow"))
-            .bearer_auth(bearer)
-            .json(&serde_json::json!({
-                "payload": bundle.payload,
-                "kdfParams": kdf_params,
-                "passwordAuthHash": bundle.password_auth_hash,
-                "recoveryAuthHash": bundle.recovery_auth_hash,
-            }))
-            .send()
-            .await
-            .map_err(|e| format!("escrow upload failed: {e}"))?;
-        if !res.status().is_success() {
-            return Err(format!("relay refused escrow (HTTP {})", res.status()));
-        }
-        Ok(())
-    }
-
-    /// Cold-start step 1 (sessionless): fetch the public KDF params by handle
-    /// so the fresh device can derive its escrow fetch auth key.
-    pub async fn escrow_kdf(
-        base_url: &str,
-        handle: &str,
-    ) -> Result<(Vec<u8>, u32, u32, u32), String> {
-        let base = base_url.trim_end_matches('/');
-        let res = reqwest::Client::new()
-            .post(format!("{base}/api/relay/escrow/kdf"))
-            .json(&serde_json::json!({ "handle": handle }))
-            .send()
-            .await
-            .map_err(|e| format!("kdf fetch failed: {e}"))?;
-        if !res.status().is_success() {
-            return Err(format!("kdf fetch refused (HTTP {})", res.status()));
-        }
-        #[derive(serde::Deserialize)]
-        struct KdfResponse {
-            #[serde(rename = "kdfSalt")]
-            kdf_salt: Vec<u8>,
-            #[serde(rename = "kdfMKib")]
-            kdf_m_kib: u32,
-            #[serde(rename = "kdfT")]
-            kdf_t: u32,
-            #[serde(rename = "kdfP")]
-            kdf_p: u32,
-        }
-        let k: KdfResponse = res.json().await.map_err(|e| format!("bad kdf response: {e}"))?;
-        Ok((k.kdf_salt, k.kdf_m_kib, k.kdf_t, k.kdf_p))
     }
 
     /// Publish this account's per-relay public keys to the directory (D5).
@@ -734,6 +767,106 @@ impl RelayClient {
         Ok(res.json::<serde_json::Value>().await.unwrap_or(serde_json::Value::Null))
     }
 
+    // ---- 7TV emote content proxy (spec/relay.md § content proxies) ----
+    // The relay makes the outbound request so no client IP ever reaches 7TV.
+    // Both legs run through the core for the same reason the SFU calls do: the
+    // device token stays on this side of the IPC boundary.
+
+    /// Proxied emote search. An empty query returns the relay's top emotes —
+    /// the picker's default set. Image URLs come back **absolute against this
+    /// relay**; results the relay describes badly are dropped, not rendered.
+    pub async fn emote_search(
+        &self,
+        signing: &SigningKey,
+        query: &str,
+        page: u32,
+        limit: u32,
+    ) -> Result<EmoteSearchResponse, String> {
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .get(format!("{base}/api/relay/emotes/search"))
+            .bearer_auth(bearer)
+            .query(&[
+                ("q", query.to_string()),
+                ("page", page.to_string()),
+                ("limit", limit.to_string()),
+            ])
+            .send()
+            .await
+            .map_err(|e| format!("emote search failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("emote search refused (HTTP {})", res.status()));
+        }
+        let body: RawEmoteSearch = res
+            .json()
+            .await
+            .map_err(|e| format!("bad emote search response: {e}"))?;
+        let results = body
+            .results
+            .into_iter()
+            .filter_map(|e| {
+                let path = emote_url_path(&e.url, &e.id, &e.name)?;
+                Some(EmoteSearchResult {
+                    id: e.id,
+                    name: e.name,
+                    url: format!("{base}{path}"),
+                    width: e.width,
+                    height: e.height,
+                    animated: e.animated,
+                })
+            })
+            .collect();
+        Ok(EmoteSearchResponse { results, next: body.next })
+    }
+
+    /// Fetch one emote's image bytes through the relay. The capability segment
+    /// only exists so an `<img src>` can authenticate; the core has the device
+    /// token, which the relay accepts as the alternative credential, so a
+    /// content-encountered emote needs no search round-trip first.
+    pub async fn emote_image(&self, signing: &SigningKey, id: &str) -> Result<(Vec<u8>, String), String> {
+        use futures_util::StreamExt as _;
+        if !crate::emoji::valid_emote_id(id) {
+            return Err("invalid emote id".into());
+        }
+        let bearer = self.bearer(signing).await?;
+        let base = self.base_url()?;
+        let res = reqwest::Client::new()
+            .get(format!("{base}/api/relay/emote/device/{id}.webp"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .map_err(|e| format!("emote fetch failed: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("emote fetch refused (HTTP {})", res.status()));
+        }
+        let mime = res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.split(';').next().unwrap_or(v).trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !mime.starts_with("image/") {
+            return Err("emote response was not an image".into());
+        }
+        // Streamed cap, not a trusted content-length: a relay that ignores its
+        // own 1 MiB ceiling must not be able to stream this device out of disk
+        // or memory.
+        let mut buf: Vec<u8> = Vec::new();
+        let mut stream = res.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(|e| format!("emote fetch interrupted: {e}"))?;
+            if buf.len() + bytes.len() > crate::emoji::MAX_EMOTE_BYTES {
+                return Err("emote image too large".into());
+            }
+            buf.extend_from_slice(&bytes);
+        }
+        if buf.is_empty() {
+            return Err("emote image was empty".into());
+        }
+        Ok((buf, mime))
+    }
+
     /// Register a group's blob/send verifier = hash(group token) (D14, member).
     pub async fn group_verifier_put(
         &self,
@@ -848,12 +981,52 @@ impl RelayClient {
         })
     }
 
-    /// Fetch the relay's latest signed KT epoch root (for gossip). Unauthenticated
-    /// (KT roots are public). `None` if the log is empty.
-    pub async fn latest_kt_root(&self) -> Result<Option<SignedRoot>, String> {
+    /// Look a handle up in the relay's key directory (D5). Unauthenticated — the
+    /// directory and its proofs are public. `Ok(None)` means the relay answered
+    /// **404**: it claims the handle has no entry (see
+    /// key-transparency.md — that is "unverified", never "verified").
+    ///
+    /// Nothing here is trusted: the caller verifies the returned root's relay
+    /// signature *first* and only then runs the inclusion proof against it.
+    pub async fn directory_lookup(&self, handle: &str) -> Result<Option<DirectoryEntry>, String> {
+        let base = self.base_url()?;
+        let mut url = reqwest::Url::parse(&format!("{base}/api/relay/directory"))
+            .map_err(|e| format!("bad relay url: {e}"))?;
+        // `push` percent-encodes the segment (handles contain '#').
+        url.path_segments_mut()
+            .map_err(|_| "relay url cannot be a base".to_string())?
+            .push(handle);
+        let res = reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("directory lookup failed: {e}"))?;
+        if res.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !res.status().is_success() {
+            return Err(format!("directory lookup refused (HTTP {})", res.status()));
+        }
+        let v: serde_json::Value = res.json().await.map_err(|e| format!("bad directory entry: {e}"))?;
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        Ok(Some(DirectoryEntry {
+            identity_pub_b64: s("identityPubKey"),
+            sealing_pub_b64: s("sealingPubKey"),
+            epoch: v.get("epoch").and_then(|e| e.as_u64()).unwrap_or(0),
+            root: s("rootHash"),
+            proof_json: v.get("proof").map(|p| p.to_string()).unwrap_or_default(),
+            vrf_public_key: s("vrfPublicKey"),
+            kt: v.get("kt").and_then(|k| k.as_str()).map(str::to_string),
+        }))
+    }
+
+    /// The relay's signed KT epoch roots since `since` (0 = all). Unauthenticated
+    /// (KT roots are public). Signatures are **not** checked here — that is
+    /// `kt::signed_root_epoch`'s job, against the pinned relay identity key.
+    pub async fn kt_roots(&self, since: i64) -> Result<Vec<SignedRoot>, String> {
         let base = self.base_url()?;
         let res = reqwest::Client::new()
-            .get(format!("{base}/api/relay/kt/roots"))
+            .get(format!("{base}/api/relay/kt/roots?since={since}"))
             .send()
             .await
             .map_err(|e| format!("kt roots fetch failed: {e}"))?;
@@ -861,13 +1034,23 @@ impl RelayClient {
             return Err(format!("kt roots refused (HTTP {})", res.status()));
         }
         let v: serde_json::Value = res.json().await.map_err(|e| format!("bad kt roots: {e}"))?;
-        let last = v.get("roots").and_then(|r| r.as_array()).and_then(|a| a.last());
-        Ok(last.map(|r| SignedRoot {
-            epoch: r.get("epoch").and_then(|e| e.as_i64()).unwrap_or(0),
-            root: r.get("rootHash").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
-            prev: r.get("prevRootHash").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
-            sig: r.get("signature").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
-        }))
+        let rows = v.get("roots").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+        Ok(rows
+            .iter()
+            .map(|r| SignedRoot {
+                epoch: r.get("epoch").and_then(|e| e.as_i64()).unwrap_or(0),
+                root: r.get("rootHash").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+                prev: r.get("prevRootHash").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+                sig: r.get("signature").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+            })
+            .collect())
+    }
+
+    /// Fetch the relay's latest signed KT epoch root (for gossip). `None` if the
+    /// log is empty.
+    pub async fn latest_kt_root(&self) -> Result<Option<SignedRoot>, String> {
+        let mut roots = self.kt_roots(0).await?;
+        Ok(roots.pop())
     }
 
     /// Download attachment ciphertext (device-authed; only the recipient).
@@ -1012,37 +1195,6 @@ impl RelayClient {
         Ok(body.acked)
     }
 
-    /// Cold-start (D15/D3a): fetch the wrapped-MK escrow from a relay by
-    /// proving the auth key. Static — no session needed (this runs before
-    /// any vault exists on a fresh device).
-    pub async fn escrow_fetch(
-        base_url: &str,
-        handle: &str,
-        auth_kind: &str,
-        auth_key_b64: &str,
-    ) -> Result<String, String> {
-        let base = base_url.trim_end_matches('/');
-        let res = reqwest::Client::new()
-            .post(format!("{base}/api/relay/escrow/fetch"))
-            .json(&serde_json::json!({
-                "handle": handle,
-                "authKind": auth_kind,
-                "authKey": auth_key_b64,
-            }))
-            .send()
-            .await
-            .map_err(|e| format!("escrow fetch failed: {e}"))?;
-        if !res.status().is_success() {
-            return Err(format!("escrow fetch refused (HTTP {})", res.status()));
-        }
-        #[derive(serde::Deserialize)]
-        struct FetchResponse {
-            payload: String,
-        }
-        let body: FetchResponse = res.json().await.map_err(|e| format!("bad escrow response: {e}"))?;
-        Ok(body.payload)
-    }
-
     pub fn status(&self) -> RelayStatus {
         let guard = self.session.lock().unwrap();
         match guard.as_ref() {
@@ -1083,6 +1235,38 @@ mod tests {
             .verifying_key()
             .verify(b"nonce123|other-relay", &sig)
             .is_err());
+    }
+
+    /// A hostile or compromised relay must not be able to point the webview at
+    /// a third-party host — that would re-create the exact IP leak the emote
+    /// proxy exists to prevent.
+    #[test]
+    fn emote_urls_are_pinned_to_the_relay_origin() {
+        let id = "01H8XYZABCDEFGHJKMNPQRSTVW";
+        let good = format!("/api/relay/emote/AbC_-123/{id}.webp");
+        assert_eq!(
+            emote_url_path(&good, id, "pepeLaugh").as_deref(),
+            Some(good.as_str())
+        );
+
+        for bad in [
+            format!("https://cdn.7tv.app/emote/{id}/2x.webp"),
+            format!("//cdn.7tv.app/api/relay/emote/sig/{id}.webp"),
+            format!("http://evil.example/api/relay/emote/sig/{id}.webp"),
+            format!("/api/relay/emote/../../evil/{id}.webp"),
+            format!("/api/relay/emote/sig/{id}.webp?x=https://evil.example"),
+            "/api/relay/emote/sig/01H8XYZABCDEFGHJKMNPQRSTVX.webp".to_string(), // id mismatch
+            format!("/api/relay/og?url=https://evil.example/{id}.webp"),
+        ] {
+            assert!(
+                emote_url_path(&bad, id, "pepeLaugh").is_none(),
+                "must reject {bad}"
+            );
+        }
+
+        // Ids and names the client would refuse to render are dropped up front.
+        assert!(emote_url_path(&good, id, "not a name").is_none());
+        assert!(emote_url_path("/api/relay/emote/sig/x.webp", "x", "ok").is_none());
     }
 
     #[test]

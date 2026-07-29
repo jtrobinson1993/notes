@@ -366,13 +366,15 @@ implementing surface is named; the rest is tracked in
 - **Onboarding = a single smart entry** (Welcome → New / Existing). A new user
   mints a handle, then sets up unlock with **all factors front-loaded**
   (biometric primary + mandatory password + recovery code shown and confirmed),
-  because the recovery code is both the cold-start path and the backup-export
-  key. An existing user on a new device should get **pairing as the highlighted
-  primary path**, with recovery code and backup import as clearly secondary
-  fallbacks. *(Built: sign up, log in via escrow restore, and the keychain /
-  password / recovery-code unlock wall — see
-  [native-app.md](native-app.md#onboarding). Not built: the biometric prompt on
-  the keychain read, device pairing, the ≥2-device nudge, backup import.)*
+  because the recovery code is the break-glass unlock and the backup-export key.
+  An existing user on a new device should get **pairing as the highlighted
+  primary path**, with backup import as a clearly secondary fallback. *(Built:
+  sign up, plus the keychain / password / recovery-code unlock wall — see
+  [native-app.md](native-app.md#onboarding). The "Existing" branch is **not**
+  built and is currently an honest explainer rather than a form: relay-held
+  escrow was [removed](roadmap.md#escrow--removed) and pairing is unbuilt, so
+  there is nothing for it to do. Also not built: the biometric prompt on the
+  keychain read, the ≥2-device nudge, backup import.)*
 - **Add someone / connect a relay.** "Add friend" generates an invite (QR +
   copyable link + in-app share); "I have an invite" pastes, scans or taps one.
   Redeeming an invite for a relay you're not on shows an inline "Join [relay] to

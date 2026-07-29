@@ -31,6 +31,7 @@ import {
   reconnectRelay,
   rememberRelayUrl,
 } from '../../src/lib/nativeRelay';
+import { resetToasts, toasts } from '../../src/lib/toast';
 
 const report = (ingested: number) => ({ ingested, acked: ingested, buffered: 0, friends: 0 });
 
@@ -108,6 +109,22 @@ describe('nativeRelay live delivery', () => {
   it('swallows drain errors (best-effort)', async () => {
     native.relayMailboxDrain.mockRejectedValue(new Error('offline'));
     await expect(drainMailbox()).resolves.toBeUndefined();
+  });
+
+  // A friend handshake the core refused on key-transparency grounds is silent
+  // otherwise (it happens in the background), so the drain surfaces it.
+  it('toasts the catalogued error when the core refused a contact key', async () => {
+    resetToasts();
+    native.relayMailboxDrain.mockResolvedValue({ ...report(0), kt_rejected: 1 });
+    await drainMailbox();
+    expect(toasts.value.at(-1)).toMatchObject({ kind: 'error', code: 'KT_CONTACT_KEY_MISMATCH' });
+  });
+
+  it('says nothing when no contact key was refused', async () => {
+    resetToasts();
+    native.relayMailboxDrain.mockResolvedValue(report(1));
+    await drainMailbox();
+    expect(toasts.value).toEqual([]);
   });
 
   it('stopRelayDelivery unsubscribes', async () => {

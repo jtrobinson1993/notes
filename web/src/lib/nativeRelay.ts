@@ -23,6 +23,7 @@ import {
   settingsSet,
   type DrainReport,
 } from './native';
+import { toastError } from './toast';
 
 /** Device-only setting: the relay URL to reconnect to on a later boot. In the
  *  native shell `window.location.origin` is `tauri://…`, not the relay, so the
@@ -48,6 +49,28 @@ export function onMailIngested(cb: (report: DrainReport) => void): () => void {
   };
 }
 
+const connectedListeners = new Set<() => void>();
+
+/**
+ * Fires once the relay session is live (after a cold-start redial, or a later
+ * reconnect).
+ *
+ * This exists because the vault gate opens *before* the redial finishes: the
+ * gate sets `ready`, the watcher on that state loads the conversation rail, and
+ * the rail needs the relay fingerprint to derive DM conversation ids. It lost
+ * that race every cold launch — the refresh chain is two IPCs deep and the
+ * redial three, so it is an ordering bug, not a timing one — and nothing
+ * retried, because drains only notify when they actually ingest something. The
+ * rail then stayed empty until mail arrived, despite every conversation already
+ * being in the local store.
+ */
+export function onRelayConnected(cb: () => void): () => void {
+  connectedListeners.add(cb);
+  return () => {
+    connectedListeners.delete(cb);
+  };
+}
+
 // Single-flight with coalescing: a nudge arriving mid-drain schedules exactly
 // one more pass (never a re-entrant drain, never a lost nudge — JS is
 // single-threaded, so `rerun`/`draining` only change at the awaits below).
@@ -66,6 +89,11 @@ export async function drainMailbox(): Promise<void> {
     do {
       rerun = false;
       const report = await relayMailboxDrain();
+      // The core refused a friend handshake because the relay's transparency
+      // log publishes a different key for that handle. It already raised the
+      // hard KT alarm; toast the catalogued code too, so the user gets the
+      // explanation and a lookup URL rather than only a banner.
+      if ((report.kt_rejected ?? 0) > 0) toastError('KT_CONTACT_KEY_MISMATCH');
       if (report.ingested > 0) for (const l of ingestedListeners) l(report);
     } while (rerun);
   } catch {
@@ -125,6 +153,16 @@ export async function reconnectRelay(): Promise<void> {
       // Best-effort; the next connect retries. Never blocks live delivery.
     }
     await startRelayDelivery();
+    // The session is live now. Anything that needed the relay to render (the
+    // conversation rail derives DM ids from the relay fingerprint) gets its
+    // second chance here rather than waiting for mail to arrive.
+    for (const cb of connectedListeners) {
+      try {
+        cb();
+      } catch {
+        // A listener must never break delivery startup.
+      }
+    }
   } catch {
     // Offline / relay down / not yet enrolled — leave delivery off; the next
     // unlock retries. Never throws into the unlock path.

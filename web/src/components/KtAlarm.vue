@@ -12,10 +12,15 @@ import { isNative } from '../lib/native';
 const alarm = ref<KtAlarm | null>(null);
 let off: (() => void) | null = null;
 
-const message = (reason: string): string =>
-  reason === 'split-view'
-    ? 'This relay served inconsistent key-transparency logs — it may be showing different data to different people.'
-    : 'This relay bound your handle to an identity key you never created.';
+const message = (reason: string): string => {
+  if (reason === 'split-view') {
+    return 'This relay served inconsistent key-transparency logs — it may be showing different data to different people.';
+  }
+  if (reason === 'contact-key-mismatch') {
+    return 'A contact’s encryption key is not the one this relay’s key-transparency log publishes for their handle. That contact was not added, and nothing was sent back to them.';
+  }
+  return 'This relay bound your handle to an identity key you never created.';
+};
 
 onMounted(() => {
   if (!isNative) return;

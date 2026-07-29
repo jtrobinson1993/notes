@@ -10,6 +10,11 @@ export interface FriendEntry {
   userId: string;
   handle: string;
   displayName: string;
+  /** True only when the relay's key-transparency log has *proved* this contact's
+   *  key belongs to their handle. Anything else — relay unreachable when they
+   *  were added, handle absent from the log, an interim-KT relay — is false, and
+   *  must never be rendered as verified. */
+  ktVerified: boolean;
 }
 
 /** A friend invite I minted. The self-describing `token` string IS the shareable
@@ -35,6 +40,8 @@ export const useFriendsStore = defineStore('friends', () => {
       userId: s.contact_id,
       handle: s.handle,
       displayName: s.display_name?.trim() || s.handle,
+      // A missing/absent epoch is "never proven", not "fine" — default false.
+      ktVerified: typeof s.kt_verified_epoch === 'number',
     }));
   }
 

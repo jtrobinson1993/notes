@@ -12,7 +12,7 @@ import { ref } from 'vue';
 import { conversationActivity } from './native';
 import { listDms } from './nativeDm';
 import { listGroups } from './nativeGroup';
-import { onMailIngested } from './nativeRelay';
+import { onMailIngested, onRelayConnected } from './nativeRelay';
 
 export interface NativeConvItem {
   /** Route key: `dm:<contactId>` | `grp:<groupId>`. */
@@ -80,11 +80,23 @@ export async function refreshNativeConversations(): Promise<void> {
 }
 
 let offIngested: (() => void) | null = null;
+let offConnected: (() => void) | null = null;
 
-/** Begin keeping the rail's list current: load once + refresh on each drain. */
+/**
+ * Begin keeping the rail's list current: load once, then refresh on each drain
+ * and once the relay session comes up.
+ *
+ * The relay subscription is not redundant. This runs the moment the vault gate
+ * opens, which is *before* the cold-start redial completes, so the first
+ * refresh reliably fails with "not connected to a relay" (DM ids are derived
+ * from the relay fingerprint). Drains only notify when they ingest something,
+ * so without the connect hook the rail stayed empty until mail happened to
+ * arrive — even though every conversation was already in the local store.
+ */
 export function startNativeConversations(): void {
   if (offIngested) return;
   offIngested = onMailIngested(() => void refreshNativeConversations());
+  offConnected = onRelayConnected(() => void refreshNativeConversations());
   void refreshNativeConversations();
 }
 
@@ -94,5 +106,7 @@ export function startNativeConversations(): void {
 export function stopNativeConversations(): void {
   offIngested?.();
   offIngested = null;
+  offConnected?.();
+  offConnected = null;
   nativeConversations.value = [];
 }

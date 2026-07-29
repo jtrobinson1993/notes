@@ -3,18 +3,18 @@
 // created/unlocked and the account is onboarded. Native is the only shell, so
 // there is no browser bypass — the wall always applies.
 //
-// First run (uninitialized vault) opens on a splash with Sign up / Log in, so
-// the two paths are an explicit choice with back buttons; a returning device
-// (locked vault) goes straight to Unlock. Gate state is shared via nativeVault.ts
-// so the idle re-locker (D4 layer A) and manual Lock can flip back to this wall.
+// First run (uninitialized vault) opens on a splash offering Sign up, plus a
+// "can't sign in?" explainer; a returning device (locked vault) goes straight to
+// Unlock. There is deliberately **no "Log in"**: relay-held escrow was removed
+// (spec/roadmap.md § "Escrow — removed"), so nothing on any server can rebuild
+// an identity on a fresh device, and device pairing — which will — is not built
+// (roadmap D8). Offering a login form that can only ever fail would advertise a
+// capability the app does not have and contradict the accepted design constraint
+// that total device loss is unrecoverable (spec/security.md). Gate state is
+// shared via nativeVault.ts so the idle re-locker (D4 layer A) and manual Lock
+// can flip back to this wall.
 import { onMounted, ref } from 'vue';
-import {
-  settingsSet,
-  vaultCreate,
-  vaultRestoreFromEscrow,
-  vaultUnlock,
-  vaultUnlockRecovery,
-} from '../lib/native';
+import { vaultCreate, vaultUnlock, vaultUnlockRecovery } from '../lib/native';
 import { gateState as state, initGate, markOnboarded, markUnlocked } from '../lib/nativeVault';
 import { registerOnRelay, registerViaInvite, type SignupIdentity } from '../lib/nativeInvites';
 import { parseInvite } from '../lib/invites';
@@ -22,7 +22,7 @@ import { generateHandleOptions } from '@notes/shared';
 
 // Sub-view of the first-run ('setup') flow. `recover` and `displayname` overlay
 // any auth screen (reachable across gate states); the rest key off `state`.
-type View = 'welcome' | 'signup' | 'login' | 'recover' | 'displayname';
+type View = 'welcome' | 'signup' | 'recover' | 'displayname';
 const view = ref<View>('welcome');
 
 // Signup identity: pick a handle from generated Word#1234 candidates (never typed
@@ -52,12 +52,6 @@ const inviteInput = ref('');
 const relayUrlInput = ref('');
 const relayCodeInput = ref('');
 const usePublicRelay = ref(false);
-
-// "Existing user, new device" restore (D15/D3a): pull the wrapped-MK escrow from
-// a relay by handle + account password and rebuild the vault here.
-const restoreUrl = ref('');
-const restoreHandle = ref('');
-const restorePassword = ref('');
 
 const MIN_PASSWORD = 16; // matches the web client's enforced minimum
 
@@ -100,32 +94,6 @@ async function unlock() {
     else await vaultUnlock(password.value);
     password.value = '';
     recoveryInput.value = '';
-    markUnlocked();
-  } catch (e) {
-    error.value = String(e);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function restore() {
-  error.value = '';
-  if (!restoreUrl.value.trim() || !restoreHandle.value.trim() || !restorePassword.value) {
-    error.value = 'Relay address, handle, and password are all required.';
-    return;
-  }
-  busy.value = true;
-  try {
-    const url = restoreUrl.value.trim();
-    const handle = restoreHandle.value.trim();
-    await vaultRestoreFromEscrow(url, handle, restorePassword.value);
-    restorePassword.value = '';
-    // Restore rebuilds an account that already exists on the relay, so record it
-    // as onboarded (relay URL + handle) — skip the signup/invite step and go
-    // straight to 'ready'. Restore rebuilds identity only; note/message history
-    // arrives by pairing an existing device or importing a backup later.
-    await settingsSet('relay.url', url);
-    await settingsSet('identity.handle', handle);
     markUnlocked();
   } catch (e) {
     error.value = String(e);
@@ -235,10 +203,23 @@ const linkBtn = 'text-sm underline opacity-70';
           your account for you.
         </p>
         <p class="text-sm opacity-70">
-          The only way back in is the <strong>recovery code</strong> you saved when
-          you signed up, or your password on a device that still has your vault. If
-          you've lost your password, your recovery code, and access to your
-          devices, the account can't be recovered — you'd create a new one.
+          Your password and the <strong>recovery code</strong> you saved at signup
+          both unlock the vault <em>on a device that still has it</em> — they are
+          keys to this device's encrypted data, not credentials a server can check.
+          Nothing is stored anywhere else.
+        </p>
+        <p class="text-sm opacity-70">
+          So if you no longer have any device with your account on it, it can't be
+          recovered — not by you, not by us, not by the relay operator. You'd create
+          a new account.
+        </p>
+        <!-- First run only: this device holds no vault, so say plainly that an
+             existing account cannot be pulled onto it yet (pairing — roadmap D8
+             — is the mechanism, and it isn't built). -->
+        <p v-if="state === 'setup'" class="text-sm opacity-70">
+          This device doesn't have your account on it yet. Moving an account onto a
+          new device needs the device you already use to hand it over, and that
+          pairing step isn't built yet — for now, keep using the device you have.
         </p>
         <button :class="linkBtn" @click="goWelcome">← Back</button>
       </template>
@@ -261,17 +242,10 @@ const linkBtn = 'text-sm underline opacity-70';
           <button data-testid="signup" :class="primaryBtn" @click="(error = ''), (view = 'signup')">
             Sign up
           </button>
-          <button
-            data-testid="login"
-            class="w-full rounded border border-neutral-500/40 px-3 py-2 font-medium"
-            @click="(error = ''), (view = 'login')"
-          >
-            Log in
-          </button>
         </div>
         <div class="text-center">
           <button data-testid="recover" :class="linkBtn" @click="(error = ''), (view = 'recover')">
-            Can't sign in? Recover account
+            Already have an account?
           </button>
         </div>
       </template>
@@ -345,43 +319,6 @@ const linkBtn = 'text-sm underline opacity-70';
             :class="inputClass"
           />
           <button type="submit" :class="primaryBtn">Continue</button>
-        </form>
-      </template>
-
-      <!-- Log in: restore an existing account on this device (escrow). -->
-      <template v-else-if="state === 'setup' && view === 'login'">
-        <button :class="linkBtn" @click="goWelcome">← Back</button>
-        <h1 class="text-xl font-semibold">Log in</h1>
-        <p class="text-sm opacity-70">
-          Already have an account? Restore it on this device with your handle and
-          password. Notes and message history come across when you pair an existing
-          device or import a backup.
-        </p>
-        <form class="space-y-3" @submit.prevent="restore">
-          <input
-            v-model="restoreUrl"
-            type="url"
-            autocomplete="off"
-            placeholder="Relay address (https://…)"
-            :class="inputClass"
-          />
-          <input
-            v-model="restoreHandle"
-            type="text"
-            autocomplete="username"
-            placeholder="Handle (e.g. Word#1234)"
-            :class="inputClass"
-          />
-          <input
-            v-model="restorePassword"
-            type="password"
-            autocomplete="current-password"
-            placeholder="Account password"
-            :class="inputClass"
-          />
-          <button type="submit" :disabled="busy" :class="primaryBtn">
-            {{ busy ? 'Restoring…' : 'Log in' }}
-          </button>
         </form>
       </template>
 

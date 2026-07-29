@@ -199,6 +199,30 @@ const MIGRATIONS: &[&str] = &[
        first_seen INTEGER NOT NULL,
        PRIMARY KEY (relay_id, epoch)
      );",
+    // v12 — the on-device used-emoji cache (chat.md § emoji). Same shape as
+    // `attachments`: metadata + per-file key here, opaque ciphertext on disk,
+    // an `evicted` state that behaves like a miss. `bytes` is the *ciphertext*
+    // length — the thing the LRU byte budget actually bounds — and
+    // `last_used_at` is touched on every read so the LRU order is real.
+    "CREATE TABLE emote_cache(
+       id TEXT PRIMARY KEY, name TEXT NOT NULL,
+       file_key BLOB NOT NULL, iv BLOB NOT NULL, path TEXT,
+       mime TEXT, width INTEGER, height INTEGER,
+       animated INTEGER NOT NULL DEFAULT 0,
+       bytes INTEGER NOT NULL DEFAULT 0,
+       last_used_at INTEGER NOT NULL,
+       state TEXT NOT NULL DEFAULT 'present'
+     );
+     CREATE INDEX idx_emote_cache_lru ON emote_cache(state, last_used_at);",
+    // v13 — per-contact key-transparency state (key-transparency.md § contact
+    // verification). `kt_verified_epoch` is the relay epoch of the SIGNED root
+    // whose inclusion proof bound this contact's handle to the identity key in
+    // this row; NULL = never proven (relay unreachable, handle absent from the
+    // log, or an interim-KT relay). It is deliberately tied to the row's
+    // `identity_pub`: a contact whose key changes is unverified again until the
+    // new key is proven, which is why `record_friend` clears it on a key change.
+    "ALTER TABLE contact_relays ADD COLUMN kt_verified_epoch INTEGER;
+     ALTER TABLE contact_relays ADD COLUMN kt_verified_at INTEGER;",
 ];
 
 #[derive(serde::Deserialize)]
@@ -258,6 +282,11 @@ pub struct FriendRecord {
     pub sealing_pub: Vec<u8>,
     /// Capability to send to the friend via the sealed mailbox (D6).
     pub delivery_token: String,
+    /// Relay epoch of the signed KT root that proved `handle → identity_pub`,
+    /// or `None` when the key could not be checked against the log (D5). Never
+    /// set optimistically: `None` renders as *unverified*.
+    #[serde(default)]
+    pub kt_verified_epoch: Option<i64>,
 }
 
 /// Everything needed to seal + send to a friend on a relay.
@@ -279,6 +308,18 @@ pub struct FriendSummary {
     /// inbound call's verified `callerId` (same encoding) to this friend.
     #[serde(rename = "identity_pub")]
     pub identity_pub: String,
+    /// Relay epoch of the signed KT root that proved this key belongs to this
+    /// handle, or `None` if it was never proven. The UI must render `None` as
+    /// *unverified* — an unproven contact must never look like a checked one.
+    pub kt_verified_epoch: Option<i64>,
+}
+
+/// A friend whose key has not been proven against the transparency log yet —
+/// the re-verification worklist (run on every relay connect).
+pub struct UnverifiedContact {
+    pub contact_id: String,
+    pub handle: String,
+    pub identity_pub: Vec<u8>,
 }
 
 /// One reaction on a message (the UI groups by emoji + flags mine).
@@ -391,6 +432,52 @@ pub struct AttachmentRow {
     pub mime: Option<String>,
     pub content_hash: Option<String>,
     pub state: String,
+}
+
+/// What the caller knows about an emote before its bytes are cached — the
+/// search result's descriptive fields, minus the URL (the core mints that).
+#[derive(Clone, serde::Deserialize)]
+pub struct EmoteMeta {
+    /// 7TV id (26-char Crockford ULID; validated before it reaches the store).
+    pub id: String,
+    /// The `:shortcode:` name it renders under.
+    pub name: String,
+    pub mime: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    #[serde(default)]
+    pub animated: bool,
+}
+
+/// A cached emote row. **Not `Serialize`** on purpose: it carries the per-file
+/// key, and keys never cross the IPC boundary.
+pub struct EmoteRow {
+    pub name: String,
+    pub file_key: Vec<u8>,
+    pub iv: Vec<u8>,
+    pub mime: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub animated: bool,
+    /// Ciphertext bytes on disk — the LRU accounting the tests assert on, and
+    /// what the D6 storage screen will surface per entry.
+    #[allow(dead_code)]
+    pub bytes: i64,
+    #[allow(dead_code)]
+    pub last_used_at: i64,
+    pub state: String,
+}
+
+/// The key-free projection the offline picker lists.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+pub struct CachedEmote {
+    pub id: String,
+    pub name: String,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub animated: bool,
+    #[serde(rename = "lastUsedAt")]
+    pub last_used_at: i64,
 }
 
 pub struct Store {
@@ -556,6 +643,11 @@ impl Store {
     /// contact is marked a friend and gains everything needed to reach them —
     /// handle, identity key, sealing key, and delivery token. Idempotent; the
     /// relay row must already exist (see `upsert_relay`).
+    ///
+    /// KT (D5): `kt_verified_epoch` carries a *fresh* proof when the caller has
+    /// one. Refreshing a row without one keeps an existing verification **only
+    /// while the identity key is unchanged** — a contact who re-keys reverts to
+    /// unverified rather than inheriting the old key's proof.
     pub fn record_friend(&self, f: &FriendRecord) -> Result<(), StoreError> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
@@ -565,11 +657,22 @@ impl Store {
             (&f.contact_id, &f.display_name),
         )?;
         tx.execute(
-            "INSERT INTO contact_relays(contact_id, relay_id, handle, identity_pub, sealing_pub, delivery_token)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO contact_relays(contact_id, relay_id, handle, identity_pub, sealing_pub,
+                                        delivery_token, kt_verified_epoch, kt_verified_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CASE WHEN ?7 IS NULL THEN NULL ELSE ?8 END)
              ON CONFLICT(contact_id, relay_id) DO UPDATE SET handle = excluded.handle,
                identity_pub = excluded.identity_pub, sealing_pub = excluded.sealing_pub,
-               delivery_token = excluded.delivery_token",
+               delivery_token = excluded.delivery_token,
+               kt_verified_epoch = CASE
+                 WHEN excluded.kt_verified_epoch IS NOT NULL THEN excluded.kt_verified_epoch
+                 WHEN contact_relays.identity_pub = excluded.identity_pub
+                   THEN contact_relays.kt_verified_epoch
+                 ELSE NULL END,
+               kt_verified_at = CASE
+                 WHEN excluded.kt_verified_epoch IS NOT NULL THEN excluded.kt_verified_at
+                 WHEN contact_relays.identity_pub = excluded.identity_pub
+                   THEN contact_relays.kt_verified_at
+                 ELSE NULL END",
             (
                 &f.contact_id,
                 &f.relay_id,
@@ -577,10 +680,63 @@ impl Store {
                 &f.identity_pub,
                 &f.sealing_pub,
                 &f.delivery_token,
+                f.kt_verified_epoch,
+                now_ms(),
             ),
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Record that the transparency log proved this contact's *current* key at
+    /// `epoch` (the re-verification pass). Guarded on `identity_pub` so a proof
+    /// for a key the row no longer holds can never mark the new key verified.
+    pub fn kt_mark_contact_verified(
+        &self,
+        contact_id: &str,
+        relay_id: &str,
+        identity_pub: &[u8],
+        epoch: i64,
+    ) -> Result<bool, StoreError> {
+        let n = self.conn.execute(
+            "UPDATE contact_relays SET kt_verified_epoch = ?4, kt_verified_at = ?5
+              WHERE contact_id = ?1 AND relay_id = ?2 AND identity_pub = ?3",
+            (contact_id, relay_id, identity_pub, epoch, now_ms()),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Drop a contact's KT verification (the log now contradicts the key we
+    /// hold). The friendship is left alone — a hard alarm is raised instead;
+    /// silently deleting a contact would hide the attack rather than show it.
+    pub fn kt_clear_contact_verified(&self, contact_id: &str, relay_id: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE contact_relays SET kt_verified_epoch = NULL, kt_verified_at = NULL
+              WHERE contact_id = ?1 AND relay_id = ?2",
+            (contact_id, relay_id),
+        )?;
+        Ok(())
+    }
+
+    /// Friends on a relay whose key has never been proven against the log — the
+    /// re-verification worklist after a relay reconnect.
+    pub fn kt_unverified_contacts(&self, relay_id: &str) -> Result<Vec<UnverifiedContact>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT cr.contact_id, cr.handle, cr.identity_pub
+               FROM contact_relays cr JOIN contacts c ON c.id = cr.contact_id
+              WHERE cr.relay_id = ?1 AND c.is_friend = 1 AND cr.kt_verified_epoch IS NULL
+              ORDER BY cr.handle",
+        )?;
+        let rows = stmt
+            .query_map((relay_id,), |r| {
+                Ok(UnverifiedContact {
+                    contact_id: r.get(0)?,
+                    handle: r.get(1)?,
+                    identity_pub: r.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Everything needed to seal + send to a friend on a relay, or None if not a
@@ -615,7 +771,7 @@ impl Store {
     pub fn list_friends(&self, relay_id: &str) -> Result<Vec<FriendSummary>, StoreError> {
         use base64::Engine as _;
         let mut stmt = self.conn.prepare(
-            "SELECT cr.contact_id, cr.handle, c.display_name, cr.identity_pub
+            "SELECT cr.contact_id, cr.handle, c.display_name, cr.identity_pub, cr.kt_verified_epoch
                FROM contact_relays cr JOIN contacts c ON c.id = cr.contact_id
               WHERE cr.relay_id = ?1 AND c.is_friend = 1 AND c.blocked_hidden = 0
                 AND cr.delivery_token IS NOT NULL
@@ -631,6 +787,7 @@ impl Store {
                     identity_pub: id_pub
                         .map(|b| base64::engine::general_purpose::STANDARD.encode(b))
                         .unwrap_or_default(),
+                    kt_verified_epoch: r.get(4)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1174,6 +1331,156 @@ impl Store {
         Ok(())
     }
 
+    // ---- used-emoji cache (chat.md § emoji; mirrors the attachment store) ----
+
+    /// Insert an emote's cache row, or bring an existing one back to `present`
+    /// with fresh key/iv/path. Upsert rather than INSERT OR IGNORE for the same
+    /// reason `upsert_attachment` exists: re-caching an **evicted** emote has to
+    /// re-point the row at the newly written blob, or it stays stuck `evicted`
+    /// with a NULL path and can never be served again.
+    pub fn upsert_emote(
+        &self,
+        e: &EmoteMeta,
+        file_key: &[u8],
+        iv: &[u8],
+        path: &str,
+        bytes: i64,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO emote_cache(
+               id, name, file_key, iv, path, mime, width, height, animated,
+               bytes, last_used_at, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'present')
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name, file_key = excluded.file_key, iv = excluded.iv,
+               path = excluded.path,
+               mime = COALESCE(excluded.mime, emote_cache.mime),
+               width = COALESCE(excluded.width, emote_cache.width),
+               height = COALESCE(excluded.height, emote_cache.height),
+               animated = excluded.animated,
+               bytes = excluded.bytes, last_used_at = excluded.last_used_at,
+               state = 'present'",
+            rusqlite::params![
+                &e.id,
+                &e.name,
+                file_key,
+                iv,
+                path,
+                &e.mime,
+                e.width,
+                e.height,
+                e.animated as i64,
+                bytes,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn emote_row(&self, id: &str) -> Result<Option<EmoteRow>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT name, file_key, iv, mime, width, height, animated,
+                        bytes, last_used_at, state
+                 FROM emote_cache WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(EmoteRow {
+                        name: r.get(0)?,
+                        file_key: r.get(1)?,
+                        iv: r.get(2)?,
+                        mime: r.get(3)?,
+                        width: r.get(4)?,
+                        height: r.get(5)?,
+                        animated: r.get::<_, i64>(6)? != 0,
+                        bytes: r.get(7)?,
+                        last_used_at: r.get(8)?,
+                        state: r.get(9)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Mark an emote used *now* — the whole point of the LRU. Only a `present`
+    /// row is touched, so a miss never promotes an evicted entry.
+    pub fn touch_emote(&self, id: &str, now: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE emote_cache SET last_used_at = ?2 WHERE id = ?1 AND state = 'present'",
+            (id, now),
+        )?;
+        Ok(())
+    }
+
+    /// Drop an emote's bytes from the accounting and null its path (the caller
+    /// removes the file). The row survives so the name/dimensions are still
+    /// known and a later re-cache is a plain upsert.
+    pub fn set_emote_evicted(&self, id: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE emote_cache SET state = 'evicted', path = NULL, bytes = 0 WHERE id = ?1",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    /// Bytes currently held on disk by `present` emote rows.
+    pub fn emote_cache_bytes(&self) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(bytes), 0) FROM emote_cache WHERE state = 'present'",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// The ids to evict, **least-recently-used first**, so that what remains
+    /// fits inside `budget` bytes. Empty when already under budget.
+    pub fn emote_lru_victims(&self, budget: i64) -> Result<Vec<String>, StoreError> {
+        let mut total = self.emote_cache_bytes()?;
+        if total <= budget {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT id, bytes FROM emote_cache WHERE state = 'present'
+              ORDER BY last_used_at ASC, id ASC",
+        )?;
+        let mut victims = Vec::new();
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        for row in rows {
+            if total <= budget {
+                break;
+            }
+            let (id, bytes) = row?;
+            total -= bytes;
+            victims.push(id);
+        }
+        Ok(victims)
+    }
+
+    /// The emotes this device can render with no relay at all, most recently
+    /// used first — the offline picker's set.
+    pub fn list_cached_emotes(&self) -> Result<Vec<CachedEmote>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, width, height, animated, last_used_at
+               FROM emote_cache WHERE state = 'present'
+              ORDER BY last_used_at DESC, name ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(CachedEmote {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    width: r.get(2)?,
+                    height: r.get(3)?,
+                    animated: r.get::<_, i64>(4)? != 0,
+                    last_used_at: r.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO settings(key, value) VALUES (?1, ?2)
@@ -1684,6 +1991,7 @@ mod tests {
             identity_pub: vec![1u8; 32],
             sealing_pub: vec![2u8; 32],
             delivery_token: token.into(),
+            kt_verified_epoch: None,
         };
         store.record_friend(&rec("deliv-a", Some("Alice"))).unwrap();
 
@@ -1712,6 +2020,53 @@ mod tests {
         store.remove_friend("c1", "r1").unwrap();
         assert!(store.friend_addressing("c1", "r1").unwrap().is_none());
         assert!(store.list_friends("r1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn contact_kt_verification_is_tied_to_the_key_it_proved() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[12u8; 32]).unwrap();
+        store.upsert_relay("r1", "https://r.example", "fp", &[9u8; 32]).unwrap();
+
+        let rec = |key: u8, epoch: Option<i64>| FriendRecord {
+            contact_id: "c1".into(),
+            display_name: Some("Alice".into()),
+            relay_id: "r1".into(),
+            handle: "Alice#0001".into(),
+            identity_pub: vec![key; 32],
+            sealing_pub: vec![2u8; 32],
+            delivery_token: "deliv".into(),
+            kt_verified_epoch: epoch,
+        };
+
+        // Recorded without a proof → unverified, and the worklist picks it up.
+        store.record_friend(&rec(1, None)).unwrap();
+        assert_eq!(store.list_friends("r1").unwrap()[0].kt_verified_epoch, None);
+        let pending = store.kt_unverified_contacts("r1").unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].identity_pub, vec![1u8; 32]);
+
+        // A later proof for the key we actually hold marks it verified.
+        assert!(store.kt_mark_contact_verified("c1", "r1", &[1u8; 32], 7).unwrap());
+        assert_eq!(store.list_friends("r1").unwrap()[0].kt_verified_epoch, Some(7));
+        assert!(store.kt_unverified_contacts("r1").unwrap().is_empty());
+
+        // A proof for some OTHER key must not mark this row verified.
+        store.kt_clear_contact_verified("c1", "r1").unwrap();
+        assert!(!store.kt_mark_contact_verified("c1", "r1", &[3u8; 32], 8).unwrap());
+        assert_eq!(store.list_friends("r1").unwrap()[0].kt_verified_epoch, None);
+
+        // Refreshing an unchanged key (e.g. a rotated delivery token) keeps the
+        // verification; a re-key drops it back to unverified.
+        store.kt_mark_contact_verified("c1", "r1", &[1u8; 32], 9).unwrap();
+        store.record_friend(&rec(1, None)).unwrap();
+        assert_eq!(store.list_friends("r1").unwrap()[0].kt_verified_epoch, Some(9));
+        store.record_friend(&rec(5, None)).unwrap();
+        assert_eq!(store.list_friends("r1").unwrap()[0].kt_verified_epoch, None);
+
+        // A fresh proof supplied at record time is stored as-is.
+        store.record_friend(&rec(5, Some(11))).unwrap();
+        assert_eq!(store.list_friends("r1").unwrap()[0].kt_verified_epoch, Some(11));
     }
 
     #[test]

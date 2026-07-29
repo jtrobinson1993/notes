@@ -25,21 +25,17 @@ describe('rate limiting', () => {
     });
   });
 
-  it('gives escrow fetch a far tighter ceiling than the global limit', async () => {
-    // Escrow fetch is unauthenticated and guesses at a handle + auth key, so it
-    // carries its own 5/min bucket. The 6th attempt is throttled while the
+  it('gives the invite oracle a far tighter ceiling than the global limit', async () => {
+    // `invites/check` is unauthenticated and answers yes/no about a token, so it
+    // carries its own 30/min bucket. The 31st attempt is throttled while the
     // global bucket (300) is nowhere near full, so an unrelated route still 200s.
     const attempt = (t: TestApp) =>
-      t.app.inject({
-        method: 'POST',
-        url: '/api/relay/escrow/fetch',
-        payload: { handle: 'Nobody#0001', authKind: 'password', authKey: 'AAAA' },
-      });
+      t.app.inject({ method: 'POST', url: '/api/relay/invites/check', payload: { token: 'nope' } });
 
     await withApp(300, async (t) => {
-      for (let i = 0; i < 5; i++) {
-        // Refused (401) but not throttled — the bucket is what's under test.
-        expect((await attempt(t)).statusCode).toBe(401);
+      for (let i = 0; i < 30; i++) {
+        // Answered (200, `valid: false`) but not throttled — the bucket is what's under test.
+        expect((await attempt(t)).statusCode).toBe(200);
       }
       expect((await attempt(t)).statusCode).toBe(429);
       expect((await t.app.inject({ method: 'GET', url: '/api/health' })).statusCode).toBe(200);

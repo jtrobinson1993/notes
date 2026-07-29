@@ -9,10 +9,11 @@
 // contacts via SAS or disconnect the relay.
 
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { isNative, ktSelfAudit, type KtAuditReport } from './native';
+import { isNative, ktSelfAudit, ktVerifyContacts, type KtAuditReport } from './native';
 
 export interface KtAlarm {
-  /** "self-audit-failed" (foreign key) or "split-view" (inconsistent roots). */
+  /** "self-audit-failed" (foreign key), "split-view" (inconsistent roots), or
+   *  "contact-key-mismatch" (the log publishes a different key for a contact). */
   reason: string;
 }
 
@@ -48,6 +49,14 @@ export async function startKtAudit(): Promise<void> {
     if (!report.ok && report.reason) raise({ reason: report.reason });
   } catch {
     // No KT history (interim KT) / not connected — nothing to audit yet.
+  }
+  try {
+    // Settle any contact added while the relay's directory was unreachable:
+    // those are recorded UNVERIFIED, and this is where they get proven (or
+    // alarm, if the log contradicts the key we hold).
+    await ktVerifyContacts();
+  } catch {
+    // Not connected / no directory — the contacts simply stay unverified.
   }
 }
 

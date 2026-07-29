@@ -329,7 +329,7 @@ function excerpt(body: string): string {
                   @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
                 >
                   <component :is="isCollapsed(row.folder!.id) ? IconFolderPlus : IconFolderMinus" class="h-4.5 w-4.5 shrink-0 opacity-60" />
-                  <span class="min-w-0 grow truncate font-medium"><EmojiText :text="row.folder!.name" /></span>
+                  <span class="min-w-0 grow truncate font-medium"><EmojiText :text="row.folder!.name" :scope="`folder:${row.folder!.id}`" /></span>
                   <span class="text-xs text-zinc-400">{{ notesInFolder(row.folder!.id) }}</span>
                 </button>
                 <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
@@ -354,7 +354,7 @@ function excerpt(body: string): string {
                   <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
                   <div class="min-w-0 grow">
                     <p class="truncate text-sm" :class="selectedId === row.note!.id ? 'font-medium' : ''">
-                      <EmojiText :text="row.note!.payload.title || 'Untitled'" />
+                      <EmojiText :text="row.note!.payload.title || 'Untitled'" :scope="`note:${row.note!.id}`" />
                       <span v-if="row.note!.shared" class="text-xs font-normal text-violet-500">· {{ row.note!.shared.ownerDisplayName }}</span>
                     </p>
                     <div v-if="!compact" class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
@@ -391,7 +391,7 @@ function excerpt(body: string): string {
                 <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
                 <div class="min-w-0 grow">
                   <p class="truncate text-sm" :class="selectedId === note.id ? 'font-medium' : ''">
-                    <EmojiText :text="note.payload.title || 'Untitled'" />
+                    <EmojiText :text="note.payload.title || 'Untitled'" :scope="`note:${note.id}`" />
                     <span v-if="note.shared" class="text-xs font-normal text-violet-500">· {{ note.shared.ownerDisplayName }}</span>
                   </p>
                   <div v-if="!compact" class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">

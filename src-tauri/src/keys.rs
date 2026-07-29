@@ -19,10 +19,6 @@ use zeroize::Zeroizing;
 pub const INFO_MK_WRAP_VAULT: &[u8] = b"accord/mk-wrap/vault-key/v1";
 pub const INFO_MK_WRAP_PASSWORD: &[u8] = b"accord/mk-wrap/password/v1";
 pub const INFO_MK_WRAP_RECOVERY: &[u8] = b"accord/mk-wrap/recovery/v1";
-// Escrow auth keys (D15): domain-separated from the wrap keys, so the secret
-// a client presents to fetch escrow can never unwrap the blobs it receives.
-pub const INFO_AUTH_PASSWORD: &[u8] = b"accord/auth/password/v1";
-pub const INFO_AUTH_RECOVERY: &[u8] = b"accord/auth/recovery/v1";
 // The account's profile key, derived from MK (D13: one derivation tree). It's
 // the root of the delivery token + display-name encryption. Deriving it from MK
 // keeps it identical on every device with this account (stable delivery token),
@@ -70,7 +66,9 @@ pub fn normalize_recovery_code(code: &str) -> String {
         .to_ascii_uppercase()
 }
 
-/// Escrow auth key: HKDF of the user secret under an auth-only domain.
+/// Auth/derivation key: HKDF of a secret under an auth-only domain — never a
+/// wrap domain, so a key handed out as a capability (a delivery or group token)
+/// can never unwrap anything.
 pub fn derive_auth_key(secret: &[u8], info: &[u8]) -> Result<Secret32, KeyError> {
     derive_wrap_key(secret, info)
 }

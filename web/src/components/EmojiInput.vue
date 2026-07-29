@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, ref, shallowRef } from 'vue';
+import { registeredEmoteNames } from '../lib/emoji';
 import { loadUnicodeEmoji, type UnicodeEmoji } from '../lib/emoji/unicode';
 import { rankEmoji, recordEmojiUse, type EmojiCandidate } from '../lib/emoji/usage';
 
@@ -39,7 +40,11 @@ function refresh() {
     return;
   }
   loadUnicode();
-  const items = rankEmoji(m[1]!, unicodeList, 8);
+  // Emotes already registered this session (picker search / the offline cached
+  // set) autocomplete alongside unicode. Typing never triggers a relay search:
+  // that is the picker's job, and a search per keystroke would hand the relay a
+  // keylogger's worth of prefixes.
+  const items = rankEmoji(m[1]!, unicodeList, 8, Date.now(), registeredEmoteNames());
   if (!items.length) {
     acOpen.value = false;
     return;

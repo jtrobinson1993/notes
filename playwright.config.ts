@@ -10,6 +10,10 @@ const ORIGIN = `http://localhost:${PORT}`;
 
 export default defineConfig({
   testDir: './e2e',
+  // The L3 UI suite (e2e/ui) drives the web app over a faked Tauri IPC and needs
+  // no relay at all — it has its own config (playwright.ui.config.ts, run with
+  // `npm run e2e:ui`). Keep it out of this run.
+  testIgnore: '**/ui/**',
   // The specs share one relay + DB, so keep runs serial and ordered.
   fullyParallel: false,
   workers: 1,

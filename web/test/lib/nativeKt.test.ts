@@ -4,6 +4,7 @@ import type { KtAuditReport } from '../../src/lib/native';
 const native = vi.hoisted(() => ({
   isNative: true,
   ktSelfAudit: vi.fn(),
+  ktVerifyContacts: vi.fn(),
 }));
 vi.mock('../../src/lib/native', () => native);
 
@@ -26,6 +27,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   native.isNative = true;
   native.ktSelfAudit.mockResolvedValue({ ok: true, reason: null, epoch: 1 });
+  native.ktVerifyContacts.mockResolvedValue({ verified: 0, unverified: 0, rejected: 0 });
   evt.handler = null;
   evt.listen.mockResolvedValue(evt.unlisten);
 });
@@ -35,6 +37,23 @@ describe('nativeKt', () => {
     await startKtAudit();
     expect(evt.listen).toHaveBeenCalledWith('kt:alarm', expect.any(Function));
     expect(native.ktSelfAudit).toHaveBeenCalledTimes(1);
+  });
+
+  // Contacts added while the relay's directory was unreachable are recorded
+  // UNVERIFIED; the connect sweep is what settles them, so it has to run.
+  it('sweeps unverified contacts on start, even if the self-audit failed', async () => {
+    await startKtAudit();
+    expect(native.ktVerifyContacts).toHaveBeenCalledTimes(1);
+
+    vi.clearAllMocks();
+    native.ktSelfAudit.mockRejectedValue('no key history (interim KT)');
+    await startKtAudit();
+    expect(native.ktVerifyContacts).toHaveBeenCalledTimes(1);
+  });
+
+  it('survives a sweep the core rejects (not connected / no directory)', async () => {
+    native.ktVerifyContacts.mockRejectedValue('not connected to a relay');
+    await expect(startKtAudit()).resolves.toBeUndefined();
   });
 
   it('raises an alarm when the initial self-audit fails', async () => {

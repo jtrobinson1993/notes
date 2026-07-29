@@ -8,10 +8,10 @@ Specs describe **what is built**. Work not yet built lives in
 
 | File | Area |
 |---|---|
-| [spec/accounts-and-crypto.md](spec/accounts-and-crypto.md) | Accounts and the key hierarchy — vault unlock, per-relay derived identities, delivery tokens, escrow, revocation, and why passkeys are gone |
+| [spec/accounts-and-crypto.md](spec/accounts-and-crypto.md) | Accounts and the key hierarchy — vault unlock, per-relay derived identities, delivery tokens, why there is no cold start, revocation, and why passkeys are gone |
 | [spec/native-app.md](spec/native-app.md) | The native app — Tauri v2 shell, the Rust core as the client, the vault gate, onboarding, multi-account, distribution |
 | [spec/local-store.md](spec/local-store.md) | The local store — SQLCipher schema, the Rust-core IPC surface, message ordering, CRDT/mutable state, attachments, eviction |
-| [spec/relay.md](spec/relay.md) | The relay — auth, registration, escrow, mailbox, blobs, group state, the privacy content proxies, and the complete state inventory |
+| [spec/relay.md](spec/relay.md) | The relay — auth, registration, mailbox, blobs, group state, the privacy content proxies, and the complete state inventory |
 | [spec/key-transparency.md](spec/key-transparency.md) | The KT log — AKD sidecar, proof types, client self-audit, gossip, public roots endpoint, reference auditor |
 | [spec/notes.md](spec/notes.md) | Local-only notes, the Obsidian-style live editor, attachments, media optimization, folders and organization |
 | [spec/chat.md](spec/chat.md) | E2EE chat — invite-only friends, DMs and groups, the sealed envelope and payload, ordering, CRDT overlays, and the native chat surface |

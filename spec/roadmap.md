@@ -21,7 +21,7 @@ tree. Removing them was on this roadmap; it is done.
 Built: the Tauri shell and Rust core over a SQLCipher store
 ([native-app.md](native-app.md), [local-store.md](local-store.md)), the
 zero-at-rest relay including its privacy content proxies ([relay.md](relay.md)),
-the key hierarchy and escrow plumbing
+the key hierarchy
 ([accounts-and-crypto.md](accounts-and-crypto.md)), full-AKD key transparency
 ([key-transparency.md](key-transparency.md)), DM + group messaging with
 attachments ([chat.md](chat.md)), 1:1 voice that fails closed without frame
@@ -37,6 +37,21 @@ fixed before launch.
 ---
 
 ## Before launch
+
+Also blocking, decided 2026-07-26 and written up in their own sections below
+rather than duplicated here:
+
+- **Signing in on a new device must work, with full history** — see
+  [*Device pairing & history transfer (D8)*](#device-pairing--history-transfer-d8)
+  and [*Multi-device history & sync (D8a)*](#multi-device-history--sync-d8a).
+  Relay-held escrow was the only cold-start path and has been
+  [removed](#escrow--removed), so pairing is now the *only* way onto a new device
+  and is therefore blocking. The device-enrolment step — a paired device has a
+  fresh signing key that is in no `relay_devices` row, so it authenticates as
+  nobody — is the part that needs design, not just wiring.
+- **Bio and avatar must persist** — see
+  [*Profiles — storage and updates*](#profiles--storage-and-updates). Until they
+  do, Settings must stop reporting "Profile saved." for data it discards.
 
 ### Real-device voice validation
 
@@ -81,8 +96,11 @@ relevant area spec. They are listed here because fixing them is outstanding work
   [notes.md](notes.md#attachments).
 - **Bio and avatar are silently discarded.** `useProfileStore().save()` writes
   only `profile.displayName`; the editor says "Profile saved." for data that is
-  dropped on lock or restart, and nothing renders it anyway. Either persist them
-  (see *Profiles* below) or stop offering the fields.
+  dropped on lock or restart, and nothing renders it anyway. **Decided
+  (2026-07-26): persist them** — the fields stay, so the storage and contact
+  distribution under *Profiles* below become required work rather than optional.
+  Until then the editor is lying to the user, so this is the higher-priority
+  half: stop claiming "Profile saved." before the storage lands.
 - **Paging can drop or duplicate a message.** `store.rs` filters the backfill
   cursor on `(relay_ts, id)` but orders by
   `relay_ts DESC, sender_contact_id DESC, id DESC`. Same-millisecond ties can
@@ -94,6 +112,22 @@ relevant area spec. They are listed here because fixing them is outstanding work
 - **`NativeCallPanel` never leaves "Connecting…".** `VoiceCall.onMediaConnected()`
   is called only from tests, so the panel shows connecting even with audio
   flowing. Wire it from the media layer.
+- **`attachment_get` leaves a lying row behind.** `attachment::cached_ciphertext`
+  carefully downgrades a `present` row to `evicted` when the file is unreadable,
+  but the `attachment_get` command reads `vault.blobs().read(&id)` directly and
+  propagates the IO error, so the row keeps claiming `present`. This is the
+  note-attachment path, where an eviction is terminal, so a vanished file leaves
+  a row that lies forever. Route it through `cached_ciphertext`.
+- **`attachment_put` re-introduces the bug `upsert_attachment` was written to
+  fix.** It writes the blob unconditionally, then uses `insert_attachment`
+  (`INSERT OR IGNORE`), so re-putting an evicted note attachment silently keeps
+  the row `evicted` with a `NULL` path while its bytes sit on disk — unreachable
+  and never evicted. Use the upsert, as the chat path already does.
+- **`BlobStore::write` can collide two temp files.** It derives the temp path
+  with `path.with_extension("tmp")`, which truncates at the last dot, so two ids
+  differing only after a dot share a temp path and concurrent writes interleave.
+  Latent today (ids are dot-free) — `with_file_name(format!("{id}.tmp"))` closes
+  it before some future id format makes it live.
 
 **Security-relevant (see also *Security work outstanding*)**
 
@@ -104,14 +138,6 @@ relevant area spec. They are listed here because fixing them is outstanding work
   of the relay (`http://169.254.169.254/…`) plus unbounded strings in the DB.
   This is a **regression against the route it replaced**; restore the three
   checks. Unreachable today only because no client subscribes.
-- **Escrow restore can silently destroy recovery-code restore.**
-  `vault.rs::restore_from_escrow` writes `recovery_auth_hash: String::new()`. If
-  that device later uploads escrow, `PUT /api/relay/escrow` stores `""` (the
-  `?? null` guard does not catch an empty string), overwriting the real hash. It
-  **fails closed** (`!stored` → 401, and no SHA-256 output is empty), so it is
-  not exploitable — but it permanently disables recovery-code cold start for
-  that account. Carry the real hash through restore, and reject an empty
-  `recoveryAuthHash` server-side.
 - **Voice frame keys outlive the call.** `dropFrameKey` and `resetVoiceWorker`
   exist and are called from nowhere; `teardownCallHost` hangs up on vault
   re-lock but leaves the last call's key live in the frame worker for the life
@@ -163,41 +189,33 @@ Grouped because these are the gaps where a spec once promised a protection the
 code does not provide, or where a shipped surface has a known hole. Each is
 cross-referenced from the relevant area spec.
 
-### A Content-Security-Policy for the native webview
+### Tighten `img-src` by fetching remote images in the core
 
-**The app has no CSP at all.** `src-tauri/tauri.conf.json` sets
-`"security": { "csp": null }`, `web/index.html` carries no meta policy, and
-nothing injects one at runtime. The relay still emits a CSP, but it is API-only
-and serves no HTML, so no browser ever applies it — `inlineScriptHashes` is dead
-in production, and `worker-src` / `manifest-src` / the YouTube `frame-src` entry
-are SPA-era vestiges.
+The webview now runs under a real CSP
+([security.md](security.md#the-native-webviews-csp)). Its only remaining network
+allowance is `img-src … https:`, and exactly two things need it:
 
-Today's XSS defence is therefore the token renderer alone: the Markdown
-pipeline builds DOM nodes and never parses HTML, so a hostile message has no
-script-injection vector by construction
-([security.md](security.md#rendering-safety--no-v-html-raw-html-inert)). That is
-a strong property, but it is a *single* layer, and nothing in the code or the
-history records a decision to run without a CSP — this is unbuilt hardening, not
-a considered tradeoff.
+- **click-to-load remote images** in notes and messages (`![](https://…)`),
+  which load straight from the third-party host once the reader opts in, and
+- the **emote picker's** search thumbnails, which the core deliberately returns
+  as relay capability paths rather than bytes
+  ([chat.md](chat.md#emoji-emotes-the-picker-and-the-cap)). Content emotes are
+  already unaffected: they arrive as bytes and render from `blob:`.
 
-It matters more now than it did: the emoji and GIF work below will load remote
-images through the relay proxies, adding the first routine remote-content fetch
-the webview makes.
+That leaves a blind exfiltration channel: script running in the webview could
+encode data into an image URL on any https host. (`connect-src` allows no origin,
+so there is no read-back.) It also means a **plain-http relay** gets no picker
+thumbnails.
 
-The policy has to be written against a *running* app, because the constraints
-are all runtime ones:
-
-- bundled assets under Tauri's custom protocol (`tauri://` / `http://tauri.localhost`),
-- `blob:` and `data:` for decrypted attachments, avatars and object URLs,
-- `connect-src` for the relay origin (HTTPS + WSS) — which is user-configurable,
-  so the policy either allows any HTTPS origin or is templated per account,
-- mediasoup's WebRTC (not CSP-governed, but the worker/wasm surfaces around it are),
-- `wasm-unsafe-eval` if any WASM ends up in the webview,
-- `img-src` for relay-proxied emote/GIF images.
-
-Target: `default-src 'none'` with explicit allowances, no `unsafe-inline` for
-scripts, and a smoke test that the app still functions with it on. Delete the
-dead relay-side directives at the same time.
+Closing it means routing both through the **Rust core**, the way content emotes
+already are: the core fetches, returns bytes, the UI renders a `blob:`. Then
+`https:` leaves `img-src` and the webview has no route to the network at all. For
+the picker that is a no-cache sibling of `emote_get` (search results must still
+not enter the LRU). For user-authored images it needs a byte cap and timeout, a
+content-type check, a redirect policy, and a decision on whether the core fetches
+directly or via the relay's `/og`-style proxy — the latter would also hide the
+reader's IP from the image host, which the click-to-load gate currently only
+*warns* about.
 
 ### Relay identity is never pinned
 
@@ -314,61 +332,62 @@ a "verified" badge on confirmed contacts, and the **soft** key-change tier.
 
 ## v8 gaps in shipped surfaces
 
-### Emoji, GIFs and link previews — the client half
+### GIFs and link previews — the client half
 
-The relay side is built and documented in
+Emoji are **done** (search, the shared renderer, the per-message fetch cap and
+the offline fallback — see [chat.md](chat.md#emoji-emotes-the-picker-and-the-cap)).
+The other two content proxies still have no client at all. The relay side of
+both is built and documented in
 [relay.md](relay.md#content-proxies-privacy-not-features): device-token-authed
-`/api/relay/gifs/{search,trending}`, `/api/relay/og`,
-`/api/relay/emotes/search`, and a capability-gated `/api/relay/emote/:sig/:file`
-image endpoint. **No client calls any of them.**
-`web/src/lib/emoji/index.ts` never populates the emote registry, so
-`resolveEmoji` resolves nothing and `EmojiText`/`EmojiInput` only ever surface
-unicode emoji. The 7TV manifest that used to be bundled is gone and nothing
-replaced it in the UI.
+`/api/relay/gifs/{search,trending}` and `/api/relay/og`.
 
-Outstanding, in dependency order:
-
-1. **Wire emote search into the picker.** Query
-   `/api/relay/emotes/search` through the Rust core (so the device token never
-   crosses IPC, as with the SFU calls), register the returned names/URLs with
-   `registerEmote`, and rank results with the existing decayed usage store
-   (`web/src/lib/emoji/usage.ts`, already built and persisted in the vault).
-2. **The on-device used-emoji store.** Search is live and network-bound; the
-   emoji you have *already seen* must render offline and without a round-trip.
-   Agreed design:
-   - A SQLCipher-backed store in the Rust core holding the bytes of every emoji
-     actually **encountered in a message or note** — not search results, which
-     are browsing, not content.
-   - **Size-bounded with LRU eviction**, the same shape as the attachment
-     eviction that already exists. A miss re-fetches from the relay proxy; an
-     eviction is never user-visible beyond a fetch.
-   - **A single shared render component persists what it renders.** Making the
-     renderer the only writer means an emoji is cached exactly when it is
-     genuinely displayed, and there is one place to enforce the caps. The picker
-     and search results must opt out explicitly.
-   - **Per-message cap on distinct emote fetches.** This is the security-relevant
-     part: without it a hostile sender puts 500 distinct emote refs in one
-     message and every recipient's client fetches 500 images — turning each
-     recipient into a fetch amplifier against the relay, and filling their disk.
-     Cap the distinct emotes rendered-and-cached per message (a small number,
-     ~20), render the remainder as literal `:shortcode:` text, and count the cap
-     per message rather than per view so re-rendering cannot bypass it.
-   - **The picker falls back to the cached set when offline**, so emoji keep
-     working with no relay.
-3. **GIF search UI**, which must bring back the **recipient-side host
+1. **GIF search UI**, which must bring back the **recipient-side host
    allowlist**. The old `safeGif` check (render only `*.<provider>` CDN hosts)
    died with the legacy chat store. Klipy returns third-party CDN URLs, so a
    client that renders them leaks exactly the IP the proxy exists to hide —
    either proxy the media too, or make the allowlist a hard precondition of the
    feature. Same constraint applies to the `image` URL in an `/og` response.
-   Also: `registerEmote()`'s doc comment says "relay origin only" but does not
-   enforce it — enforce it in code as part of this work.
-4. **Link previews in chat**, and with them a **local link-preview preference**.
+   Note that emoji solved the equivalent problem by **pinning the origin in
+   code** (`isAllowedEmoteUrl`, [chat.md](chat.md#emoji-emotes-the-picker-and-the-cap));
+   a GIF allowlist should be the same shape, not a comment.
+2. **Link previews in chat**, and with them a **local link-preview preference**.
    The old on/off toggle was a server-side per-user profile flag and went with
    the legacy stack; it must come back as a **device-local** setting alongside
    the existing click-to-load image/embed toggles in `web/src/lib/privacy.ts`
    (`localStorage`, no server involvement). Default off — fetching a preview,
    even through the relay, tells the relay which link you were sent.
+
+### Resolving an emote shortcode without asking the relay for the name
+
+Shipped emoji resolve a `:shortcode:` seen in content to a 7TV id through
+`emote_search`, because the wire format carries only the name and the client has
+no other name→id oracle
+([chat.md](chat.md#emoji-emotes-the-picker-and-the-cap)). It works and it is
+capped, but it discloses to the relay — and through it to 7TV — **which
+shortcodes appear in the messages you receive**, for emotes you have not already
+cached. The image fetch that follows discloses the emote anyway, so this is a
+narrow widening, not a new category; it is listed because it was a design choice
+with a privacy cost, not an inevitability.
+
+Two ways out, neither free:
+
+- **Carry the id in the message** (`<:name:id>`-style, as other chat apps do).
+  Removes the lookup entirely, but it is a wire-format change, and it lets a
+  sender bind any id to any name — the image would be whatever the *sender*
+  picked, which is arguably correct for emotes but is a new sender-controlled
+  field to reason about.
+- **Have the relay expose a name→id resolve endpoint it can answer from its own
+  cache**, so 7TV never sees the query. The relay still learns the name.
+
+Until one of them is built, `initEmoji()` keeps the common case quiet: every
+emote already in the on-device cache resolves with no network at all.
+
+Also unbuilt, and worth doing while that code is open: the **chat composer has
+no `:` autocomplete**. `EmojiInput` (note/folder titles) has one and ranks
+against the registered emote set; the chat draft is a bare `<input>`, so an
+emote has to come from the picker. Typing must never trigger a relay search per
+keystroke — autocomplete stays limited to emotes already registered this
+session.
 
 ### Push registration (D7)
 
@@ -443,34 +462,45 @@ group. Removal is the one that matters cryptographically — without it, a remov
 member keeps a working group key, so "remove" would be a lie in the UI. Build
 the rotation with the removal, not after it.
 
-### Escrow — upload, cold start, and device re-enrolment
+### Escrow — removed
 
-The escrow *plumbing* is complete on both sides (relay routes, Rust commands,
-tests) and **entirely unreachable**:
+**Decided 2026-07-27: relay-held escrow is dropped entirely, code included.**
 
-- **Nothing ever uploads an escrow blob.** `relayEscrowUpload()` in
-  `web/src/lib/native.ts` has zero call sites and `relay_escrow_upload` is never
-  invoked from onboarding or Settings. No account has an escrow row, so the
-  "Log in" screen in `NativeGate.vue` cannot restore anything. Upload has to
-  happen at signup (and after a password change), with the user told plainly
-  what is stored and what it protects.
-- **Recovery-code cold start is unreachable.** The client only ever sends
-  `authKind: 'password'`; `POST /api/relay/escrow/fetch` supports both. Wire the
-  recovery-code path, and fix the empty-`recovery_auth_hash` bug above first.
-- **A restored device cannot reach the relay.** `vault_restore_from_escrow`
-  rebuilds MK and the identity keys, but the device's Ed25519 signing key is
-  fresh-random per device, so it is in no `relay_devices` row and
-  `POST /api/relay/auth/token` 401s. There is no enrolment endpoint — a device
-  enrols only via `POST /api/relay/register`, which creates an account. So
-  escrow restore currently yields a working local vault with **no connectivity**.
-  Needs a device-enrolment path authorized by something the restored device
-  proves it holds (an escrow-derived key, or the account's identity key), which
-  is adjacent to but distinct from D8 pairing.
+Escrow stored a password-wrapped master key (MK) on the relay so a brand-new
+device could rebuild an identity from handle + password alone. It is gone
+because it never paid for itself:
 
-Until all three land, escrow is not a recovery story and should not be described
-to a user as one. See
-[accounts-and-crypto.md](accounts-and-crypto.md#account-escrow--cold-start).
+- **Whenever any device survives, pairing already does the job better.** The
+  existing device seals MK straight to the new one
+  ([D8](#device-pairing--history-transfer-d8)) with nothing stored server-side —
+  and pairing carries *history* too, which escrow never could.
+- **When no device survives, it was buying recovery at a bad price.** A
+  permanently stored blob wrapped under one human-chosen password is an offline
+  brute-force target and a standing at-rest liability on a relay whose entire
+  posture is zero-at-rest. An encrypted backup export the user holds themselves
+  protects the same case with no server storage
+  ([D8](#offline-encrypted-backup-export-d8)).
 
+The consequence is accepted and documented as a design constraint rather than a
+gap: **losing every device with no backup means permanently losing the identity,
+not just the history** — see
+[security.md](security.md#total-device-loss-is-unrecoverable-by-design). The
+onboarding obligations that follow from it (the ≥2-device nudge, prompting the
+backup export) are part of D8.
+
+**Removal work** — escrow is still in the tree and must come out end to end:
+relay routes (`PUT /api/relay/escrow`, `/escrow/kdf`, `/escrow/fetch`) and their
+tests; the `relay_escrow` table and accessors in `server/src/db.ts`; the Rust
+commands `relay_escrow_upload` / `vault_restore_from_escrow` and the
+`recovery_auth_hash` / `password_auth_hash` escrow bundle in `vault.rs`;
+`relayEscrowUpload` / `vaultRestoreFromEscrow` in `web/src/lib/native.ts`; the
+"Log in" restore screen in `NativeGate.vue` and its tests; and the fake-core
+handlers in `e2e/ui/fakeCore.ts`. Note that removing it also removes the
+empty-`recovery_auth_hash` bug recorded under *Defects* — verify that as part of
+the removal rather than fixing it separately.
+
+Pairing therefore becomes the **only** way onto a new device, which makes
+[D8](#device-pairing--history-transfer-d8) launch-blocking.
 ### Profiles — storage and updates
 
 [profiles.md](profiles.md) covers what exists: the handle, and an E2EE display
@@ -535,9 +565,8 @@ previously written up as if shipped:
 
 ### Device pairing & history transfer (D8)
 
-The only way onto a new device today is escrow recovery, which restores
-**identity but no history** (and, as above, no relay access). Pairing is the
-intended primary path:
+With relay-held escrow [removed](#escrow--removed), pairing is the **only** way
+onto a new device, and therefore launch-blocking:
 
 1. **Pair via QR.** The new device generates an ephemeral X25519 keypair and
    shows its *public* key as a QR; the primary scans it, both show a **SAS** to
@@ -546,7 +575,7 @@ intended primary path:
    encrypted local store (or a CRDT snapshot) to the new device **through the
    relay as opaque blobs** — nothing durable lands on the server.
 3. **Ongoing sync.** Every device is a full replica; the relay queues encrypted
-   updates for offline devices.
+   updates for offline devices. Designed in *Multi-device history & sync* below.
 
 **Core invariant — MK only ever crosses the wire *sealed to a key held by the
 receiving device*.** The real risk is authenticating the *target* device, not the
@@ -559,6 +588,217 @@ compromise and is out of scope.
 
 Also unbuilt: the **soft ≥2-device nudge** during onboarding, so single-device
 loss isn't catastrophic.
+
+### Multi-device history & sync (D8a)
+
+**Decided (2026-07-26): a new device must arrive with full history, and devices
+must stay converged.** This is table stakes for a chat app, not an enhancement,
+so it is designed here rather than left as "every device is a full replica".
+
+**Why today's model cannot do it.** A conversation exists only on the device that
+received it. The relay is a sealed-sender mailbox that deletes an envelope on ack
+and after a 14-day time-to-live (TTL), so there is nothing to re-read: a second
+device sees an empty app and starts accumulating from the moment it enrols. Three
+separate mechanisms are needed, and they solve genuinely different problems.
+
+#### 1. Live fan-out — per-device mailboxes, duplicated by the relay
+
+Give every enrolled device its **own mailbox**, and have the relay copy each
+inbound envelope into all of the account's device mailboxes. Each device acks its
+own copy; the relay deletes per copy, and the existing TTL applies per copy.
+
+The load-bearing detail is that **the sealing key stays account-level, derived
+from the master key (MK)** rather than per-device. All of an account's devices
+already share MK (that is what pairing hands over), so they all derive the same
+sealing key, and therefore:
+
+- the sender seals **once** and addresses one delivery token, exactly as today —
+  so a contact never learns how many devices you have, or that you added one;
+- the relay duplicates an **opaque blob** it already holds, so sealed sender is
+  untouched: it still cannot tell who sent it or read it;
+- no protocol change is visible to senders at all. This is a relay-side and
+  client-side change only.
+
+Per-*device* sealing keys were the obvious alternative and are worse: the sender
+would have to seal N times, which leaks the device count to every contact and
+makes adding a device a visible event. The cost of the account-level key is that
+any one compromised device can open all account mail — but a compromised device
+already holds MK, so this concedes nothing new.
+
+#### 2. Mutable state — a device tells its siblings by messaging itself
+
+Message bodies converge for free once fan-out exists, because every device
+receives the same stream. Everything *mutable* does not: read markers, reactions,
+edits, deletions, note bodies, folder and pin structure.
+
+Handle these as **self-envelopes** — a device that changes state seals an update
+to its own account and the relay fans it out to the siblings. Mechanically it is
+the same path as an inbound message, so it inherits sealed sender, the mailbox
+and acks with no new transport.
+
+Merge semantics are already specified in [chat.md](chat.md) and need no
+invention, only wiring: edits are a last-writer-wins register, reactions an
+add-wins set, read state a monotonic maximum, deletion a tombstone that always
+wins. Note bodies are Yjs documents, which merge by construction. The ordering
+key `(relay_ts, sender_id, message_id)` is already device-independent, so two
+replicas that have seen the same envelopes agree on order without negotiating.
+
+#### 3. Backfill — the snapshot a new device cannot receive live
+
+Fan-out only covers mail sent *after* a device enrolled. History from before it
+existed has to come from a device that already holds it, which is the pairing
+transfer in D8 above: a chunked, encrypted snapshot streamed through the relay as
+ordinary opaque blobs with a short TTL, deleted on pickup. Chunks are acked
+individually so a large transfer resumes rather than restarting.
+
+**Attachments are the awkward part.** Relay blobs are deleted on ack, so the
+bytes are usually gone from the server, and a full media history may be far
+larger than the message history. Ship attachment *metadata* in the snapshot
+always, and fetch bytes lazily: a device that lacks a blob requests it from a
+sibling that still has it, falling back to "no longer available" rather than
+pretending. This reuses the eviction states the attachment store already has.
+
+#### What the relay learns that it did not before
+
+Stated plainly because it is a real cost: per-device mailboxes make **device
+count and per-device activity patterns** visible to the relay — which mailbox
+drains, and when. It already knows the enrolled device list (devices authenticate
+individually), so this is a resolution increase rather than a new category, but
+it does mean the relay can distinguish "this account has three devices, one of
+which is active at night" where before it saw one mailbox.
+
+#### The revocation problem — unsolved, and it should block the design review
+
+Revoking a device stops fan-out to it, and `deviceFromAuthHeader` re-checks the
+revoked flag per request, so its relay access dies immediately. But a revoked
+device **keeps MK**, and therefore keeps the account sealing key and everything
+already on its disk. Genuine revocation means rotating MK and re-wrapping every
+key derived from it across all remaining devices — a substantial change that
+touches the recovery code, delivery tokens and the profile key.
+
+Until that exists, "remove device" means "cut off future access", not "revoke
+what it has". That must be said in the interface, not implied. This is the same
+class of gap as *Revocation & blocking fan-out* above and probably shares its fix.
+
+#### Open questions
+
+- Is the snapshot bounded, or is a five-year history simply a long transfer? A
+  time-boxed default with "fetch older on demand" may be kinder.
+- Should self-envelopes be coalesced? Read-marker churn could dominate mailbox
+  traffic on a busy conversation.
+- Does a device that has been offline for months need a different path from a
+  brand-new device, or is "backfill from a sibling" the same code?
+
+### Mitigating what per-device mailboxes tell the relay
+
+[D8a](#multi-device-history--sync-d8a) gives every device its own mailbox, which
+hands the relay two things it did not have at that resolution: **how many devices
+an account has**, and **each device's activity pattern** — which mailbox drains,
+how often, at what hours. Combined across accounts that is a decent
+device-fingerprint and a rough timezone/sleep-schedule signal, on a relay whose
+whole posture is that it learns as little as possible. It is worth a deliberate
+answer rather than a shrug.
+
+Note the relay already knows the enrolled device *list*, because devices
+authenticate individually — so the new exposure is the per-device **traffic
+pattern**, not the existence of the devices.
+
+Options to evaluate, cheapest first:
+
+- **Uniform draining.** Devices poll on a fixed schedule with jitter rather than
+  reacting instantly to a nudge, so drain timing stops tracking human activity.
+  Costs latency, which is exactly what a chat app cannot spend freely — probably
+  only acceptable for the *idle* case, with live nudges when the app is focused.
+- **Cover traffic.** Idle devices issue drains that fetch nothing, so "this
+  device is asleep" is not observable. Cheap in bandwidth (an empty mailbox
+  response is tiny), and it directly attacks the schedule signal.
+- **Decoupling ack from fetch**, so the relay cannot tell a device that *read*
+  something from one that merely polled.
+- **A single account mailbox with client-side de-duplication** — the pre-D8a
+  shape — where every device drains the same queue and the relay cannot attribute
+  a drain to a device at all. Attractive on privacy, but it breaks per-device
+  acks: the relay could not know when it is safe to delete, and either every
+  device must ack (leaking the count anyway) or the queue grows to its
+  time-to-live (TTL). Evaluate seriously before rejecting; it may be the right
+  shape with a different deletion rule.
+- **Accepting it and saying so** in
+  [security.md](security.md#threat-model--metadata-exposure), which already lists
+  a recipient's device count as structurally visible.
+
+The decision belongs with the D8a design review, because it may change the
+mailbox model rather than sit on top of it. What must not happen is D8a shipping
+with the exposure undocumented.
+
+### Device revocation — threat model and mechanism
+
+"Remove device" currently means "stop the relay serving it": `deviceFromAuthHeader`
+re-checks the revoked flag on every request, so relay access dies immediately.
+It does **not** mean the device stops being able to read what it has. A revoked
+device keeps the master key (MK), and therefore the account sealing key, the
+profile key, every note and message already on its disk, and the ability to
+decrypt anything it can still obtain by other means. For a privacy-first app that
+gap is not acceptable as a permanent answer, and the mechanism cannot be designed
+without first being honest about *why* someone revokes.
+
+**Why a user revokes, and what each case actually demands**
+
+1. **Retired hardware they still control** — sold, recycled, replaced. The device
+   is not an adversary; the user just wants it off the account. Cutting relay
+   access is genuinely sufficient, provided the disk was encrypted. This is the
+   common case and today's behaviour already serves it.
+2. **Lost or stolen, unknown holder.** The vault is locked, so the attacker faces
+   the unlock paths — but the OS keychain unlock is *silent* and not
+   biometric-gated (see [native-app.md](native-app.md)), so on a warm machine an
+   attacker may simply open the app. This case demands that the device lose
+   access to **future** content immediately and that **existing** content stop
+   being readable, which today it does not.
+3. **Compromised while in use** — malware, an attacker with the unlocked machine.
+   Strictly worse: assume MK is already exfiltrated, so nothing done afterwards
+   can protect what the device already had. What revocation must still deliver is
+   **forward secrecy at the account level**: everything *after* revocation is
+   unreadable to the old key material.
+4. **Ending a shared-device situation** — a partner, a family machine, a former
+   relationship. Socially the most likely reason a privacy-focused user reaches
+   for this, and it is really case 3 with a known adversary who may still have
+   physical access and may know the password. This one also demands the
+   *password* be rotatable independently, and that the interface not reveal to
+   the other party that revocation happened.
+
+Cases 2–4 all reduce to the same requirement: **rotate MK and re-wrap everything
+derived from it across the remaining devices**, so the revoked device holds keys
+that no longer open anything new. That is the substantial piece of work, and it
+reaches into the recovery code, the delivery token, the profile key, the account
+sealing key that [D8a](#multi-device-history--sync-d8a) introduces, group keys,
+and every at-rest blob wrapped under the old MK.
+
+**Design questions to settle**
+
+- **What is re-encrypted, and when.** Rotating MK does not require rewriting the
+  whole store if MK wraps per-object keys rather than the data — re-wrapping keys
+  is cheap, re-encrypting history is not. Confirm the hierarchy actually allows
+  the cheap path.
+- **How remaining devices learn the new MK.** They cannot be handed it by the
+  revoked device, and pairing requires physical co-presence. Distributing it as a
+  self-envelope sealed to each remaining device's own key is the natural fit — but
+  that means devices need per-device keys *for this purpose*, which cuts against
+  D8a's account-level sealing key. Resolve the two together.
+- **Contacts must re-pin.** A new identity key means every contact's trust-on-
+  first-use pin is stale, which looks exactly like the machine-in-the-middle
+  attack key transparency exists to catch. Rotation therefore has to be a
+  *published, log-visible* event with a signed statement chaining old key to new,
+  not a silent substitution.
+- **Offline devices.** A remaining device that is offline during rotation must be
+  able to catch up without being mistaken for the revoked one.
+- **Does the relay learn anything new** from a rotation event, and can it
+  distinguish "revoked a device" from "added one"?
+- **What the interface promises.** Until rotation exists, the button must say
+  what it does — cut off future access — and not imply the device has been locked
+  out of what it holds.
+
+This shares its machinery with
+[*Revocation & blocking fan-out*](#revocation--blocking-fan-out) (unfriending has
+the same "the other side keeps a working capability" problem) and should be
+designed once for both.
 
 ### Offline encrypted backup export (D8)
 
@@ -653,48 +893,53 @@ colluding relays a timing linkage, so it needs independent per-relay sealing
 ## Testing
 
 [testing.md](testing.md) documents the four-layer strategy and what each layer
-would cover. **L1 (Rust core unit tests) is built; L2–L4 are not.**
+covers. **L1 (Rust core unit tests), L2 (two cores against a real spawned relay)
+and L3 (the UI over a faked Tauri IPC) are built and run in CI; L4 is not
+built.**
 
-### L2 — two Rust cores against a real relay · not built
+What L2 does *not* reach yet, and would be worth extending it with: **group
+fan-out** and **attachment upload/download** — each is a multi-party or
+multi-step protocol whose halves are currently only tested separately.
 
-Drive two `Store`/`RelayClient` instances in-process against a booted relay and
-assert the protocol end to end: invite → friend → send → drain → decrypt →
-ingest, group fan-out, attachment upload/download, escrow round-trip. This is
-the layer that would have caught the `friend-confirm` half-friendship and the
-paging-cursor bug. No webview involved, so it runs anywhere CI runs.
+### What L3 still leaves uncovered
 
-### L3 — Playwright against a faked Tauri IPC · not built
+Deliberate gaps in `e2e/ui/`, in rough priority order: **groups** (create, add
+member, fan-out render), **attachments** through the composer, the **voice call
+panel** (ring → accept → hang up; media stays out of this layer by design), the
+**settings** surface, and the **mobile pane logic** in `mobileNav.ts` — the
+suite runs one desktop viewport, so the phone layout has no coverage anywhere.
 
-Run the real Vue app in a real browser with a **stateful fake** standing in for
-the Rust core, so UI flows (onboarding, unlock, chat, settings) get browser-grade
-coverage without a native shell. Checked against the installed
-`@tauri-apps/api` (2.11.1), the seam is small but exact:
-
-- `isTauri()` reads `globalThis.isTauri` — a fake that only sets
-  `__TAURI_INTERNALS__` leaves `isNative === false` and the UI takes no native
-  path at all.
-- `invoke()` calls `window.__TAURI_INTERNALS__.invoke(cmd, args, options)`.
-- Events go through `invoke('plugin:event|listen', …)` with a handler registered
-  via `window.__TAURI_INTERNALS__.transformCallback`, so the fake must implement
-  `transformCallback` to *push* frames at the UI rather than only answer calls.
-
-`@tauri-apps/api/mocks` is rejected for this: it mutates `window` in the current
-JS context, which under Vitest is Node and under Playwright is the wrong side of
-the process boundary.
-
-### L4 — real-shell smoke · not built
+### L4 — real-shell smoke · not built, deferred on a decision
 
 One thin pass through the actual Tauri binary, to catch what a fake cannot:
-webview quirks, the custom protocol, keychain access, and (post-CSP) that the
-policy doesn't break the app.
+webview quirks, the custom protocol serving the production CSP as a header, the
+capability set in `src-tauri/capabilities/`, and keychain access. (The CSP's own
+silent-failure risk is already covered off-shell by `web/dev/csp-probe.mjs` in
+Chromium and WebKit — [testing.md](testing.md#the-csp-probe).)
 
-### The constraint that shapes L3 and L4
+**The options were fully researched in July 2026 — read
+[testing.md § L4](testing.md#l4--real-shell-smoke-against-the-packaged-app--not-built-evaluated-july-2026-deferred-see-below)
+before touching this, the research does not need redoing.** In short:
 
-`tauri-driver` is **Linux and Windows only** — Apple ships no WKWebView
-WebDriver, and macOS is the development machine. So load-bearing UI coverage has
-to live in L3, with L4 kept to a smoke run on a platform that supports it.
-`@srsholmes/tauri-playwright` (MIT, pre-1.0, ~39 stars) is worth evaluating for
-L4; the pre-1.0 dependency risk is real and should be weighed before adopting.
+- The macOS blocker recorded here previously is **obsolete**.
+  `@wdio/tauri-service` (WebdriverIO org, MIT, 1.2.0) drives macOS via
+  `tauri-plugin-wdio-webdriver`, and the Tauri docs now recommend it.
+- **The blocker is now a security decision, and it is the maintainer's to make.**
+  Every macOS-capable option embeds an automation server in the app:
+  `tauri-plugin-wdio-webdriver` runs 47 unauthenticated W3C WebDriver endpoints
+  on `127.0.0.1:4445`, able to eval arbitrary JS and therefore call every IPC
+  command against an unlocked vault. Upstream's suggested gate
+  (`[target.'cfg(debug_assertions)'.dependencies]`) is **not honoured by Cargo**
+  and resolves to always-on, so the naive install links it into release builds.
+- **Recommended shape when built:** official `tauri-driver` on **Linux only**,
+  no app modification, driving the real release binary, attached to
+  `native-build.yml`'s Linux job (which already pays for the build) — plus
+  `apt install webkit2gtk-driver xvfb` and a small plain-`fetch` W3C client. Not
+  a new `ci.yml` job: a 10–20 minute Tauri compile per push buys too little.
+- **Why it is still unwritten:** it cannot be run or debugged from the macOS dev
+  machine, and a CI-only job that has never executed is the "green but
+  meaningless" failure this strategy exists to avoid. It wants someone iterating
+  against a Linux runner.
 
 ### Re-point the coverage gate
 

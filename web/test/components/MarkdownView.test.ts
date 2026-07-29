@@ -96,4 +96,13 @@ describe('MarkdownView — emote shortcodes', () => {
     expect(w.find('img.chat-emoji').exists()).toBe(false);
     expect(w.find('code').text()).toContain(`:${known}:`);
   });
+
+  it('renders emoji through the shared renderer, scoped to the document', () => {
+    // The scope is the per-message/per-note emote fetch budget's key: markdown
+    // must thread it, or a note body would render emoji un-budgeted.
+    const w = mount(MarkdownView, { props: { source: `:${known}:`, emojiScope: 'note:abc' } });
+    const img = w.find('img.chat-emoji');
+    expect(img.exists()).toBe(true);
+    expect(img.attributes('src')).toBe(url);
+  });
 });

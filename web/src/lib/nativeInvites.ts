@@ -21,11 +21,35 @@ import {
 } from './native';
 import { buildInvite, generateInviteToken, inviteTokenHash, parseInvite } from './invites';
 import { rememberRelayUrl } from './nativeRelay';
+import { errorMessage } from './errors';
+import { toastError } from './toast';
 
 /** True if a register was refused because this device is already enrolled (a
  *  prior onboarding attempt got past the register step). Recoverable. */
 function isAlreadyRegistered(e: unknown): boolean {
   return /already registered/i.test(String(e));
+}
+
+/** The core fails an invite closed when the relay's key-transparency log
+ *  publishes a different identity key for the inviter's handle — i.e. the
+ *  invite is not from who it claims. Surface it as the catalogued error rather
+ *  than a raw core string: this is the MITM case, and the user needs the
+ *  explanation, not the internals. */
+const KT_MISMATCH = 'KT_CONTACT_KEY_MISMATCH';
+
+function isKtMismatch(e: unknown): boolean {
+  return String(e).includes(KT_MISMATCH);
+}
+
+/** Re-raise a KT mismatch as a catalogued, user-readable failure (and toast it,
+ *  since it can also happen inside best-effort onboarding steps that would
+ *  otherwise swallow it). Any other error passes through untouched. */
+function rethrowKt(e: unknown): never {
+  if (isKtMismatch(e)) {
+    toastError(KT_MISMATCH);
+    throw new Error(errorMessage(KT_MISMATCH));
+  }
+  throw e;
 }
 
 /**
@@ -116,9 +140,15 @@ export async function registerViaInvite(
     await relayDirectoryPublish();
     const deliveryToken = await relayRegisterVerifier();
     const envelope = await sealFriendAccept(inv.sealingPub, { handle, deliveryToken });
-    await relayRegisterFriendAccept(envelope);
+    // The core verifies the invite's pinned key against the transparency log
+    // before delivering this (it carries our delivery token).
+    await relayRegisterFriendAccept(envelope, inv.handle, inv.identityPub);
   } catch (e) {
-    console.warn('post-registration setup / friend handshake incomplete (retry on connect):', e);
+    // A KT mismatch is NOT a hiccup to retry past — the invite is not from who
+    // it claims. The account exists either way, so we surface it and let the
+    // user land in the app without that "friend".
+    if (isKtMismatch(e)) toastError(KT_MISMATCH);
+    else console.warn('post-registration setup / friend handshake incomplete (retry on connect):', e);
   }
   return { handle, inviterHandle: inv.handle };
 }
@@ -195,6 +225,9 @@ export async function redeemFriendInvite(
   // Include my sealing key so the inviter can reciprocate (seal a friend-confirm
   // back to me); the whole payload is signed by the envelope.
   const envelope = await sealFriendAccept(inv.sealingPub, me);
-  const relayTs = await relayInviteRedeem(inv.token, envelope);
+  // The core checks the invite's pinned identity key against the relay's
+  // transparency log and refuses to send on a mismatch — fail closed before the
+  // delivery token inside the envelope can reach an impostor.
+  const relayTs = await relayInviteRedeem(inv.token, envelope, inv.handle, inv.identityPub).catch(rethrowKt);
   return { inviterHandle: inv.handle, relayTs };
 }

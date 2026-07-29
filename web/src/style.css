@@ -319,6 +319,15 @@ html.vt-exclude-root {
   transform: scale(2);
 }
 
+/* The same emote rendered as a picker tile: sized to the grid cell, no hover
+   zoom (the cell already highlights). */
+.emote-tile {
+  display: block;
+  max-height: 1.75rem;
+  max-width: 1.75rem;
+  object-fit: contain;
+}
+
 /* A chat message that is nothing but emote(s) renders them enlarged. Bumping the
    font-size scales both the em-sized custom emote images and any native unicode
    emoji glyphs together. */

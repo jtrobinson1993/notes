@@ -466,14 +466,6 @@ CREATE TABLE IF NOT EXISTS relay_mailbox (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_relay_mailbox_device ON relay_mailbox(device_id, queue_id);
-CREATE TABLE IF NOT EXISTS relay_escrow (
-  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  payload TEXT NOT NULL,
-  kdf_params TEXT,
-  password_auth_hash TEXT,
-  recovery_auth_hash TEXT,
-  updated_at INTEGER NOT NULL
-);
 CREATE TABLE IF NOT EXISTS relay_directory (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   identity_pubkey TEXT NOT NULL,
@@ -540,11 +532,17 @@ CREATE TABLE IF NOT EXISTS relay_group_blobs (
 );
 `);
 
-  // Idempotent v8 migration: relay_escrow.kdf_params (added after the table).
-  const escrowCols = db.prepare('PRAGMA table_info(relay_escrow)').all() as { name: string }[];
-  if (!escrowCols.some((c) => c.name === 'kdf_params')) {
-    db.exec('ALTER TABLE relay_escrow ADD COLUMN kdf_params TEXT');
-  }
+  // Idempotent migration: drop the relay-held escrow table.
+  //
+  // Escrow was removed (spec/roadmap.md § "Escrow — removed") because a
+  // permanently stored, password-wrapped master key is an offline brute-force
+  // target on a relay whose whole posture is zero-at-rest. Deleting the table
+  // *definition* stops new rows, but an already-running relay would keep its
+  // existing blobs on disk and in every backup — still crackable, and no longer
+  // usable by any client. Leaving them would defeat the point of the removal, so
+  // they are dropped on boot. Safe to run forever: a relay that never had the
+  // table is unaffected.
+  db.exec('DROP TABLE IF EXISTS relay_escrow');
 
   // Idempotent migration: add users.display_name / name_color if missing.
   const userCols = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -1065,66 +1063,6 @@ CREATE TABLE IF NOT EXISTS relay_group_blobs (
         return rows.map((r) => r.blob_id);
       });
       return sweep();
-    },
-
-    /** D15 escrow: opaque wrapped-key payload + auth-key hashes. The blobs
-     *  are MK wrapped under user-held secrets — never usable by the relay. */
-    setRelayEscrow(
-      userId: string,
-      payload: string,
-      kdfParams: string | null,
-      passwordAuthHash: string | null,
-      recoveryAuthHash: string | null,
-    ): void {
-      db.prepare(
-        `INSERT INTO relay_escrow (user_id, payload, kdf_params, password_auth_hash, recovery_auth_hash, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload,
-           kdf_params = excluded.kdf_params,
-           password_auth_hash = excluded.password_auth_hash,
-           recovery_auth_hash = excluded.recovery_auth_hash,
-           updated_at = excluded.updated_at`,
-      ).run(userId, payload, kdfParams, passwordAuthHash, recoveryAuthHash, Date.now());
-    },
-    getRelayEscrow(userId: string):
-      | {
-          payload: string;
-          kdfParams: string | null;
-          passwordAuthHash: string | null;
-          recoveryAuthHash: string | null;
-        }
-      | undefined {
-      const r = db
-        .prepare('SELECT payload, kdf_params, password_auth_hash, recovery_auth_hash FROM relay_escrow WHERE user_id = ?')
-        .get(userId) as
-        | {
-            payload: string;
-            kdf_params: string | null;
-            password_auth_hash: string | null;
-            recovery_auth_hash: string | null;
-          }
-        | undefined;
-      return r
-        ? {
-            payload: r.payload,
-            kdfParams: r.kdf_params,
-            passwordAuthHash: r.password_auth_hash,
-            recoveryAuthHash: r.recovery_auth_hash,
-          }
-        : undefined;
-    },
-    /** KDF params by handle for cold-start escrow fetch (public — the salt is
-     *  not secret). Undefined when there's no escrow; the route substitutes a
-     *  deterministic pseudo-params so probing can't detect existence. */
-    getRelayEscrowKdfByHandle(handle: string): string | undefined {
-      return (
-        db
-          .prepare(
-            `SELECT e.kdf_params FROM relay_escrow e JOIN users u ON u.id = e.user_id
-             WHERE u.handle = ? COLLATE NOCASE`,
-          )
-          .get(handle) as { kdf_params: string | null } | undefined
-      )?.kdf_params ?? undefined;
     },
 
     /** D5 directory: bind this account's handle to its per-relay keys. */

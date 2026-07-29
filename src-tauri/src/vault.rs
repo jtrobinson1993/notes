@@ -73,41 +73,6 @@ struct VaultMeta {
     wrapped_mk_vault: WrappedKey,
     wrapped_mk_password: WrappedKey,
     wrapped_mk_recovery: WrappedKey,
-    /// D15: auth-key hashes for the relay escrow (public data — hashes of
-    /// domain-separated keys the relay compares against on fetch).
-    #[serde(default)]
-    escrow: Option<EscrowMeta>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-struct EscrowMeta {
-    password_auth_hash: String,
-    recovery_auth_hash: String,
-}
-
-/// What the client uploads to the relay for escrow (D15).
-pub struct EscrowUploadBundle {
-    pub payload: String,
-    pub kdf_params: String,
-    pub password_auth_hash: String,
-    pub recovery_auth_hash: String,
-}
-
-/// The relay escrow payload — mirror of what `escrow_bundle()` serializes.
-#[derive(serde::Deserialize)]
-struct EscrowPayload {
-    #[serde(rename = "kdfSalt")]
-    kdf_salt: [u8; 16],
-    #[serde(rename = "kdfMKib")]
-    kdf_m_kib: u32,
-    #[serde(rename = "kdfT")]
-    kdf_t: u32,
-    #[serde(rename = "kdfP")]
-    kdf_p: u32,
-    #[serde(rename = "wrappedMkPassword")]
-    wrapped_mk_password: WrappedKey,
-    #[serde(rename = "wrappedMkRecovery")]
-    wrapped_mk_recovery: WrappedKey,
 }
 
 /// Minimal keychain abstraction: the OS secure store in production, an
@@ -139,6 +104,7 @@ pub struct Vault {
     store: Option<Store>,
     mk: Option<Secret32>,
     blobs: crate::blobs::BlobStore,
+    emote_blobs: crate::blobs::BlobStore,
 }
 
 impl Vault {
@@ -148,12 +114,14 @@ impl Vault {
 
     pub fn with_keychain(data_dir: PathBuf, keychain: Box<dyn Keychain>) -> Self {
         let blobs = crate::blobs::BlobStore::new(data_dir.join("blobs"));
+        let emote_blobs = crate::blobs::BlobStore::new(data_dir.join("emotes"));
         Self {
             data_dir,
             keychain,
             store: None,
             mk: None,
             blobs,
+            emote_blobs,
         }
     }
 
@@ -161,6 +129,14 @@ impl Vault {
     /// unlock, but every caller also needs the row from the locked store).
     pub fn blobs(&self) -> &crate::blobs::BlobStore {
         &self.blobs
+    }
+
+    /// The used-emoji cache's blob store. A **separate root** from attachments
+    /// on purpose: both are content-addressed by an id supplied over the wire,
+    /// and one shared namespace would let a relay-assigned blob id collide with
+    /// a 7TV emote id and clobber the other's bytes.
+    pub fn emote_blobs(&self) -> &crate::blobs::BlobStore {
+        &self.emote_blobs
     }
 
     fn db_path(&self) -> PathBuf {
@@ -210,8 +186,6 @@ impl Vault {
         let recovery_code = keys::generate_recovery_code();
         let recovery_norm = keys::normalize_recovery_code(&recovery_code);
 
-        let pw_auth = keys::derive_auth_key(password_secret.as_ref(), keys::INFO_AUTH_PASSWORD)?;
-        let rc_auth = keys::derive_auth_key(recovery_norm.as_bytes(), keys::INFO_AUTH_RECOVERY)?;
         let meta = VaultMeta {
             version: 1,
             kdf_salt,
@@ -229,82 +203,12 @@ impl Vault {
                 INFO_MK_WRAP_RECOVERY,
                 &mk,
             )?,
-            escrow: Some(EscrowMeta {
-                password_auth_hash: keys::sha256_b64url(pw_auth.as_ref()),
-                recovery_auth_hash: keys::sha256_b64url(rc_auth.as_ref()),
-            }),
         };
         std::fs::write(self.meta_path(), serde_json::to_vec_pretty(&meta)?)?;
 
         self.store = Some(Store::open(&self.db_path(), &sqlcipher_key)?);
         self.mk = Some(mk);
         Ok(recovery_code)
-    }
-
-    /// Cold-start restore (D15/D3a): rebuild the vault on a fresh device from
-    /// a relay escrow payload + the account password. Unwraps MK from the
-    /// escrow, then re-wraps it under a **new** local key set (fresh vault
-    /// key + SQLCipher key in this device's keychain), producing a
-    /// provisioned-but-empty vault. History arrives via device pairing/sync
-    /// or a backup import — the escrow only restores identity (D8).
-    pub fn restore_from_escrow(
-        &mut self,
-        escrow_payload: &str,
-        password: &str,
-    ) -> Result<(), VaultError> {
-        if self.meta_path().exists() {
-            return Err(VaultError::AlreadyInitialized);
-        }
-        let esc: EscrowPayload =
-            serde_json::from_str(escrow_payload).map_err(VaultError::Meta)?;
-        let secret = derive_password_secret_with(
-            password,
-            &esc.kdf_salt,
-            esc.kdf_m_kib,
-            esc.kdf_t,
-            esc.kdf_p,
-        )?;
-        let mk = keys::unwrap(secret.as_ref(), INFO_MK_WRAP_PASSWORD, &esc.wrapped_mk_password)
-            .map_err(|_| VaultError::WrongPassword)?;
-
-        // Recovery code is not recoverable from escrow (it was random at
-        // signup); a restored device keeps the escrow's recovery wrap so the
-        // original code still works, and re-derives fresh local wraps.
-        std::fs::create_dir_all(&self.data_dir)?;
-        let sqlcipher_key = keys::random_key();
-        let vault_key = keys::random_key();
-        self.keychain_set(&self.keychain_user(KEYRING_SQLCIPHER), &sqlcipher_key)?;
-        self.keychain_set(&self.keychain_user(KEYRING_VAULT), &vault_key)?;
-
-        let mut kdf_salt = [0u8; 16];
-        rand::rng().fill_bytes(&mut kdf_salt);
-        let password_secret = derive_password_secret(password, &kdf_salt)?;
-        let pw_auth = keys::derive_auth_key(password_secret.as_ref(), keys::INFO_AUTH_PASSWORD)?;
-
-        let meta = VaultMeta {
-            version: 1,
-            kdf_salt,
-            kdf_m_kib: KDF_M_KIB,
-            kdf_t: KDF_T,
-            kdf_p: KDF_P,
-            wrapped_mk_vault: keys::wrap(vault_key.as_ref(), INFO_MK_WRAP_VAULT, &mk)?,
-            wrapped_mk_password: keys::wrap(password_secret.as_ref(), INFO_MK_WRAP_PASSWORD, &mk)?,
-            // Carry the original recovery wrap forward so the user's existing
-            // recovery code still opens this device.
-            wrapped_mk_recovery: esc.wrapped_mk_recovery,
-            escrow: Some(EscrowMeta {
-                password_auth_hash: keys::sha256_b64url(pw_auth.as_ref()),
-                // Recovery auth hash is re-derivable only from the code, which
-                // we don't have here; leave the escrow's value untouched by
-                // not re-uploading until the user re-enters it.
-                recovery_auth_hash: String::new(),
-            }),
-        };
-        std::fs::write(self.meta_path(), serde_json::to_vec_pretty(&meta)?)?;
-
-        self.store = Some(Store::open(&self.db_path(), &sqlcipher_key)?);
-        self.mk = Some(mk);
-        Ok(())
     }
 
     /// Primary unlock (D3): keychain only — no user secret. Biometric gating
@@ -371,56 +275,6 @@ impl Vault {
         let seed = keys::random_key();
         self.keychain_set(&name, &seed)?;
         Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
-    }
-
-    /// The escrow bundle for the relay (D15): opaque payload (wrapped blobs
-    /// + public KDF params), the **public KDF params** (served pre-auth so a
-    /// cold-start device can derive its fetch key), and the auth-key hashes.
-    /// Everything here is safe to hand to the relay — MK only appears wrapped
-    /// under user secrets.
-    pub fn escrow_bundle(&self) -> Result<EscrowUploadBundle, VaultError> {
-        let meta = self.load_meta()?;
-        let escrow = meta.escrow.clone().ok_or(VaultError::NotInitialized)?;
-        let payload = serde_json::json!({
-            "v": 1,
-            "kdfSalt": meta.kdf_salt,
-            "kdfMKib": meta.kdf_m_kib,
-            "kdfT": meta.kdf_t,
-            "kdfP": meta.kdf_p,
-            "wrappedMkPassword": serde_json::to_value(&meta.wrapped_mk_password)?,
-            "wrappedMkRecovery": serde_json::to_value(&meta.wrapped_mk_recovery)?,
-        })
-        .to_string();
-        let kdf_params = serde_json::json!({
-            "kdfSalt": meta.kdf_salt,
-            "kdfMKib": meta.kdf_m_kib,
-            "kdfT": meta.kdf_t,
-            "kdfP": meta.kdf_p,
-        })
-        .to_string();
-        Ok(EscrowUploadBundle {
-            payload,
-            kdf_params,
-            password_auth_hash: escrow.password_auth_hash,
-            recovery_auth_hash: escrow.recovery_auth_hash,
-        })
-    }
-
-    /// Derive the base64 escrow **fetch auth key** from the password + the
-    /// relay-served public KDF params (cold-start step 2). Pure — no vault
-    /// state, runs before any vault exists. Matches the create-time
-    /// derivation exactly, so the relay's stored hash compares equal.
-    pub fn derive_escrow_auth_key_b64(
-        password: &str,
-        salt: &[u8],
-        m_kib: u32,
-        t: u32,
-        p: u32,
-    ) -> Result<String, VaultError> {
-        use base64::Engine as _;
-        let secret = derive_password_secret_with(password, salt, m_kib, t, p)?;
-        let auth = keys::derive_auth_key(secret.as_ref(), keys::INFO_AUTH_PASSWORD)?;
-        Ok(base64::engine::general_purpose::STANDARD.encode(auth.as_ref()))
     }
 
     /// D6 delivery token + verifier, derived from the account's profile key.
@@ -599,77 +453,52 @@ mod tests {
     }
 
     #[test]
-    fn escrow_bundle_is_present_and_opaque() {
+    fn meta_sidecar_carries_only_the_three_local_wraps() {
+        // Relay-held escrow is gone (roadmap.md § "Escrow — removed"), and with
+        // it the auth-key hashes the sidecar used to publish. What is left must
+        // be exactly the three *local* unlock wraps plus public KDF params —
+        // nothing shaped for a server, and no raw key material.
         let (_dir, mut vault) = new_vault();
         vault.create("a long enough password").unwrap();
-        let bundle = vault.escrow_bundle().unwrap();
-        assert_ne!(bundle.password_auth_hash, bundle.recovery_auth_hash); // separate domains
-        let parsed: serde_json::Value = serde_json::from_str(&bundle.payload).unwrap();
-        assert_eq!(parsed["v"], 1);
-        assert!(parsed["wrappedMkPassword"]["ciphertext"].is_array());
-        // The payload never carries the vault-key wrap (that one never
-        // leaves the device) nor any raw key material.
-        assert!(parsed.get("wrappedMkVault").is_none());
-        // KDF params are exposed for the pre-auth cold-start fetch.
-        let kdf: serde_json::Value = serde_json::from_str(&bundle.kdf_params).unwrap();
-        assert!(kdf["kdfSalt"].is_array());
+        let meta: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(vault.meta_path()).unwrap()).unwrap();
+        let keys: Vec<&str> = meta.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys, // serde_json orders object keys lexicographically
+            vec![
+                "kdf_m_kib",
+                "kdf_p",
+                "kdf_salt",
+                "kdf_t",
+                "version",
+                "wrapped_mk_password",
+                "wrapped_mk_recovery",
+                "wrapped_mk_vault",
+            ]
+        );
     }
 
     #[test]
-    fn escrow_fetch_auth_key_matches_the_stored_hash() {
-        // The cold-start fetch derivation must reproduce the create-time
-        // auth key exactly, so the relay's stored hash compares equal.
+    fn a_pre_removal_sidecar_still_opens() {
+        // Vaults created before the escrow removal have an extra `escrow`
+        // object in vault.meta.json. Dropping the field must not lock those
+        // users out: the unknown key is ignored, all three paths still work.
         let (_dir, mut vault) = new_vault();
-        vault.create("a long enough password").unwrap();
-        let bundle = vault.escrow_bundle().unwrap();
-        let kdf: serde_json::Value = serde_json::from_str(&bundle.kdf_params).unwrap();
-        let salt: Vec<u8> = kdf["kdfSalt"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_u64().unwrap() as u8)
-            .collect();
-        let m = kdf["kdfMKib"].as_u64().unwrap() as u32;
-        let t = kdf["kdfT"].as_u64().unwrap() as u32;
-        let p = kdf["kdfP"].as_u64().unwrap() as u32;
+        let recovery = vault.create("a long enough password").unwrap();
+        let mut meta: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(vault.meta_path()).unwrap()).unwrap();
+        meta.as_object_mut().unwrap().insert(
+            "escrow".into(),
+            serde_json::json!({ "password_auth_hash": "stale", "recovery_auth_hash": "stale" }),
+        );
+        std::fs::write(vault.meta_path(), serde_json::to_vec(&meta).unwrap()).unwrap();
 
-        use base64::Engine as _;
-        let auth_b64 =
-            Vault::derive_escrow_auth_key_b64("a long enough password", &salt, m, t, p).unwrap();
-        let auth_raw = base64::engine::general_purpose::STANDARD.decode(auth_b64).unwrap();
-        // Server stores b64url(sha256(raw auth key)); it must equal the hash
-        // captured at create time.
-        assert_eq!(keys::sha256_b64url(&auth_raw), bundle.password_auth_hash);
-    }
-
-    #[test]
-    fn restore_from_escrow_recovers_same_mk_on_a_fresh_device() {
-        // Device 1: create, remember MK (via a settings marker), export escrow.
-        let (_d1, mut v1) = new_vault();
-        let recovery = v1.create("a long enough password").unwrap();
-        v1.store().unwrap().set_setting("marker", "hello").unwrap();
-        let payload = v1.escrow_bundle().unwrap().payload;
-
-        // Device 2 (fresh keychain + data dir): restore from escrow + password.
-        let (_d2, mut v2) = new_vault();
-        assert_eq!(v2.status(), VaultStatus::Uninitialized);
-        v2.restore_from_escrow(&payload, "a long enough password").unwrap();
-        assert_eq!(v2.status(), VaultStatus::Unlocked);
-        // Same MK ⇒ per-relay identities re-derive identically (the point).
-        assert_eq!(v1.mk().unwrap().as_ref(), v2.mk().unwrap().as_ref());
-        // Fresh store — escrow restores identity, not history (D8).
-        assert!(v2.store().unwrap().get_setting("marker").unwrap().is_none());
-
-        // Wrong password is rejected.
-        let (_d3, mut v3) = new_vault();
-        assert!(matches!(
-            v3.restore_from_escrow(&payload, "the wrong password"),
-            Err(VaultError::WrongPassword)
-        ));
-
-        // The original recovery code still opens the restored device.
-        v2.lock();
-        v2.unlock_recovery(&recovery).unwrap();
+        vault.lock();
+        vault.unlock_password("a long enough password").unwrap();
+        vault.lock();
+        vault.unlock_recovery(&recovery).unwrap();
+        vault.lock();
+        vault.unlock_keychain().unwrap();
     }
 
     #[test]
@@ -697,6 +526,8 @@ mod tests {
         // guard for the onboarding bug: delivery_token() must derive it from MK on
         // first use (not fail), persist it, and yield the SAME token on every
         // device with this account (same MK) so friends can always reach it.
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
         let (_d1, mut v1) = new_vault();
         let _ = v1.create("a long enough password").unwrap();
         assert!(v1.store().unwrap().get_setting("profile.key").unwrap().is_none());
@@ -706,13 +537,25 @@ mod tests {
         assert!(v1.store().unwrap().get_setting("profile.key").unwrap().is_some());
         assert_eq!(token1, v1.delivery_token().unwrap().0);
 
-        // A second device restored from escrow (same MK, fresh store with no
-        // profile.key) derives the identical token.
-        let payload = v1.escrow_bundle().unwrap().payload;
-        let (_d2, mut v2) = new_vault();
-        v2.restore_from_escrow(&payload, "a long enough password").unwrap();
-        assert!(v2.store().unwrap().get_setting("profile.key").unwrap().is_none());
-        assert_eq!(token1, v2.delivery_token().unwrap().0);
+        // Cross-device stability: the token is a pure function of MK, so any
+        // other device holding this MK (arriving by pairing — the only route
+        // now that escrow is gone) derives the identical token from an empty
+        // store. Assert that derivation directly rather than standing up a
+        // second vault, which nothing but pairing can give the same MK.
+        let profile_key =
+            keys::derive_auth_key(v1.mk().unwrap().as_ref(), keys::INFO_PROFILE).unwrap();
+        let expected = b64.encode(
+            keys::derive_auth_key(profile_key.as_ref(), keys::INFO_DELIVERY)
+                .unwrap()
+                .as_ref(),
+        );
+        assert_eq!(token1, expected);
+        // And it is the same value the seeded setting holds, i.e. first use
+        // persisted the MK-derived key rather than a fresh random one.
+        assert_eq!(
+            v1.store().unwrap().get_setting("profile.key").unwrap().unwrap(),
+            b64.encode(profile_key.as_ref()),
+        );
     }
 
     #[test]

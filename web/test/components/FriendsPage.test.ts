@@ -73,4 +73,41 @@ describe('FriendsPage', () => {
     expect(w.text()).toContain('Gull#6109');
     expect(w.text()).not.toContain('No friends yet');
   });
+
+  // Key transparency: a contact whose key was never proven against the log
+  // (added while the relay's directory was unreachable, or absent from the log)
+  // must never be shown as verified — that badge is the whole user-facing point
+  // of the check.
+  it('marks a contact verified only when the log proved their key', async () => {
+    friendsStore.load.mockImplementation(async () => {
+      friendsStore.friends = [
+        { userId: 'u1', displayName: 'Proven', handle: 'Gull#6109', ktVerified: true },
+        { userId: 'u2', displayName: 'Unproven', handle: 'Tern#2200', ktVerified: false },
+      ];
+    });
+
+    const w = mount(FriendsPage, { global: { stubs } });
+    await flushPromises();
+
+    expect(w.find('[data-testid="kt-verified-u1"]').exists()).toBe(true);
+    expect(w.find('[data-testid="kt-unverified-u1"]').exists()).toBe(false);
+
+    expect(w.find('[data-testid="kt-verified-u2"]').exists()).toBe(false);
+    const badge = w.find('[data-testid="kt-unverified-u2"]');
+    expect(badge.exists()).toBe(true);
+    expect(badge.text()).toContain('not verified');
+  });
+
+  // An entry with no verification field at all is unproven, not "assume fine".
+  it('treats a missing verification flag as unverified', async () => {
+    friendsStore.load.mockImplementation(async () => {
+      friendsStore.friends = [{ userId: 'u3', displayName: 'Legacy', handle: 'Reef#0004' }];
+    });
+
+    const w = mount(FriendsPage, { global: { stubs } });
+    await flushPromises();
+
+    expect(w.find('[data-testid="kt-unverified-u3"]').exists()).toBe(true);
+    expect(w.find('[data-testid="kt-verified-u3"]').exists()).toBe(false);
+  });
 });

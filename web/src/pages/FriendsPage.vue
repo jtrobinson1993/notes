@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import IconShield from '~icons/mynaui/shield';
+import IconShieldCheck from '~icons/mynaui/shield-check';
 import AppLayout from '../components/AppLayout.vue';
 import { useFriendsStore } from '../stores/friends';
 
@@ -164,7 +166,29 @@ function fmtExpiry(ts: number): string {
             </span>
             <div class="grow">
               <p class="text-sm font-medium">{{ f.displayName }}</p>
-              <p class="text-xs text-zinc-400">{{ f.handle }}</p>
+              <p class="flex items-center gap-1 text-xs text-zinc-400">
+                <span>{{ f.handle }}</span>
+                <!-- Key transparency: only a proven key is shown as verified;
+                     everything else says so plainly rather than staying silent. -->
+                <span
+                  v-if="f.ktVerified"
+                  :data-testid="`kt-verified-${f.userId}`"
+                  class="inline-flex items-center gap-0.5 text-green-600 dark:text-green-400"
+                  title="This contact's key matches the relay's public key-transparency log."
+                >
+                  <IconShieldCheck class="h-3.5 w-3.5" aria-hidden="true" />
+                  Key verified
+                </span>
+                <span
+                  v-else
+                  :data-testid="`kt-unverified-${f.userId}`"
+                  class="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-500"
+                  title="This contact's key has not been checked against the relay's key-transparency log yet — it is re-checked whenever the relay reconnects."
+                >
+                  <IconShield class="h-3.5 w-3.5" aria-hidden="true" />
+                  Key not verified
+                </span>
+              </p>
             </div>
             <button
               class="shrink-0 rounded-lg border border-zinc-300 px-3 py-1 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"

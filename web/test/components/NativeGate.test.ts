@@ -8,7 +8,6 @@ const native = vi.hoisted(() => ({
   vaultUnlock: vi.fn(),
   vaultUnlockKeychain: vi.fn(),
   vaultUnlockRecovery: vi.fn(),
-  vaultRestoreFromEscrow: vi.fn(),
   vaultLock: vi.fn(),
   // markUnlocked() kicks the re-lock policy read; default = stay unlocked.
   settingsGet: vi.fn().mockResolvedValue(null),
@@ -46,13 +45,9 @@ function onboarded(): void {
   );
 }
 
-/** First run opens on a splash; click through to the signup / login sub-view. */
+/** First run opens on a splash; click through to the signup sub-view. */
 async function gotoSignup(w: ReturnType<typeof mountGate>): Promise<void> {
   await w.find('[data-testid="signup"]').trigger('click');
-  await flushPromises();
-}
-async function gotoLogin(w: ReturnType<typeof mountGate>): Promise<void> {
-  await w.find('[data-testid="login"]').trigger('click');
   await flushPromises();
 }
 
@@ -114,13 +109,17 @@ describe('NativeGate', () => {
     expect(w.find('[data-testid="app"]').exists()).toBe(true);
   });
 
-  it('opens on a welcome splash and offers Sign up / Log in', async () => {
+  it('opens on a welcome splash offering only Sign up — there is no log-in path', async () => {
+    // Relay-held escrow is gone, so nothing can rebuild an identity on a fresh
+    // device and pairing (roadmap D8) is unbuilt. The splash must not offer a
+    // "Log in" that could only ever fail.
     native.vaultStatus.mockResolvedValue('uninitialized');
     const w = mountGate();
     await flushPromises();
     expect(w.text()).toContain('Welcome to Accord');
     expect(w.find('[data-testid="signup"]').exists()).toBe(true);
-    expect(w.find('[data-testid="login"]').exists()).toBe(true);
+    expect(w.find('[data-testid="login"]').exists()).toBe(false);
+    expect(w.text().toLowerCase()).not.toContain('log in');
     expect(w.find('[data-testid="app"]').exists()).toBe(false);
   });
 
@@ -136,6 +135,34 @@ describe('NativeGate', () => {
     await w.find('button').trigger('click');
     await flushPromises();
     expect(w.text()).toContain('Welcome to Accord');
+  });
+
+  it('tells a first-run user their existing account cannot be pulled onto this device', async () => {
+    // The honest cold-start story now that escrow is removed: an account lives
+    // on its devices, and pairing is not built — say so rather than offering a
+    // form. (spec/security.md § total device loss is unrecoverable.)
+    native.vaultStatus.mockResolvedValue('uninitialized');
+    const w = mountGate();
+    await flushPromises();
+    await w.find('[data-testid="recover"]').trigger('click');
+    await flushPromises();
+    expect(w.text()).toContain("pairing step isn't built yet");
+    expect(w.text()).toContain("can't be recovered");
+  });
+
+  it('omits the pairing note on the lock wall, where the vault is present', async () => {
+    onboarded();
+    native.vaultStatus.mockResolvedValue('locked');
+    native.vaultUnlockKeychain.mockRejectedValue(new Error('nope'));
+    const w = mountGate();
+    await flushPromises();
+    await w.find('[data-testid="app"]').exists();
+    // "Can't unlock? Recover account" reaches the same explainer.
+    const links = w.findAll('button.underline');
+    await links[links.length - 1]!.trigger('click');
+    await flushPromises();
+    expect(w.text()).toContain('recovery code');
+    expect(w.text()).not.toContain("pairing step isn't built yet");
   });
 
   it('walks signup → recovery display → onboarding on first run (no account yet)', async () => {
@@ -283,58 +310,24 @@ describe('NativeGate', () => {
     expect(w.find('[data-testid="app"]').exists()).toBe(true);
   });
 
-  it('restores an existing account on a fresh device via escrow', async () => {
-    onboarded();
+  it('has no dead path: every splash affordance leads somewhere real', async () => {
+    // Guard against re-introducing an option the core cannot serve. Only the
+    // documented gate commands may be reachable from the first-run wall.
     native.vaultStatus.mockResolvedValue('uninitialized');
-    native.vaultRestoreFromEscrow.mockResolvedValue(undefined);
+    native.vaultCreate.mockResolvedValue('AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGG-HHHH');
     const w = mountGate();
     await flushPromises();
-
-    await gotoLogin(w);
-    expect(w.text()).toContain('Log in');
-
-    await w.find('input[type="url"]').setValue('https://relay.example');
-    await w.find('input[type="text"]').setValue('Word#1234');
-    await w.find('input[type="password"]').setValue('a sixteen char password');
-    await w.find('form').trigger('submit');
+    // Splash: sign up, or read the explainer. Nothing else.
+    expect(w.findAll('button').map((b) => b.text())).toEqual([
+      'Sign up',
+      'Already have an account?',
+    ]);
+    // The explainer is text + Back; it never calls the core.
+    await w.find('[data-testid="recover"]').trigger('click');
     await flushPromises();
-
-    expect(native.vaultRestoreFromEscrow).toHaveBeenCalledWith(
-      'https://relay.example',
-      'Word#1234',
-      'a sixteen char password',
-    );
-    expect(w.find('[data-testid="app"]').exists()).toBe(true);
-  });
-
-  it('requires all restore fields before calling the core', async () => {
-    native.vaultStatus.mockResolvedValue('uninitialized');
-    const w = mountGate();
-    await flushPromises();
-    await gotoLogin(w);
-
-    await w.find('input[type="url"]').setValue('https://relay.example');
-    // handle + password left blank
-    await w.find('form').trigger('submit');
-    await flushPromises();
-    expect(native.vaultRestoreFromEscrow).not.toHaveBeenCalled();
-    expect(w.text()).toContain('required');
-  });
-
-  it('surfaces a restore failure without opening the gate', async () => {
-    native.vaultStatus.mockResolvedValue('uninitialized');
-    native.vaultRestoreFromEscrow.mockRejectedValue(new Error('no escrow for handle'));
-    const w = mountGate();
-    await flushPromises();
-    await gotoLogin(w);
-
-    await w.find('input[type="url"]').setValue('https://relay.example');
-    await w.find('input[type="text"]').setValue('Word#1234');
-    await w.find('input[type="password"]').setValue('a sixteen char password');
-    await w.find('form').trigger('submit');
-    await flushPromises();
-    expect(w.find('[data-testid="app"]').exists()).toBe(false);
-    expect(w.text()).toContain('no escrow for handle');
+    expect(w.find('form').exists()).toBe(false);
+    expect(native.vaultCreate).not.toHaveBeenCalled();
+    expect(native.vaultUnlock).not.toHaveBeenCalled();
   });
 
   it('rejects a short password client-side', async () => {

@@ -52,6 +52,17 @@ An invite is a self-describing string built entirely client-side
   carried in the invite so the invitee seals to keys it got from the (in-person)
   invite channel rather than from the relay's directory.
 
+**Every contact key is checked against the transparency log before it is
+trusted** — on redeem (the invite's `identityPub` pin, before the accept is
+sent), on the register-via-invite leg, and in the drain for the verified sender
+of an inbound `friend-accept`/`friend-confirm`, before `record_friend` and
+before the reciprocal confirm is sealed. A key the log contradicts fails closed:
+no contact row, no reply, a hard KT alarm and `KT_CONTACT_KEY_MISMATCH`. A key
+the log simply cannot speak to (relay unreachable, handle not yet published,
+interim-KT relay) is recorded **unverified** — the friends list says so, and the
+next relay connect re-checks it. The mechanics, and why 404 does not block, are
+in [key-transparency.md](key-transparency.md#contact-verification--the-directory-lookup-path-as-built).
+
 **The handshake** (`nativeInvites.ts` → the core → the drain):
 
 1. The invitee seals a `friend-accept` — `{handle, displayName?, deliveryToken,
@@ -215,7 +226,15 @@ consequences live in
 History paging is `messages_page(conversation_id, channel_id, before, limit)`,
 newest-first, with the cursor taken from the oldest row of the previous page
 (`nativeChat.ts` keeps per-channel cursors and an `exhausted` flag, reset on a
-fresh open). ⚠ The paging cursor compares `(relay_ts, id)` while the query orders
+fresh open).
+
+**The pager's order is not the display order**, and conflating them is a bug the
+UI shipped with: `loadHistoryLocal` reverses each page before returning it, so a
+thread reads oldest-at-the-top, while the cursor keeps coming off the *pager's*
+own last row. Rendering the pager's array unchanged put the newest message at
+the top of every conversation.
+
+⚠ The paging cursor compares `(relay_ts, id)` while the query orders
 by `(relay_ts, sender_contact_id, id)`; the two only agree when no two messages
 share a millisecond, so a same-millisecond tie can drop or repeat a row across a
 page boundary. Cheap to fix by carrying the sender in the cursor.
@@ -393,11 +412,112 @@ tree as a DM.
 
 ### Composition
 
-**The composer is a plain text input and messages render as plain text.**
-Markdown, the CodeMirror composer, `:shortcode:` emotes, the emoji picker, GIF
-search, link previews, replies, threads and system notices are **not wired into
-the native surface**. The relay does host privacy-proxied GIF/emote/OG endpoints
-(see [relay.md](relay.md)), but no client calls them yet.
+**The composer is a plain text input and messages render as plain text plus
+emoji.** Markdown, the CodeMirror composer, GIF search, link previews, replies,
+threads and system notices are **not wired into the native surface**;
+`:shortcode:` emotes, unicode emoji and the picker are.
+
+### Emoji: emotes, the picker, and the cap
+
+Two kinds of emoji exist and they behave differently on purpose. **Unicode
+emoji** are glyphs in the message text — nothing to fetch, nothing to store.
+**Emotes** are `:shortcode:` names standing for images the relay proxies
+(7TV upstream), and every one of them is a remote fetch that somebody else's
+message decided to trigger. That is the whole design problem here.
+
+**One renderer, and it is the only writer to the cache.** `EmojiText.vue`
+renders every `:shortcode:` the app shows — chat messages, note bodies (through
+`MdTokens`/`MarkdownView`), note titles, folder names, picker tiles. Making the
+renderer the *only* code path that can call `emote_get` means an emote is cached
+exactly when it is genuinely displayed, and gives the caps a single home. The
+policy behind it is `web/src/lib/emoji/render.ts`; nothing else in `web/` may
+call the emote commands.
+
+**Every render site declares a scope, and the prop is required so it cannot be
+forgotten:**
+
+| `scope` | Meaning |
+|---|---|
+| a message / note / folder id | **Content.** Unknown emotes are resolved through the core, which caches them, charged to that id's fetch budget. |
+| `false` | **Browsing** (the picker, search results). Renders only what is already registered: never fetches, never persists. |
+
+Browsing is not usage: one idle scroll through the picker must not be able to
+fill the on-device cache with emotes nobody ever sent, so the picker opts out
+explicitly rather than by omission.
+
+**A browsed emote and a cached emote are different registry entries**, and that
+separation is load-bearing rather than cosmetic. A search result carries the
+relay's own image URL, good enough for a picker tile; a cached emote carries a
+`blob:` minted from bytes the core holds. Content resolution
+(`resolveEmoji`) accepts **only** the `blob:`; browsing (`resolvePreviewEmoji`)
+accepts either. Collapsing the two — which an earlier revision did — meant that
+once the picker had auto-searched on open, any message using one of those ~60
+shortcodes rendered `<img src="https://relay/…">` directly from the webview:
+no core, no budget charge, no cache write, no offline copy, and a fresh relay
+GET on every render. Browsing a name must never be what makes it renderable in
+content.
+
+**The per-message fetch cap is a security control**, not tidiness. Without it a
+hostile sender puts 500 distinct emote refs in one message and every recipient
+issues 500 relay requests — each recipient becomes a fetch amplifier. The core
+cannot enforce it (it has no idea which message a call came from), so:
+
+- at most **20 distinct emotes** per scope may be pulled over the network;
+- over-cap shortcodes render as **literal `:shortcode:` text** — content is never
+  silently dropped, it just isn't fetched;
+- the budget is charged only when the call actually touched the network
+  (`emote_get` reports `fetched`), so an emote already on disk renders free,
+  offline, and without limit;
+- a charge is **never refunded on failure**, so a message cannot retry its way
+  past the cap. What is rationed is the *request*, so the budget is committed
+  **before** each await, not after the result comes back. An earlier revision
+  raised the "did this touch the network" flag only after the call resolved, so
+  a rejection (relay 429, 5xx, offline) reported no network use, the slot was
+  refunded and the name un-admitted — a complete reset that let a 500-shortcode
+  message issue 500 searches per render pass, unbounded across passes, and which
+  amplified hardest exactly when the relay was already failing;
+- the state is keyed by **message id in module state**, not per component, so
+  scrolling a message out of view and back does not buy it a fresh budget.
+
+**The picker** (`EmojiPicker.vue`) searches through the core's `emote_search`
+— never `fetch()` from the webview, because the relay device token must not
+cross IPC — debounced, with results ranked by the decayed usage tally
+(`lib/emoji/usage.ts`, persisted in the vault: which emoji you use is
+behavioural metadata and never leaves the device in the clear). Duplicate
+shortcodes are collapsed to one tile, since the registry is keyed by name. When
+search fails it falls back to `emote_cached_list()` — the emotes this device
+already holds — and shows an *Offline* marker, so emoji keep working with no
+relay; only when that fallback is empty too does it raise
+`EMOTE_SEARCH_UNAVAILABLE`.
+
+**The relay does not get to choose the image origin.** `registerEmote` refuses
+any URL that is not `blob:`/`data:`, same-origin, or the **pinned relay origin**
+(`relay_status().base_url`, set at unlock). A compromised relay answering search
+with a `cdn.7tv.app` link therefore renders as literal text instead of pointing
+the webview at a third party and leaking this device's IP — which is the exact
+leak the proxy exists to prevent. The core enforces the same rule on its side of
+the IPC boundary; this is the second half of it, in the process that actually
+creates the `<img>`. It used to be a doc comment that claimed the property
+without checking it.
+
+**Resolution order for a shortcode in content** (`render.ts`): the in-memory
+registry → `emote_get(id, name)` if the id is known → otherwise `emote_search`
+for the name, accepting **only an exact name match** (a fuzzy hit would let the
+relay decide which image a shortcode shows), then `emote_get`. At unlock,
+`initEmoji()` registers the ids of everything in the local cache, so emotes you
+have already been sent resolve with **no search and no network at all**. The
+name→id lookup is the one place content causes a search: it tells the relay (and
+7TV) which shortcodes your messages contain — no worse than the image fetch that
+follows it, but it is a real disclosure and it is bounded by the same cap.
+
+Everything decrypted dies with the vault: `teardownEmoji()` revokes the `blob:`
+URLs holding decrypted emote bytes, clears the registry and the budgets, and
+drops the usage tally (`App.vue`).
+
+The **on-device cache** those calls write to — encryption, blinded filenames,
+the 64 MiB LRU budget — is
+[local-store.md](local-store.md#emoji-on-device-the-used-emoji-cache). GIF and
+OG proxying remain untouched by any client ([roadmap.md](roadmap.md)).
 
 ## Security properties, and the gaps
 
@@ -407,6 +527,12 @@ Real and enforced today:
   cannot attribute an envelope to an account.
 - **Sender authenticity.** Every payload is signed inside the ciphertext and
   verified before ingest; the stored sender is the verified key, never a claim.
+- **Contact keys are checked against the transparency log** before a contact is
+  recorded and before anything is sealed back to them, against a root whose
+  relay signature is verified first
+  ([key-transparency.md](key-transparency.md#contact-verification--the-directory-lookup-path-as-built)).
+  A contradiction fails closed; an unprovable key is recorded and *shown* as
+  unverified.
 - **Conversation binding.** An inbound DM is filed under the id recomputed from
   `(me, verified sender)`; a group message under the group whose key opened it.
 - **Author-gated mutation.** Edits and deletes apply only when the verified
@@ -420,17 +546,18 @@ Real and enforced today:
 
 Known gaps, stated plainly rather than implied away:
 
-- **A `friend-accept` / `friend-confirm` is accepted from any sender.** The
-  drain records the verified sender as a friend, and for an *accept* it also
-  replies with **my handle and my delivery token**. Nothing ties the inbound
-  envelope to an invite I actually minted — the `identityPub` the invite carries
-  as a TOFU pin is parsed but never compared against the sender. Anyone able to
-  enqueue into my mailbox (an existing friend, a live-invite holder, or the relay
-  itself, which owns the queue) can therefore add themselves to my friends list
-  under a handle of their choosing and be handed my delivery token. Closing it
-  means remembering outstanding invites locally and matching the accept's
-  verified sender against the invite's pinned key — a design change, tracked as a
-  follow-up rather than silently assumed.
+- **A `friend-accept` / `friend-confirm` is still accepted from any sender who
+  is genuinely in the log.** The drain records the verified sender as a friend
+  and, for an *accept*, replies with **my handle and my delivery token**.
+  Key-transparency verification now narrows this: the sender's key must be the
+  one the log publishes for the handle they claim, so the relay can no longer
+  inject an arbitrary key, and nobody can impersonate someone else's handle.
+  What is **not** closed is the link to an invite *I* minted — a real account on
+  the relay can still enqueue an accept under its own true handle and be handed
+  my delivery token. Closing that means remembering outstanding invites locally
+  (they live in memory for the session today) and matching an accept against a
+  live invite and its pinned key before recording or replying; see
+  [roadmap.md](roadmap.md#an-inbound-friend-accept-is-trusted-from-any-sender).
 - **Unfriend does not revoke reach** (above): the profile-key rotation fan-out is
   unbuilt.
 - **No group-key rotation**, so a member cannot be removed.
@@ -447,8 +574,11 @@ Deliberately absent from the native surface, tracked in
   which no longer exists, so it needs re-specifying against message ids).
 - **System notices** (`SystemEvent`): adding a member posts no in-band notice.
 - **Channels and threads**, in any form.
-- **Rich composition**: markdown rendering, emotes/emoji picker, GIF search,
-  link previews, spoilers — including wiring the relay's content proxies.
+- **Rich composition**: markdown rendering in messages, GIF search, link
+  previews, spoilers. (Emoji — emotes, the picker, the renderer and its caps —
+  *are* built; see above.) The GIF/OG proxies still have no client at all.
+- **`:` autocomplete in the chat composer.** `EmojiInput` has one for note and
+  folder titles; the chat draft is a bare input, so emotes come from the picker.
 - **Typing indicators and presence.** Neither the client nor the relay has any
   of it: the `ephemeral: true` envelope flag [relay.md](relay.md) specifies for
   this is **not implemented** in `routes/relay.ts`.

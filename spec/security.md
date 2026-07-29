@@ -23,8 +23,9 @@ editor itself writes — `<u>` and `<span style="color:…">` with
 Link/image URLs are scheme-validated in the renderer (`https?:`/`mailto:`/`tel:`).
 Because there is no HTML parse step, there is no sanitizer config to get wrong
 and no mXSS surface; **a hostile message sender gets no script-injection vector
-by construction.** This is now the app's *primary* XSS defence rather than one of
-two — see [§ CSP](#hardening-headers-and-the-csp-the-app-does-not-have).
+by construction.** This is the app's *primary* XSS defence; the webview's CSP is
+the second layer behind it — see
+[§ Hardening headers and the webview CSP](#hardening-headers-and-the-webview-csp).
 
 ## Remote media privacy (click-to-load)
 
@@ -102,22 +103,53 @@ per-user analytics id handed to Klipy is `sha256("klipy:" + userId)` truncated t
 16 hex chars. Failures are logged without the query — search terms are user
 content.
 
-**Client side: not wired up yet.** No client surface calls these proxies today —
-there is no GIF picker, nothing fetches `/api/relay/og`, and the emote registry
-(`web/src/lib/emoji/index.ts`) is populated by nothing, so only unicode emoji
-render. Two *client-side* properties that used to exist must come back with the
-UI, and are recorded here so they aren't lost:
+**Client side: emoji are wired end to end; GIFs and OG are not.** The Rust core calls
+both emote endpoints — proxied search plus an image fetch that feeds the
+size-bounded on-device used-emoji cache
+([local-store.md](local-store.md#emoji-on-device-the-used-emoji-cache)). Three
+properties it enforces are security-relevant, not housekeeping:
 
-- A GIF URL is **sender-controlled** and travels inside the encrypted message. The
-  recipient must render only GIFs whose media host belongs to the provider's CDN
-  over HTTPS — the old `safeGif` allowlist, deleted with the legacy chat store —
-  otherwise a hostile sender can smuggle an arbitrary tracking URL past
-  click-to-load.
-- Emote images must load **only from the relay origin** (or `blob:`/`data:`).
-  `registerEmote()` documents that rule but does not enforce it; whatever
-  populates the registry has to.
+- **The relay may not choose the image origin.** A search result's `url` is
+  accepted only as a site-relative `/api/relay/emote/<sig>/<id>.webp` naming the
+  emote being described, then re-joined onto the pinned relay base. Rendering a
+  relay-supplied absolute URL would hand a hostile relay the IP leak the proxy
+  exists to prevent.
+- **The 1 MiB image cap is re-enforced against the streamed body**, not a
+  declared `content-length`, and the response must be `image/*`. The relay's own
+  cap is not trusted with this device's disk or memory.
+- **Cached emote bytes are encrypted at rest** under a fresh per-file key with
+  the key in the SQLCipher row, and their **filenames are blinded** —
+  `SHA-256(salt ‖ id)` under a random per-vault salt, because a 7TV id is a
+  public name and a directory listing would otherwise enumerate every emote the
+  device has been sent. The set of emotes a device holds is a fingerprint of
+  what it has been sent.
 
-See [roadmap.md](roadmap.md) for the emoji/GIF client work itself.
+Two of those properties have a **client-side other half**, and both are now
+enforced in `web/` rather than described
+([chat.md](chat.md#emoji-emotes-the-picker-and-the-cap)):
+
+- A **per-message cap on distinct emote fetches** (20). Without it a hostile
+  sender puts hundreds of distinct emote refs in one message and every
+  recipient fetches every one, turning each recipient into a fetch amplifier
+  against the relay. The core cannot enforce this — it has no message context —
+  so it reports whether a given `emote_get` hit the network (`fetched`) and the
+  shared renderer counts, keyed by message id in module state so re-rendering
+  or scrolling back cannot reset the budget. Over-cap shortcodes render as
+  literal text; a failed fetch still spends its charge.
+- Emote images load **only from the relay origin** (or `blob:`/`data:`/
+  same-origin). `registerEmote()` used to document that rule without checking
+  it; `isAllowedEmoteUrl()` now enforces it against the origin pinned from
+  `relay_status()` at unlock, and a refused registration degrades to literal
+  text. Both sides of the IPC boundary check it: the core so a hostile relay
+  cannot smuggle a CDN URL through `emote_search`, the webview because it is the
+  process that actually creates the `<img>`.
+
+Still owed by the **GIF** client, which does not exist: a GIF URL is
+**sender-controlled** and travels inside the encrypted message, so the recipient
+must render only GIFs whose media host belongs to the provider's CDN over HTTPS
+— the old `safeGif` allowlist, deleted with the legacy chat store — otherwise a
+hostile sender can smuggle an arbitrary tracking URL past click-to-load. Nothing
+fetches `/api/relay/og` either. See [roadmap.md](roadmap.md).
 
 ## Voice fails closed
 
@@ -152,7 +184,7 @@ guessing oracle:
 Over-limit requests get `429`. Tests raise the ceiling out of the way
 (`rateLimitMax` in the app builder) so request-heavy suites aren't throttled.
 
-## Hardening headers, and the CSP the app does not have
+## Hardening headers and the webview CSP
 
 **On the relay** (`server/src/security-headers.ts`, wired in `buildRelayApp`),
 every response carries: `X-Content-Type-Options: nosniff`, `Referrer-Policy:
@@ -160,33 +192,124 @@ no-referrer`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`
 `Cross-Origin-Resource-Policy: same-origin`, a locked-down `Permissions-Policy`,
 and `Strict-Transport-Security` on https. CORP is `same-origin` by default and
 can only be relaxed by an **explicit per-route decision** — the emote image
-endpoint is the one route that does, since it must be loadable as an `<img>` from
-the app.
+endpoint is the one route that does, so it can be loaded as an `<img>` from
+another origin.
 
-A CSP header is emitted too, but be honest about what it buys now: the relay is
-**API-only**. It serves JSON, an image endpoint and WebSockets — never an HTML
-document — so `registerSecurityHeaders` is called with `indexHtml = null`, no
-inline-script hashes are ever computed, and no browser applies the policy to a
-page. Several directives (`worker-src`, `manifest-src`, the YouTube/Vimeo
-`frame-src`) are vestiges of the era when this process served the SPA. The header
-is kept as a cheap default for any future HTML surface; it is not a live defence.
+The relay's own CSP is deliberately minimal — `default-src 'none'; base-uri
+'none'; form-action 'none'; frame-ancestors 'none'` — because the relay is
+**API-only**: JSON, an image endpoint and WebSockets, never an HTML document, so
+no browser ever applies it to a page. It is a floor in case this process ever
+does emit HTML, not a live defence. The SPA-era directives it used to carry
+(script/style/img/font/connect sources, `worker-src`, `manifest-src`, a
+YouTube/Vimeo `frame-src`) and the `inlineScriptHashes` machinery behind them
+were deleted: a dead header that *reads* like a defence is worse than a short
+one.
 
-**The native webview enforces no CSP at all.** `src-tauri/tauri.conf.json` sets
-`"csp": null`, and `web/index.html` carries no `<meta>` policy, so the app's own
-document runs with no script-source restriction. The old claim — "even if a
-hostile message injected a `<script>`, the browser refuses to run it" — is **no
-longer true of the shipping client**. What actually holds the line is the
-renderer above: there is no HTML parse step, so there is no injection path to
-begin with. That is a real property, but it is now a single layer, and the
-consequence of losing it is larger in the native shell than it was in the browser
-(a script that did run would have the Tauri IPC surface in reach).
+### The native webview's CSP
 
-Setting a CSP for the webview is **unbuilt hardening**, not a considered
-tradeoff — nothing in the code or history records a decision to run without one.
-It needs care (bundled assets, `blob:`/`data:` media, mediasoup's WebRTC, WASM
-for Argon2id) and should be verified against a running app rather than
-guessed, so it belongs in [roadmap.md](roadmap.md) rather than being asserted
-here.
+The policy that actually defends the app lives in `src-tauri/tauri.conf.json`
+(`app.security.csp`), and Tauri sends it as a `Content-Security-Policy` response
+header on the bundled `index.html` — from the `tauri://localhost` origin on
+macOS/Linux and `http://tauri.localhost` on Windows, so `'self'` means "the
+bundle" on every platform. As shipped:
+
+```
+default-src 'none';
+script-src 'self';
+style-src 'self' 'unsafe-inline';
+img-src 'self' data: blob: https:;
+font-src 'self';
+media-src 'self' blob:;
+connect-src ipc: http://ipc.localhost;
+worker-src 'self';
+frame-src https://www.youtube-nocookie.com https://player.vimeo.com;
+object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+```
+
+Keys living in Rust means an XSS cannot steal them directly, but it *can* drive
+every IPC command the UI can reach, so the policy is written to deny by default
+and name each resource type the app genuinely loads:
+
+| Directive | Why exactly this |
+|---|---|
+| `script-src 'self'` | No `'unsafe-inline'`, no `'unsafe-eval'`. `index.html`'s one inline script (the pre-paint theme applier) is allowed by **hash**: Tauri's codegen sha256s every inline `<script>` in the bundled HTML and appends it to `script-src` at runtime, so the configured value stays clean and a *different* inline script still can't run. No `'wasm-unsafe-eval'` — no WebAssembly runs in the webview at all (Argon2id lives in the Rust core; `hash-wasm` is reachable only from tests and is not in the bundle). |
+| `style-src 'self' 'unsafe-inline'` | The one relaxation. CodeMirror's theme is injected at runtime as a `<style>` element by `style-mod` — dynamic text, so no hash can cover it — and blocking it doesn't throw, it silently renders the editor unstyled. Inline **styles** cannot execute script, and the only user-controlled CSS value in the app is the `<span style="color:…">` pair, restricted by `COLOR_VALUE_RE` to a brand var or a `light-dark(#hex, #hex)` pair. *Rejected:* `EditorView.cspNonce` + Tauri's `__TAURI_STYLE_NONCE__` placeholder would allow a nonce instead, but it depends on a Tauri-internal token in `index.html`, diverges from dev (where Vite injects styles inline anyway), and the failure mode of getting it wrong is an unstyled editor in a release build. |
+| `img-src 'self' data: blob: https:` | `data:` for avatars, `blob:` for decrypted attachments and for emote bytes handed over from the core. `https:` covers the two loads that do leave the machine: the **click-to-load remote image** in a note or message (`![](https://…)`), and the **emote picker's** relay-hosted search thumbnails. Both are discussed below; `http:` is deliberately not allowed. |
+| `media-src 'self' blob:` | Audio/video attachments decrypt in the core and play from object URLs. |
+| `font-src 'self'` | Geist/Geist Mono are bundled (`@fontsource-variable`); no CDN, so no `data:` and no remote origin. |
+| `connect-src ipc: http://ipc.localhost` | **The webview may not open a network connection at all.** Both entries are `invoke()`'s own transport (`ipc://localhost` on macOS/Linux, `http://ipc.localhost` on Windows/Android — Tauri's IPC `fetch`es the custom protocol and falls back to `postMessage` if CSP blocks it). There is no `fetch`, `XMLHttpRequest` or `WebSocket` anywhere in `web/src`: all relay traffic is the Rust core's. The CSP turns that architectural rule into something the engine enforces. mediasoup's WebRTC is unaffected — `RTCPeerConnection` is not governed by CSP. |
+| `worker-src 'self'` | The E2EE voice frame-crypto Worker (`lib/voiceFrameWorker.ts`, a module worker built into `assets/`). No `blob:` — nothing constructs a worker from an object URL. |
+| `frame-src` (two origins) | The click-to-load video embeds the editor writes, exactly the origins `web/src/lib/editor/media.ts::embedSrc` produces (`youtube-nocookie.com`, `player.vimeo.com`). |
+| `object-src`/`base-uri`/`form-action`/`frame-ancestors` `'none'` | Plugins, `<base>` rewriting, and form posts have no legitimate use here; every `<form>` in the app is `@submit.prevent`. |
+
+#### The relay origin is never named — and mostly isn't needed
+
+The relay's URL is **chosen by the user**, so it cannot be a build-time constant,
+and Tauri's CSP is static configuration: there is no supported API to change a
+window's policy after it is created. Three ways out were considered.
+
+1. **Template the CSP per account at runtime.** Would mean patching Tauri or
+   recreating the webview whenever the relay changes. Rejected.
+2. **Name a wildcard that covers any relay.** `https:` covers an https relay but
+   not a self-hosted one on plain http, so it doesn't actually solve "unknown
+   origin" — it just widens the policy. Rejected as the *primary* answer.
+3. **Route remote media through the Rust core**, which already holds the device
+   token and owns all networking: it fetches the bytes and hands them over IPC,
+   and the UI renders a `blob:`. **Chosen**, and already how the built core
+   works — `emote_get` returns image bytes from the on-device cache or, on a
+   miss, from the relay's image proxy
+   ([local-store.md](local-store.md#emoji-on-device-the-used-emoji-cache)). So
+   the emotes that arrive **in content** — the ones a hostile sender controls,
+   and the ones that must render offline — never put the relay origin in the
+   document at all.
+
+The one deliberate exception is the **emote picker**: search results are
+browsing, not content, so the core returns the relay's capability paths and the
+picker is meant to render them directly rather than pulling every thumbnail
+through IPC and past the cache. Those loads ride the `https:` source below. A
+plain-http relay therefore gets no picker thumbnails (everything else, content
+emotes included, still works) — allowing `http:` in `img-src` to fix that would
+be a worse trade than the missing thumbnails.
+
+#### What the policy does not close
+
+`img-src … https:` leaves a one-way exfiltration channel: script running in the
+webview could encode data into an image URL on any https host. Two shipped
+things need it — the **click-to-load remote image** in a note or message
+([§ Remote media privacy](#remote-media-privacy-click-to-load)), and the emote
+picker's relay-hosted thumbnails above — and removing it would break both
+silently. Note the shape of what is left, though: `connect-src` allows no origin
+at all, so there is no read-back channel; an attacker gets blind `GET`s, not a
+request/response loop, and no way to read a reply.
+
+Closing it means routing those two through the core as well, at which point
+`https:` leaves `img-src` and the webview has no route to the network whatsoever.
+That is tracked in
+[roadmap.md](roadmap.md#tighten-img-src-by-fetching-remote-images-in-the-core).
+
+#### Dev, and how the policy is verified
+
+Under `npm run dev:native` the webview loads the **Vite dev server**, not the
+bundle, so Tauri never touches the document and `app.security.devCsp` alone would
+apply to nothing. Vite therefore sends the policy itself (`server.headers` in
+`web/vite.config.ts`, built by `web/csp.ts`), reading `devCsp` from
+`tauri.conf.json` so there is one source of truth and adding the same inline-script
+hash Tauri computes for the bundle. `devCsp` is identical to the shipped policy
+except for `connect-src`, which also allows `'self'` and `ws://localhost:5173`
+for HMR. (A `vite --host` LAN session reaches the page from a different origin,
+so HMR's socket is refused there and the page needs a manual reload — deliberate,
+rather than allowing `ws:` wholesale.)
+
+Because a too-tight CSP fails **silently** — no crash, just a missing avatar,
+attachment, worker or stylesheet — the policy is checked against real engines
+rather than by reading it: `node web/dev/csp-probe.mjs` (and `--dev`) loads the
+app under the exact shipped header in **Chromium and WebKit** and reports every
+violation, covering `data:`/`blob:` images, `blob:` media, the module worker,
+runtime-injected styles, inline style attributes, the bundled fonts, and the
+editor harness with real CodeMirror. The policy's invariants — no inline script,
+no network origin in `connect-src`, `frame-src` matching `embedSrc`, dev
+differing from prod only in `connect-src` — are asserted in
+`web/test/lib/csp.test.ts`.
 
 ## Threat model & metadata exposure
 
@@ -264,6 +387,48 @@ HTTPS — the **sender's IP** at send time, a network-position correlate of the
 social graph that sealed-sender does *not* erase (mitigated only by the operator
 not logging, or users fronting with a VPN/Tor — not by protocol).
 
+### Total device loss is unrecoverable, by design
+
+**Decided 2026-07-27.** If a user loses every device they own and holds no
+exported backup, their account is gone: not only the message and note history,
+but the **identity itself** — the handle, the contacts who address them by
+identity key, and the ability to prove they are the same person to anyone.
+Nothing anywhere can restore it. This is a constraint the product accepts, not a
+defect to be fixed later, and it is written here so it is never treated as one.
+
+**Why.** Everything durable is encrypted under a master key (MK) that exists only
+on the user's own devices. That is the property the whole design is built to
+deliver: the relay stores no content at rest, cannot read what it forwards, and
+holds nothing that could reconstruct an account. Any recovery mechanism that
+works *without* a surviving device requires something recoverable to exist
+somewhere the user is not — which is exactly the thing the threat model rules
+out. **Relay-held escrow was that mechanism and has been removed** (see
+[roadmap.md](roadmap.md#escrow--removed)): it put a permanently stored,
+password-wrapped MK on the server, creating an offline brute-force target against
+a single human-chosen password and a standing at-rest liability, in exchange for
+a convenience that device pairing already provides whenever any device survives.
+
+**What this means in practice.** There are exactly two ways to not lose
+everything, and both require acting *before* the loss:
+
+1. **Own more than one device.** Pairing makes every device a full replica
+   ([roadmap.md](roadmap.md#multi-device-history--sync-d8a)), so any surviving
+   device restores both identity and history to a replacement.
+2. **Keep an encrypted backup export** somewhere the user controls
+   ([roadmap.md](roadmap.md#offline-encrypted-backup-export-d8)). This is the
+   only protection against losing *all* devices at once — theft, fire, a single
+   laptop being the whole fleet.
+
+The recovery code does **not** cover this case and must never be presented as
+though it does: it wraps MK *locally*, so it dies with the device it was created
+on. It protects against a forgotten password, not a lost device.
+
+**Obligation on the interface.** Because the failure is silent until it is
+absolute, onboarding has to say so plainly and push the two mitigations —
+the ≥2-device nudge and the backup export — rather than burying them in settings.
+A user who discovers this constraint at the moment they need recovery has been
+failed by the product, even though the cryptography behaved exactly as designed.
+
 ### v8 trust boundaries worth stating plainly
 
 Five places where the design accepts a bounded risk rather than eliminating it.
@@ -280,13 +445,9 @@ Each is deliberate; none should be discovered by surprise later.
   replies embed a snapshot of their context, and a relay can already withhold or
   delay delivery — but nothing may treat relay ordering as adversary-proof. See
   [local-store.md](local-store.md#message-ordering-no-server-counter).
-- **Escrow is an explicit carve-out from zero-at-rest.** The relay holds the
-  password- and recovery-wrapped MK. Zero-at-rest means zero *content* at rest;
-  key blobs encrypted under secrets only the user holds are not the honeypot the
-  posture exists to avoid. The residual is an **offline brute-force against the
-  password-wrapped blob**, bounded by Argon2id (m≈19 MiB, t=2), the 16-character
-  minimum, and the 5/min fetch bucket above. See
-  [accounts-and-crypto.md](accounts-and-crypto.md#account-escrow--cold-start).
+- **Losing every device loses the account — permanently.** *(Decided
+  2026-07-27; this is an accepted design constraint, not a gap.)* See
+  [Total device loss](#total-device-loss-is-unrecoverable-by-design) below.
 - **History backfill can be *incomplete*, not forged.** Per-message sender
   signatures mean a member serving history cannot alter what someone else said,
   but it **can omit** messages. Not fully preventable; mitigated by preferring

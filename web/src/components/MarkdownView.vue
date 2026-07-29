@@ -6,7 +6,18 @@ import { getNoteAttachmentCiphertext } from '../lib/attachments';
 import { decryptBlob } from '../lib/crypto';
 import MdTokens from './MdTokens';
 
-const props = defineProps<{ source: string; attachments?: AttachmentRef[]; breaks?: boolean }>();
+// `emojiScope` is the id this document's emoji fetches are charged to (the note
+// or message id) — or false to render only emotes already held, fetching none.
+// See EmojiText: it is the per-message cap's key, so it must not be guessed.
+const props = withDefaults(
+  defineProps<{
+    source: string;
+    attachments?: AttachmentRef[];
+    breaks?: boolean;
+    emojiScope?: string | false;
+  }>(),
+  { emojiScope: false },
+);
 
 // Extended syntax shared with the live editor: ==highlight== and ||spoiler||.
 interface InlineToken extends Tokens.Generic {
@@ -102,6 +113,6 @@ function onClick(event: MouseEvent) {
 
 <template>
   <div ref="root" class="md-preview" @click="onClick">
-    <MdTokens :tokens="tokens" :resolve="resolveAttachment" />
+    <MdTokens :tokens="tokens" :resolve="resolveAttachment" :emoji-scope="props.emojiScope" />
   </div>
 </template>

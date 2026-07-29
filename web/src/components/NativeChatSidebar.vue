@@ -265,7 +265,7 @@ function onDropOnRoot() {
             @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
           >
             <component :is="isCollapsed(row.folder!.id) ? IconFolderPlus : IconFolderMinus" class="h-4.5 w-4.5 shrink-0 opacity-60" />
-            <span class="min-w-0 grow truncate"><EmojiText :text="row.folder!.name" /></span>
+            <span class="min-w-0 grow truncate"><EmojiText :text="row.folder!.name" :scope="`folder:${row.folder!.id}`" /></span>
           </button>
           <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
             <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(row.folder!.id)"><IconFolderPlus class="h-3.5 w-3.5" /></button>
@@ -289,7 +289,7 @@ function onDropOnRoot() {
             @drop.stop.prevent="onDropOnItem(row.item!)"
           >
             <IconNote class="h-4 w-4 shrink-0 opacity-50" />
-            <span class="min-w-0 grow truncate"><EmojiText :text="row.item!.title" /></span>
+            <span class="min-w-0 grow truncate"><EmojiText :text="row.item!.title" :scope="`note:${row.item!.noteId}`" /></span>
           </button>
           <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
             <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Unpin" @click="unpinNote(row.item!.noteId)"><IconX class="h-3.5 w-3.5" /></button>

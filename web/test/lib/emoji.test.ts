@@ -1,11 +1,24 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { clearEmotes, isEmoteOnly, registerEmote, resolveEmoji } from '../../src/lib/emoji';
+import {
+  clearEmotes,
+  emoteIdFor,
+  isAllowedEmoteUrl,
+  isEmoteOnly,
+  registerEmote,
+  registerEmoteId,
+  registeredEmoteNames,
+  resolveEmoji,
+  setEmoteRelayOrigin,
+} from '../../src/lib/emoji';
 
 // The bundled 7TV manifest is gone — emote images come from the relay's proxying
 // endpoints now, so the registry starts empty and only resolves what a caller has
 // explicitly registered.
 
-afterEach(() => clearEmotes());
+afterEach(() => {
+  clearEmotes();
+  setEmoteRelayOrigin(null);
+});
 
 describe('emote registry', () => {
   it('resolves nothing until an emote is registered', () => {
@@ -24,6 +37,71 @@ describe('emote registry', () => {
     expect(resolveEmoji('partyblob')).toBe('blob:custom');
     clearEmotes();
     expect(resolveEmoji('partyblob')).toBeNull();
+  });
+});
+
+describe('emote URLs are pinned to origins this app controls', () => {
+  // The whole point of the relay's emote proxy is that this device never
+  // resolves a third-party host: an <img> to a CDN is an IP-revealing beacon,
+  // and it would be chosen by whoever authored the content or runs the relay.
+  const cdn = 'https://cdn.7tv.app/emote/x/2x.webp';
+
+  it('refuses a third-party URL outright — no relay is "close enough"', () => {
+    setEmoteRelayOrigin('https://relay.test');
+    expect(isAllowedEmoteUrl(cdn)).toBe(false);
+    expect(registerEmote('partyblob', cdn)).toBe(false);
+    expect(resolveEmoji('partyblob')).toBeNull();
+  });
+
+  it('accepts the pinned relay origin, and only while it is pinned', () => {
+    const url = 'https://relay.test/api/relay/emote/sig/abc.webp';
+    // Fail closed before a relay is known.
+    expect(registerEmote('partyblob', url)).toBe(false);
+
+    setEmoteRelayOrigin('https://relay.test');
+    expect(registerEmote('partyblob', url)).toBe(true);
+    expect(resolveEmoji('partyblob')).toBe(url);
+
+    // A different port or scheme is a different origin.
+    expect(isAllowedEmoteUrl('https://relay.test:8443/api/relay/emote/sig/abc.webp')).toBe(false);
+    expect(isAllowedEmoteUrl('http://relay.test/api/relay/emote/sig/abc.webp')).toBe(false);
+    expect(isAllowedEmoteUrl('https://relay.test.evil.example/x.webp')).toBe(false);
+  });
+
+  it('accepts locally-minted sources: blob:, data: and same-origin', () => {
+    expect(registerEmote('a', 'blob:mock/1')).toBe(true);
+    expect(registerEmote('b', 'data:image/webp;base64,AA==')).toBe(true);
+    expect(registerEmote('c', '/emoji/partyblob.webp')).toBe(true);
+    expect(registerEmote('d', `${window.location.origin}/emoji/x.webp`)).toBe(true);
+  });
+
+  it('is not fooled by a blob: URL carrying a foreign origin, or by junk', () => {
+    // blob:https://evil.example/… parses with a foreign origin but can only
+    // ever resolve to bytes this document created — allowed, and inert.
+    expect(isAllowedEmoteUrl('blob:https://evil.example/1234')).toBe(true);
+    expect(isAllowedEmoteUrl('javascript:alert(1)')).toBe(false);
+    expect(isAllowedEmoteUrl('//cdn.7tv.app/x.webp')).toBe(false);
+    expect(isAllowedEmoteUrl('')).toBe(false);
+    expect(isAllowedEmoteUrl('   ')).toBe(false);
+  });
+
+  it('ignores an unparseable relay base rather than trusting it', () => {
+    setEmoteRelayOrigin('not a url');
+    expect(isAllowedEmoteUrl('https://relay.test/x.webp')).toBe(false);
+  });
+});
+
+describe('emote ids', () => {
+  it('remembers an id without making the name renderable', () => {
+    registerEmoteId('partyblob', '01F6MEP1ZG000CSNPPXHJPRW1J');
+    expect(emoteIdFor('partyblob')).toBe('01F6MEP1ZG000CSNPPXHJPRW1J');
+    expect(resolveEmoji('partyblob')).toBeNull();
+    expect(registeredEmoteNames()).not.toContain('partyblob');
+
+    // Registering the image later keeps the id.
+    registerEmote('partyblob', 'blob:mock/1');
+    expect(emoteIdFor('partyblob')).toBe('01F6MEP1ZG000CSNPPXHJPRW1J');
+    expect(registeredEmoteNames()).toContain('partyblob');
   });
 });
 

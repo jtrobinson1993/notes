@@ -38,6 +38,9 @@ const nativeMod = vi.hoisted(() => ({
   conversationActivity: vi.fn().mockResolvedValue([]),
   attachmentUpload: vi.fn(),
   attachmentFetch: vi.fn().mockResolvedValue([1, 2, 3]),
+  emoteSearch: vi.fn(),
+  emoteGet: vi.fn(),
+  emoteCachedList: vi.fn(),
 }));
 vi.mock('../../src/lib/native', () => nativeMod);
 
@@ -48,6 +51,8 @@ vi.mock('../../src/lib/callHost', () => ({ callHost: () => call }));
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
 
 import NativeChat from '../../src/components/NativeChat.vue';
+import EmojiPicker from '../../src/components/EmojiPicker.vue';
+import { clearEmotes, registerEmote, setEmoteRelayOrigin } from '../../src/lib/emoji';
 
 // A local-log row as the UI sees it (lib/chatView.ts): `attachments` is always
 // an array on the happy path — rowToView defaults it to [].
@@ -73,6 +78,8 @@ beforeEach(() => {
   relay.onMailIngested.mockReturnValue(() => {});
   nativeMod.conversationReactions.mockResolvedValue([]);
   nativeMod.conversationActivity.mockResolvedValue([]);
+  clearEmotes();
+  setEmoteRelayOrigin(null);
 });
 
 describe('NativeChat', () => {
@@ -101,6 +108,37 @@ describe('NativeChat', () => {
     // own message row is right-aligned (column: actions + bubble, then chips)
     const own = w.findAll('li').find((li) => li.text().includes('hey'));
     expect(own?.classes()).toContain('items-end');
+  });
+
+  it('renders message text through the shared emoji renderer, scoped to the message', async () => {
+    // The scope is the message id: that is what bounds how many distinct
+    // emotes one (attacker-authored) message may pull from the relay.
+    registerEmote('partyblob', 'blob:mock/party', '01F6MEP1ZG000CSNPPXHJPRW1J');
+    dm.openDm.mockResolvedValue({
+      conversationId: 'dm:A',
+      messages: [view({ key: 'm1', senderId: 'idA', text: 'nice :partyblob:' })],
+    });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+
+    const img = w.find('img.chat-emoji');
+    expect(img.exists()).toBe(true);
+    expect(img.attributes('src')).toBe('blob:mock/party');
+    expect(w.text()).toContain('nice');
+  });
+
+  it('inserts a picked emoji into the draft (sending is what caches it)', async () => {
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+
+    await w.find('[data-testid="draft"]').setValue('yo');
+    w.findComponent(EmojiPicker).vm.$emit('pick', ':partyblob:');
+    await flushPromises();
+    expect((w.find('[data-testid="draft"]').element as HTMLInputElement).value).toBe('yo :partyblob: ');
   });
 
   it('sends a draft via sendDm and reloads', async () => {

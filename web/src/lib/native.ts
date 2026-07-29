@@ -40,19 +40,6 @@ export function vaultUnlockRecovery(code: string): Promise<void> {
   return invoke('vault_unlock_recovery', { code });
 }
 
-/**
- * Cold-start restore on a fresh, unpaired device (D15/D3a): fetch the
- * wrapped-MK escrow from a relay by handle + password and rebuild the vault.
- * Restores identity, not history (pair a device or import a backup for that).
- */
-export function vaultRestoreFromEscrow(
-  url: string,
-  handle: string,
-  password: string,
-): Promise<void> {
-  return invoke('vault_restore_from_escrow', { url, handle, password });
-}
-
 export function vaultLock(): Promise<void> {
   return invoke('vault_lock');
 }
@@ -125,14 +112,16 @@ export function relayRegister(url: string, inviteToken?: string, handle?: string
 }
 
 /** Invite signups only: deliver the sealed friend-accept to the inviter (the
- *  follow-up leg of the D4b handshake). Resolves with whether it was delivered. */
-export function relayRegisterFriendAccept(envelope: number[]): Promise<boolean> {
-  return invoke<boolean>('relay_register_friend_accept', { envelope });
-}
-
-/** Upload the wrapped-MK escrow bundle to the connected relay (D15). */
-export function relayEscrowUpload(): Promise<void> {
-  return invoke('relay_escrow_upload');
+ *  follow-up leg of the D4b handshake). Resolves with whether it was delivered.
+ *  `handle`/`identityPub` are the invite's pinned keys — the core verifies them
+ *  against the transparency log before the envelope (which carries our delivery
+ *  token) leaves the device. */
+export function relayRegisterFriendAccept(
+  envelope: number[],
+  handle: string,
+  identityPub: string,
+): Promise<boolean> {
+  return invoke<boolean>('relay_register_friend_accept', { envelope, handle, identityPub });
 }
 
 /** Derive + publish this account's per-relay keys to the directory (D5). */
@@ -147,9 +136,19 @@ export function relayInviteMint(tokenHash: string, expiresInSec?: number): Promi
 }
 
 /** Redeem a friend invite: drop the pre-sealed friend-accept envelope into the
- *  inviter's mailbox (capability only). Resolves with the relay stamp. */
-export function relayInviteRedeem(token: string, envelope: number[]): Promise<number> {
-  return invoke<number>('relay_invite_redeem', { token, envelope });
+ *  inviter's mailbox (capability only). Resolves with the relay stamp.
+ *
+ *  `handle` + `identityPub` are the invite's TOFU pin: the core checks them
+ *  against the relay's transparency log and refuses to send if the log
+ *  publishes a different key for that handle (the accept carries our delivery
+ *  token, so the check has to gate the send). */
+export function relayInviteRedeem(
+  token: string,
+  envelope: number[],
+  handle: string,
+  identityPub: string,
+): Promise<number> {
+  return invoke<number>('relay_invite_redeem', { token, envelope, handle, identityPub });
 }
 
 /** This account's per-relay directory keys (base64) for assembling an invite. */
@@ -166,6 +165,10 @@ export interface FriendSummary {
   /** STANDARD base64 of the friend's Ed25519 identity key (maps an inbound
    *  call's verified callerId, which uses the same encoding, to this friend). */
   identity_pub: string;
+  /** Relay epoch of the signed transparency-log root that proved this key
+   *  belongs to this handle, or `null` if it was never proven. `null` must
+   *  render as *unverified* — never as verified. */
+  kt_verified_epoch: number | null;
 }
 
 export interface FriendAddressing {
@@ -458,6 +461,10 @@ export interface DrainReport {
   friends: number;
   /** Incoming voice call rings from verified call-offer envelopes (v8 voice). */
   calls?: CallRing[];
+  /** Friend handshakes the core refused because the relay's transparency log
+   *  publishes a different key for that handle (D5). Nothing was recorded and
+   *  nothing was sealed back; a hard `kt:alarm` was raised. */
+  kt_rejected?: number;
 }
 
 /** An incoming voice call ring surfaced by the drain (v8 voice). */
@@ -486,7 +493,7 @@ export function relayMailboxDrain(): Promise<DrainReport> {
 
 /** Result of a KT self-audit (D5): whether the relay's log only bound my handle
  *  to keys I minted + its roots are consistent. `reason` is the alarm on failure
- *  ("self-audit-failed" | "split-view"). */
+ *  ("self-audit-failed" | "split-view" | "contact-key-mismatch"). */
 export interface KtAuditReport {
   ok: boolean;
   reason: string | null;
@@ -497,6 +504,20 @@ export interface KtAuditReport {
  *  `kt:alarm` event on failure (see nativeKt). */
 export function ktSelfAudit(): Promise<KtAuditReport> {
   return invoke<KtAuditReport>('kt_self_audit');
+}
+
+/** Outcome of re-checking contacts whose keys were never proven against the log. */
+export interface KtContactSweep {
+  verified: number;
+  unverified: number;
+  rejected: number;
+}
+
+/** Re-verify every contact recorded without a transparency-log proof (added
+ *  while the relay's directory was unreachable). Run on relay connect; emits a
+ *  hard `kt:alarm` if the log contradicts a key we hold. */
+export function ktVerifyContacts(): Promise<KtContactSweep> {
+  return invoke<KtContactSweep>('kt_verify_contacts');
 }
 
 /** Gossip my latest signed KT root to a friend so they can detect a split view
@@ -655,6 +676,70 @@ export function attachmentHas(id: string): Promise<boolean> {
 /** Local space reclamation (D6 retention) — this device only. */
 export function attachmentEvict(id: string): Promise<void> {
   return invoke('attachment_evict', { id });
+}
+
+// ---- emoji (relay-proxied search + the on-device used-emoji cache) ----
+//
+// Both legs run in the core so the relay device token never crosses IPC: the
+// webview must never `fetch()` the relay's emote endpoints itself. See
+// spec/local-store.md § "Emoji on device".
+
+/** One search hit. `url` is absolute against the **connected relay** — the core
+ *  refuses to hand back any other origin, so a hostile relay cannot point the
+ *  webview at a third-party CDN (which would leak this device's IP). */
+export interface EmoteSearchResult {
+  id: string;
+  name: string;
+  url: string;
+  width: number;
+  height: number;
+  animated: boolean;
+}
+
+export interface EmoteSearchResponse {
+  results: EmoteSearchResult[];
+  next: string | null;
+}
+
+/** Proxied 7TV search. An empty query returns the relay's top emotes (the
+ *  picker's default set). Results are **browsing**: the core caches nothing. */
+export function emoteSearch(query: string, page?: number, limit?: number): Promise<EmoteSearchResponse> {
+  return invoke<EmoteSearchResponse>('emote_search', { query, page: page ?? null, limit: limit ?? null });
+}
+
+/** An emote's image bytes. `fetched` is true when the call had to go to the
+ *  relay — the per-message fetch cap counts exactly those. */
+export interface EmoteImage {
+  id: string;
+  name: string;
+  mime: string | null;
+  width: number | null;
+  height: number | null;
+  animated: boolean;
+  bytes: number[];
+  fetched: boolean;
+}
+
+/** Bytes for a known emote: cache first, relay on a miss (cached on the way
+ *  through). Only the shared content renderer may call this — see
+ *  `lib/emoji/render.ts`, which owns the per-message cap. */
+export function emoteGet(id: string, name: string): Promise<EmoteImage> {
+  return invoke<EmoteImage>('emote_get', { id, name });
+}
+
+/** The offline picker's set: every emote this device can render with no relay
+ *  at all, most recently used first. Carries no key material. */
+export interface CachedEmote {
+  id: string;
+  name: string;
+  width: number | null;
+  height: number | null;
+  animated: boolean;
+  lastUsedAt: number;
+}
+
+export function emoteCachedList(): Promise<CachedEmote[]> {
+  return invoke<CachedEmote[]>('emote_cached_list');
 }
 
 /** A message row for the local log — used by the live-ingest path

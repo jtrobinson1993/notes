@@ -51,6 +51,9 @@ const folderName = computed(() => {
   const id = org.folderOf(props.note.id);
   return id ? (org.folders.find((f) => f.id === id)?.name ?? null) : null;
 });
+// Emoji-render scope for the folder chip (see EmojiText): the folder's own id,
+// so its emote fetches are budgeted per folder rather than per note view.
+const folderScope = computed(() => `folder:${org.folderOf(props.note.id) ?? 'none'}`);
 const title = ref(props.note.payload.title);
 const body = ref(props.note.payload.body);
 const editor = ref<{ insertText: (s: string) => void } | null>(null);
@@ -356,7 +359,7 @@ function fmtSize(bytes: number): string {
         title="Folder"
       >
         <IconFolder class="h-3 w-3 shrink-0" />
-        <span class="truncate"><EmojiText :text="folderName" /></span>
+        <span class="truncate"><EmojiText :text="folderName" :scope="folderScope" /></span>
       </span>
       <span
         v-for="tag in tags"
@@ -422,7 +425,7 @@ function fmtSize(bytes: number): string {
     <div v-if="mode === 'reading'" class="min-h-0 grow overflow-y-auto">
       <!-- breaks: a single newline is a hard line break, so reading mode keeps
            the line breaks you typed in the editor instead of soft-wrapping. -->
-      <MarkdownView :source="body" :attachments="attachments" breaks />
+      <MarkdownView :source="body" :attachments="attachments" :emoji-scope="`note:${note.id}`" breaks />
     </div>
     <div v-else class="min-h-0 grow">
       <MarkdownEditor

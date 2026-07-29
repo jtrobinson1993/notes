@@ -2,8 +2,12 @@
 
 > **Status: as built — full AKD.** The relay runs a **Meta `akd` sidecar**
 > (VRF-blinded labels, inclusion / append-only / key-history proofs) and the
-> native client verifies end-to-end: inclusion, self-audit, and gossip-based
-> split-view detection with a blocking alarm. An **interim Merkle path**
+> native client verifies end-to-end: **contact keys on first trust** (the
+> inclusion proof, against a root whose relay signature is checked first),
+> self-audit, and gossip-based split-view detection. The hard alarm is a
+> prominent banner; making it *block* sending is still open
+> ([roadmap.md](roadmap.md#the-hard-kt-alarm-warns-but-does-not-block)). An
+> **interim Merkle path**
 > (`ktMerkle.ts` — signed hash-chained roots + per-entry inclusion proofs over
 > the handle-ordered directory) remains as the fallback when no sidecar is
 > configured. **Not built:** SAS fingerprint verification (the server-trust-free
@@ -71,10 +75,12 @@ app binary.
 
 - **`verify_lookup`** → the verified identity key for a handle, and
   **`verify_key_history`** → every key the log ever bound to a handle
-  (`src-tauri/src/kt.rs`).
+  (`src-tauri/src/kt.rs`). Both are wired: `verify_lookup` through **contact
+  verification** (below), `verify_key_history` through `kt_self_audit`.
 - **`kt_self_audit`** derives your own handle + identity key, fetches
   `GET /api/relay/directory/:handle/history` (AKD backend only — the interim
-  Merkle KT cannot prove history and answers 404), verifies it, and applies
+  Merkle KT cannot prove history and answers 404), **resolves the returned root
+  through the signed chain** (below), verifies the proof against it, and applies
   `self_audit_verdict(history_keys, my_keys)` — a key the log bound to *your*
   handle that you never minted is hard equivocation. On a clean, consistent
   result it advances the verified root; otherwise it raises a hard alarm.
@@ -92,6 +98,111 @@ app binary.
 - **Alarm surface:** `nativeKt.ts` subscribes to the `kt:alarm` Tauri event and
   runs one self-audit on connect; `KtAlarm.vue` renders a prominent,
   non-dismissable banner distinguishing split-view from foreign-key.
+
+## Contact verification — the directory-lookup path (as built)
+
+This is the check the log exists for: **is the key I am about to trust for a
+handle the one the log published for it?** Without it the log proves only that
+the relay is consistent about *my own* key.
+
+### The signed root is the anchor, and it is resolved first
+
+An inclusion proof verifies against whatever root it is handed. Taking the root
+from the same response that carried the proof therefore proves *nothing* — a
+hostile relay just answers with a self-consistent `(proof, root)` pair for a key
+it chose. So `kt::contact_verdict` resolves the root **before** it parses the
+proof:
+
+1. `kt::signed_root_epoch(relay_pub, roots, root)` finds the response's
+   `rootHash` in the relay's `GET /api/relay/kt/roots` chain and verifies the
+   relay's Ed25519 signature over `kt-root|{root}|{prev}` — the *same* check the
+   gossip path already applies to a friend-supplied root, against the relay
+   identity key pinned at connect. A root that is not in that signed chain is a
+   fabrication.
+2. Only then does `verify_lookup` run, against that root.
+3. The verified value is compared with the key we were handed.
+
+Two consequences worth stating plainly:
+
+- **The epoch number is not the anchor; the root hash is.** `akd_core`'s
+  `lookup_verify` does not bind its `epoch` argument tightly (a proof still
+  verifies with the epoch off by one), and the akd epoch is the sidecar's own
+  counter anyway — it does not line up with the relay's signed-root epochs,
+  which are what gossip, `kt_roots_seen` and the auditor speak in. The client
+  therefore records the **relay epoch of the signed root**, everywhere.
+- **The VRF public key is pinned per relay (TOFU)**, in the vault setting
+  `kt.vrfPub.<relayFp>`, and a change is a rejection rather than a rotation.
+  The VRF key decides which *leaf* a handle maps to: a relay free to swap it
+  could compute a VRF proof mapping `Alice#0001` onto a leaf that legitimately
+  holds the attacker's key, and the inclusion proof would still verify under a
+  genuinely signed root. The relay's root signature does **not** cover the VRF
+  key today, so first-use pinning is the available defence; having the relay
+  sign the VRF key into the root chain would remove the TOFU window and is
+  listed in [roadmap.md](roadmap.md).
+
+### Where it runs
+
+Everywhere a contact key is first trusted — in the Rust core, since the device
+token and all networking live there:
+
+| Moment | Command | What is checked |
+|---|---|---|
+| Redeeming an invite | `relay_invite_redeem` | the invite's TOFU pin (`handle` + `identityPub`) **before** the sealed friend-accept is sent |
+| Invite signup's follow-up leg | `relay_register_friend_accept` | the same pin, before delivery |
+| Inbound `friend-accept` / `friend-confirm` | `relay_mailbox_drain` | the *verified envelope sender's* key against the handle in the payload, **before** `record_friend` and before the reciprocal confirm is sealed |
+| Relay connect | `kt_verify_contacts` | every contact still recorded without a proof |
+
+**Ordering is the property, not an implementation detail.** A friend-accept is
+answered with a friend-confirm carrying *my delivery token*; an invite redeem
+sends an accept carrying it too. Verifying after replying would hand that token
+to an impostor whatever the verdict then said, so the check gates the send.
+
+### Verdicts
+
+| Verdict | Meaning | Behaviour |
+|---|---|---|
+| **Verified** | the log published exactly this key for this handle under a signed root | proceed; the signed epoch is stored on the contact (`contact_relays.kt_verified_epoch`) |
+| **Rejected** — key mismatch, invalid proof, unsigned root, or a changed VRF key | the relay actively contradicts its own signed log | **fail closed**: nothing recorded, nothing sealed back, hard `kt:alarm` (`contact-key-mismatch`), and `KT_CONTACT_KEY_MISMATCH` surfaced to the user on the interactive paths |
+| **Unverified** — 404, no AKD backend, relay/directory unreachable, no relay key | no proof either way | proceed, recorded **unverified**, re-checked on the next connect |
+
+A rejected envelope is still **acked**: it is permanently unusable, and
+re-draining it would only replay the same rejection.
+
+An unverified contact is never rendered as verified — `friends_list` carries
+`kt_verified_epoch`, and the friends list shows "Key verified" only for a real
+epoch, "Key not verified" otherwise.
+
+### The 404 case — unverified, deliberately not blocking
+
+A 404 means the relay claims the handle has no directory entry. It is treated
+exactly like an unreachable directory: **never a match, never a block.**
+
+- It is **indistinguishable from a benign race.** Publishing directory keys is
+  best-effort at signup (`publishSelf` retries on the next connect), so an
+  accept can genuinely arrive before the sender's entry lands. Blocking would
+  break first-contact onboarding for a non-adversarial failure.
+- It **denies an attacker nothing.** A relay that wants to withhold proof can
+  answer 404, 503, or simply hang; if 404 blocked, the same relay would just
+  stall instead. Blocking on 404 buys no security while costing real
+  reachability — including offline use, where no lookup is possible at all.
+- The exposure it leaves is bounded and visible: the contact is recorded
+  **unverified**, is shown that way, and the sweep on every relay connect
+  re-checks it. A relay sustaining the lie must keep 404-ing forever, and the
+  moment it answers, a contradiction becomes a hard alarm.
+
+What is *not* tolerated is the log answering and disagreeing. That is the one
+case the relay cannot reach by silence, and it fails closed.
+
+### Re-verification
+
+`kt_verify_contacts` (run from `nativeKt.startKtAudit()` on connect, alongside
+the self-audit) sweeps every friend with `kt_verified_epoch IS NULL` and settles
+them. A proof only ever marks the row verified if it matches the `identity_pub`
+still stored there, and a contact whose key changes is dropped back to
+unverified by `record_friend`, so a proof for the old key can never vouch for a
+new one. On a sweep rejection the verification is cleared and the hard alarm
+fires — the contact is **not** silently deleted; making the alarm *block* is a
+separate roadmap item.
 
 **Deferred:** a **WASM `akd_core` verifier** (plus a JS reimplementation of
 self-audit/gossip) for the deferred browser client
@@ -125,22 +236,23 @@ than a napi binding into Node.
 
 | Proof | When the client checks it |
 |---|---|
-| **Inclusion/lookup** | on every directory fetch — the returned key is proven present in the current epoch |
-| **Consistency/extension** | whenever a newer root is seen — epoch *n+1*'s tree provably extends epoch *n* (append-only) |
-| **Self-audit (history)** | periodically for the client's *own* handle — proves the log has only ever mapped it to keys this account actually minted |
+| **Inclusion/lookup** | whenever a contact key is first trusted, and on the reconnect sweep — see *Contact verification* above. Always against a root resolved through the **signed** chain first |
+| **Self-audit (history)** | on connect for the client's *own* handle — proves the log has only ever mapped it to keys this account actually minted |
+| **Consistency/extension** | **not client-side.** `akd_core` ships no append-only verifier; the client's equivocation defence is `(epoch, root)`-equality over `kt_roots_seen`, and full consistency verification is the reference auditor's job |
 
 - The client caches the latest verified root per relay (`kt_state`, see
   [local-store.md](local-store.md)).
-- **Gossip:** every E2E envelope to a contact on a shared relay piggybacks the
-  sender's latest seen signed root; the recipient checks consistency between
-  that root and its own. Two roots for the same epoch range that don't extend
-  each other = **split view** — the relay is showing different logs to
-  different users.
-- **Alarms** (per D5/UI): *soft* — a contact's key changed with valid proofs
-  (likely a legitimate new key; badge + inline notice, re-verify via SAS).
-  *Hard* — failed self-audit, failed consistency, or gossip split-view: a
-  blocking alert that halts sending to affected contacts and offers SAS
-  re-verification / relay disconnect.
+- **Gossip:** DM sends piggyback the sender's latest signed root on a
+  `kt-gossip` envelope; the recipient verifies the relay's signature over it and
+  records it. A *different* root at an epoch already seen = **split view** — the
+  relay is showing different logs to different users.
+- **Alarms:** the *hard* tier — failed self-audit, gossip split-view, or a
+  contact key the log contradicts — raises `kt:alarm`, which `KtAlarm.vue`
+  renders as a prominent, non-dismissable banner. It does **not** yet halt
+  sending to affected contacts; that is an open roadmap item
+  ([roadmap.md](roadmap.md#the-hard-kt-alarm-warns-but-does-not-block)). The
+  *soft* tier (a contact's key changed with valid proofs → badge + inline
+  notice, re-verify via SAS) is unbuilt and waits on SAS.
 
 ## Roots endpoint (public, unauthenticated)
 
@@ -192,3 +304,16 @@ log plus gossip is the whole of the MITM defence: a relay that equivocates
 *consistently* to a pair of users who never gossip with anyone else would not be
 caught. Users on a shared relay who exchange messages do co-observe the log, so
 the gap narrows as soon as a third party is involved.
+
+Two bootstrap windows are worth naming precisely, because contact verification
+inherits them rather than closing them:
+
+- **The VRF pin is trust-on-first-use.** A relay hostile from a client's very
+  first lookup could pin its own VRF key on that client and thereafter aim any
+  handle at any leaf. Pinning converts a *sustained* attack into a one-shot at
+  first contact, the same posture as the relay fingerprint; the durable fix is
+  the relay committing to its VRF key in the signed root chain.
+- **"Not in the log" is not proof of anything.** A relay can withhold an entry
+  (404) or stall, and contact verification then records the contact unverified
+  rather than blocking (see *The 404 case*). What it cannot do is publish a
+  contradicting key without that being caught and alarmed.

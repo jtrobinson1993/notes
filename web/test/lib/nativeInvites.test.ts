@@ -12,8 +12,13 @@ vi.mock('../../src/lib/native', () => native);
 
 import { createFriendInvite, redeemFriendInvite, FRIEND_ACCEPT_KIND } from '../../src/lib/nativeInvites';
 import { parseInvite, inviteTokenHash, buildInvite } from '../../src/lib/invites';
+import { errorMessage } from '../../src/lib/errors';
+import { resetToasts, toasts } from '../../src/lib/toast';
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  resetToasts();
+});
 
 describe('createFriendInvite', () => {
   it('mints hash(token) and embeds my pinned keys in the invite', async () => {
@@ -80,8 +85,31 @@ describe('redeemFriendInvite', () => {
       deliveryToken: 'MYDELIV',
       sealingPub: 'MYSEAL',
     });
-    // Dropped via the one-time token + the sealed envelope.
-    expect(native.relayInviteRedeem).toHaveBeenCalledWith('TOK', [9, 9, 9]);
+    // Dropped via the one-time token + the sealed envelope, and the invite's
+    // TOFU pin rides along so the core can check it against the KT log before
+    // the envelope (which carries my delivery token) is sent.
+    expect(native.relayInviteRedeem).toHaveBeenCalledWith('TOK', [9, 9, 9], 'Inviter#0001', 'IDPUB');
+  });
+
+  it('surfaces a KT mismatch as the catalogued error and adds nobody', async () => {
+    const invite = buildInvite({
+      relayUrl: 'https://relay.example',
+      relayFp: 'FP',
+      token: 'TOK',
+      handle: 'Inviter#0001',
+      identityPub: 'IDPUB',
+      sealingPub: 'SEALPUB',
+    });
+    native.relayMyDirectoryKeys.mockResolvedValue({ identity_pub: 'MYID', sealing_pub: 'MYSEAL' });
+    native.envelopeSeal.mockResolvedValue([9, 9, 9]);
+    // The core fails closed: the log publishes a different key for that handle.
+    native.relayInviteRedeem.mockRejectedValue('KT_CONTACT_KEY_MISMATCH: key-mismatch');
+
+    await expect(redeemFriendInvite(invite, { handle: 'Me#0002', deliveryToken: 'MYDELIV' })).rejects.toThrow(
+      errorMessage('KT_CONTACT_KEY_MISMATCH'),
+    );
+    // And the user is told, by catalogued code rather than a raw core string.
+    expect(toasts.value.at(-1)).toMatchObject({ kind: 'error', code: 'KT_CONTACT_KEY_MISMATCH' });
   });
 
   it('rejects a malformed invite before any network call', async () => {

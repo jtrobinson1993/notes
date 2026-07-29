@@ -16,7 +16,7 @@ import { WS_MAX_PAYLOAD } from './util.js';
 /**
  * The standalone v8 relay (spec/relay.md): a zero-knowledge message relay that
  * mounts ONLY the `/api/relay/*` surface (device auth, directory + KT, mailbox,
- * blobs, groups, voice signaling/SFU, escrow, registration, plus the content
+ * blobs, groups, voice signaling/SFU, registration, plus the content
  * proxies for GIF search / link previews / 7TV emotes) and a health probe.
  *
  * The content proxies are here because they are a PRIVACY primitive: the relay
@@ -34,8 +34,9 @@ import { WS_MAX_PAYLOAD } from './util.js';
 export async function buildRelayApp(db: DB, config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
 
-  // API-only hardening headers (no SPA → no CSP script hashes to thread in).
-  registerSecurityHeaders(app, config, null);
+  // API-only hardening headers (no HTML surface → the CSP is a floor, not a
+  // live defence; the app's real one is the native webview's).
+  registerSecurityHeaders(app, config);
 
   await app.register(fastifyRateLimit, {
     global: true,

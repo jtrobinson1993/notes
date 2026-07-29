@@ -91,6 +91,16 @@ cannot have, and the reason a future web client would be a lower-trust tier
 rather than a second first-class shell
 ([roadmap.md](roadmap.md#d16--a-v8-web-client-deferred)).
 
+**The webview runs under a Content-Security-Policy** (`app.security.csp` in
+`src-tauri/tauri.conf.json`, sent by Tauri as a header on the bundled
+`index.html`): `default-src 'none'` with an explicit allowance per resource type,
+no inline or eval'd script, and a `connect-src` that permits **only Tauri's IPC
+transport** — the document may not open a network connection of its own, which
+is the "all networking is the core's" rule made enforceable rather than merely
+observed. The full policy, the reasoning per directive, the dev-server variant
+and how it is verified are in
+[security.md](security.md#the-native-webviews-csp).
+
 `web/src/lib/native.ts` is the typed wrapper around every `invoke()`. `isNative`
 (Tauri's `isTauri()`) survives as a **guard, not a branch**: there is no second
 implementation behind it any more, so the few modules that still check it simply
@@ -107,7 +117,7 @@ Gate state (`lib/nativeVault.ts`) is one of:
 | State | What it is |
 |---|---|
 | `checking` | Boot probe (`vault_status`) in flight — shows "Unlocking…". |
-| `setup` | First run — no vault exists. Splash → Sign up / Log in / Recover explainer. |
+| `setup` | First run — no vault exists. Splash → Sign up, or the "already have an account?" explainer. |
 | `recovery` | The one-time recovery code, shown after create and confirmed before continuing. |
 | `locked` | A vault exists but is locked. Silent keychain attempt first, then password / recovery code. |
 | `onboarding` | Unlocked, but this device has no relay account yet (no `identity.handle` + `relay.url`). |
@@ -139,7 +149,9 @@ MK **rests only wrapped** — under the keychain vault key, under Argon2id(passw
 and under KDF(recovery code) — in a `vault.meta.json` sidecar. The SQLCipher key
 itself is random and lives in the keychain, never derived from the password.
 Consequence by design: **copying the DB file to another machine yields an
-unreadable file**; a new device pairs or restores from escrow.
+unreadable file**. A new device will get its copy by pairing, which is unbuilt
+([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)) — so today there
+is no way to move an account to another machine at all.
 
 ### Idle re-lock (per device)
 
@@ -167,7 +179,7 @@ Runs after unlock and before `ready`, because a fresh vault has no relay account
 yet. The launch is **greenfield** — there is no migration from the legacy app,
 so the native shell needed its own account-creation path.
 
-The first-run splash offers exactly two paths, plus an explainer:
+The first-run splash offers exactly **one** path, plus an explainer:
 
 - **Sign up** — pick a generated `Word#1234` **handle** from candidates
   (re-rollable; never typed, so the word is always vetted), set the vault
@@ -177,19 +189,26 @@ The first-run splash offers exactly two paths, plus an explainer:
   give a relay address plus an operator registration code (blank for a public
   relay). A pasted string that doesn't parse as a friend invite is treated as a
   registration code and pre-fills the relay-address form rather than erroring.
-- **Log in** — an existing account, on a device with **no** vault: restore from
-  the relay-held escrow with relay address + handle + **account password**. This
-  is password-only today; the recovery code is the unlock path for a vault that
-  already exists on this device, not an escrow-fetch key. Restore rebuilds
-  **identity only** — it writes `relay.url` + `identity.handle` and goes straight
-  to `ready`, skipping onboarding. Note and message history are *not* recovered
-  this way; history lives on devices, and device pairing / backup import are
-  unbuilt ([roadmap.md](roadmap.md)).
-- **"Can't sign in? Recover account"** is an **explainer, not a flow**: it states
+- **"Already have an account?"** is an **explainer, not a flow**. It states
   plainly that Accord holds no email or personal information, so there is no
   "email me a reset" and nobody — including the operator — can recover an account
-  for you. The only ways back are the recovery code or the password on a device
-  that still holds the vault.
+  for you; that the password and the recovery code both unlock the vault *on a
+  device that still holds it* rather than being credentials a server checks; and
+  — on first run only — that an existing account cannot be pulled onto this
+  device yet, because that needs pairing and pairing is unbuilt. The same
+  explainer backs "Can't unlock? Recover account" on the lock wall, where the
+  pairing paragraph is suppressed (that device *does* hold the vault).
+
+**There is deliberately no "Log in".** It used to restore an identity from the
+relay-held escrow; escrow was [removed](roadmap.md#escrow--removed), so the
+screen could only ever fail. A "pairing coming soon" placeholder was rejected for
+the same reason a dead form is: it advertises a capability the app does not have
+and blunts the honest message that an account lives on its devices
+([security.md](security.md#total-device-loss-is-unrecoverable-by-design)).
+Pairing, when it lands, is a different affordance (scan the existing device's QR,
+compare a SAS) and gets its own entry point. Unit tests assert the splash exposes
+exactly `Sign up` + the explainer and that the explainer calls no core command;
+the L3 gate spec asserts the same against the real component.
 
 A relay declares its **registration mode** on `/api/relay/info`: `public` or
 `invite`-only (`RELAY_REGISTRATION_MODE`, default invite). In invite mode the

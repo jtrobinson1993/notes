@@ -28,12 +28,19 @@ runs the app. See [the spec](spec/README.md) for the design and the reasoning.
   click-to-load images and video embeds). Attachments are encrypted per file and
   stored locally. Import/export is a zip of Markdown files, done entirely on
   device (Settings → Import & export).
-- **Chat.** 1:1 DMs and group chats: text, encrypted attachments, and — in DMs —
-  edit, delete and reactions (the group fan-out for those is a follow-up, as are
-  threaded replies). Envelopes are sealed to the recipient — the relay
+- **Chat.** 1:1 DMs and group chats: text, emoji, encrypted attachments, and —
+  in DMs — edit, delete and reactions (the group fan-out for those is a
+  follow-up, as are threaded replies). Envelopes are sealed to the recipient — the relay
   sees an opaque blob addressed by a *delivery token*, not a sender. Each chat
   has its own sidebar where you can **pin** notes into nested folders; pinning is
   private and does not share the note.
+- **Emoji, without the tracking.** Unicode emoji plus `:shortcode:` emotes with
+  a search picker. Emote search and every image go through **your relay**, never
+  a third-party CDN, so the emote provider never sees your IP; images you have
+  been sent are kept in an encrypted, size-bounded on-device cache, so they keep
+  working offline. A message can only pull a small number of new emotes
+  (extras stay as `:text:`), which stops anyone using a message full of emotes
+  to hammer your relay or fill your disk.
 - **Reach is capability-gated.** Someone can only put mail in your mailbox if
   they hold your delivery token, which you hand out by accepting an **invite**
   (`accord://friend?i=…`, minted in-app and shared out of band) — so there is no
@@ -45,12 +52,17 @@ runs the app. See [the spec](spec/README.md) for the design and the reasoning.
   It **fails closed**: a webview without WebRTC Encoded Transform cannot place or
   accept a call at all, rather than silently downgrading to plaintext Opus.
 - **Key transparency.** The relay publishes a signed, append-only log of
-  handle → identity-key bindings. On connecting, the app audits *its own* handle
-  against the log's key history and exchanges signed epoch roots with contacts
-  to catch a relay showing different logs to different people; either failure
-  raises a non-dismissable alarm banner. A contact's key itself comes from the
-  invite you accepted, pinned on first use — the relay is not asked for it, and
-  the human out-of-band check (SAS) that would confirm a pin is unbuilt.
+  handle → identity-key bindings. Before trusting a contact's key — when you
+  redeem an invite, and when a friend request arrives — the app asks the log
+  what key that handle owns and checks the answer against a log root the relay
+  has signed. If the log publishes a different key, the contact is **not**
+  added, nothing is sent back to them, and you get a non-dismissable alarm.
+  If the log cannot answer (relay offline, handle not published yet), the
+  contact is added but shown as **"Key not verified"**, and re-checked on every
+  reconnect. The app also audits *its own* handle against the log's key history
+  and exchanges signed epoch roots with contacts, to catch a relay showing
+  different logs to different people. The human out-of-band check (SAS) that
+  would make this independent of the relay entirely is still unbuilt.
 - **Multiple accounts.** Each account is its own vault (own master key, store and
   relay identity) in its own data directory; switching restarts the app.
 
@@ -63,19 +75,23 @@ list, with designs, is [spec/roadmap.md](spec/roadmap.md).
   version history, no collaborative editing.
 - **Desktop only.** No iOS/Android shell, and no browser client (deferred
   deliberately — a browser can't hold the Rust core's trust properties).
-- **One device per account.** Device pairing and history transfer aren't built.
-  Escrow restore (handle + password) rebuilds the master key and identity on a
-  new install, but not your history — and, since a device can only enroll with
-  the relay during registration, a restored install cannot yet connect to the
-  relay to send or receive. There is also no encrypted backup export, so losing
-  every device loses history.
+- **One device per account, and that is load-bearing.** Device pairing and
+  history transfer aren't built, and relay-held escrow — the old "log in on a
+  new install with handle + password" path — has been removed, because it meant
+  storing a password-wrapped master key on the relay forever. So an account
+  exists only on the device that created it: there is no log-in screen, and
+  **losing that device loses the account itself**, not just the history. There
+  is no encrypted backup export yet either. Pairing and that export are the
+  planned answers; both are launch-blocking. See
+  [spec/security.md](spec/security.md#total-device-loss-is-unrecoverable-by-design).
 - **No notifications outside the app.** Unread counts appear in the sidebar and
   the window title; there is no OS notification, no sound, and nothing registers
   for the relay's content-free push wake.
 - **Group membership only grows.** Create and add-member work; removing a member
   (with the group-key rotation that must accompany it) and leaving a group don't.
-- **GIF search, link previews and 7TV emotes are relay-side only.** The proxies
-  exist and are tested on the relay; nothing in the app calls them yet.
+- **GIF search and link previews are relay-side only.** The proxies exist and
+  are tested on the relay; nothing in the app calls them yet. (Emoji, the third
+  proxied surface, *is* wired up — see below.)
 - **SAS fingerprint verification** — the out-of-band way to confirm a contact's
   key without trusting the relay — is specified but unbuilt.
 - Builds are **unsigned** for now, so every OS will warn on first launch.
@@ -117,7 +133,7 @@ created by opening the URL in a browser — there is nothing to open.
 
 ### Serve it over HTTPS
 
-Device tokens, escrow blobs and KT roots all ride these endpoints, so a real
+Device tokens, sealed envelopes and KT roots all ride these endpoints, so a real
 deployment must terminate TLS. The compose setup does it for you; behind your
 own proxy:
 
@@ -136,7 +152,7 @@ URL strands existing installs.
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `APP_ORIGIN` | `http://localhost:3000` | Public URL of the relay (drives HSTS/CSP, the Caddy certificate, and the default push subject) |
+| `APP_ORIGIN` | `http://localhost:3000` | Public URL of the relay (drives HSTS, the Caddy certificate, and the default push subject) |
 | `PORT` / `HOST` | `3000` / `0.0.0.0` | Listen port and interface |
 | `DATA_DIR` | `/data` (in Docker) | Where the SQLite database, blobs and backups live |
 | `RELAY_REGISTRATION_MODE` | `invite` | Who may create an account: `invite` (a valid invite is always required) or `public` (anyone) |
@@ -210,6 +226,12 @@ AKD_SIDECAR_TOKEN=$(openssl rand -base64 32)
 network only, no exposed port; the relay authenticates with the token). Leave
 the token empty to stay on the interim log.
 
+**Contact keys are only *verified* on the AKD log.** The client checks a new
+contact's key with an AKD inclusion proof, against a root it has confirmed the
+relay signed. On the interim log there is no proof the client can verify, so
+contacts on such a relay are added but always read "Key not verified" — another
+reason to set the token.
+
 Anyone can audit a relay's log from its public endpoints — `GET
 /api/relay/kt/roots` (also at `/.well-known/accord/kt-roots`) — with the
 reference auditor, which verifies the root signatures and hash chain and alarms
@@ -231,8 +253,8 @@ An operator auditing its own log proves nothing, so the recommendation is that
 - **Master key (MK).** A random 256-bit key generated on the device at signup. It
   never leaves the device and only ever rests **wrapped**, three ways:
   - under a **vault key in the OS keychain** — the primary, silent unlock;
-  - under **Argon2id(password)** (m ≈ 19 MiB, t = 2, p = 1) — the portable path,
-    and what an escrow restore on a new device uses;
+  - under **Argon2id(password)** (m ≈ 19 MiB, t = 2, p = 1) — the fallback when
+    the keychain can't be read;
   - under a **160-bit recovery code**, shown once at signup — break-glass.
 
   The wrapped blobs and public KDF parameters sit in a plaintext sidecar
@@ -251,11 +273,12 @@ An operator auditing its own log proves nothing, so the recommendation is that
   key that only their friends hold. The relay checks a hash of the token,
   forwards the opaque envelope, and deletes it on ack. It never learns the
   sender.
-- **Escrow.** MK wrapped by the password and by the recovery code is stored on
-  the relay so a fresh install can rebuild the vault from handle + password
-  (identity only — see "Not built yet"). The fetch credential is
-  domain-separated from the wrapping key, so the secret presented to *fetch* an
-  escrow blob cannot *unwrap* it.
+- **No key material on the relay, wrapped or otherwise.** The password and the
+  recovery code are *local* keys — they unwrap MK from this device's sidecar, and
+  no server can check either one. The relay used to hold a password-wrapped copy
+  of MK for cold-start recovery; that was removed, because a permanently stored
+  blob behind one human-chosen password is an offline brute-force target on a
+  server whose whole point is holding nothing worth stealing.
 - **Voice frames** are encrypted per frame with a call key exchanged E2E; the SFU
   forwards ciphertext. See the fail-closed note above.
 - **Errors are catalogued.** Every user-visible failure is a stable code in
@@ -326,14 +349,26 @@ DATA_DIR=$PWD/relay-data npm start              # http://localhost:3000
 ```sh
 npm run typecheck    # shared + server + web
 npm test             # Vitest: crypto / server / web projects
-cargo test --manifest-path src-tauri/Cargo.toml    # the Rust core
+cargo test --manifest-path src-tauri/Cargo.toml    # the Rust core + its relay integration tests
 npm run build && npm run e2e                       # Playwright against the real relay
+npm run e2e:ui                                     # Playwright: the app UI over a faked Tauri IPC
 ```
 
-The Playwright suite boots the built relay on a throwaway `DATA_DIR` and drives
-its HTTP surface, including real account registration — there is no test-only
-auth bypass. Native UI has no browser-drivable form, so it isn't covered there;
-see [spec/testing.md](spec/testing.md).
+`cargo test` runs the core's unit tests **and** the integration tests that drive
+two whole core instances against a relay it spawns itself (`node
+server/dist/relay-index.js`, throwaway `DATA_DIR`, free port). Those skip with a
+printed reason when node/npm are unavailable — `ACCORD_L2_REQUIRE=1` turns a
+skip into a failure, which is what CI uses.
+
+`npm run e2e` boots the built relay on a throwaway `DATA_DIR` and drives its HTTP
+surface, including real account registration — there is no test-only auth bypass.
+
+`npm run e2e:ui` is the other half: it serves the **real app** (Vite, port 5173)
+and drives it in Chromium with a stateful fake of the Rust core injected before
+any app script runs, covering the vault gate, the side rail and chat, the
+re-lock teardown, and notes. Nothing about the fake ships — it lives in
+`e2e/ui/`, and there is no flag that turns it on in a build. See
+[spec/testing.md](spec/testing.md) for what it does and does not prove.
 
 ### Docker on macOS (Colima)
 

@@ -43,7 +43,7 @@ registry — see [native-app.md](native-app.md#multi-account).
 ## SQLite schema (as built)
 
 `PRAGMA user_version` drives forward-only migrations in `store.rs`; the core
-refuses to open a DB newer than itself. **11 migrations** are applied today.
+refuses to open a DB newer than itself. **13 migrations** are applied today.
 
 ```sql
 -- v1: the core table set
@@ -82,13 +82,27 @@ settings(key, value)
 -- v9  message_reactions(message_id, reactor_id, emoji, created_at)
 -- v10 groups(group_id, group_key, name, created_at)  -- local group key material
 -- v11 kt_state.last_epoch + kt_roots_seen(relay_id, epoch, root_hash, first_seen)
+-- v12 emote_cache(id, name, file_key, iv, path, mime, width, height, animated,
+--                 bytes, last_used_at, state)      -- present | evicted
+--     + INDEX idx_emote_cache_lru(state, last_used_at)
+-- v13 contact_relays.kt_verified_epoch + .kt_verified_at
+--     -- the relay epoch of the SIGNED KT root whose inclusion proof bound this
+--     -- contact's handle to the identity_pub in this row. NULL = never proven,
+--     -- and it is cleared whenever identity_pub changes (a re-keyed contact is
+--     -- unverified until the new key is proven). See key-transparency.md.
+--     -- The relay's VRF public key is pinned alongside, in settings under
+--     -- `kt.vrfPub.<relayFp>` (no migration — it is a plain setting).
 ```
 
 Attachment ciphertext lives on the filesystem under `dataDir/blobs` (two-level
 sharded paths, atomic tmp+rename writes, id charset guard against path
-traversal); the DB row holds the per-file key + metadata. Message rows are the
-plain append-only log ordered by the sort tuple below; reactions live in
-`message_reactions`.
+traversal); the DB row holds the per-file key + metadata. Emote ciphertext uses
+the *same* `BlobStore` type under a **separate root**, `dataDir/emotes` — both
+are addressed by an id that arrives over the wire, and one shared namespace
+would let a relay-assigned blob id collide with a 7TV emote id and clobber the
+other's bytes (emote files are additionally named by a blinded hash, not the id;
+see below). Message rows are the plain append-only log ordered by the sort tuple
+below; reactions live in `message_reactions`.
 
 **FTS5 availability was a build risk** (the vendored SQLCipher bundle had to
 support it) and is covered by a dedicated gate test.
@@ -102,7 +116,7 @@ install every note is unshared. Note sharing itself is unbuilt; see
 
 ## IPC command surface
 
-**79 Tauri commands**, all registered in `lib.rs`; events flow back to the UI
+**81 Tauri commands**, all registered in `lib.rs`; events flow back to the UI
 (`relay:message`, `kt:alarm`, …). `web/src/lib/native.ts` is the typed wrapper,
 and it is the app's *entire* I/O surface — every read, write and network call
 the UI makes goes through this table.
@@ -110,14 +124,15 @@ the UI makes goes through this table.
 | Area | Commands |
 |---|---|
 | Accounts | `account_list` `account_add` `account_switch` `account_set_label` |
-| Vault | `vault_status` `vault_create` `vault_unlock` `vault_unlock_keychain` `vault_unlock_recovery` `vault_restore_from_escrow` `vault_lock` `settings_get` `settings_set` |
-| Relay | `relay_connect` `relay_register` `relay_register_friend_accept` `relay_status` `relay_escrow_upload` `relay_change_handle` `relay_directory_publish` `relay_register_verifier` `relay_my_directory_keys` `device_public_key` |
+| Vault | `vault_status` `vault_create` `vault_unlock` `vault_unlock_keychain` `vault_unlock_recovery` `vault_lock` `settings_get` `settings_set` |
+| Relay | `relay_connect` `relay_register` `relay_register_friend_accept` `relay_status` `relay_change_handle` `relay_directory_publish` `relay_register_verifier` `relay_my_directory_keys` `device_public_key` |
 | Friends | `relay_invite_mint` `relay_invite_redeem` `friends_list` `friend_addressing` `friend_remove` |
 | Messaging | `relay_send` `relay_send_message` `relay_edit_message` `relay_delete_message` `relay_react` `relay_mailbox_fetch` `relay_mailbox_ack` `relay_mailbox_drain` `envelope_seal` `envelope_open` |
 | Conversations | `dm_conversation_id_for` `dm_mark_read` `dm_unread` `conversation_activity` `conversation_reactions` `messages_page` `messages_ingest` `message_edit` `message_delete` |
 | Groups | `group_create` `group_add_member` `group_list` `relay_send_group_message` `relay_group_edit_message` `relay_group_delete_message` `relay_group_react` |
 | Notes | `notes_list` `notes_load_all` `note_get` `note_create` `note_save` `note_delete` `notes_search` |
 | Attachments | `attachment_upload` `attachment_fetch` `attachment_put` `attachment_get` `attachment_has` `attachment_evict` |
+| Emoji | `emote_search` `emote_get` `emote_cache_put` `emote_cached_list` |
 | Voice | `relay_call_offer` `voice_join` `voice_signal` `voice_leave` `sfu_join` `sfu_transport` `sfu_connect` `sfu_produce` `sfu_consume` `sfu_leave` |
 | Key transparency | `kt_self_audit` `kt_gossip_send` |
 
@@ -254,6 +269,103 @@ renders as missing rather than retrying a fetch that cannot succeed.
 file removed, row kept) — distinct from delete-for-everyone. Nothing calls it
 automatically yet; the retention policy that would is in
 [roadmap.md](roadmap.md#local-retention--the-storage-screen).
+
+## Emoji on device (the used-emoji cache)
+
+Emote *search* is live and network-bound, but an emoji you have **already been
+sent** must render offline and without a round-trip. `emoji.rs` + the
+`emote_cache` table are that store. It is deliberately the **same shape as the
+attachment cache** rather than a second design: metadata row in SQLCipher,
+opaque ciphertext in a `BlobStore`, an `evicted` state that behaves exactly like
+a miss, and an **upsert** (not insert-or-ignore) on the re-cache path — the bug
+`upsert_attachment` exists to avoid, where a re-fetched entry stays stuck
+`evicted` with a NULL path forever.
+
+**Only emotes encountered in content are cached.** Search results are browsing,
+not content: the picker renders them straight from the relay's capability URL
+and nothing is written. Caching them would let one picker session fill the
+budget with emotes nobody ever sent.
+
+**Encrypted at rest, like everything else.** Attachment ciphertext already
+exists (it is what travels), but an emote image arrives as plaintext WebP from
+the relay. The *set of emotes you hold* is a fingerprint of what you have been
+sent, so each image is encrypted with a fresh random per-file key under the same
+AES-256-GCM helper attachments use, with the key in the SQLCipher-protected row.
+
+**Filenames are blinded, because a filename is metadata too.** A 7TV id is a
+*public* identifier for a specific emote, so naming blobs by id would let anyone
+who can list `dataDir/emotes` read the whole set straight off the directory —
+encrypted bytes or not. Files are named `SHA-256(salt ‖ id)` under a random
+per-vault salt kept in the (SQLCipher-protected) settings table, so the listing
+is opaque without the DB key, and the salt being per-vault means two devices'
+directories can't even be compared. This is the one place the emote store is
+*stricter* than the attachment store, whose blob ids are opaque relay-assigned
+strings rather than public names.
+
+**Size-bounded LRU.** `emote_cache.bytes` is the ciphertext length on disk, and
+every insert evicts least-recently-used `present` rows until the total is back
+inside the budget. `last_used_at` is touched on every **successful** read — a
+row whose bytes are gone or won't decrypt is corrected to `evicted` instead of
+floating to the top of the LRU by being asked for repeatedly. Eviction is
+invisible beyond a later re-fetch.
+
+The budget defaults to **64 MiB** and is overridable through the ordinary
+settings table (`emote_cache_budget_bytes`; a non-numeric or non-positive value
+is ignored rather than removing the bound). 64 MiB was picked because 7TV 2x
+WebPs run ~10–40 KiB, so it holds roughly 2,000–6,000 distinct emotes — more
+than any real history surfaces — while staying bounded in the adversarial
+direction: a single image is capped at 1 MiB.
+
+Commands:
+
+- `emote_search(query, page?, limit?)` — proxied 7TV search. Runs in the core
+  for the same reason the SFU control calls do: the **device token never crosses
+  IPC**. An empty query returns the relay's top emotes (the picker's default
+  set).
+- `emote_get(id, name)` — cache first, relay on a miss; the fetched bytes are
+  cached on the way through. Returns `fetched: true` when it went to the
+  network, which is what a caller's per-message fetch cap counts.
+- `emote_cache_put(meta, bytes)` — persist bytes the caller already holds.
+- `emote_cached_list()` — the offline picker's set, most recently used first.
+  Key-free by construction: `EmoteRow` (which carries the per-file key) is not
+  `Serialize`.
+
+Hardening that is load-bearing, not incidental:
+
+- **Ids and names are validated in the core** — 26-char Crockford ULID and
+  `[A-Za-z0-9_]{2,40}` — before they become filenames or URL path segments.
+- **The relay does not get to choose the image origin.** A search result's `url`
+  is only accepted as a site-relative `/api/relay/emote/<sig>/<id>.webp` for the
+  emote being described, and is then joined onto the pinned relay base. A
+  hostile or compromised relay handing back a third-party CDN link would
+  re-create exactly the IP leak the proxy exists to prevent.
+- **The 1 MiB image cap is enforced client-side too**, against the *streamed*
+  body rather than a declared `content-length`, and the response must be
+  `image/*`. The relay's own cap is not trusted with this device's disk.
+
+One accepted, low-severity limitation: `emote_get(id, name)` takes the shortcode
+from message content, so a **sender chooses the name a cached emote is filed
+under**, and a later message can rename an entry already in your offline picker
+(latest observation wins). It is cosmetic and device-local — the id, and so the
+image, is unaffected — but it is a sender-controlled field and is recorded here
+rather than discovered later. If it ever matters, the fix is to prefer the name
+the relay's search returned over one seen in content.
+
+**Who may write to this cache, and when.** Exactly one client path does:
+`EmojiText.vue`, the shared renderer, via `lib/emoji/render.ts`. An emote is
+persisted precisely when it is *displayed as content* — never when it is merely
+browsed in the picker, which renders search results straight from the relay's
+capability URLs and calls nothing here. The client also enforces the piece the
+core structurally cannot: a **cap of 20 distinct network-fetched emotes per
+message**, keyed by message id so re-rendering cannot bypass it, with the
+remainder rendered as literal `:shortcode:` text. `emote_get`'s `fetched` flag
+is what that budget counts, so cache hits stay free and unlimited. The rationale
+and the rest of the client policy are in
+[chat.md](chat.md#emoji-emotes-the-picker-and-the-cap).
+
+The offline picker reads this cache too (`emote_cached_list`, then `emote_get`
+per tile). That is a *read* path by construction: its input is what the core
+already holds, so it cannot pull anything new in.
 
 ## Retention & eviction
 
