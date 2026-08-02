@@ -555,7 +555,17 @@ Linux runner. Tracked in [roadmap.md](roadmap.md).
 ## The Vitest suites
 
 Three projects, defined in `vitest.config.ts`; `@notes/shared` is aliased to its
-TypeScript source so no build step is needed.
+TypeScript source, so tests running **in-process** need no build step.
+
+That alias is Vitest's, though, and a **spawned child process** does not inherit
+it: inside a child, `@notes/shared` resolves the ordinary way, through the
+workspace symlink to `shared/dist/index.js`. `server/test/relayIdentity.test.ts`
+runs the operator CLI and the relay entrypoint as real processes and so genuinely
+depends on that build. Root **`pretest`/`precoverage`** therefore build `shared`
+before `npm test` / `npm run coverage`, and nothing else needs to remember to.
+Removing them reintroduces a test that passes on any machine that has built
+`shared` at some point and fails on a clean checkout — which is how it first
+broke in CI, green locally and red on the runner.
 
 - **`crypto`** (`node`, `web/test/crypto/**`) — the WebCrypto/`@noble` helpers
   that remain in the webview: `crypto.ts` wrap/unwrap and seal/unseal round-trips

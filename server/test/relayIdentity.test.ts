@@ -41,6 +41,15 @@ import { makeRelayApp, type TestApp } from '../../test/helpers/server.js';
 // what they touch ("no database", "no DATA_DIR", "the root key is never
 // written") are only worth anything if the actual command is what is measured.
 // Run from source via tsx: the unit CI job does not build server/dist.
+//
+// A spawned process gets none of Vitest's config, so the `@notes/shared` alias
+// to source (vitest.config.ts) does not apply here — inside the child, the
+// package resolves the ordinary way, via the workspace symlink to
+// `shared/dist/index.js`. That build is therefore a real prerequisite of this
+// file, which is why the root `pretest`/`precoverage` scripts build `shared`.
+// Without them this suite passes on a machine that happens to have built
+// `shared` earlier and fails on a clean checkout — which is exactly how it
+// first broke in CI.
 const REPO = join(import.meta.dirname, '..', '..');
 const TSX = join(REPO, 'node_modules/.bin/tsx');
 const CLI = join(REPO, 'server/src/relay-cli.ts');
