@@ -571,7 +571,7 @@ broke in CI, green locally and red on the runner.
   that remain in the webview: `crypto.ts` wrap/unwrap and seal/unseal round-trips
   with tamper and wrong-key rejection, HKDF domain separation, note crypto,
   password handling, and `voiceCrypto` (the frame key schedule).
-- **`server`** (`node`, `server/test/**`, 32 files) — the relay, built in-process
+- **`server`** (`node`, `server/test/**`, 33 files) — the relay, built in-process
   with `buildRelayApp` + a temp-dir SQLite DB (`test/helpers/server.ts`) and
   driven through `app.inject()`. Covers: registration modes and invite gating,
   the sealed-send auth matrix, mailbox, directory, handles, groups (state
@@ -583,7 +583,11 @@ broke in CI, green locally and red on the runner.
   (KLIPY), `emotes` (7TV) and `linkPreview`) have their own suite asserting the
   privacy property they exist for — the relay makes the outbound call, never the
   client — plus `ssrf.test.ts` for the address classifier, including the IPv6
-  transition formats that smuggle an IPv4 address inside a v6 one.
+  transition formats that smuggle an IPv4 address inside a v6 one, and
+  `emotes.test.ts` for the emote-id allowlist: every rejected id asserts that
+  **no outbound `fetch` happened at all**, since "refused after the request went
+  out" is not a refusal, and the accepted case pins the request's origin to
+  `https://cdn.7tv.app` so the proxy can never be steered off 7TV.
 - **`web`** (`jsdom`, `web/test/**` minus crypto, `web/test/setup.ts`) — the UI.
   The native IPC is mocked **at `web/src/lib/native.ts` with `vi.mock`**, not at
   `window.__TAURI_INTERNALS__`: the UI's contract is the typed wrapper, so

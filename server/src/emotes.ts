@@ -19,7 +19,11 @@ import { join, resolve, sep } from 'node:path';
 export const EMOTE_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 export const EMOTE_FILE_RE = /^([0-9A-HJKMNP-TV-Z]{26})\.webp$/;
 
-const CDN = (id: string) => `https://cdn.7tv.app/emote/${id}/2x.webp`;
+// `id` is always ULID-checked before it gets here, so the escape is a no-op
+// today; it is present so that the host half of this URL stays fixed even if
+// the allowlist above is ever loosened — `/`, `?`, `#` and `@` are exactly the
+// characters that would otherwise let an id steer the request off 7TV's CDN.
+const CDN = (id: string) => `https://cdn.7tv.app/emote/${encodeURIComponent(id)}/2x.webp`;
 const GQL = 'https://7tv.io/v3/gql';
 const IMAGE_TIMEOUT_MS = 8000;
 const SEARCH_TIMEOUT_MS = 8000;
@@ -154,6 +158,14 @@ export type EmoteImageOutcome =
 
 /** Return the on-disk path for an emote image, fetching + caching it on a miss. */
 export async function ensureEmoteCached(cacheDir: string, id: string): Promise<EmoteImageOutcome> {
+  // The identical test already runs inside emoteCachePath(), so this is not a
+  // new restriction — it is the same one, restated where it can be seen. Both a
+  // reader and a taint analyzer need the barrier to dominate the outbound fetch
+  // *within one function*; hidden behind a helper that returns a path, the fact
+  // that `id` is a 26-char ULID before it reaches CDN() is invisible, which is
+  // what CodeQL js/request-forgery reported against the fetch below.
+  if (!EMOTE_ID_RE.test(id)) return { ok: false, reason: 'invalid-id' };
+
   const path = emoteCachePath(cacheDir, id);
   if (!path) return { ok: false, reason: 'invalid-id' };
 
