@@ -14,6 +14,8 @@
     "@codemirror/language-data": "^6.5.2",
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.43.1",
+    "@fontsource-variable/geist": "^5.2.9",
+    "@fontsource-variable/geist-mono": "^5.2.8",
     "@lezer/highlight": "^1.2.3",
     "@lezer/markdown": "^1.6.4",
     "@noble/curves": "^1.8.1",
@@ -21,6 +23,7 @@
     "@pinia/colada": "^0.14.2",
     "@sapphi-red/web-noise-suppressor": "^0.3.5",
     "@simplewebauthn/browser": "^13.1.0",
+    "@tauri-apps/api": "^2.11.1",
     "codemirror": "^6.0.2",
     "emojibase-data": "^16.0.3",
     "fflate": "^0.8.3",
@@ -31,7 +34,8 @@
     "pinia": "^3.0.1",
     "reka-ui": "^2.2.0",
     "vue": "^3.5.13",
-    "vue-router": "^4.5.0"
+    "vue-router": "^4.5.0",
+    "yjs": "^13.6.31"
   },
   "devDependencies": {
     "@iconify-json/mynaui": "^1.2.17",
@@ -41,12 +45,7 @@
     "typescript": "^5.8.0",
     "unplugin-icons": "^23.0.1",
     "vite": "^8.0.16",
-    "vite-plugin-pwa": "^1.0.0",
-    "vue-tsc": "^2.2.8",
-    "workbox-core": "^7.4.1",
-    "workbox-expiration": "^7.4.1",
-    "workbox-precaching": "^7.4.1",
-    "workbox-routing": "^7.4.1",
-    "workbox-strategies": "^7.4.1"
-  }
+    "vue-tsc": "^2.2.8"
+  },
+  "license": "AGPL-3.0-only"
 }

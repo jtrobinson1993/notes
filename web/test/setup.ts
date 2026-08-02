@@ -10,6 +10,15 @@ if (!globalThis.crypto || !('subtle' in globalThis.crypto)) {
   });
 }
 
+// jsdom implements neither half of the object-URL API, and several surfaces
+// (attachments, decrypted emote bytes) mint one. Hand out a unique blob: URL so
+// tests can assert on it, and record revocation.
+if (typeof URL.createObjectURL !== 'function') {
+  let n = 0;
+  URL.createObjectURL = () => `blob:mock/${++n}`;
+  URL.revokeObjectURL = () => {};
+}
+
 // jsdom ships no ResizeObserver; the conversation page observes the chat region
 // to decide the thread layout. A no-op stub is enough (callbacks never fire).
 if (typeof globalThis.ResizeObserver === 'undefined') {

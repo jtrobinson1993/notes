@@ -1,0 +1,365 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { flushPromises, mount } from '@vue/test-utils';
+
+const dm = vi.hoisted(() => ({
+  listDms: vi.fn(),
+  openDm: vi.fn(),
+  sendDm: vi.fn(),
+}));
+vi.mock('../../src/lib/nativeDm', () => dm);
+
+const grp = vi.hoisted(() => ({
+  listGroups: vi.fn(),
+  openGroup: vi.fn(),
+  sendGroup: vi.fn(),
+  createGroup: vi.fn(),
+  addGroupMember: vi.fn(),
+}));
+vi.mock('../../src/lib/nativeGroup', () => grp);
+
+const friends = vi.hoisted(() => ({
+  createInvite: vi.fn(),
+  redeemInvite: vi.fn(),
+}));
+vi.mock('../../src/lib/nativeFriends', () => friends);
+
+const relay = vi.hoisted(() => ({ onMailIngested: vi.fn(() => () => {}) }));
+vi.mock('../../src/lib/nativeRelay', () => relay);
+
+const nativeMod = vi.hoisted(() => ({
+  isNative: true,
+  relayDeleteMessage: vi.fn(),
+  relayEditMessage: vi.fn(),
+  relayReact: vi.fn(),
+  relayGroupDeleteMessage: vi.fn(),
+  relayGroupEditMessage: vi.fn(),
+  relayGroupReact: vi.fn(),
+  conversationReactions: vi.fn().mockResolvedValue([]),
+  conversationActivity: vi.fn().mockResolvedValue([]),
+  attachmentUpload: vi.fn(),
+  attachmentFetch: vi.fn().mockResolvedValue([1, 2, 3]),
+  emoteSearch: vi.fn(),
+  emoteGet: vi.fn(),
+  emoteCachedList: vi.fn(),
+}));
+vi.mock('../../src/lib/native', () => nativeMod);
+
+const call = vi.hoisted(() => ({ placeCall: vi.fn() }));
+vi.mock('../../src/lib/callHost', () => ({ callHost: () => call }));
+
+// Standalone (no app router): the component reads `?open=`/`?add=` defensively.
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
+
+import NativeChat from '../../src/components/NativeChat.vue';
+import EmojiPicker from '../../src/components/EmojiPicker.vue';
+import { clearEmotes, registerEmote, setEmoteRelayOrigin } from '../../src/lib/emoji';
+
+// A local-log row as the UI sees it (lib/chatView.ts): `attachments` is always
+// an array on the happy path — rowToView defaults it to [].
+const view = (over: Record<string, unknown>) => ({
+  key: 'm0',
+  conversationId: 'dm:A',
+  channelId: null,
+  senderId: '',
+  sortKey: 0,
+  text: '',
+  attachments: [],
+  ...over,
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  dm.listDms.mockResolvedValue([
+    { contactId: 'idA', handle: 'A#1', displayName: 'Alice', conversationId: 'dm:A', unread: 0 },
+  ]);
+  dm.openDm.mockResolvedValue({ conversationId: 'dm:A', messages: [] });
+  grp.listGroups.mockResolvedValue([]);
+  grp.openGroup.mockResolvedValue({ conversationId: 'grp:x', messages: [] });
+  relay.onMailIngested.mockReturnValue(() => {});
+  nativeMod.conversationReactions.mockResolvedValue([]);
+  nativeMod.conversationActivity.mockResolvedValue([]);
+  clearEmotes();
+  setEmoteRelayOrigin(null);
+});
+
+describe('NativeChat', () => {
+  it('lists DMs on mount and subscribes to live ingest', async () => {
+    const w = mount(NativeChat);
+    await flushPromises();
+    expect(dm.listDms).toHaveBeenCalled();
+    expect(relay.onMailIngested).toHaveBeenCalled();
+    expect(w.text()).toContain('Alice');
+  });
+
+  it('opens a DM and renders its messages, own on the right', async () => {
+    dm.openDm.mockResolvedValue({
+      conversationId: 'dm:A',
+      messages: [
+        view({ key: 'm1', senderId: 'idA', text: 'hi there' }),
+        view({ key: 'm2', senderId: 'self', text: 'hey' }),
+      ],
+    });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click'); // the DM row (0 = add)
+    await flushPromises();
+    expect(dm.openDm).toHaveBeenCalledWith('idA', 50);
+    expect(w.text()).toContain('hi there');
+    // own message row is right-aligned (column: actions + bubble, then chips)
+    const own = w.findAll('li').find((li) => li.text().includes('hey'));
+    expect(own?.classes()).toContain('items-end');
+  });
+
+  it('renders message text through the shared emoji renderer, scoped to the message', async () => {
+    // The scope is the message id: that is what bounds how many distinct
+    // emotes one (attacker-authored) message may pull from the relay.
+    registerEmote('partyblob', 'blob:mock/party', '01F6MEP1ZG000CSNPPXHJPRW1J');
+    dm.openDm.mockResolvedValue({
+      conversationId: 'dm:A',
+      messages: [view({ key: 'm1', senderId: 'idA', text: 'nice :partyblob:' })],
+    });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+
+    const img = w.find('img.chat-emoji');
+    expect(img.exists()).toBe(true);
+    expect(img.attributes('src')).toBe('blob:mock/party');
+    expect(w.text()).toContain('nice');
+  });
+
+  it('inserts a picked emoji into the draft (sending is what caches it)', async () => {
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+
+    await w.find('[data-testid="draft"]').setValue('yo');
+    w.findComponent(EmojiPicker).vm.$emit('pick', ':partyblob:');
+    await flushPromises();
+    expect((w.find('[data-testid="draft"]').element as HTMLInputElement).value).toBe('yo :partyblob: ');
+  });
+
+  it('sends a draft via sendDm and reloads', async () => {
+    dm.sendDm.mockResolvedValue('msg-1');
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+
+    await w.find('[data-testid="draft"]').setValue('hello');
+    await w.find('[data-testid="composer"]').trigger('submit');
+    await flushPromises();
+    expect(dm.sendDm).toHaveBeenCalledWith('idA', 'hello', undefined);
+    expect((w.find('[data-testid="draft"]').element as HTMLInputElement).value).toBe('');
+  });
+
+  it('starts a voice call from the active DM header', async () => {
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-testid="call-start"]').trigger('click');
+    expect(call.placeCall).toHaveBeenCalledWith('idA');
+  });
+
+  it('creates an invite link', async () => {
+    friends.createInvite.mockResolvedValue({ invite: 'accord://friend?i=abc', expiresAt: 1 });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="add-friend"]').trigger('click');
+    await w.find('[data-testid="make-invite"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="invite-link"]').text()).toContain('accord://friend?i=abc');
+  });
+
+  it('reacts to a message and renders the reaction chip', async () => {
+    nativeMod.relayReact.mockResolvedValue(undefined);
+    dm.openDm.mockResolvedValue({
+      conversationId: 'dm:A',
+      messages: [view({ key: 'm1', senderId: 'idA', text: 'hi there' })],
+    });
+    // After reacting, the reaction is present in the store.
+    nativeMod.conversationReactions
+      .mockResolvedValueOnce([]) // initial open
+      .mockResolvedValueOnce([{ message_id: 'm1', emoji: '👍', reactor_id: 'self' }]);
+
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+
+    await w.find('[data-testid="react-msg"]').trigger('click');
+    await flushPromises();
+    expect(nativeMod.relayReact).toHaveBeenCalledWith('idA', 'm1', '👍', true);
+    const chip = w.find('[data-testid="reaction-chip"]');
+    expect(chip.text()).toContain('👍');
+    expect(chip.text()).toContain('1');
+  });
+
+  it('renders a non-image attachment as a download chip', async () => {
+    dm.openDm.mockResolvedValue({
+      conversationId: 'dm:A',
+      messages: [
+        view({
+          key: 'm1',
+          senderId: 'idA',
+          text: '',
+          attachments: [{ blobId: 'b1', key: 'k', iv: 'v', mime: 'application/pdf', name: 'doc.pdf', size: 9 }],
+        }),
+      ],
+    });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="attach-download"]').text()).toContain('doc.pdf');
+  });
+
+  it('still renders a message whose payload carries a malformed attachments field', async () => {
+    // `attachments_json` is peer-authored and parsed without a schema check, so
+    // the field can be missing or a non-array. One such message must not take
+    // the whole conversation's render down (regression).
+    dm.openDm.mockResolvedValue({
+      conversationId: 'dm:A',
+      messages: [
+        { ...view({ key: 'm1', senderId: 'idA', text: 'first' }), attachments: undefined },
+        { ...view({ key: 'm2', senderId: 'idA', text: 'second' }), attachments: 5 },
+        view({ key: 'm3', senderId: 'idA', text: 'third', attachments: [null, 'nope'] }),
+      ],
+    });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+    expect(w.text()).toContain('first');
+    expect(w.text()).toContain('second');
+    expect(w.text()).toContain('third');
+    expect(w.find('[data-testid="attach-download"]').exists()).toBe(false);
+  });
+
+  it('shows an unread badge from the DM list', async () => {
+    dm.listDms.mockResolvedValue([
+      { contactId: 'idA', handle: 'A#1', displayName: 'Alice', conversationId: 'dm:A', unread: 4 },
+    ]);
+    const w = mount(NativeChat);
+    await flushPromises();
+    expect(w.find('[data-testid="unread-badge"]').text()).toBe('4');
+  });
+
+  it('deletes an own message via relayDeleteMessage and shows the tombstone', async () => {
+    nativeMod.relayDeleteMessage.mockResolvedValue(undefined);
+    dm.openDm
+      .mockResolvedValueOnce({
+        conversationId: 'dm:A',
+        messages: [view({ key: 'm2', senderId: 'self', text: 'oops' })],
+      })
+      .mockResolvedValueOnce({
+        conversationId: 'dm:A',
+        messages: [view({ key: 'm2', senderId: 'self', text: null })], // tombstoned
+      });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+
+    await w.find('[data-testid="delete-msg"]').trigger('click');
+    await flushPromises();
+    expect(nativeMod.relayDeleteMessage).toHaveBeenCalledWith('idA', 'm2');
+    expect(w.text()).toContain('Message deleted');
+  });
+
+  it('edits an own message via relayEditMessage', async () => {
+    nativeMod.relayEditMessage.mockResolvedValue(undefined);
+    dm.openDm
+      .mockResolvedValueOnce({
+        conversationId: 'dm:A',
+        messages: [view({ key: 'm2', senderId: 'self', text: 'typo' })],
+      })
+      .mockResolvedValueOnce({
+        conversationId: 'dm:A',
+        messages: [view({ key: 'm2', senderId: 'self', text: 'fixed', editedAt: 5 })],
+      });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="dm-row"]').trigger('click');
+    await flushPromises();
+
+    await w.find('[data-testid="edit-msg"]').trigger('click');
+    await w.find('[data-testid="edit-input"]').setValue('fixed');
+    await w.find('[data-testid="edit-form"]').trigger('submit');
+    await flushPromises();
+    expect(nativeMod.relayEditMessage).toHaveBeenCalledWith('idA', 'm2', 'fixed');
+    expect(w.text()).toContain('fixed');
+    expect(w.text()).toContain('(edited)');
+  });
+
+  it('lists groups and opens/sends to one', async () => {
+    grp.listGroups.mockResolvedValue([{ groupId: 'grp:x', name: 'Team', conversationId: 'grp:x', unread: 0 }]);
+    grp.openGroup.mockResolvedValue({ conversationId: 'grp:x', messages: [view({ key: 'gm1', senderId: 'idA', text: 'group hi' })] });
+    grp.sendGroup.mockResolvedValue('gm2');
+    const w = mount(NativeChat);
+    await flushPromises();
+    expect(w.text()).toContain('Team');
+
+    await w.find('[data-testid="group-row"]').trigger('click');
+    await flushPromises();
+    expect(grp.openGroup).toHaveBeenCalledWith('grp:x', 50);
+    expect(w.text()).toContain('group hi');
+
+    await w.find('[data-testid="draft"]').setValue('yo');
+    await w.find('[data-testid="composer"]').trigger('submit');
+    await flushPromises();
+    expect(grp.sendGroup).toHaveBeenCalledWith('grp:x', 'yo', undefined);
+  });
+
+  it('reacts to a group message via the group fan-out', async () => {
+    grp.listGroups.mockResolvedValue([{ groupId: 'grp:x', name: 'Team', conversationId: 'grp:x', unread: 0 }]);
+    grp.openGroup.mockResolvedValue({ conversationId: 'grp:x', messages: [view({ key: 'gm1', senderId: 'idA', text: 'hi' })] });
+    nativeMod.relayGroupReact.mockResolvedValue(undefined);
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="group-row"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-testid="react-msg"]').trigger('click');
+    await flushPromises();
+    expect(nativeMod.relayGroupReact).toHaveBeenCalledWith('grp:x', 'gm1', '👍', true);
+  });
+
+  it('creates a group', async () => {
+    grp.createGroup.mockResolvedValue('grp:new');
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="new-group"]').setValue('Squad');
+    await w.find('[data-testid="new-group-form"]').trigger('submit');
+    await flushPromises();
+    expect(grp.createGroup).toHaveBeenCalledWith('Squad');
+  });
+
+  it('adds a friend to a group', async () => {
+    grp.listGroups.mockResolvedValue([{ groupId: 'grp:x', name: 'Team', conversationId: 'grp:x', unread: 0 }]);
+    grp.addGroupMember.mockResolvedValue(undefined);
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="group-row"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-testid="add-member-toggle"]').trigger('click');
+    await w.find('[data-testid="add-member-pick"]').trigger('click'); // the one DM friend (Alice)
+    await flushPromises();
+    expect(grp.addGroupMember).toHaveBeenCalledWith('grp:x', 'idA');
+  });
+
+  it('redeems an invite then refreshes the DM list', async () => {
+    friends.redeemInvite.mockResolvedValue({ inviterHandle: 'B#2', relayTs: 1 });
+    const w = mount(NativeChat);
+    await flushPromises();
+    await w.find('[data-testid="add-friend"]').trigger('click');
+    await w.find('textarea').setValue('accord://friend?i=xyz');
+    await w.find('[data-testid="redeem"]').trigger('click');
+    await flushPromises();
+    expect(friends.redeemInvite).toHaveBeenCalledWith('accord://friend?i=xyz');
+    // mount + redeem's refreshLists + the sidebar-list refresh (refreshNativeConversations).
+    expect(dm.listDms).toHaveBeenCalledTimes(3);
+  });
+});

@@ -1,8 +1,20 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import tailwindcss from '@tailwindcss/vite';
-import { VitePWA } from 'vite-plugin-pwa';
 import Icons from 'unplugin-icons/vite';
+import { devCspHeader } from './csp';
+
+// The dev server sends the native shell's own CSP (see ./csp.ts for why Vite has
+// to be the one to send it). tauri.conf.json is the single source of truth.
+const tauriConf = JSON.parse(
+  readFileSync(fileURLToPath(new URL('../src-tauri/tauri.conf.json', import.meta.url)), 'utf8'),
+) as { app: { security: { csp: string | null; devCsp?: string } } };
+const csp = devCspHeader(
+  tauriConf.app.security,
+  readFileSync(fileURLToPath(new URL('./index.html', import.meta.url)), 'utf8'),
+);
 
 export default defineConfig({
   plugins: [
@@ -11,44 +23,15 @@ export default defineConfig({
     // Bundle Iconify icons (Myna set) as inline Vue SVG components at build
     // time — no runtime CDN calls, only the icons actually imported ship.
     Icons({ compiler: 'vue3' }),
-    VitePWA({
-      // Custom service worker (src/sw.ts) so we can host Web Push handlers, which
-      // the generated worker can't. It keeps the precache + emoji runtime cache.
-      strategies: 'injectManifest',
-      srcDir: 'src',
-      filename: 'sw.ts',
-      registerType: 'autoUpdate',
-      injectManifest: {
-        // The default 7TV emoji set is hundreds of small files; don't bloat the
-        // precache with them — cache on demand the first time one is rendered.
-        globIgnores: ['**/emoji/**'],
-      },
-      // Don't register the service worker in dev: its precache serves stale JS
-      // across reloads, which silently masks code changes (a recurring "why
-      // isn't my change showing up" trap). Prod always registers it. The cost is
-      // that Web Push / notifications can't be exercised against the dev server
-      // (`navigator.serviceWorker.ready` never resolves, so Settings shows "Not
-      // supported here") — flip `enabled` back to true temporarily to test those.
-      devOptions: {
-        enabled: false,
-        type: 'module',
-      },
-      manifest: {
-        name: 'Accord',
-        short_name: 'Accord',
-        description: 'Self-hosted, end-to-end encrypted notes & chat',
-        theme_color: '#18181b',
-        background_color: '#18181b',
-        display: 'standalone',
-        icons: [
-          { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
-          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-        ],
-      },
-    }),
   ],
   server: {
+    // Same policy the built shell ships (see the devCsp note above). The HMR
+    // websocket is named explicitly for the default loopback dev server; a LAN
+    // session (`vite --host`, e.g. the Linux-WebKit harness run in
+    // web/dev/README.md) reaches the page from another origin, so HMR's socket
+    // is refused there and the page needs a manual reload — deliberate, rather
+    // than allowing `ws:` wholesale.
+    headers: csp ? { 'Content-Security-Policy': csp } : {},
     proxy: {
       // ws:true so the chat WebSocket upgrade at /api/ws is proxied too — with
       // the string shorthand only REST is forwarded, so the socket fails to

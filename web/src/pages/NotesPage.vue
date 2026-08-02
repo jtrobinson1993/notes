@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { useQuery } from '@pinia/colada';
 import AppLayout from '../components/AppLayout.vue';
 import NoteEditor from '../components/NoteEditor.vue';
 import EmojiText from '../components/EmojiText.vue';
-import FolderShareDialog from '../components/FolderShareDialog.vue';
 import ResizeHandle from '../components/ResizeHandle.vue';
 import { useResizable } from '../lib/useResizable';
 import { isCollapsed, toggleCollapsed } from '../lib/folderCollapse';
@@ -13,20 +11,14 @@ import { loadTagColors, tagColor, tagTextColor } from '../lib/tagColors';
 import { toPlainText } from '../lib/transfer';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
 import { useOrgStore, type OrgFolder } from '../stores/organization';
-import { useSessionStore } from '../stores/session';
 import { isMobile, noteOpen } from '../lib/mobileNav';
 import IconFolderMinus from '~icons/mynaui/folder-minus';
 import IconFolderPlus from '~icons/mynaui/folder-plus';
 import IconNote from '~icons/mynaui/file-text';
 import IconPencil from '~icons/mynaui/pencil';
 import IconTrash from '~icons/mynaui/trash';
-import IconShare from '~icons/mynaui/share';
 import IconMenu from '~icons/mynaui/menu';
 
-// Folder being shared (opens FolderShareDialog).
-const shareFolder = ref<{ id: string; name: string } | null>(null);
-
-const session = useSessionStore();
 const notes = useNotesStore();
 const org = useOrgStore();
 const route = useRoute();
@@ -196,36 +188,15 @@ async function autoOpen() {
   selectedId.value = notes.sorted[0]?.id ?? (await notes.create());
 }
 
-// Instant load from the encrypted IndexedDB cache, then background sync.
-useQuery({
-  key: ['notes-sync'],
-  query: async () => {
-    if (!session.unlocked) return null;
-    if (!notes.loaded) await notes.loadFromCache();
-    await notes.sync();
-    void loadTagColors();
-    void org.load();
-    await autoOpen();
-    return notes.sorted.length;
-  },
-  refetchOnWindowFocus: true,
-  refetchOnReconnect: true,
-  staleTime: 30_000,
-});
-
-watch(
-  () => session.unlocked,
-  async (unlocked) => {
-    if (unlocked) {
-      await notes.loadFromCache();
-      await notes.sync();
-      void loadTagColors();
-      void org.load();
-      await autoOpen();
-    }
-  },
-  { immediate: true },
-);
+// Instant load from the encrypted local store (SQLite, via the Rust core). The
+// vault gate only renders the app once the vault is unlocked, so by the time
+// this page mounts the keys are available. All three loads are idempotent.
+void (async () => {
+  if (!notes.loaded) await notes.loadFromCache();
+  void loadTagColors();
+  void org.load();
+  await autoOpen();
+})();
 
 const selected = computed(() => (selectedId.value ? (notes.notes.get(selectedId.value) ?? null) : null));
 
@@ -358,11 +329,10 @@ function excerpt(body: string): string {
                   @drop.stop.prevent="onDropOnFolder(row.folder!.id)"
                 >
                   <component :is="isCollapsed(row.folder!.id) ? IconFolderPlus : IconFolderMinus" class="h-4.5 w-4.5 shrink-0 opacity-60" />
-                  <span class="min-w-0 grow truncate font-medium"><EmojiText :text="row.folder!.name" /></span>
+                  <span class="min-w-0 grow truncate font-medium"><EmojiText :text="row.folder!.name" :scope="`folder:${row.folder!.id}`" /></span>
                   <span class="text-xs text-zinc-400">{{ notesInFolder(row.folder!.id) }}</span>
                 </button>
                 <div class="hidden shrink-0 items-center pr-1 group-hover:flex">
-                  <button class="rounded p-1 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400" title="Share folder" @click="shareFolder = { id: row.folder!.id, name: row.folder!.name }"><IconShare class="h-3.5 w-3.5" /></button>
                   <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="New subfolder" @click="createSubfolder(row.folder!.id)"><IconFolderPlus class="h-3.5 w-3.5" /></button>
                   <button class="rounded p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" title="Rename folder" @click="renameFolder(row.folder!.id, row.folder!.name)"><IconPencil class="h-3.5 w-3.5" /></button>
                   <button class="rounded p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400" title="Delete folder" @click="deleteFolder(row.folder!.id, row.folder!.name)"><IconTrash class="h-3.5 w-3.5" /></button>
@@ -384,7 +354,7 @@ function excerpt(body: string): string {
                   <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
                   <div class="min-w-0 grow">
                     <p class="truncate text-sm" :class="selectedId === row.note!.id ? 'font-medium' : ''">
-                      <EmojiText :text="row.note!.payload.title || 'Untitled'" />
+                      <EmojiText :text="row.note!.payload.title || 'Untitled'" :scope="`note:${row.note!.id}`" />
                       <span v-if="row.note!.shared" class="text-xs font-normal text-violet-500">· {{ row.note!.shared.ownerDisplayName }}</span>
                     </p>
                     <div v-if="!compact" class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
@@ -421,7 +391,7 @@ function excerpt(body: string): string {
                 <IconNote class="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
                 <div class="min-w-0 grow">
                   <p class="truncate text-sm" :class="selectedId === note.id ? 'font-medium' : ''">
-                    <EmojiText :text="note.payload.title || 'Untitled'" />
+                    <EmojiText :text="note.payload.title || 'Untitled'" :scope="`note:${note.id}`" />
                     <span v-if="note.shared" class="text-xs font-normal text-violet-500">· {{ note.shared.ownerDisplayName }}</span>
                   </p>
                   <div v-if="!compact" class="flex items-center gap-1 overflow-hidden text-xs text-zinc-500 dark:text-zinc-400">
@@ -453,12 +423,5 @@ function excerpt(body: string): string {
         </div>
       </section>
     </div>
-    <FolderShareDialog
-      v-if="shareFolder"
-      :open="true"
-      :folder-id="shareFolder.id"
-      :folder-name="shareFolder.name"
-      @update:open="(v) => { if (!v) shareFolder = null; }"
-    />
   </AppLayout>
 </template>

@@ -2,11 +2,22 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { marked, type Tokens } from 'marked';
 import type { AttachmentRef } from '@notes/shared';
-import { api } from '../lib/api';
+import { getNoteAttachmentCiphertext } from '../lib/attachments';
 import { decryptBlob } from '../lib/crypto';
 import MdTokens from './MdTokens';
 
-const props = defineProps<{ source: string; attachments?: AttachmentRef[]; breaks?: boolean }>();
+// `emojiScope` is the id this document's emoji fetches are charged to (the note
+// or message id) — or false to render only emotes already held, fetching none.
+// See EmojiText: it is the per-message cap's key, so it must not be guessed.
+const props = withDefaults(
+  defineProps<{
+    source: string;
+    attachments?: AttachmentRef[];
+    breaks?: boolean;
+    emojiScope?: string | false;
+  }>(),
+  { emojiScope: false },
+);
 
 // Extended syntax shared with the live editor: ==highlight== and ||spoiler||.
 interface InlineToken extends Tokens.Generic {
@@ -60,7 +71,8 @@ function resolveAttachment(id: string): Promise<string | null> {
       const ref = props.attachments?.find((a) => a.id === id);
       if (!ref) return null;
       try {
-        const ct = await api.attachmentDownload(ref.id);
+        const ct = await getNoteAttachmentCiphertext(ref.id);
+        if (!ct) return null;
         const data = await decryptBlob(ct, ref.key, ref.iv);
         const url = URL.createObjectURL(new Blob([data as BlobPart], { type: ref.type }));
         objectUrls.push(url);
@@ -101,6 +113,6 @@ function onClick(event: MouseEvent) {
 
 <template>
   <div ref="root" class="md-preview" @click="onClick">
-    <MdTokens :tokens="tokens" :resolve="resolveAttachment" />
+    <MdTokens :tokens="tokens" :resolve="resolveAttachment" :emoji-scope="props.emojiScope" />
   </div>
 </template>

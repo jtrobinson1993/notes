@@ -1,7 +1,5 @@
 import { reactive } from 'vue';
-import { useSessionStore } from '../stores/session';
-import { api } from './api';
-import { unwrapKey, wrapKey } from './crypto';
+import { settingsGet, settingsSet } from './native';
 import { PRESET_COLORS, presetCss } from './editor/palette';
 
 // Per-tag pill colors, chosen via the pill's color popover. Values are the
@@ -9,35 +7,18 @@ import { PRESET_COLORS, presetCss } from './editor/palette';
 // light-dark(...)); tags without a stored color get a stable preset hashed
 // from their name.
 //
-// Colors are synced server-side as an encrypted settings blob (tag names are
-// sensitive — they otherwise only exist inside encrypted note payloads), with
-// localStorage as an instant-load/offline cache.
+// The blob lives in the encrypted vault (SQLCipher `settings`, via the Rust
+// core) — the KEYS are tag names, which are as sensitive as note bodies, so
+// there is deliberately no plaintext localStorage cache.
 
-const LOCAL_KEY = 'notes:tag-colors';
 const SETTING_KEY = 'tag-colors';
-const INFO_SETTINGS = 'notes:wrap:settings:v1';
 
-function load(): Record<string, string> {
-  try {
-    return JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}') as Record<string, string>;
-  } catch {
-    return {};
-  }
-}
-
-const stored = reactive<Record<string, string>>(load());
-
-function persistLocal(): void {
-  localStorage.setItem(LOCAL_KEY, JSON.stringify({ ...stored }));
-}
+const stored = reactive<Record<string, string>>({});
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function pushRemote(): Promise<void> {
-  const session = useSessionStore();
-  if (!session.mk) return;
-  const wrapped = await wrapKey(session.mk, new TextEncoder().encode(JSON.stringify({ ...stored })), INFO_SETTINGS);
-  await api.settingPut(SETTING_KEY, JSON.stringify(wrapped)).catch(() => {});
+  await settingsSet(SETTING_KEY, JSON.stringify({ ...stored })).catch(() => {});
 }
 
 function schedulePush(): void {
@@ -47,27 +28,26 @@ function schedulePush(): void {
 
 let loaded = false;
 
-/** Fetch and decrypt the server copy once the session is unlocked; local
- * entries missing from the server (offline edits) are pushed back. */
+/** Read the stored colors out of the encrypted vault (once per unlock). */
 export async function loadTagColors(): Promise<void> {
-  const session = useSessionStore();
-  if (loaded || !session.mk) return;
+  if (loaded) return;
   loaded = true;
   try {
-    const remote = await api.settingGet(SETTING_KEY);
-    if (!remote) {
-      if (Object.keys(stored).length) schedulePush();
-      return;
-    }
-    const pt = await unwrapKey(session.mk, JSON.parse(remote.data), INFO_SETTINGS);
-    const colors = JSON.parse(new TextDecoder().decode(pt)) as Record<string, string>;
-    const localOnly = Object.keys(stored).some((k) => !(k in colors));
-    Object.assign(stored, colors);
-    persistLocal();
-    if (localOnly) schedulePush();
+    const raw = await settingsGet(SETTING_KEY);
+    if (raw) Object.assign(stored, JSON.parse(raw) as Record<string, string>);
   } catch {
-    loaded = false; // network/decrypt hiccup: retry on the next call
+    loaded = false; // transient: retry on the next call
   }
+}
+
+/** Drop the decrypted tag names on lock — they must not outlive the vault key.
+ *  Any pending debounced write is cancelled (it would fail against a locked
+ *  vault anyway, and could otherwise fire after a switch to another account). */
+export function resetTagColors(): void {
+  if (pushTimer) clearTimeout(pushTimer);
+  pushTimer = null;
+  loaded = false;
+  for (const k of Object.keys(stored)) delete stored[k];
 }
 
 export function tagColor(tag: string): string {
@@ -80,13 +60,11 @@ export function tagColor(tag: string): string {
 
 export function setTagColor(tag: string, color: string): void {
   stored[tag] = color;
-  persistLocal();
   schedulePush();
 }
 
 export function clearTagColor(tag: string): void {
   delete stored[tag];
-  persistLocal();
   schedulePush();
 }
 

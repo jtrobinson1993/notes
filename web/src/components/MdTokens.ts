@@ -3,8 +3,8 @@ import { marked, type Token, type Tokens } from 'marked';
 import { embedSrc, parseVideoUrl, VIMEO_LOGO, YT_LOGO, type VideoEmbed } from '../lib/editor/media';
 import { COLOR_VALUE_RE } from '../lib/editor/syntax';
 import { clickToLoadEmbeds, clickToLoadImages } from '../lib/privacy';
-import { resolveEmoji, SHORTCODE_RE } from '../lib/emoji';
 import { mediaKind } from '../lib/fileMeta';
+import EmojiText from './EmojiText.vue';
 
 // Markdown rendering from marked's token stream straight to VNodes: no HTML
 // string is ever parsed, so there is nothing for a sanitizer to miss. Raw
@@ -25,25 +25,13 @@ function decode(text: string): string {
   return decoder.value;
 }
 
-// Replace :shortcode: emoji inside a plain-text run with inline <img>; unknown
-// shortcodes stay literal text. Only applied to ordinary text — never to code
-// spans/blocks (which render literally). A fresh regex avoids shared lastIndex.
-function emojiText(text: string): VNodeChild {
+// :shortcode: emoji inside a plain-text run go through the one shared renderer
+// (EmojiText), which owns resolution, caching and the per-message fetch cap —
+// this file must never resolve or fetch an emote itself. Only ordinary text is
+// passed through it, never code spans/blocks (which render literally).
+function emojiText(text: string, ctx: RenderCtx): VNodeChild {
   if (!text.includes(':')) return text;
-  const re = new RegExp(SHORTCODE_RE.source, 'g');
-  const out: VNodeChild[] = [];
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    const url = resolveEmoji(m[1]!);
-    if (!url) continue;
-    if (m.index > last) out.push(text.slice(last, m.index));
-    out.push(h('img', { src: url, alt: m[0], title: m[0], class: 'chat-emoji', loading: 'lazy' }));
-    last = m.index + m[0].length;
-  }
-  if (!out.length) return text;
-  if (last < text.length) out.push(text.slice(last));
-  return out;
+  return h(EmojiText, { text, scope: ctx.emojiScope });
 }
 
 const RemoteImage = defineComponent({
@@ -164,6 +152,9 @@ interface RenderCtx {
   resolve: AttachmentResolver;
   onToggleTask?: (index: number, checked: boolean) => void;
   taskIndex: { n: number };
+  /** The id emoji rendering is charged to (the note/message this markdown is),
+   *  or false to render already-known emotes only. See EmojiText. */
+  emojiScope: string | false;
 }
 
 function renderBlocks(tokens: Token[], ctx: RenderCtx): VNodeChild[] {
@@ -265,7 +256,7 @@ function renderToken(t: Token, ctx: RenderCtx): VNodeChild {
       return h('p', renderInline(marked.Lexer.lexInline((t as Tokens.HTML).text.trim(), marked.defaults), ctx));
     case 'text': {
       const tt = t as Tokens.Text;
-      return tt.tokens ? renderInline(tt.tokens, ctx) : emojiText(decode(tt.text));
+      return tt.tokens ? renderInline(tt.tokens, ctx) : emojiText(decode(tt.text), ctx);
     }
     case 'escape':
       return decode((t as Tokens.Escape).text);
@@ -311,6 +302,10 @@ export default defineComponent({
   props: {
     tokens: { type: Array as PropType<Token[]>, required: true },
     resolve: { type: Function as PropType<AttachmentResolver>, required: true },
+    // Emoji rendering scope: the id of the note/message being rendered (its
+    // per-message emote fetch cap), or false for "resolve nothing new".
+    // Required so a new render surface has to make the choice consciously.
+    emojiScope: { type: [String, Boolean] as PropType<string | false>, required: true },
     // reading-mode task toggle: index is the document-order ordinal of the
     // task-list item, checked its new state. Omit to keep checkboxes disabled.
     onToggleTask: { type: Function as PropType<(index: number, checked: boolean) => void>, default: undefined },
@@ -320,6 +315,7 @@ export default defineComponent({
       renderBlocks(props.tokens, {
         resolve: props.resolve,
         onToggleTask: props.onToggleTask,
+        emojiScope: props.emojiScope,
         // fresh counter each render so ordinals stay stable across re-renders
         taskIndex: { n: 0 },
       });

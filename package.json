@@ -9,15 +9,24 @@
     "web"
   ],
   "scripts": {
-    "build": "npm run build -w shared && npm run build -w server && npm run build -w web",
+    "build": "npm run build -w shared && npm run build -w server",
+    "build:web": "npm run build -w shared && npm run build -w web",
     "typecheck": "npm run build -w shared && npm run typecheck -w server && npm run typecheck -w web",
-    "dev:server": "npm run dev -w server",
     "dev:web": "npm run dev -w web",
-    "start": "node server/dist/index.js",
+    "dev:native": "tauri dev",
+    "build:native": "tauri build",
+    "relay:dev": "npm run relay:dev -w server",
+    "relay:start": "node server/dist/relay-index.js",
+    "relay": "npm run relay -w server --",
+    "kt-audit": "npm run kt-audit -w server --",
+    "start": "node server/dist/relay-index.js",
+    "pretest": "npm run build -w shared",
     "test": "vitest run",
     "test:watch": "vitest",
+    "precoverage": "npm run build -w shared",
     "coverage": "vitest run --coverage",
     "e2e": "playwright test",
+    "e2e:ui": "playwright test -c playwright.ui.config.ts",
     "e2e:install": "playwright install --with-deps chromium webkit"
   },
   "engines": {
@@ -28,6 +37,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.49.1",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/ws": "^8.5.13",
     "@vitest/coverage-v8": "^4.1.8",
     "@vue/test-utils": "^2.4.6",
@@ -35,5 +45,6 @@
     "tsx": "^4.22.4",
     "vitest": "^4.1.8",
     "ws": "^8.18.0"
-  }
+  },
+  "license": "AGPL-3.0-only"
 }

@@ -62,7 +62,7 @@ async function newNote() {
           @click="toggle(item.id)"
         >
           <IconNote class="h-4 w-4 shrink-0 opacity-60" />
-          <span class="min-w-0 grow truncate"><EmojiText :text="item.label" /></span>
+          <span class="min-w-0 grow truncate"><EmojiText :text="item.label" :scope="`note:${item.id}`" /></span>
           <IconPin
             class="h-4 w-4 shrink-0"
             :class="org.isPinned(conversationId, 'note', item.id) ? 'text-blue-600' : 'text-zinc-300 dark:text-zinc-600'"

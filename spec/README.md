@@ -1,41 +1,60 @@
 # Accord — Spec
 
 Self-hosted, end-to-end encrypted **notes + chat** app for a small private group
-(invite-only, never many users). The server stores only ciphertext.
+(invite-only, never many users). As of **v8** the app is a **native desktop
+client** holding its data in a local encrypted store, talking to a **relay that
+stores nothing at rest**. There is no browser client and no hosted service.
 
-This spec is split by app area so you can load just the part you're working on:
+**These files describe what is built.** Anything not built yet — remaining v8
+work, known defects, distribution, a future web client, v9 — lives in
+[roadmap.md](roadmap.md).
 
 | File | Area |
 |---|---|
-| [accounts-and-crypto.md](accounts-and-crypto.md) | Accounts, passkeys, recovery, the master-key + X25519 crypto model, the sharing primitive |
-| [notes.md](notes.md) | The notes app and the Obsidian-style live editor (formatting, code blocks, tables/checkboxes, attachments, import/export, history, offline) + **v4 folders & chat-sidebar pins** |
-| [ui.md](ui.md) | Theming (brand / pastel / high-contrast) and the app shell / sidebar |
-| [chat.md](chat.md) | v3 E2EE chat — friends, DMs, groups, conversation keys/epochs, the WebSocket transport, **the phase-1 implementation as built**, and **v4 channels** |
-| [voice.md](voice.md) | **v6** E2EE voice — embedded mediasoup SFU, end-to-end frame encryption, voice channels + 1:1 calls, key reuse from chat/v5 (implemented on `v6-voice`) |
-| [profiles.md](profiles.md) | v3.2 E2EE editable profiles — bio + avatar, the per-user profile key, visibility, distribution + rotation |
-| [notifications.md](notifications.md) | Foreground new-message chime + tab/badge unread + v3 phase 3 — PWA install + content-free background Web Push (service worker, VAPID, subscriptions) |
-| [security.md](security.md) | Cross-cutting security — rendering/XSS safety, CSP, metadata exposure, threat model |
-| [roadmap.md](roadmap.md) | Phasing and future versions (v3.1 – v8) |
-| [testing.md](testing.md) | The unit + e2e test plan (Vitest + Playwright) |
+| [accounts-and-crypto.md](accounts-and-crypto.md) | Accounts and the **key hierarchy** — master key, vault unlock (keychain / Argon2id password / recovery code), domain separation, the sealed envelope, per-relay derived identities, delivery tokens, why there is no cold start, revocation, and why passkeys are gone |
+| [native-app.md](native-app.md) | **The native app** — why native, Tauri v2, the Rust core as the real client, the vault gate + unlock paths, idle re-lock, onboarding, multi-account, distribution & signing |
+| [local-store.md](local-store.md) | **The local store** — SQLCipher schema as built, the 81-command Rust-core IPC surface, message ordering, CRDT/mutable-state mapping, attachments on device, backfill integrity, eviction |
+| [relay.md](relay.md) | **The relay** — posture and complete state inventory, device-token auth, registration, sealed-sender mailbox, blob store, directory/KT, group state, invites, and the privacy content proxies |
+| [key-transparency.md](key-transparency.md) | **The KT log** — the AKD sidecar, proof types, native self-audit, gossip split-view detection, the public roots endpoint, the reference auditor |
+| [notes.md](notes.md) | **Local-only notes** and the Obsidian-style live editor — formatting, code blocks, tables/checkboxes, attachments, media optimization, zip import/export, folders and organization |
+| [chat.md](chat.md) | **E2EE chat** — invite-only friends as a capability handshake, DMs and groups, the sealed envelope + payload, ordering without a server counter, the CRDT overlays, the mailbox drain, and the native chat surface |
+| [voice.md](voice.md) | **E2EE 1:1 voice** — the sealed ring, relay signaling, the embedded mediasoup SFU, frame encryption, and the fail-closed gate that refuses a call without it |
+| [profiles.md](profiles.md) | **Handles and the E2EE display name** — what the relay sees, how a name reaches a contact (once, inside the friend handshake), and the profile key's single real job |
+| [notifications.md](notifications.md) | **Unread surfaces, in-app toasts and the error catalogue** — plus the relay's content-free push wake, which is built but has no client half |
+| [ui.md](ui.md) | **Theming** (brand / pastel / high-contrast), the app shell and side rail, the per-chat sidebar, modals, toasts, Settings, narrow-viewport navigation, and the UI model |
+| [security.md](security.md) | **Cross-cutting security** — rendering/XSS safety, click-to-load remote media, the relay content proxies and their SSRF defences, voice failing closed, rate limits, threat model, trust boundaries |
+| [testing.md](testing.md) | **How the product is tested** — the Vitest projects, cargo tests and the relay Playwright suite as they run today, the four-layer native strategy (L1–L3 built and in CI, L4 evaluated and deferred), and the WebKit editor harness |
+| [roadmap.md](roadmap.md) | **Everything not built yet** |
 
 ## Tech stack (decisions)
 
 | Area | Decision |
 |---|---|
-| Language | TypeScript everywhere |
-| Server | Node 22 LTS + Fastify, SQLite (better-sqlite3), single process |
+| Language | TypeScript everywhere, **plus Rust** for the native core + AKD sidecar |
+| Native shell | **Tauri v2** — desktop built; mobile (iOS/Android) not built yet |
+| Relay | Node 22 LTS + Fastify, SQLite (better-sqlite3), single process; the only server, run standalone (`npm run relay:start`) |
 | Frontend | Vue 3 + Vite, Pinia (+ Pinia Colada for query/cache), Reka UI components, Tailwind v4 |
-| Realtime | `@fastify/websocket` (chat) |
-| Mobile | PWA (installable, offline shell) — no native apps |
-| Auth | Passkeys only (WebAuthn, `@simplewebauthn`). No passwords, no SSO. Multiple passkeys per account encouraged |
-| Account recovery | Mandatory recovery code at signup (random ≥128-bit, shown once). No other recovery path |
-| Registration | Admin-generated invite links; the invitee creates their own account + passkey |
-| Distribution | Single multi-arch Docker image (amd64/arm64); install = one `docker run`/compose command |
-| Repo | Private GitHub repo `jtrobinson1993/notes` |
+| Local store | SQLite + **SQLCipher** whole-DB in the Rust core; encrypted blob files on disk |
+| Realtime | `@fastify/websocket` — relay live-delivery nudge + voice signaling |
+| Auth | **Device-key challenge/token** to the relay; local unlock via OS keychain + password (Argon2id) + recovery code. **No passkeys, no server session, no cookie** |
+| Account recovery | **Local only** — the mandatory recovery code shown once at signup unlocks a vault this device already holds. Relay-held escrow was [removed](roadmap.md#escrow--removed), so **losing every device loses the account** ([security.md](security.md#total-device-loss-is-unrecoverable-by-design)); pairing and an offline backup export are the planned answers ([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)) |
+| Registration | Relay registration mode: `public` or `invite`-only (operator-minted invites, or a friend invite that also friends you). No admin role and no first-user bypass |
+| Distribution | Native app, **unsigned-first** for the initial group; relay as a Docker image |
+| Repo | **Public** GitHub repo `jtrobinson1993/notes`, licensed **AGPL-3.0-only** |
 
 ## Status at a glance
 
-- **Shipped:** v1 (notes, passkeys, recovery, PWA), v2 (sharing, attachments, version history, offline editing, import/export, encrypted backups), v2.1 (Obsidian-style live editor), v2.2 (themes, media optimization, block-level live rendering), v3 phase 1 (friends + 1:1 DMs over WebSocket), v3.1 (chat polish — emoji, GIFs, attachments, reactions/replies/threads), v3.2 (E2EE editable profiles), v3.3 (new-chat modal + groups, reusable modal, sidebar tooltips, infinite scroll), v3 phase 2 (group membership management — add/remove/leave, epoch re-keying, per-group permissions + admin roles), v3 phase 3 (CSP + hardening headers, content-free PWA push), v3.1 – v3.5, v4 (chat sidebar + text/voice channels + note folders & pins), v5 (note & folder sharing, private channels, recursive folder grants).
-- **Planned:** v7 – v8 — see [roadmap.md](roadmap.md). **v6 voice** is implemented
-  on the `v6-voice` branch (embedded mediasoup SFU, E2EE frames, channels + 1:1
-  calls) — see [voice.md](voice.md); pending a manual two-browser audio check.
+- **Built and specced here:** the Tauri shell + Rust core over a SQLCipher store;
+  the zero-at-rest relay with device-token auth, sealed-sender mailbox, blob
+  store and the privacy content proxies; the key hierarchy, vault unlock and the
+  sealed envelope; full-AKD key transparency with client self-audit and gossip;
+  DM + group messaging with attachments and the CRDT overlays; 1:1 voice that
+  fails closed without frame E2EE; local notes with the live editor, folders and
+  import/export; the toast surface and error catalogue.
+- **Deleted, not deprecated:** the v1–v6 browser product — the passkey SPA, the
+  all-in-one Fastify server, the PWA/service worker, the IndexedDB note cache,
+  the session/CSRF layer, the admin UI and the test-auth seam. Nothing in these
+  specs describes it except where a section explains what replaced it.
+- **Next:** real-device voice validation, an integrated shakedown, the defects
+  listed in the roadmap, then the greenfield cutover — see
+  [roadmap.md](roadmap.md).

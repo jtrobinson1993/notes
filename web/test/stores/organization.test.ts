@@ -1,20 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
-// An in-memory settings store standing in for the server, so we can exercise the
-// real master-key encrypt → store → decrypt round-trip.
+// An in-memory stand-in for the encrypted vault (SQLCipher, via the Rust core),
+// so we can exercise the real write → reload round-trip.
 const store = vi.hoisted(() => new Map<string, string>());
-const api = vi.hoisted(() => ({
-  settingGet: vi.fn(async (k: string) => (store.has(k) ? { data: store.get(k)!, updatedAt: 0 } : null)),
-  settingPut: vi.fn(async (k: string, data: string) => {
-    store.set(k, data);
-    return { updatedAt: 0 };
+const native = vi.hoisted(() => ({
+  settingsGet: vi.fn(async (k: string) => store.get(k) ?? null),
+  settingsSet: vi.fn(async (k: string, v: string) => {
+    store.set(k, v);
   }),
 }));
-vi.mock('../../src/lib/api', () => ({ api }));
-vi.mock('../../src/stores/session', () => ({
-  useSessionStore: () => ({ mk: new Uint8Array(32).fill(7) }),
-}));
+vi.mock('../../src/lib/native', () => native);
 
 import { useOrgStore } from '../../src/stores/organization';
 
@@ -174,20 +170,22 @@ describe('organization store — chat folders (per conversation)', () => {
 });
 
 describe('organization store — encrypted persistence', () => {
-  it('round-trips through the master-key-encrypted settings blob', async () => {
+  it('round-trips folders, note filing, and pins through the vault blob', async () => {
     const org1 = useOrgStore();
     const f = org1.createFolder('Work');
     org1.setNoteFolder('n1', f);
     org1.pin('conv1', 'note', 'n1');
-    // The remote push is debounced ~800ms; wait comfortably past it. With stray
+    // The vault write is debounced ~800ms; wait comfortably past it. With stray
     // timers from earlier tests now cancelled in afterEach, nothing else can
     // overwrite this test's blob between the push and the reload below.
-    await vi.waitFor(() => expect(api.settingPut).toHaveBeenCalled(), { timeout: 3000 });
+    await vi.waitFor(() => expect(native.settingsSet).toHaveBeenCalled(), { timeout: 3000 });
 
-    // The persisted blob is ciphertext, not plaintext folder names.
-    expect(store.get('notes-org')).not.toContain('Work');
+    // Folder names are as sensitive as tag names: nothing in the clear on disk —
+    // they only ever go to the vault (encrypted at rest), never to localStorage.
+    expect(localStorage.getItem('notes:org')).toBeNull();
+    expect(localStorage.length).toBe(0);
 
-    // A fresh store loads + decrypts it.
+    // A fresh store loads it back out of the vault.
     localStorage.clear();
     setActivePinia(createPinia());
     const org2 = useOrgStore();

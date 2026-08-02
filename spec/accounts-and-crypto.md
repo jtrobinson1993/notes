@@ -1,172 +1,346 @@
 # Accounts & cryptography
 
-The identity and key-management foundation everything else builds on. All
-encryption/decryption happens **client-side** (WebCrypto + `@noble/curves`);
-the server only ever stores ciphertext, wrapped keys, and WebAuthn public keys.
+The identity and key-management foundation everything else builds on. Accord is
+a **native app**: every key is generated and held by the Rust core
+(`src-tauri/src/`), the UI (`web/src/`) never touches key material — it asks the
+core over `invoke()` — and a relay only ever stores ciphertext, wrapped key
+blobs, and public keys.
 
-## Cryptography model
+There is no browser client, no server-side session, and no passkey. The v1
+passkey/PRF browser account model was deleted, not migrated; see
+[Passkeys are not used](#passkeys-are-not-used) and, for the future web client,
+[roadmap.md](roadmap.md#d16--a-v8-web-client-deferred).
 
-Priorities: modern, boring, widely supported (Chrome, Firefox-based Zen, Safari).
+## The key hierarchy
 
-- **Master key (MK):** random 256-bit, generated client-side at signup. Never
-  leaves the client unwrapped. Held in memory for the session (mirrored into
-  per-tab `sessionStorage` so an in-tab reload restores it without re-prompting)
-  and dropped when the tab/app fully closes or on a manual **Lock**. There is
-  **no inactivity auto-lock** — the device's own lock screen is the boundary —
-  and MK is deliberately never written to persistent storage, which would expose
-  it to XSS at rest.
-- **Key wrapping:**
-  - *Passkey:* WebAuthn **PRF extension** output → HKDF-SHA-256 → wraps MK
-    (AES-256-GCM). One wrapped copy per registered passkey. Passkeys without PRF
-    support are rejected at registration with a clear message.
-  - *Recovery code:* random 160-bit (base32 in groups of 4) → HKDF → a second
-    wrapped copy of MK, plus a separately-derived auth key whose hash the server
-    stores for recovery login. High entropy, so no slow KDF needed.
-  - *Password (optional fallback / passkey-less path):* for users whose passkey
-    can't produce PRF output (e.g. Firefox on Linux) **and for users who can't
-    register a passkey at all**. A user-chosen password (**16-char minimum,
-    enforced client-side only** — the server never sees it) + a random salt →
-    **Argon2id** (`hash-wasm`, m≈19 MiB, t=2, p=1; memory-hard because the input
-    is low-entropy, unlike the recovery code) → a third wrapped copy of MK, plus a
-    separately-derived auth key whose hash the server stores. Can be added later
-    under Settings → Security (requires an unlocked session) **or chosen at signup**
-    via the passkey-less path (below); passkey stays the default and the password is
-    offered behind "Other options" at signup, as an "alternative method" on the
-    login screen, and as "Unlock with password" on the lock screen (an already
-    logged-in but locked session, where the handle is taken from the session so
-    only the password is asked). `password.ts` holds the derivation;
-    `INFO_PASSWORD_WRAP` namespaces the wrap.
-- **Per-note key:** random AES-256-GCM key per note, wrapped by MK. Titles and
-  bodies both encrypted.
-- **Per-user X25519 keypair (sharing / chat):** created at signup via
-  `@noble/curves` (portable across browsers that lack WebCrypto X25519). Private
-  key wrapped by MK; public key stored server-side as metadata.
-- The server stores ciphertext blobs, wrapped keys, and WebAuthn public keys. It
-  can never read notes or messages.
+One derivation tree covers every key. The load-bearing split is **derived**
+(re-derivable from MK, so it *cannot* rotate without rotating MK) vs **random**
+(independently rotatable) — anything that must rotate on revocation wants to be
+random.
 
-### Domain-separated key derivation
+```
+MK / master seed (random 256-bit, per account — every full device holds it)
+│
+│  at-rest wrappings (the three ways to open the vault):
+│    ← vault key         (random, per device, OS keychain)      [primary]
+│    ← Argon2id(password)                                       [portable]
+│    ← KDF(recovery code)                                       [break-glass]
+│
+├─ DERIVED (HKDF-SHA256, domain-separated) — built:
+│    ├─ per-relay identity = KDF(MK, domain ‖ relay fingerprint):
+│    │    ├─ Ed25519 signing — relay challenges, envelope signatures
+│    │    └─ X25519 sealing  — the address inbound envelopes are sealed to
+│    └─ profile key = KDF(MK, "accord/profile-key/v1")
+│         └─ delivery token = KDF(profile key, "accord/delivery/v1")
+│              → sha256 → the verifier the relay stores
+│
+├─ RANDOM, held in the encrypted local store:
+│    ├─ per-group key (one per group, no epochs yet)             built
+│    │    └─ group delivery token = KDF(group key, "accord/group-token/v1")
+│    ├─ per-file attachment key (fresh per file; the key + IV ride
+│    │   inside the E2E message payload, never near the relay)   built
+│    └─ per-note key (`notes.note_key`) — the column exists but is
+│        unused: notes are local-only until relay sync lands     unbuilt
+│
+└─ Per-device (random, OS keychain, never leaves the device) — built:
+     ├─ device Ed25519 key — signs relay challenges → short-lived token
+     └─ SQLCipher key — the local database at rest
+```
 
-HKDF `info` strings keep wrapped/sealed forms from being interchangeable
-(`crypto.ts`): `INFO_MK_WRAP`, `INFO_NOTE_KEY`, `INFO_PRIVATE_KEY`,
-`INFO_RECOVERY_WRAP`, `INFO_PASSWORD_WRAP`, `INFO_SEAL`, plus `INFO_SETTINGS` for
-the encrypted settings blob.
+**Not built** (and deliberately absent from the tree above rather than described
+as if present): per-conversation *epoch* keys — a DM is a sealed box per message
+to the recipient's derived sealing key, and a group has one long-lived key with
+no rotation; the **preview key** for rich push previews; the **backup export
+key**. All three are in [roadmap.md](roadmap.md).
 
-### The sharing / sealing primitive (reused by chat)
+Files: `keys.rs` (wrap/unwrap, domain constants, recovery-code format),
+`vault.rs` (the three unlock paths, delivery token), `identity.rs`
+(per-relay identities), `envelope.rs` (the sealed envelope), `attachment.rs`
+(per-file keys).
 
-Sharing a secret (a note key, a conversation key) to another user is a
-**sealed box**: `sealKey(recipientPublicKey, raw)` = ephemeral X25519 keypair +
-ECDH + HKDF + AES-256-GCM; `unsealKey(myPrivateKey, myPublicKey, sealed)` on the
-recipient. Any unlocked device can recover its X25519 private key from MK, so it
-can unseal anything sealed to it. The server stores the opaque sealed blob
-per-recipient. v3 chat reuses this verbatim for conversation keys.
+### Why the profile key is derived, not random
 
-## Accounts, auth & distribution (v1, shipped)
+The design called for a random, MK-wrapped profile key so it could rotate. As
+built it is **derived from MK** (`Vault::delivery_token()` derives it on first
+use and caches it in the `profile.key` setting inside the encrypted store).
 
-- **Install:** Docker; all data in a single mounted volume (SQLite + config).
-- **Admin bootstrap** on first run; the admin creates/revokes invite links and
-  removes users.
-- **Signup via invite:** passkey registration + a one-time recovery code, **or**
-  the passkey-less password path (`POST /api/register/password`) for users who
-  can't make a passkey — same first-run-or-invite gate, the client generates MK
-  and uploads only wrapped blobs (MK wrapped under the Argon2id password key and
-  the recovery secret), so a password account still gets a recovery code. Both
-  paths live behind "Other options" in the same signup flow (setup + invite). On the password path the handle is chosen on the password step — it is the login username (`handle` + password), so a password manager captures it — and the display name is set after the account is created. An
-  invite is **one-time** — `markInviteUsed` records `used_by` on registration, and
-  both `register/options` and `register/verify` reject a used/expired token. The
-  invite page first calls the **non-consuming** `GET /api/invite/:token` (returns
-  only `{ valid }`) and redirects a used/expired/unknown link to **login** rather
-  than re-showing the signup flow; a router guard likewise bounces an
-  already-signed-in user off `/invite/*` to the app.
-- **Login** with passkey; add/remove additional passkeys; **recover** with the
-  handle + recovery code (which re-registers a passkey). An optional **password**
-  fallback (handle + password, set up in Settings) is offered behind an
-  "alternative methods" link, rate-limited per handle like recovery.
-- **Changing the handle** (Settings → Security) also changes the **password
-  sign-in username**, since the handle *is* that username. A standing amber note
-  says so, and the change is **step-up-authenticated for password accounts**:
-  `PUT /api/handle` requires the same password auth key as login when
-  `password_auth_hash` is set, so someone with an unlocked session can't silently
-  change the handle and lock the owner out of password login. The re-auth form
-  carries the new handle as the username + the current password, so the browser
-  can offer to update the saved login. Passkey-only accounts have no password
-  (and their passkey login is handle-agnostic), so they just confirm a warning.
-- **No password reset.** Because everything is end-to-end encrypted, there is no
-  way to recover an account once the password, all passkeys, *and* the recovery
-  code are lost — the user is warned of this at password setup and in Settings →
-  Security, and steered toward a password manager + passkey.
-- **Sessions:** server session cookie (`notes_session`, httpOnly, SameSite=Lax);
-  the cookie is the sha256 of a random token. Mutating `/api/*` requests are
-  CSRF-checked against the `Origin` header.
+The reason is multi-device reach: every device of an account must present the
+*same* delivery token, or a friend who reaches one device silently fails to
+reach another. There is no device-to-device key sync yet (D8 pairing is
+unbuilt), so a random per-device value would diverge. Derivation makes the token
+identical on every device — including one that arrives with an empty store —
+with no distribution step at all. A regression test in `vault.rs` pins exactly
+that: the token is `KDF(KDF(MK, profile), delivery)`, a pure function of MK, so
+any device holding MK computes the same value without being told it.
 
-## Multi-device & device linking
+The cost is that rotation is no longer free: rotating means writing a new random
+value into `profile.key` *and* getting it to the account's other devices, which
+is the same machinery D8 provides. Until then the profile key never rotates —
+see [Revocation](#revocation).
 
-### How multi-device works today (shipped)
+## Creating an account
 
-Every device holds MK in memory after unlock, and every passkey has its own
-`wrapped_mk` (`credentials` table), so any registered passkey on any device
-unlocks MK independently. Two ways to onboard a new device today:
+Signup happens in order, and the ordering is deliberate: the **local vault**
+exists before any relay does, so the user is given their recovery code before a
+network call can fail.
 
-- **Syncing passkey provider** (iCloud Keychain, Google Password Manager,
-  1Password, …): the passkey is already present on the new device — nothing to
-  do. The recommended path.
-- **Recovery code:** for **device-bound** authenticators (Windows Hello and
-  other platform passkeys that don't sync), the new device runs `recover()` —
-  the recovery code unwraps MK from `recovery_wrapped_mk`, the device registers
-  its own passkey, and the recovery code is rotated. This is the only
-  cross-device bridge for a non-syncing authenticator, and each use spends and
-  re-issues the code.
+1. **Local.** `vault_create(password)` generates MK, the vault key and the
+   SQLCipher key, writes the three wrapped copies, and returns the recovery
+   code, which the UI shows once behind an explicit "I saved my recovery code".
+2. **Identity.** The user picks a handle from generated `Word#1234` candidates
+   (never typed, so the word is always from the vetted list) and a required
+   display name. The display name is stored only in the encrypted vault — see
+   [profiles.md](profiles.md).
+3. **Relay.** Onboarding registers the account and enrolls this device's key on
+   a relay, by redeeming a friend invite or with a relay address plus an
+   optional operator registration code. The relay assigns/claims the handle and
+   returns a device token. See [relay.md](relay.md#registration-account-creation).
 
-### Device linking (proposed — not yet built)
+An account with no relay yet is a real state: the vault unlocks and the gate
+routes to onboarding rather than the app (`nativeVault.ts`).
 
-A smoother path: add a passkey to a new device *from an already-unlocked device*,
-without spending the recovery code.
+**A second device cannot be added at all today.** Relay-held escrow — the one
+cold-start path — was removed
+([roadmap.md](roadmap.md#escrow--removed)), and pairing, which replaces it, is
+unbuilt ([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)). An
+account therefore lives only on the device that created it, and losing that
+device loses the identity
+([security.md](security.md#total-device-loss-is-unrecoverable-by-design)).
 
-**Core invariant — MK only ever crosses the wire _sealed to a key held by the
-receiving device_; the server (and any network observer) sees ciphertext only,
-never plaintext MK.** MK living on the new device is not new — it is required
-(every device needs MK) and the recovery flow already does it. This is the same
-trust posture as the existing sealed-box sharing primitive, which it reuses:
+## Unlocking: the vault (`vault.rs`)
 
-1. The **new** device generates an ephemeral X25519 keypair and shows its
-   *public* key (e.g. a QR code). The private key never leaves the device.
-2. The **logged-in** device runs `sealKey(newDevicePublicKey, MK)` and posts the
-   sealed blob to a short-lived, single-use relay endpoint.
-3. The new device fetches the blob, `unsealKey`s MK with its ephemeral private
-   key, registers its own passkey (its own `wrapped_mk`), and discards the
-   ephemeral key.
+The vault is either `uninitialized`, `locked`, or `unlocked` (decided by whether
+`vault.meta.json` exists and whether the store is open). Unlocked means: the
+SQLCipher database is open and MK is in the core's memory. `lock()` drops both;
+MK is `Zeroizing`, so it is wiped rather than left in a freed allocation.
 
-A variant with the same invariant: the logged-in device wraps MK under a
-high-entropy one-time **link code** (effectively an ephemeral recovery code)
-that the new device enters to unwrap a short-TTL server blob — no new primitive.
+**At rest**, MK exists only as three wrapped copies in `vault.meta.json`, a
+plaintext sidecar next to the database. Every field in it is either a public
+parameter (the Argon2id salt and cost) or MK encrypted under a secret the file
+does not contain — so the sidecar holds no secret of its own. A test pins the
+exact field set, because anything added there is published to whoever can read
+the disk. Sidecars written before escrow was removed carry an extra `escrow`
+object of auth-key hashes; the field is simply ignored on load (a test covers
+that those vaults still open on all three paths), and it is dropped the next
+time the file is rewritten.
 
-**The real risk is authenticating the _target_ device, not the transport.** An
-attacker who substitutes their own public key (or intercepts the link code) would
-receive MK. Required mitigations:
+Wrapping is uniform: `HKDF-SHA256(ikm = secret, info = domain)` → AES-256-GCM
+with a fresh 12-byte nonce. The three domains are
+`accord/mk-wrap/{vault-key,password,recovery}/v1`, so a blob wrapped for one
+path can never be opened by another (tested).
 
-- **Human-verified, out-of-band channel:** an in-person QR scan and/or a short
-  comparison string (SAS) shown on both screens that the user confirms matches.
-  The public key / link code must be bound to the user's real device by a human,
-  never trusted from the network alone.
-- **Single-use, short TTL** (seconds–minutes); the relay blob is deleted on
-  pickup and the ephemeral key discarded.
-- **Notify + audit:** linking raises a "new device linked" notice, and the new
-  passkey appears in the credential list for revocation.
+- **Keychain (primary).** A random per-device *vault key* in the OS keychain
+  wraps MK. `initGate()` tries this silently on launch, so the normal case is
+  the app just opening. Biometric/Secure-Enclave gating of the keychain item is
+  **not** implemented — see [roadmap.md](roadmap.md#smaller-deferred-items).
+- **Password (portable).** Argon2id (m ≈ 19 MiB, t = 2, p = 1, 32-byte output,
+  16-byte random salt) over the account password. Memory-hard because the input
+  is low-entropy. A **16-character minimum** is enforced in the signup UI
+  (`NativeGate.vue`); nothing but the client can enforce it, because the
+  password never leaves the device.
+- **Recovery code (break-glass).** 160 random bits, base32, printed as eight
+  groups of four. Normalization strips separators and upper-cases, so the code
+  can be typed back with any spacing. High entropy, so it feeds HKDF directly —
+  no slow KDF needed. Shown exactly once, at signup.
 
-Done with channel authentication, linking has **no durable transferable secret**
-(unlike the written-down recovery code, which is itself an off-device,
-MK-equivalent secret), so it is equal-to-or-better than recovery codes — not a
-step down. Skipping either invariant — a plaintext relay, or an unauthenticated
-channel — **is** a compromise and is out of scope.
+Keychain items live under service `dev.accord.app` as `sqlcipher-key`,
+`vault-key` and `device-key`, each suffixed with a short hash of the account's
+data directory. That namespacing is what makes **multi-account** safe: each
+account is a separate data dir with its own vault, MK, device key and store, so
+two accounts on one machine share no key material (`accounts.rs`; see
+[native-app.md](native-app.md)).
 
-## Server-side identity tables
+**Re-lock policy** is per device, stored in the vault: `relock.policy` is
+`stay` (default) or `on-idle` with `relock.idleMinutes` (default 15). With
+`stay`, the OS lock screen is the boundary — there is no forced inactivity lock.
+`nativeVault.ts` owns the timer and, on lock, also stops the mailbox drain
+(without MK there is nothing to open envelopes with).
 
-- `users` — id, role, `public_key` (X25519), `wrapped_private_key`,
-  `recovery_wrapped_mk`, `recovery_auth_hash`, the optional password-fallback
-  trio (`password_salt`, `password_wrapped_mk`, `password_auth_hash`), the public
-  `handle`, and (v3) `display_name`. There is **no username**: the auto-generated `handle`
-  (`Word#1234`) is the sole identifier. (The legacy `username` column — a
-  login-only, server-readable name — was dropped via a table rebuild; login is
-  passkey/discoverable and recovery keys off the handle.)
-- `credentials` — one row per passkey, each with its own `wrapped_mk` (this is
-  how multi-device works: any registered passkey can unwrap MK).
-- `sessions`, `invites` (admin signup invites), `challenges` (WebAuthn).
+**No password reset, and no remote login.** Both the password and the recovery
+code are *local* keys: they unwrap MK from this device's sidecar. Neither is a
+credential any server can check, so neither opens an account on a device that
+does not already hold it. Lose every device and the account is gone — nobody,
+including a relay operator, can decrypt it
+([security.md](security.md#total-device-loss-is-unrecoverable-by-design)). The
+recover screen says exactly this rather than offering a dead end.
+
+There is **no "change password" flow** yet: changing it means re-wrapping MK
+under the new Argon2id secret. Unbuilt — [roadmap.md](roadmap.md).
+
+## Domain-separated derivation
+
+Every derivation — and the one signature prefix — is namespaced, so no output
+can be substituted for another (`keys.rs`, `identity.rs`, `envelope.rs`):
+
+| Domain | Purpose |
+| --- | --- |
+| `accord/mk-wrap/vault-key/v1` | MK under the keychain vault key |
+| `accord/mk-wrap/password/v1` | MK under Argon2id(password) |
+| `accord/mk-wrap/recovery/v1` | MK under the recovery code |
+| `accord/profile-key/v1` | the account profile key, from MK |
+| `accord/delivery/v1` | delivery token, from the profile key |
+| `accord/group-token/v1` | group delivery token, from the group key |
+| `accord/relay-id/ed25519/v1` ‖ fp | per-relay signing key |
+| `accord/relay-id/x25519/v1` ‖ fp | per-relay sealing key |
+| `accord/envelope/v1` | envelope content key from the ephemeral ECDH |
+| `accord/envelope-sig/v1` | signature domain inside the envelope |
+
+The auth/wrap split matters: a secret handed out as a *capability* — a delivery
+or group token the relay checks — is derived under an auth domain, never a wrap
+domain, so possessing one can never unwrap anything.
+(`accord/auth/{password,recovery}/v1` were the escrow fetch keys and are gone
+with it.)
+
+## The sealed envelope (`envelope.rs`)
+
+Everything sent to another user reduces to one primitive. The outer envelope
+— all the relay holds — is `{v, eph, nonce, ct}`: an ephemeral X25519 keypair,
+ECDH against the recipient's per-relay sealing key, HKDF-SHA256, AES-256-GCM.
+The inner plaintext carries `{kind, payload, senderIdentityPub, sig, sentAt}`:
+the sender's identity certificate rides **inside** the ciphertext, and `sig`
+covers `kind|payload`, so a member replaying history later cannot forge content.
+
+Any unlocked device re-derives its sealing key from MK, so it can open anything
+sealed to that identity — there is no per-device key exchange to get wrong.
+Groups use the symmetric variant under the shared group key (one envelope for
+all members). Unknown major versions surface as `UnknownVersion` and the caller
+buffers the raw bytes for a later app version rather than dropping them.
+
+## Per-relay derived identities (`identity.rs`)
+
+Each relay sees a **distinct identity keypair derived from the one master seed**
+and that relay's pinned fingerprint, so independent relays **cannot collude to
+correlate** the same user — chosen over presenting one shared key everywhere.
+Handles are minted per relay anyway, so "same handle everywhere" was never on
+offer. Derivation is deterministic, which is what lets any device holding MK
+re-appear as the *same* user with nothing else — the property pairing will rely
+on ([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)).
+
+To authenticate, the device signs the relay's challenge: the relay issues a
+random nonce, the device signs `nonce ‖ relay-fingerprint` with its **device
+key** (not the identity key), and gets a short-lived bearer token back. Binding
+the relay's own fingerprint into the signed payload is what stops a malicious
+relay replaying your signature to a different relay. See
+[relay.md](relay.md#auth-d4d4b).
+
+**Two independent layers, deliberately.** Vault unlock is local and
+user-facing; the relay token is network-level and invisible. The token refreshes
+on the *device key*, which lives in the keychain and is readable while the vault
+is locked, so the relay connection survives a locked vault and queued traffic
+keeps arriving — you re-unlock only to *read*.
+
+A DM's conversation id is likewise derived, not carried: `dm:` + SHA-256 over
+the two identity keys in sorted order, so both sides compute the same id with no
+exchange, and a message always lands in *my DM with that sender* rather than
+wherever the payload claims.
+
+## Delivery tokens
+
+The profile key is the reach root: `delivery token = KDF(profile key,
+"accord/delivery/v1")`. The recipient registers `sha256(token)` as a
+**verifier** with the relay (`PUT /api/relay/verifier`, device-token authed, so
+only your own devices can rotate it); a sender presents the **token** and the
+relay compares digests in constant time before queueing the envelope. The send
+route takes no device token at all — the capability is the only credential —
+so the relay cannot link an envelope to a sender account. The sender's identity
+rides inside the sealed envelope, where only the recipient sees it.
+
+**Granularity: one shared token per recipient**, not one per friend, so the
+relay never learns your friend count. The accepted cost is that revoking one
+friend means rotating the profile key and re-issuing to everyone else
+(O(friends) sealed messages — Signal's model); blocks are rare and friend counts
+are modest. Groups use the analogous group token derived from the shared group
+key: every member derives the same pair, and any current member may register the
+verifier (a non-member gets a 403).
+
+## There is no cold start
+
+A password or a recovery code alone has **nothing to decrypt** on a fresh device
+— MK is random and every identity derives from it — so a brand-new device cannot
+reach an existing account by any means the app offers. This is the current
+state, and it is deliberate.
+
+Escrow used to fill the gap: the relay stored the password-wrapped and
+recovery-wrapped MK plus public Argon2id parameters, and a fresh device fetched
+it by handle. **It was removed on 2026-07-27** — the reasoning, and the removal
+inventory, are in [roadmap.md](roadmap.md#escrow--removed). In short: a
+permanently stored blob wrapped under one human-chosen password is an offline
+brute-force target and a standing at-rest liability on a relay whose whole
+posture is zero-at-rest, and it only ever bought what pairing buys better
+whenever any device survives. The relay now stores no key material of any kind.
+
+What follows from that, and must not be softened anywhere in the UI:
+
+- **The gate offers no "Log in".** A first run can only sign up. `NativeGate.vue`
+  states plainly that an existing account cannot be pulled onto a new device
+  yet; tests assert both the absent affordance and the wording.
+- **Losing every device loses the identity, permanently** — an accepted design
+  constraint, not a gap
+  ([security.md](security.md#total-device-loss-is-unrecoverable-by-design)).
+- **Pairing is therefore launch-blocking**
+  ([roadmap.md](roadmap.md#device-pairing--history-transfer-d8)), together with
+  the offline encrypted backup export for the no-surviving-device case.
+
+## Revocation
+
+Two named tiers, so neither the UI nor this document ever oversells what
+revocation covers.
+
+- **Tier 1 — "revoke a lost device"** (the realistic case: lost or stolen but
+  locked; keychain and SQLCipher intact). Stop honoring the device, and rotate
+  everything it could decrypt: the profile key (re-issuing delivery tokens to
+  every remaining friend), every group key it held, every shared-note key.
+  Content it already decrypted is compromised regardless — it held plaintext.
+- **Tier 2 — "identity compromise"** (a device taken while *unlocked*). The
+  attacker holds MK itself, so they can re-derive the per-relay identity keys —
+  the one thing rotation cannot fix — and could sign a fraudulent key-rotation
+  attestation. Recovery is a **new seed, a new identity, and re-verification
+  with contacts out of band**. Tier 1 must never be presented as covering this.
+
+**What is actually built:** the relay half of tier 1. An operator revokes a
+device with the relay CLI (`revoke-device <id>`), and every device-token-authed
+route re-checks the `revoked` flag on each request — so a revoked device loses
+mailbox fetch and blob access **immediately**, not merely when its 15-minute
+token expires. Its mailbox queue also stops receiving fan-out
+(`activeRelayDeviceIds` filters revoked devices).
+
+**What is not built:** all of the rotation. `friend_remove` only drops the local
+friend row and addressing; it does not rotate the profile key, so an unfriended
+contact keeps a *working* delivery token and can still queue envelopes to you.
+Group-key rotation on member removal, note-key rotation, and any Devices screen
+to trigger a revocation are likewise absent. Blocking is therefore not yet a
+security boundary — it is a local hide. See
+[roadmap.md](roadmap.md#revocation--blocking-fan-out); nothing here should be
+described to a user as revocation until that lands.
+
+## Passkeys are not used
+
+No part of the app registers, stores, or verifies a WebAuthn credential today.
+The v1 model wrapped MK with the **PRF extension** output; native shells make
+PRF unreliable (it is broken on Linux), which is why the account model moved to
+keychain/password/recovery in the first place. A **password is therefore
+mandatory** at signup: absent reliable PRF it is the only universal
+MK-decryption factor, and the recovery code stays break-glass.
+
+Re-scoping passkeys to what they *are* good at — phishing-resistant bootstrap
+authentication to a relay, and an opportunistic (never load-bearing) PRF wrap
+where PRF genuinely works — is future work, in
+[roadmap.md](roadmap.md). No relay route accepts a WebAuthn assertion.
+
+## What the relay stores about an account
+
+Identity-adjacent state only; the full inventory is in
+[relay.md](relay.md#state-inventory).
+
+- `users` — id, role, and the public `handle` (`Word#1234`). No username, no
+  email, no password, no display name.
+- `relay_devices` — one row per enrolled device: its Ed25519 public key,
+  content-derived id, optional label, and a `revoked` flag.
+- the **directory** — the account's per-relay identity + sealing public keys,
+  published under its handle and logged in key transparency
+  ([key-transparency.md](key-transparency.md)).
+- the **delivery verifier** — `sha256(delivery token)`, and nothing about who
+  holds it.
+
+**No key material.** Since escrow was removed the relay holds nothing —
+wrapped or otherwise — that could reconstruct an account.

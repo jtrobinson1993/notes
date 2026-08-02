@@ -39,7 +39,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Build server + web
+      - name: Build the relay
         run: npm run build
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
@@ -50,6 +50,33 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  ui-e2e:
+    name: App UI over a faked IPC (Playwright, L3)
+    runs-on: ubuntu-latest
+    # spec/testing.md § L3. Deliberately its own job rather than a step in
+    # `e2e`: the two Playwright configs both write `playwright-report/`, so
+    # sharing a job would have the second run clobber the first one's report.
+    # No relay and no Rust here — the config boots `shared` + the Vite dev
+    # server itself, so `npm ci` + Chromium is the whole setup.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Run Playwright against the fake core
+        run: npm run e2e:ui
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-ui
           path: playwright-report/
           retention-days: 7
 
@@ -70,18 +97,74 @@ jobs:
           tags: notes:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Boot it and probe the app
+      - name: Boot it and probe the relay
         run: |
+          # A relay refuses to start without an operator-installed identity (an
+          # offline root delegating to the online signing key, spec/relay.md), so
+          # the probe walks the documented operator flow end to end — including
+          # the claim that `npm run relay` works inside the published image,
+          # which is the route an operator with no checkout uses:
+          #   1. mint the bundle "on the operator's machine" (a throwaway
+          #      container writing to a mounted directory — no relay database),
+          #   2. copy it into the relay's data volume,
+          #   3. start the relay, which ingests it at boot with no setup command.
+          docker volume create notes-ci-data
+          # 0777 because the image runs as `node` (uid 1000) while the runner is
+          # uid 1001; the documented command needs no such thing on a normal
+          # single-user machine.
+          mkdir -m 0777 -p "$PWD/ci-identity"
+          docker run --rm -v "$PWD/ci-identity:/out" notes:ci \
+            npm run relay -- init-identity --out /out/relay-identity.json
+          test -f "$PWD/ci-identity/relay-identity.json"
+          docker run --rm -v notes-ci-data:/data -v "$PWD/ci-identity:/in" notes:ci \
+            cp /in/relay-identity.json /data/relay-identity.json
           docker run -d --name notes-ci -e APP_ORIGIN=http://localhost:3000 \
-            -p 3000:3000 notes:ci
+            -v notes-ci-data:/data -p 3000:3000 notes:ci
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/health || true)
             if [ "$code" = "200" ]; then echo "healthy (HTTP $code)"; exit 0; fi
             sleep 1
           done
-          echo "::error::server did not serve / within 30s — see logs below"
+          echo "::error::relay did not answer /api/health within 30s — see logs below"
           docker logs notes-ci
           exit 1
       - name: Tear down
         if: always()
-        run: docker rm -f notes-ci || true
+        run: |
+          docker rm -f notes-ci || true
+          docker volume rm notes-ci-data || true
+          rm -rf ci-identity
+
+  rust-core:
+    name: Rust core (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1 # keep in sync with src-tauri/rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # `tauri` (default features) pulls wry → webkit2gtk-sys/atk/soup3 on
+      # Linux, and their build scripts are pkg-config lookups: without these
+      # the job fails while *compiling*, long before a test runs. Same list as
+      # native-build.yml — keep them in sync.
+      - name: Linux webview/system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf
+      # The L2 integration tests (src-tauri/tests/) spawn a REAL relay, which is
+      # Node — without a toolchain they would skip, and a skip that still reports
+      # green is worse than no test. ACCORD_L2_REQUIRE=1 makes any skip a failure.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: cargo test (unit + L2 against a real relay)
+        working-directory: src-tauri
+        env:
+          ACCORD_L2_REQUIRE: '1'
+        run: cargo test --locked

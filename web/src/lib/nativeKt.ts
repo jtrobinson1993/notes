@@ -1,0 +1,76 @@
+// Native-shell key-transparency seam (spec/key-transparency.md, client verify).
+// The Rust core runs the self-audit (kt_self_audit) and emits a `kt:alarm` event
+// on a HARD failure — the relay bound my handle to a key I never minted
+// (self-audit-failed) or showed inconsistent roots (split-view). Here we run the
+// audit on connect and fan alarms out to the UI (KtAlarm banner).
+//
+// A hard KT alarm is serious: it means the relay may be equivocating on
+// identities, so the UI surfaces it prominently and the user should re-verify
+// contacts via SAS or disconnect the relay.
+
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { isNative, ktSelfAudit, ktVerifyContacts, type KtAuditReport } from './native';
+
+export interface KtAlarm {
+  /** "self-audit-failed" (foreign key), "split-view" (inconsistent roots),
+   *  "contact-key-mismatch" (the log publishes a different key for a contact),
+   *  "relay-identity-changed" (the relay is not the one this account pinned
+   *  — its identity key is what every root signature is checked against), or
+   *  "group-rekey-refused" (an inbound group-invite tried to replace the key of
+   *  a group this account is already in; the stored key was kept). */
+  reason: string;
+}
+
+const listeners = new Set<(a: KtAlarm) => void>();
+let latest: KtAlarm | null = null;
+let unlisten: UnlistenFn | null = null;
+
+/** Subscribe to KT alarms. Fires immediately with the latest if one is active. */
+export function onKtAlarm(cb: (a: KtAlarm) => void): () => void {
+  listeners.add(cb);
+  if (latest) cb(latest);
+  return () => {
+    listeners.delete(cb);
+  };
+}
+
+function raise(alarm: KtAlarm): void {
+  latest = alarm;
+  for (const cb of listeners) cb(alarm);
+}
+
+/** Start KT verification: subscribe to `kt:alarm` (once) and run one self-audit
+ *  now (e.g. on relay connect). Idempotent; native shell only. */
+export async function startKtAudit(): Promise<void> {
+  if (!isNative) return;
+  if (!unlisten) {
+    unlisten = await listen<KtAuditReport>('kt:alarm', (e) => {
+      if (e.payload.reason) raise({ reason: e.payload.reason });
+    });
+  }
+  try {
+    const report = await ktSelfAudit();
+    if (!report.ok && report.reason) raise({ reason: report.reason });
+  } catch {
+    // No KT history (interim KT) / not connected — nothing to audit yet.
+  }
+  try {
+    // Settle any contact added while the relay's directory was unreachable:
+    // those are recorded UNVERIFIED, and this is where they get proven (or
+    // alarm, if the log contradicts the key we hold).
+    await ktVerifyContacts();
+  } catch {
+    // Not connected / no directory — the contacts simply stay unverified.
+  }
+}
+
+/** Tear down the alarm listener + clear alarm state (e.g. on sign-out / relay
+ *  switch; a new session re-audits from scratch). */
+export async function stopKtAudit(): Promise<void> {
+  if (unlisten) {
+    unlisten();
+    unlisten = null;
+  }
+  latest = null;
+  listeners.clear();
+}

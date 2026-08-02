@@ -13,10 +13,14 @@ import {
   PopoverTrigger,
 } from 'reka-ui';
 import type { AttachmentRef } from '@notes/shared';
-import { api } from '../lib/api';
 import { decryptBlob, encryptBlob } from '../lib/crypto';
 import { optimizeImage } from '../lib/imageOptimize';
-import { attachmentCap } from '../lib/attachments';
+import {
+  attachmentCap,
+  deleteNoteAttachment,
+  getNoteAttachmentCiphertext,
+  putNoteAttachment,
+} from '../lib/attachments';
 import { optimizeImages } from '../lib/privacy';
 import { clearTagColor, setTagColor, tagColor, tagTextColor } from '../lib/tagColors';
 import { useNotesStore, type DecryptedNote } from '../stores/notes';
@@ -32,8 +36,6 @@ import EmojiInput from './EmojiInput.vue';
 import EmojiText from './EmojiText.vue';
 import MarkdownEditor from './MarkdownEditor.vue';
 import MarkdownView from './MarkdownView.vue';
-import ShareDialog from './ShareDialog.vue';
-import HistoryDialog from './HistoryDialog.vue';
 
 // `closable` shows a ✕ next to the kebab — used when the editor is opened as an
 // overlay over a chat; emits `close` when clicked. `backable` shows a mobile-only
@@ -49,6 +51,9 @@ const folderName = computed(() => {
   const id = org.folderOf(props.note.id);
   return id ? (org.folders.find((f) => f.id === id)?.name ?? null) : null;
 });
+// Emoji-render scope for the folder chip (see EmojiText): the folder's own id,
+// so its emote fetches are budgeted per folder rather than per note view.
+const folderScope = computed(() => `folder:${org.folderOf(props.note.id) ?? 'none'}`);
 const title = ref(props.note.payload.title);
 const body = ref(props.note.payload.body);
 const editor = ref<{ insertText: (s: string) => void } | null>(null);
@@ -68,8 +73,6 @@ function resetTagColor(tag: string) {
 const attachments = ref<AttachmentRef[]>(props.note.payload.attachments ?? []);
 const saveState = ref<'saved' | 'unsaved' | 'saving' | 'error'>('saved');
 const fileInput = ref<HTMLInputElement>();
-const shareOpen = ref(false);
-const historyOpen = ref(false);
 const attachError = ref('');
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 // Bumped on every edit (and note switch) so a save that finishes after the
@@ -102,7 +105,8 @@ function resolveAttachment(id: string): Promise<string | null> {
       const ref = attachments.value.find((a) => a.id === id);
       if (!ref) return null;
       try {
-        const ct = await api.attachmentDownload(ref.id);
+        const ct = await getNoteAttachmentCiphertext(ref.id);
+        if (!ct) return null;
         const data = await decryptBlob(ct, ref.key, ref.iv);
         const url = URL.createObjectURL(new Blob([data as BlobPart], { type: ref.type }));
         objectUrls.push(url);
@@ -151,7 +155,7 @@ async function save() {
       tags: tags.value,
       attachments: attachments.value.length ? attachments.value : undefined,
     });
-    if (gen === editGen) saveState.value = notes.pendingCount > 0 ? 'error' : 'saved';
+    if (gen === editGen) saveState.value = 'saved';
   } catch {
     if (gen === editGen) saveState.value = 'error';
   }
@@ -182,7 +186,12 @@ async function attachFiles(files: FileList | File[], atCursor = false) {
         continue;
       }
       const { ciphertext, key, iv } = await encryptBlob(data);
-      const { id } = await api.attachmentUpload(ciphertext);
+      const id = await putNoteAttachment(props.note.id, ciphertext, {
+        key,
+        iv,
+        type,
+        size: data.length,
+      });
       attachments.value.push({ id, name: file.name, type, size: data.length, key, iv });
       if (type.startsWith('image/')) {
         const markup = `![${file.name}](attachment:${id})`;
@@ -211,7 +220,8 @@ function onEditorFiles(files: File[]) {
 }
 
 async function download(ref: AttachmentRef) {
-  const ct = await api.attachmentDownload(ref.id);
+  const ct = await getNoteAttachmentCiphertext(ref.id);
+  if (!ct) return; // the device no longer holds it (evicted); nothing to fetch
   const data = await decryptBlob(ct, ref.key, ref.iv);
   const url = URL.createObjectURL(new Blob([data as BlobPart], { type: ref.type }));
   const a = document.createElement('a');
@@ -225,7 +235,8 @@ async function removeAttachment(refToRemove: AttachmentRef) {
   attachments.value = attachments.value.filter((a) => a.id !== refToRemove.id);
   body.value = body.value.replaceAll(`![${refToRemove.name}](attachment:${refToRemove.id})`, '');
   await save();
-  await api.attachmentDelete(refToRemove.id).catch(() => {}); // uploader-owned; best effort
+  // Reclaim the on-device ciphertext; best effort (the note no longer refs it).
+  await deleteNoteAttachment(refToRemove.id).catch(() => {});
 }
 
 async function remove() {
@@ -312,20 +323,6 @@ function fmtSize(bytes: number): string {
             class="z-popover min-w-44 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
           >
             <DropdownMenuItem
-              v-if="isOwner"
-              class="rounded-md px-3 py-1.5 text-sm text-zinc-700 outline-none data-highlighted:bg-zinc-100 dark:text-zinc-200 dark:data-highlighted:bg-zinc-800"
-              @select="shareOpen = true"
-            >
-              Share
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              v-if="isOwner"
-              class="rounded-md px-3 py-1.5 text-sm text-zinc-700 outline-none data-highlighted:bg-zinc-100 dark:text-zinc-200 dark:data-highlighted:bg-zinc-800"
-              @select="historyOpen = true"
-            >
-              History
-            </DropdownMenuItem>
-            <DropdownMenuItem
               v-if="!readonly"
               class="rounded-md px-3 py-1.5 text-sm text-zinc-700 outline-none data-highlighted:bg-zinc-100 dark:text-zinc-200 dark:data-highlighted:bg-zinc-800"
               @select="fileInput?.click()"
@@ -352,8 +349,6 @@ function fmtSize(bytes: number): string {
         <IconX class="h-5 w-5" />
       </button>
       <input ref="fileInput" type="file" multiple class="hidden" @change="attach" />
-      <ShareDialog v-if="isOwner" v-model:open="shareOpen" :note-id="note.id" />
-      <HistoryDialog v-if="isOwner" v-model:open="historyOpen" :note-id="note.id" />
     </div>
 
     <div class="mb-2 flex flex-wrap items-center gap-1.5">
@@ -364,7 +359,7 @@ function fmtSize(bytes: number): string {
         title="Folder"
       >
         <IconFolder class="h-3 w-3 shrink-0" />
-        <span class="truncate"><EmojiText :text="folderName" /></span>
+        <span class="truncate"><EmojiText :text="folderName" :scope="folderScope" /></span>
       </span>
       <span
         v-for="tag in tags"
@@ -430,7 +425,7 @@ function fmtSize(bytes: number): string {
     <div v-if="mode === 'reading'" class="min-h-0 grow overflow-y-auto">
       <!-- breaks: a single newline is a hard line break, so reading mode keeps
            the line breaks you typed in the editor instead of soft-wrapping. -->
-      <MarkdownView :source="body" :attachments="attachments" breaks />
+      <MarkdownView :source="body" :attachments="attachments" :emoji-scope="`note:${note.id}`" breaks />
     </div>
     <div v-else class="min-h-0 grow">
       <MarkdownEditor

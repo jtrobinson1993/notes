@@ -1,124 +1,116 @@
-# Editable user profiles (v3.2)
+# Profiles & names
 
-A user's **display name, bio, and avatar** are **end-to-end encrypted** and shown
-only to **contacts** — the server stores only ciphertext and never sees any of
-them. Everyone else (and the server) sees a public **handle**; name color is the
-one piece of plaintext profile metadata the server keeps.
+How a person is named in the app: a public **handle** the relay knows, and an
+**end-to-end-encrypted display name** only contacts see. Bio and avatar belong
+to the same profile, but their storage and distribution are **not built yet**
+— the editor UI is ahead of the plumbing (see [Bio & avatar](#bio--avatar)).
 
-## Handles vs. the display name (v6)
+## Handle vs. display name
 
-Identity is split into three parts so the server can route and label accounts
-without learning real names:
+Identity is split in two so a relay can route and label accounts without ever
+learning a real name. There is **no username** — see the invariant in
+`CLAUDE.md`.
 
-- **Username** — the login credential. Unique, plaintext, **never shown to any
-  other user**.
 - **Handle** — a public `Word#1234` label (e.g. `Otter#0421`) from a curated
-  animal/nature word list (`server/handleWords.ts`, 3–10 chars, no profanity) plus
-  a 4-digit discriminator. **Unique, plaintext, server-visible**, and the name
-  shown to **non-contacts** (and the server) everywhere a person is surfaced —
-  friend requests, members you aren't friends with, share pickers. Generated at
-  signup (3 options to pick from; auto-assigned otherwise); changeable in Settings
-  (`generateHandleOptions` / `setUserHandle`; `GET /api/handle/options`,
-  `PUT /api/handle`, validated by `isValidHandle`). Backfilled for every existing
-  account by an idempotent migration.
-- **Display name** — the friendly real name, now part of the **encrypted**
-  `ProfileData` blob (below). Only **contacts** who hold the sealed profile key
-  decrypt it; the server can't read it. The client overlays each contact's
-  decrypted name over the handle it received from the server (`profile.hydrate` /
-  `displayNameFor`; the chat/friends/voice stores call it). A one-time client
-  migration moves any **legacy plaintext** display name into the encrypted blob
-  and then clears the server's copy (`PUT /api/profile { displayName: null }`).
+  animal/nature word list plus a four-digit discriminator. Unique per relay,
+  plaintext, **relay-visible**, and the name shown to anyone who is not a
+  contact. Assigned at registration: the signup screen offers generated
+  candidates with a re-roll and the client sends the chosen one; the relay
+  validates it against the same generator (`isValidHandle`) and claims it,
+  reissuing a fresh one if it is somehow taken. A handle is never typed, so the
+  word is always from the vetted list.
+- **Display name** — the friendly name a contact sees. Chosen at signup
+  (required), stored **only inside the encrypted vault**, and delivered to a
+  friend end-to-end encrypted. The relay never sees it.
 
-The rest of this doc covers the encrypted blob (bio + avatar + display name).
+**Changing the handle** lives in Settings → Profile: re-roll generated
+candidates and claim one via `POST /api/relay/handle`. There is no step-up
+re-authentication, because there is no separate login credential to protect —
+the unlocked vault *is* the credential. Friends address you by identity key and
+delivery token, so a handle change never breaks the friend graph; only what
+non-contacts see changes. The relay refreshes the KT root because the directory
+is user-keyed and the handle→key mapping moved
+([key-transparency.md](key-transparency.md)).
 
-## Crypto model
+## How the display name reaches a contact
 
-Each user has a per-user **profile key** (random 32-byte AES-256-GCM key,
-`profileCrypto.ts`). It encrypts a JSON `ProfileData { displayName?, bio?, avatar? }`
-blob (the avatar is a small optimized `data:image/webp` URL embedded whole). The
-profile key is distributed two ways — reusing the chat key machinery, not a
-second mechanism:
+There is no profile server and no profile blob in transit. The display name
+travels **inside the sealed friend handshake**:
 
-- **Wrapped under the owner's master key** (`wrapProfileKey`, HKDF info
-  `notes:wrap:profile-key:v1`) and stored server-side, so the owner can recover
-  and edit their profile on any device.
-- **Sealed to each recipient's X25519 public key** (`sealProfileKey`, the same
-  ephemeral-static "sealed box" used for conversation keys), so each contact can
-  unseal the key and decrypt the blob.
+- On invite redeem, and on the reciprocating friend-confirm, the payload is
+  `{handle, displayName, deliveryToken, sealingPub}` (`friend_payload` in
+  `message.rs`, `sealFriendAccept` in `nativeInvites.ts`), sealed to the peer's
+  X25519 sealing key and signed inside the envelope
+  ([accounts-and-crypto.md](accounts-and-crypto.md#the-sealed-envelope-envelopers)).
+- The receiving core stores it in `contacts.display_name` in the local
+  encrypted store, and the friends list renders `display_name || handle`.
 
-**Rotation = forward secrecy.** A monotonic **epoch** rides with the profile.
-When a contact loses access, the owner's client generates a *new* profile key,
-re-encrypts the blob, bumps the epoch, and re-seals only to the remaining
-recipients (`profile.rotate()`). The lost contact keeps only stale plaintext it
-already saw; it can't read future updates. (This mirrors conversation-key epoch
-re-keying.)
+So the name is E2EE in the strict sense — the relay only ever forwards
+ciphertext — but it is a **one-shot at friending time**, not a live profile.
 
-## Visibility
+**Unbuilt, stated plainly:** editing your display name afterwards updates only
+your own device. There is no update message, so existing friends keep the name
+they were told at friending. A profile-update envelope (and the key rotation
+that goes with revoking access to it) is future work —
+[roadmap.md](roadmap.md).
 
-A **"Only allow friends to see my profile"** setting (default **on**;
-`users.profile_friends_only`). With it on, the profile key is only ever sealed to
-**accepted friends**; group co-members who aren't friends see just the **handle**
-+ color. Turning it **off** widens distribution to **group co-members** as
-well. Tightening back to friends-only **immediately revokes** any sealed keys
-held by non-friend co-members (`deleteNonFriendProfileKeys`) — they lose the
-current blob at once; the next save re-seals to friends only.
+## Bio & avatar
 
-## Distribution & revocation
+Settings → Profile has a working editor: a bio (500 characters) and an avatar
+picker that opens `AvatarCropper` — a square crop frame with drag-to-pan and
+zoom — re-encoding the crop client-side to a **256² WebP data URL**
+(`lib/avatar.ts`; PNG fallback, 25 MB input cap, explicit messages for
+oversized/undecodable files rather than silent failure).
 
-- **On accept / `friend-accepted`:** both sides seal their current profile key to
-  the new friend and `POST /api/profile/keys` (no rotation — adding a recipient
-  doesn't need a new epoch). Must match the stored epoch.
-- **On unfriend:** the server deletes the profile-key rows **both directions**
-  (`deleteProfileKeyPair`) so each side loses the other's current blob
-  immediately; the unfriending client also **rotates** so future updates stay
-  hidden.
-- **On update:** recipients receive a `profile-updated` WebSocket frame; the
-  client invalidates its cached decryption so the next render re-fetches.
+**Neither value is stored or shared.** `useProfileStore().save()` persists only
+`profile.displayName`; bio and avatar live in the Pinia store in memory and are
+gone on lock or restart, and nothing in the app renders another user's avatar or
+bio. Treat the editor as UI landed ahead of its backing: persisting them in the
+vault and distributing them to contacts is future work
+([roadmap.md](roadmap.md)). The local store already has the columns this will
+use (`contacts.avatar_ref`, `contacts.profile_key_epoch`), currently unused.
 
-## Server (`db.ts`, `routes/chat.ts`)
+## The profile key
 
-- `profiles(owner_id PK, ciphertext, iv, epoch, owner_wrapped_key, updated_at)` —
-  the encrypted blob + the MK-wrapped key.
-- `profile_keys(owner_id, recipient_id, epoch, sealed_key, PK(owner_id,
-  recipient_id))` — the profile key sealed per recipient.
-- `users.profile_friends_only` (migration; default 1).
-- Routes (all `requireAuth`): `GET /api/profile` now also returns `friendsOnly`;
-  `GET /api/profile/data` (owner's own blob + wrapped key, or null);
-  `PUT /api/profile/data` (set/rotate the blob + sealed keys — validates every
-  recipient is a friend, or a co-member when not friends-only);
-  `POST /api/profile/keys` (distribute to a new recipient at the current epoch);
-  `PUT /api/profile/visibility` (toggle; tightening revokes non-friend keys);
-  `GET /api/users/:id/profile` → `ProfileView` (**handle** + color always for a
-  related user; the encrypted blob + **my** sealed key when I'm a recipient, else
-  `encrypted: null` — and the real display name lives *inside* that blob; **403**
-  with no relationship).
-- `users.handle` (unique, indexed; migration backfills all rows). Identity
-  helpers `effectiveHandle()` (public name) vs `effectiveDisplayName()` (the
-  legacy plaintext, now only returned to the owner for one-time migration).
+The account has a profile key, but in v8 it is **not** a profile-encryption key
+sealed to contacts. It is derived from MK and used as the root of the
+sealed-sender **delivery token** — see
+[accounts-and-crypto.md](accounts-and-crypto.md#delivery-tokens) for its
+derivation and for why it does not rotate today. The v1 scheme (a random profile
+key sealed per recipient, with an epoch bumped to revoke a contact) does not
+exist in the native app; if profile blobs land, they will re-use the same sealed
+envelope everything else uses rather than a second mechanism.
 
-## Client (`stores/profile.ts`, UI)
+## Removed with the legacy stack
 
-- The store holds my profile key in memory only (like conversation keys), my
-  decrypted `ProfileData`, visibility, and epoch; it caches other users'
-  decrypted profiles by id. It loads on socket connect and resets on lock.
-- **Edit:** Settings → Profile has the avatar uploader + bio; Settings → Privacy
-  has the visibility toggle. Picking an avatar opens `AvatarCropper` — a square
-  crop frame with **drag-to-pan + zoom** (slider/wheel) — and the chosen crop is
-  re-encoded client-side to a **256² WebP** (`lib/avatar.ts`; PNG fallback) data
-  URL. Failures (oversized input, undecodable file, encoding/canvas errors, or a
-  rejected save) surface an explicit message rather than failing silently.
-- **View:** `ProfileDialog` (on the reusable `AppModal`) shows a contact's
-  avatar + name + bio, opened by clicking a sender's avatar or name in chat.
-  `ChatAvatar` renders the decrypted avatar when present, else the initial.
-  Clicking **my own** avatar/name opens the same card so I can see how it appears
-  to a contact; since the server never seals me a profile key to myself, the
-  dialog builds my card straight from the profile store (`myDisplayName`,
-  `myHandle`, `myNameColor`, `myData`) rather than re-fetching it.
+These were server-side profile fields and have no v8 equivalent — the server
+that stored them is gone:
 
-## Deferred
+- **Name color** — the one plaintext profile field the old server kept. Deleted.
+  (`ProfileEntry.nameColor` still exists as an always-null field in the Pinia
+  store; it is vestigial and nothing sets it.)
+- **"Only allow friends to see my profile"** — the friends-only visibility
+  toggle and the non-friend key revocation behind it. There is no group
+  co-member profile distribution to widen or tighten: reach is friends-gated at
+  the relay and profile data does not leave the device.
+- **Link previews on/off** — a server-side per-user flag on the legacy stack.
+  Native chat does not render link previews yet; when it does, the preference
+  must come back as a **local** device setting (the relay's content proxy
+  fetches on the client's behalf, so the choice is the reader's alone). Tracked
+  in [roadmap.md](roadmap.md), not here.
 
-- **Decorations** (animated avatars, profile backgrounds/borders) — the "maybe"
-  from the roadmap; not implemented.
-- **Rotation when *being* unfriended** by someone else: the server already
-  revokes the current blob symmetrically; proactive key rotation on the
-  passive side is left for when a dedicated unfriended-notification frame lands.
+What *does* exist in Settings → Privacy today is device-local media handling —
+click-to-load remote images and video embeds, and pre-upload image
+optimization — stored in `localStorage`, unrelated to the profile.
+
+## Not built
+
+- A **contact page**: identity, verification state (SAS), reachability, mutual
+  groups, block. There is no `ProfileDialog` or avatar component in the native
+  UI; friends are rendered as name + handle + initial.
+- **Profile updates after friending** (name, bio, avatar), and the access
+  revocation that has to accompany them.
+- **Decorations** (animated avatars, profile backgrounds/borders) — still a
+  "maybe", still unimplemented.
+
+All of the above live in [roadmap.md](roadmap.md).

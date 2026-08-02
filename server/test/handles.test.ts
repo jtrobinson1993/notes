@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateUniqueHandles, isValidHandle, randomHandle } from '../src/handles.js';
-import { HANDLE_WORDS } from '../src/handleWords.js';
+import { generateUniqueHandles, isValidHandle, randomHandle, HANDLE_WORDS } from '../src/handles.js';
 
 const WORD_SET = new Set(HANDLE_WORDS);
 

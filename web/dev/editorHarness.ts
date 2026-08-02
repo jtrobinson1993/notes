@@ -7,6 +7,10 @@ import { EditorView } from '@codemirror/view';
 import MarkdownEditor from '../src/components/MarkdownEditor.vue';
 // Load the app's stylesheet so editor decorations (bullets, checkboxes, quotes,
 // headings) render with their real CSS — needed for any layout/visual check.
+// Fonts are imported from main.ts in the real app; the harness has its own entry,
+// so pull them in here too or the check renders in a fallback face.
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
 import '../src/style.css';
 
 const value = ref('- one\n- two');
@@ -35,7 +39,7 @@ setInterval(() => {
 createApp({
   setup() {
     return () =>
-      h('div', { style: 'font-family: system-ui; max-width: 760px' }, [
+      h('div', { style: 'font-family: var(--font-sans); max-width: 760px' }, [
         h('div', { style: 'display:flex; gap:12px; align-items:center; margin-bottom:8px' }, [
           h('label', [
             'mode ',

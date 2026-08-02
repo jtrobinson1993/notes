@@ -4,7 +4,14 @@ import webpush from 'web-push';
 import type { PushPayload } from '@notes/shared';
 import type { Config } from './config.js';
 import type { DB } from './db.js';
-import type { Realtime } from './realtime.js';
+
+/** Minimal presence check the pusher needs — "is this user reachable another
+ *  way, so skip the push?" The legacy monolith passes its realtime hub; the
+ *  relay-only app passes a relayLive-backed (or always-offline) adapter. Keeping
+ *  this structural decouples push from the legacy realtime module. */
+export interface Presence {
+  isOnline(userId: string): boolean;
+}
 
 // Web Push delivery. The server is crypto-oblivious, so a push NEVER carries
 // message content — only a routing hint ({ type:'message', conversationId }).
@@ -36,6 +43,12 @@ export interface Push {
   /** Push a content-free incoming-call ping to callees without a live socket
    *  (online devices are rung over the WebSocket). */
   notifyCall(conversationId: string, callerId: string, calleeIds: string[]): void;
+  /** v8 sealed mailbox (D7): a **content-free** `{type:'mail'}` wake to a
+   *  recipient's push subscriptions so an offline device drains the sealed
+   *  mailbox over its authed REST. Carries no content or routing — the relay is
+   *  zero-at-rest and sealed-sender. Online-gating is the caller's job (the live
+   *  nudge already reaches connected devices). */
+  notifyMailbox(userId: string): void;
 }
 
 const NOOP: Push = {
@@ -44,6 +57,7 @@ const NOOP: Push = {
   notifyNewMessage() {},
   notifyReaction() {},
   notifyCall() {},
+  notifyMailbox() {},
 };
 
 /** Resolve VAPID keys: explicit env vars win; otherwise generate once and
@@ -69,11 +83,11 @@ function resolveVapidKeys(config: Config): { publicKey: string; privateKey: stri
   return keys;
 }
 
-export function createPush(db: DB, config: Config, realtime: Realtime): Push {
+export function createPush(db: DB, config: Config, presence: Presence): Push {
   const keys = resolveVapidKeys(config);
   if (!keys) return NOOP;
 
-  const subject = process.env.VAPID_SUBJECT?.trim() || `mailto:admin@${config.rpId}`;
+  const subject = process.env.VAPID_SUBJECT?.trim() || `mailto:admin@${config.originHost}`;
   webpush.setVapidDetails(subject, keys.publicKey, keys.privateKey);
 
   // Fan a content-free payload out to each recipient that isn't the actor and
@@ -83,7 +97,7 @@ export function createPush(db: DB, config: Config, realtime: Realtime): Push {
     const body = JSON.stringify(payload);
     for (const uid of recipientIds) {
       if (uid === actorId) continue;
-      if (realtime.isOnline(uid)) continue;
+      if (presence.isOnline(uid)) continue;
       for (const sub of db.listPushSubscriptions(uid)) {
         webpush
           .sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, body)
@@ -118,5 +132,21 @@ export function createPush(db: DB, config: Config, realtime: Realtime): Push {
     deliver(calleeIds, callerId, { type: 'call', conversationId });
   }
 
-  return { enabled: true, publicKey: keys.publicKey, notifyNewMessage, notifyReaction, notifyCall };
+  // v8 content-free mailbox wake (D7). Unlike `deliver`, it sends unconditionally
+  // to the user's subscriptions — the v8 online-gating (relayLive) is decided by
+  // the caller, and there is no actor/content to carry. Prunes dead subs.
+  function notifyMailbox(userId: string): void {
+    const body = JSON.stringify({ type: 'mail' });
+    for (const sub of db.listPushSubscriptions(userId)) {
+      webpush
+        .sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, body)
+        .catch((err: { statusCode?: number }) => {
+          if (err?.statusCode === 404 || err?.statusCode === 410) {
+            db.deletePushSubscription(userId, sub.endpoint);
+          }
+        });
+    }
+  }
+
+  return { enabled: true, publicKey: keys.publicKey, notifyNewMessage, notifyReaction, notifyCall, notifyMailbox };
 }

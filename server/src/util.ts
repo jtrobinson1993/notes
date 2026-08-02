@@ -1,5 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 
+/** Max inbound WebSocket frame the relay will accept (`maxPayload` for
+ * @fastify/websocket, applied to every socket: relayLive, voice signaling and
+ * the SFU). Relay frames are small control/ciphertext envelopes — bulk content
+ * goes through blob upload — so a 64 KiB ceiling caps how much memory a single
+ * peer can make the server buffer per frame. */
+export const WS_MAX_PAYLOAD = 64 * 1024;
+
 export function newId(): string {
   return randomBytes(16).toString('base64url');
 }

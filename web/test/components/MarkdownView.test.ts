@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
 import MarkdownView from '../../src/components/MarkdownView.vue';
-import { defaultEmoji } from '../../src/lib/emoji';
+import { clearEmotes, registerEmote } from '../../src/lib/emoji';
 
 function render(source: string) {
   return mount(MarkdownView, { props: { source } });
@@ -66,27 +66,43 @@ describe('MarkdownView — breaks mode (chat messages)', () => {
   });
 });
 
-describe('MarkdownView — custom emoji shortcodes', () => {
-  const known = defaultEmoji[0]!;
+describe('MarkdownView — emote shortcodes', () => {
+  // There is no bundled emote manifest any more: only emotes a caller has
+  // registered (same-origin / blob: / relay URLs — never a third-party CDN)
+  // resolve to an image.
+  const known = 'partyblob';
+  const url = '/emote/partyblob.webp';
 
-  it('renders a known :shortcode: as an inline emoji image', () => {
-    const w = render(`hi :${known.name}: there`);
+  beforeEach(() => registerEmote(known, url));
+  afterEach(() => clearEmotes());
+
+  it('renders a registered :shortcode: as an inline emoji image', () => {
+    const w = render(`hi :${known}: there`);
     const img = w.find('img.chat-emoji');
     expect(img.exists()).toBe(true);
-    expect(img.attributes('src')).toBe(`/emoji/7tv/${known.file}`);
+    expect(img.attributes('src')).toBe(url);
     expect(w.text()).toContain('hi');
     expect(w.text()).toContain('there');
   });
 
-  it('leaves an unknown shortcode as literal text', () => {
+  it('leaves an unregistered shortcode as literal text', () => {
     const w = render('a :totally_unknown_emote: b');
     expect(w.find('img.chat-emoji').exists()).toBe(false);
     expect(w.text()).toContain(':totally_unknown_emote:');
   });
 
   it('does not turn a shortcode inside a code span into an emoji', () => {
-    const w = render(`\`:${known.name}:\``);
+    const w = render(`\`:${known}:\``);
     expect(w.find('img.chat-emoji').exists()).toBe(false);
-    expect(w.find('code').text()).toContain(`:${known.name}:`);
+    expect(w.find('code').text()).toContain(`:${known}:`);
+  });
+
+  it('renders emoji through the shared renderer, scoped to the document', () => {
+    // The scope is the per-message/per-note emote fetch budget's key: markdown
+    // must thread it, or a note body would render emoji un-budgeted.
+    const w = mount(MarkdownView, { props: { source: `:${known}:`, emojiScope: 'note:abc' } });
+    const img = w.find('img.chat-emoji');
+    expect(img.exists()).toBe(true);
+    expect(img.attributes('src')).toBe(url);
   });
 });

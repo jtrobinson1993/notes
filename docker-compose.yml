@@ -1,7 +1,12 @@
-# Production compose for self-hosted "notes".
+# Production compose for a self-hosted Accord relay (spec/relay.md).
+#
+# The `notes` service is the v8 relay — an API-only, zero-knowledge message
+# relay. It serves no web app: clients are the native desktop app, which points
+# at APP_ORIGIN. Operator tasks (invites, devices) are the relay CLI:
+#   docker compose exec notes node server/dist/relay-cli.js status
 #
 # Caddy terminates HTTPS (automatic Let's Encrypt) and reverse-proxies to the
-# app; nothing but Caddy is exposed to the internet. Everything is configured
+# relay; nothing but Caddy is exposed to the internet. Everything is configured
 # through .env — copy .env.example to .env and set APP_ORIGIN, then:
 #
 #   docker compose up -d            # pulls the published image (no build on prod)
@@ -15,8 +20,8 @@ services:
     build: .
     container_name: notes
     restart: unless-stopped
-    # No plaintext host port — Caddy fronts the app over HTTPS. 3000 stays on the
-    # internal compose network only.
+    # No plaintext host port — Caddy fronts the relay over HTTPS. 3000 stays on
+    # the internal compose network only.
     expose:
       - '3000'
     ports:
@@ -29,13 +34,41 @@ services:
     env_file:
       - .env
     environment:
-      # Must exactly match the URL you open the app at (passkeys are bound to it).
+      # The public origin clients reach this relay at (also drives HSTS/CSP).
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      # Who may create an account: 'invite' (default, closed — the operator mints
+      # invites with the CLI) or 'public' (anyone may register).
+      RELAY_REGISTRATION_MODE: ${RELAY_REGISTRATION_MODE:-invite}
       # Voice: the public/LAN IP clients reach this host at (required for calls
       # to connect off-localhost). Leave unset for local-only testing.
       VOICE_ANNOUNCED_IP: ${VOICE_ANNOUNCED_IP:-127.0.0.1}
+      # Full-AKD key transparency (optional): point the relay at the sidecar on
+      # the compose network. Unset AKD_SIDECAR_TOKEN → the relay uses the interim
+      # Merkle KT and the sidecar service below can be removed.
+      AKD_SIDECAR_URL: ${AKD_SIDECAR_TOKEN:+http://akd-sidecar:8091}
+      AKD_SIDECAR_TOKEN: ${AKD_SIDECAR_TOKEN:-}
     volumes:
       - notes-data:/data
+    depends_on:
+      - akd-sidecar
+
+  # v8 key-transparency (full-AKD, spec/key-transparency.md). Reachable only on
+  # the compose network (no published port) and authenticated by
+  # AKD_SIDECAR_TOKEN. Set that token in .env to enable full-AKD KT; leave it
+  # empty to run interim-Merkle KT (this service then idles harmlessly).
+  akd-sidecar:
+    build: ./akd-sidecar
+    image: ghcr.io/jtrobinson1993/notes-akd-sidecar:${NOTES_TAG:-latest}
+    container_name: notes-akd-sidecar
+    restart: unless-stopped
+    expose:
+      - '8091'
+    environment:
+      AKD_SIDECAR_HOST: 0.0.0.0
+      AKD_SIDECAR_PORT: '8091'
+      AKD_SIDECAR_TOKEN: ${AKD_SIDECAR_TOKEN:-}
+    volumes:
+      - akd-data:/akd-data
 
   caddy:
     image: caddy:2
@@ -57,5 +90,6 @@ services:
 
 volumes:
   notes-data:
+  akd-data:
   caddy-data:
   caddy-config:

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import webpush from 'web-push';
 import { createPush } from '../src/push.js';
-import type { Realtime } from '../src/realtime.js';
+import type { Presence } from '../src/push.js';
 import { makeConfig, makeDb, seedUser, type TestDb } from '../../test/helpers/server.js';
 
 vi.mock('web-push', () => ({
@@ -20,14 +20,9 @@ const mock = webpush as unknown as {
   sendNotification: ReturnType<typeof vi.fn>;
 };
 
-/** A realtime stand-in whose only relevant behavior is presence. */
-function fakeRealtime(online: Set<string>): Realtime {
-  return {
-    isOnline: (id: string) => online.has(id),
-    register() {},
-    sendToUser() {},
-    sendToUsers() {},
-  };
+/** A presence stand-in — the only thing the pusher consults. */
+function fakeRealtime(online: Set<string>): Presence {
+  return { isOnline: (id: string) => online.has(id) };
 }
 
 let t: TestDb;

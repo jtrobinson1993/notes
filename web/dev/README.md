@@ -65,3 +65,25 @@ Backspace-after-ArrowLeft → "- item"
 
 Edit the `SCENARIOS` array, or `import { openHarness } from './editor-probe.mjs'`
 in your own script and call `probe({ doc, caret, key, presses })`.
+
+## `csp-probe.mjs` — the webview Content-Security-Policy
+
+Not an editor tool, but it lives here for the same reason: it needs a real
+browser. The native shell ships a CSP (`app.security.csp` in
+`src-tauri/tauri.conf.json`), and a too-tight policy fails **silently** — a
+missing avatar, attachment, worker or stylesheet, never an exception.
+
+```sh
+npm run build:web && node web/dev/csp-probe.mjs   # prod policy vs web/dist
+node web/dev/csp-probe.mjs --dev                  # dev policy, dev server running
+```
+
+It loads the app under the exact shipped header in **Chromium and WebKit**,
+reports every `securitypolicyviolation`, and exits non-zero if there was one.
+`--dev` also loads the editor harness above, which is what exercises CodeMirror's
+runtime `<style>` injection. `CSP=…` overrides the policy — drop a directive and
+confirm the run goes red — and note the dev server sends the policy itself
+(`web/csp.ts`), because Tauri never sees a document it doesn't serve.
+
+Re-run it after touching `index.html`, adding a dependency that loads or injects
+anything, or editing the policy. Rationale per directive: `spec/security.md`.

@@ -1,4 +1,5 @@
 import Database, { type Database as SqliteDatabase } from 'better-sqlite3';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Role, WrappedKey, UserInfo, CredentialInfo, InviteInfo, NoteRecord } from '@notes/shared';
@@ -57,6 +58,19 @@ export interface FriendRow {
   user_id: string;
   friend_id: string;
   created_at: number;
+}
+
+/** One row of `relay_online_keys` — an online signing key the relay's offline
+ *  root has delegated to. See spec/relay.md. */
+export interface StoredOnlineKey {
+  version: number;
+  pubkey: string;
+  /** pkcs8 DER, base64. NULL once superseded (wiped at rotation). */
+  privkey: string | null;
+  issuedAt: number;
+  notAfter: number;
+  /** Base64 Ed25519 signature by the ROOT key over the delegation payload. */
+  signature: string;
 }
 
 export interface ConversationRow {
@@ -432,6 +446,187 @@ export function openDb(dataDir: string) {
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
 
+  // v8 relay tables (spec/relay.md): device identity keys (D4b), single-use
+  // auth challenges, and the relay's own pinned identity keypair.
+  db.exec(`
+CREATE TABLE IF NOT EXISTS relay_devices (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  pubkey TEXT NOT NULL UNIQUE,
+  name TEXT,
+  created_at INTEGER NOT NULL,
+  revoked INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS relay_challenges (
+  nonce TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+);
+-- The relay's trust anchor: the ROOT public key clients pin. There is
+-- deliberately NO private-key column here, and there must never be one — the
+-- root private half lives in the operator's password manager, off the server,
+-- so a server breach cannot mint a delegation (spec/relay.md § "Relay identity:
+-- an offline root and an online signing key"). server/test/relayIdentity.test.ts
+-- asserts the whole schema has no column that could hold it.
+CREATE TABLE IF NOT EXISTS relay_root (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  pubkey TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+-- Every online signing key the root has ever delegated to, newest = MAX(version).
+-- Each row IS a delegation: the root-signed statement arrives in the identity
+-- bundle, so a row can only exist because the operator's offline root vouched
+-- for it. The version column is the monotonic anti-rollback counter — it only
+-- ever increases (enforced in installRelayIdentity), so a superseded and
+-- possibly stolen online key cannot be reinstated by replaying its old bundle.
+-- Older rows keep their public half (KT roots they signed must stay verifiable)
+-- but have privkey NULLed at rotation, so a later break-in cannot steal a key
+-- the relay no longer needs.
+CREATE TABLE IF NOT EXISTS relay_online_keys (
+  version INTEGER PRIMARY KEY,
+  pubkey TEXT NOT NULL,
+  privkey TEXT,
+  issued_at INTEGER NOT NULL,
+  not_after INTEGER NOT NULL,
+  signature TEXT NOT NULL,
+  installed_at INTEGER NOT NULL
+);
+-- Relay-local HMAC secrets that are NOT an identity (today: the emote capability
+-- key). Kept apart from the identity so rotating the online signing key doesn't
+-- invalidate every minted emote URL, and so no signing key doubles as an HMAC key.
+CREATE TABLE IF NOT EXISTS relay_local_secrets (
+  name TEXT PRIMARY KEY,
+  secret TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_verifiers (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  verifier TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_mailbox (
+  queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL REFERENCES relay_devices(id) ON DELETE CASCADE,
+  relay_ts INTEGER NOT NULL,
+  envelope BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_relay_mailbox_device ON relay_mailbox(device_id, queue_id);
+CREATE TABLE IF NOT EXISTS relay_directory (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  identity_pubkey TEXT NOT NULL,
+  sealing_pubkey TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+-- key_version names the delegated online key that signed this root, so a root
+-- published before a rotation still verifies (against that version's delegation)
+-- instead of failing under the current key.
+CREATE TABLE IF NOT EXISTS relay_kt_roots (
+  epoch INTEGER PRIMARY KEY AUTOINCREMENT,
+  root_hash TEXT NOT NULL,
+  prev_root_hash TEXT,
+  signature TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  key_version INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS relay_invites (
+  token_hash TEXT PRIMARY KEY,
+  inviter_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+-- Operator registration invites: CLI-minted signup grants with NO inviter (as
+-- opposed to relay_invites, which are user-minted D4b friend invites that also
+-- establish a friendship). The relay operator mints these to let people onto an
+-- invite-only relay; the register endpoint accepts either kind. Store only
+-- hash(token) — the raw token is the operator-held capability.
+CREATE TABLE IF NOT EXISTS relay_registration_invites (
+  token_hash TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+-- One-shot: when a new account registers via an invite, we stash who invited
+-- them so the account's *first authenticated* call can deliver a sealed
+-- friend-accept back to the inviter (the invite capability is already consumed
+-- by registration, so this is the follow-up leg of the D4b handshake). Deleted
+-- as soon as it's claimed; a fresh account has at most one pending inviter.
+CREATE TABLE IF NOT EXISTS relay_register_pending_friend (
+  new_user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  inviter_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_blobs (
+  blob_id TEXT PRIMARY KEY,
+  recipient_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_group_state (
+  group_id TEXT PRIMARY KEY,
+  record TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_group_verifiers (
+  group_id TEXT PRIMARY KEY,
+  verifier TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS relay_group_blobs (
+  blob_id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+`);
+
+  // Idempotent migration: drop the relay-held escrow table.
+  //
+  // Escrow was removed (spec/roadmap.md § "Escrow — removed") because a
+  // permanently stored, password-wrapped master key is an offline brute-force
+  // target on a relay whose whole posture is zero-at-rest. Deleting the table
+  // *definition* stops new rows, but an already-running relay would keep its
+  // existing blobs on disk and in every backup — still crackable, and no longer
+  // usable by any client. Leaving them would defeat the point of the removal, so
+  // they are dropped on boot. Safe to run forever: a relay that never had the
+  // table is unaffected.
+  db.exec('DROP TABLE IF EXISTS relay_escrow');
+
+  // Idempotent migration: retire the single-key relay identity.
+  //
+  // `relay_identity` held ONE keypair that both signed KT roots (so its private
+  // half had to live on the server) and was what clients pinned. That made a
+  // server breach unrecoverable — the attacker signs whatever they like and the
+  // operator cannot revoke the anchor with the anchor. It is replaced by an
+  // offline root + a delegated online key (spec/relay.md). The old private key
+  // cannot be carried into the new hierarchy (its whole problem is that it is on
+  // the server), so the table is dropped rather than migrated, and the relay
+  // refuses to boot until the operator installs an identity bundle minted with
+  // `npm run relay -- init-identity` on their own machine.
+  //
+  // Existing KT roots go with it: they are signed by a key no client will ever
+  // verify against again, so leaving them would publish a chain that fails every
+  // audit. The log restarts from genesis. This only ever affects a developer's
+  // local database — the relay has never been deployed.
+  const hadLegacyIdentity = !!db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'relay_identity'")
+    .get();
+  if (hadLegacyIdentity) {
+    db.exec('DROP TABLE relay_identity');
+    db.exec('DELETE FROM relay_kt_roots');
+  }
+  // Idempotent migration: tag KT roots with the online key version that signed them.
+  const ktRootCols = db.prepare('PRAGMA table_info(relay_kt_roots)').all() as { name: string }[];
+  if (!ktRootCols.some((c) => c.name === 'key_version')) {
+    db.exec('ALTER TABLE relay_kt_roots ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1');
+  }
+  // Idempotent cleanup: an online key with no delegation is not a thing any
+  // more (they only ever arrive inside a root-signed bundle). Such a row could
+  // only be a leftover from a pre-release schema on a developer's box, and it
+  // would be an unvouched-for signing key sitting in the identity table.
+  db.exec('DELETE FROM relay_online_keys WHERE signature IS NULL');
+
   // Idempotent migration: add users.display_name / name_color if missing.
   const userCols = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
   if (!userCols.some((c) => c.name === 'display_name')) {
@@ -616,6 +811,539 @@ export function openDb(dataDir: string) {
 
   return {
     raw: db as SqliteDatabase,
+
+    // ---- v8 relay (spec/relay.md) ----
+
+    /** The pinned trust anchor: the relay's ROOT public key (raw Ed25519,
+     *  standard base64), or undefined on a relay that has never been
+     *  initialized. The private half is not here and never will be. */
+    getRelayRootPubkey(): string | undefined {
+      const row = db.prepare('SELECT pubkey FROM relay_root WHERE id = 1').get() as
+        | { pubkey: string }
+        | undefined;
+      return row?.pubkey;
+    },
+    /** Every delegated online key, ascending by version. The last one is
+     *  current; the earlier ones keep KT roots they signed verifiable. */
+    listRelayOnlineKeys(): StoredOnlineKey[] {
+      return (
+        db
+          .prepare(
+            'SELECT version, pubkey, privkey, issued_at, not_after, signature FROM relay_online_keys ORDER BY version',
+          )
+          .all() as {
+          version: number;
+          pubkey: string;
+          privkey: string | null;
+          issued_at: number;
+          not_after: number;
+          signature: string;
+        }[]
+      ).map((r) => ({
+        version: r.version,
+        pubkey: r.pubkey,
+        privkey: r.privkey,
+        issuedAt: r.issued_at,
+        notAfter: r.not_after,
+        signature: r.signature,
+      }));
+    },
+    /**
+     * Install an identity bundle's root + delegated online key, in one
+     * transaction, and report what it did. The caller has already verified the
+     * bundle cryptographically (relayIdentity.parseIdentityBundle) and checked
+     * the root matches; this decides how it lands against what is already here.
+     *
+     * **Anti-rollback lives here**, in the same transaction as the write, so it
+     * cannot be raced: a delegation must strictly exceed every version already
+     * installed. Re-installing the exact delegation already at that version is
+     * the idempotent restart case and is a no-op; a *different* delegation at a
+     * version already used means the root signed two contradictory statements
+     * (or the file was tampered with), and is refused rather than resolved.
+     *
+     * Superseded private keys are wiped in the same transaction — the relay
+     * only ever needs the newest one, so an attacker who breaks in later cannot
+     * steal a key it no longer has a use for.
+     */
+    installRelayIdentity(bundle: {
+      rootPubKey: string;
+      onlineKey: { pubkey: string; privkey: string };
+      delegation: { version: number; onlineKey: string; issuedAt: number; notAfter: number; signature: string };
+    }): 'installed' | 'unchanged' | 'stale' {
+      return db.transaction(() => {
+        const d = bundle.delegation;
+        const root = db.prepare('SELECT pubkey FROM relay_root WHERE id = 1').get() as
+          | { pubkey: string }
+          | undefined;
+        if (!root) {
+          db.prepare('INSERT INTO relay_root (id, pubkey, created_at) VALUES (1, ?, ?)').run(
+            bundle.rootPubKey,
+            Date.now(),
+          );
+        } else if (root.pubkey !== bundle.rootPubKey) {
+          // Belt and braces: relayIdentity.installIdentityBundle refuses this
+          // with a fuller explanation, but the invariant is enforced here too so
+          // no caller can bypass it.
+          throw new Error('identity bundle is rooted at a different key than the one installed');
+        }
+
+        const existing = db.prepare('SELECT pubkey, signature FROM relay_online_keys WHERE version = ?').get(
+          d.version,
+        ) as { pubkey: string; signature: string } | undefined;
+        if (existing) {
+          if (existing.pubkey === d.onlineKey && existing.signature === d.signature) return 'unchanged';
+          throw new Error(
+            `a DIFFERENT delegation is already installed at version ${d.version} — two root-signed ` +
+              'statements at the same version cannot both be honored; refusing',
+          );
+        }
+        const max = (db.prepare('SELECT MAX(version) AS v FROM relay_online_keys').get() as {
+          v: number | null;
+        }).v;
+        if (max !== null && d.version < max) return 'stale';
+
+        db.prepare(
+          'INSERT INTO relay_online_keys (version, pubkey, privkey, issued_at, not_after, signature, installed_at) ' +
+            'VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ).run(d.version, d.onlineKey, bundle.onlineKey.privkey, d.issuedAt, d.notAfter, d.signature, Date.now());
+        db.prepare('UPDATE relay_online_keys SET privkey = NULL WHERE version < ?').run(d.version);
+        return 'installed';
+      })();
+    },
+    /** A relay-local HMAC secret by name, minted on first use. Not an identity:
+     *  nothing a client pins or verifies depends on it. */
+    relayLocalSecret(name: string): Buffer {
+      const row = db.prepare('SELECT secret FROM relay_local_secrets WHERE name = ?').get(name) as
+        | { secret: string }
+        | undefined;
+      if (row) return Buffer.from(row.secret, 'base64');
+      const secret = randomBytes(32);
+      db.prepare('INSERT INTO relay_local_secrets (name, secret, created_at) VALUES (?, ?, ?)').run(
+        name,
+        secret.toString('base64'),
+        Date.now(),
+      );
+      return secret;
+    },
+    /** Enroll a device key. Returns the id, or null if the key belongs to another user. */
+    enrollRelayDevice(userId: string, id: string, pubkey: string, name: string | null): string | null {
+      const existing = db.prepare('SELECT id, user_id FROM relay_devices WHERE pubkey = ?').get(pubkey) as
+        | { id: string; user_id: string }
+        | undefined;
+      if (existing) return existing.user_id === userId ? existing.id : null;
+      db.prepare(
+        'INSERT INTO relay_devices (id, user_id, pubkey, name, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(id, userId, pubkey, name, Date.now());
+      return id;
+    },
+    getRelayDeviceByPubkey(pubkey: string): { id: string; userId: string; revoked: boolean } | undefined {
+      const r = db.prepare('SELECT id, user_id, revoked FROM relay_devices WHERE pubkey = ?').get(pubkey) as
+        | { id: string; user_id: string; revoked: number }
+        | undefined;
+      return r ? { id: r.id, userId: r.user_id, revoked: r.revoked !== 0 } : undefined;
+    },
+    listRelayDevices(userId: string): { id: string; name: string | null; createdAt: number; revoked: boolean }[] {
+      return (
+        db.prepare('SELECT id, name, created_at, revoked FROM relay_devices WHERE user_id = ? ORDER BY created_at').all(
+          userId,
+        ) as { id: string; name: string | null; created_at: number; revoked: number }[]
+      ).map((r) => ({ id: r.id, name: r.name, createdAt: r.created_at, revoked: r.revoked !== 0 }));
+    },
+    /** D4: revocation = stop honoring the device's next challenge. */
+    revokeRelayDevice(userId: string, deviceId: string): boolean {
+      return (
+        db.prepare('UPDATE relay_devices SET revoked = 1 WHERE id = ? AND user_id = ?').run(deviceId, userId)
+          .changes > 0
+      );
+    },
+    /** Operator (CLI) revoke by device id alone — no owning-user scope. */
+    revokeRelayDeviceById(deviceId: string): boolean {
+      return db.prepare('UPDATE relay_devices SET revoked = 1 WHERE id = ?').run(deviceId).changes > 0;
+    },
+    /** Operator (CLI) inventory: every enrolled device with its owner + handle. */
+    listAllRelayDevices(): {
+      id: string;
+      userId: string;
+      handle: string | null;
+      name: string | null;
+      createdAt: number;
+      revoked: boolean;
+    }[] {
+      return (
+        db
+          .prepare(
+            `SELECT d.id, d.user_id, d.name, d.created_at, d.revoked, u.handle
+             FROM relay_devices d LEFT JOIN users u ON u.id = d.user_id
+             ORDER BY d.created_at`,
+          )
+          .all() as {
+          id: string;
+          user_id: string;
+          name: string | null;
+          created_at: number;
+          revoked: number;
+          handle: string | null;
+        }[]
+      ).map((r) => ({
+        id: r.id,
+        userId: r.user_id,
+        handle: r.handle,
+        name: r.name,
+        createdAt: r.created_at,
+        revoked: r.revoked !== 0,
+      }));
+    },
+    getRelayDeviceById(id: string): { id: string; userId: string; revoked: boolean } | undefined {
+      const r = db.prepare('SELECT id, user_id, revoked FROM relay_devices WHERE id = ?').get(id) as
+        | { id: string; user_id: string; revoked: number }
+        | undefined;
+      return r ? { id: r.id, userId: r.user_id, revoked: r.revoked !== 0 } : undefined;
+    },
+    /** Recipient registers hash(delivery token) — the relay checks the hash,
+     *  never sees the token, never learns the sender (D6). */
+    setRelayVerifier(userId: string, verifier: string): void {
+      db.prepare(
+        `INSERT INTO relay_verifiers (user_id, verifier, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET verifier = excluded.verifier, updated_at = excluded.updated_at`,
+      ).run(userId, verifier, Date.now());
+    },
+    getRelayVerifier(userId: string): string | undefined {
+      return (
+        db.prepare('SELECT verifier FROM relay_verifiers WHERE user_id = ?').get(userId) as
+          | { verifier: string }
+          | undefined
+      )?.verifier;
+    },
+    activeRelayDeviceIds(userId: string): string[] {
+      return (
+        db.prepare('SELECT id FROM relay_devices WHERE user_id = ? AND revoked = 0').all(userId) as {
+          id: string;
+        }[]
+      ).map((r) => r.id);
+    },
+    /** Fan one envelope out to every given device queue (one transaction). */
+    enqueueRelayEnvelope(deviceIds: string[], relayTs: number, envelope: Buffer): void {
+      const insert = db.prepare(
+        'INSERT INTO relay_mailbox (device_id, relay_ts, envelope, created_at) VALUES (?, ?, ?, ?)',
+      );
+      const tx = db.transaction((ids: string[]) => {
+        for (const id of ids) insert.run(id, relayTs, envelope, Date.now());
+      });
+      tx(deviceIds);
+    },
+    fetchRelayMailbox(
+      deviceId: string,
+      limit: number,
+    ): { queueId: number; relayTs: number; envelope: Buffer }[] {
+      return (
+        db.prepare(
+          'SELECT queue_id, relay_ts, envelope FROM relay_mailbox WHERE device_id = ? ORDER BY queue_id LIMIT ?',
+        ).all(deviceId, limit) as { queue_id: number; relay_ts: number; envelope: Buffer }[]
+      ).map((r) => ({ queueId: r.queue_id, relayTs: r.relay_ts, envelope: r.envelope }));
+    },
+    /** Hold-until-ack: delete only the caller's own rows (D6). */
+    ackRelayMailbox(deviceId: string, queueIds: number[]): number {
+      const del = db.prepare('DELETE FROM relay_mailbox WHERE device_id = ? AND queue_id = ?');
+      const tx = db.transaction((ids: number[]) => {
+        let n = 0;
+        for (const id of ids) n += del.run(deviceId, id).changes;
+        return n;
+      });
+      return tx(queueIds);
+    },
+    /** Undelivered TTL (~30 days, D6): expiry ≠ data loss (devices re-sync). */
+    pruneRelayMailbox(maxAgeMs: number): number {
+      return db.prepare('DELETE FROM relay_mailbox WHERE created_at < ?').run(Date.now() - maxAgeMs)
+        .changes;
+    },
+
+    /** D4b friend invite: store only `hash(token)` (the token is a client-held
+     *  bearer capability; the relay never sees it). */
+    mintRelayInvite(tokenHash: string, inviterUserId: string, expiresAt: number): void {
+      db.prepare(
+        'INSERT OR REPLACE INTO relay_invites (token_hash, inviter_user_id, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)',
+      ).run(tokenHash, inviterUserId, expiresAt, Date.now());
+    },
+    /** Non-consuming validity check by token hash. */
+    getRelayInvite(
+      tokenHash: string,
+    ): { inviterUserId: string; expiresAt: number; used: number } | undefined {
+      const r = db
+        .prepare('SELECT inviter_user_id, expires_at, used FROM relay_invites WHERE token_hash = ?')
+        .get(tokenHash) as
+        | { inviter_user_id: string; expires_at: number; used: number }
+        | undefined;
+      return r ? { inviterUserId: r.inviter_user_id, expiresAt: r.expires_at, used: r.used } : undefined;
+    },
+    /** One-time redeem: atomically claim an unused, unexpired invite and return
+     *  the inviter's id. Returns undefined if it was already used, expired, or
+     *  unknown — so double-redeem races resolve to exactly one winner. */
+    redeemRelayInvite(tokenHash: string, now: number): string | undefined {
+      const claim = db.transaction((): string | undefined => {
+        const r = db
+          .prepare('SELECT inviter_user_id, expires_at, used FROM relay_invites WHERE token_hash = ?')
+          .get(tokenHash) as
+          | { inviter_user_id: string; expires_at: number; used: number }
+          | undefined;
+        if (!r || r.used || r.expires_at < now) return undefined;
+        db.prepare('UPDATE relay_invites SET used = 1 WHERE token_hash = ?').run(tokenHash);
+        return r.inviter_user_id;
+      });
+      return claim();
+    },
+    /** Operator registration invite (CLI-minted; no inviter): store hash(token). */
+    mintRegistrationInvite(tokenHash: string, expiresAt: number): void {
+      db.prepare(
+        'INSERT OR REPLACE INTO relay_registration_invites (token_hash, expires_at, used, created_at) VALUES (?, ?, 0, ?)',
+      ).run(tokenHash, expiresAt, Date.now());
+    },
+    /** One-time claim of an operator registration invite: true iff it was unused
+     *  and unexpired (and is now marked used). Races resolve to one winner. */
+    redeemRegistrationInvite(tokenHash: string, now: number): boolean {
+      const claim = db.transaction((): boolean => {
+        const r = db
+          .prepare('SELECT expires_at, used FROM relay_registration_invites WHERE token_hash = ?')
+          .get(tokenHash) as { expires_at: number; used: number } | undefined;
+        if (!r || r.used || r.expires_at < now) return false;
+        db.prepare('UPDATE relay_registration_invites SET used = 1 WHERE token_hash = ?').run(tokenHash);
+        return true;
+      });
+      return claim();
+    },
+    /** Non-consuming validity check for an operator registration invite. */
+    getRegistrationInvite(tokenHash: string): { expiresAt: number; used: number } | undefined {
+      const r = db
+        .prepare('SELECT expires_at, used FROM relay_registration_invites WHERE token_hash = ?')
+        .get(tokenHash) as { expires_at: number; used: number } | undefined;
+      return r ? { expiresAt: r.expires_at, used: r.used } : undefined;
+    },
+    /** Housekeeping: drop expired/used registration invites past a grace window. */
+    pruneRegistrationInvites(maxAgeMs: number): number {
+      return db
+        .prepare('DELETE FROM relay_registration_invites WHERE expires_at < ? OR (used = 1 AND created_at < ?)')
+        .run(Date.now(), Date.now() - maxAgeMs).changes;
+    },
+    /** Record that `newUserId` registered via an invite minted by `inviterUserId`
+     *  so the account's first authed call can deliver the friend-accept (D4b). */
+    setPendingRegisterFriend(newUserId: string, inviterUserId: string): void {
+      db.prepare(
+        'INSERT OR REPLACE INTO relay_register_pending_friend (new_user_id, inviter_user_id, created_at) VALUES (?, ?, ?)',
+      ).run(newUserId, inviterUserId, Date.now());
+    },
+    /** One-shot claim: return + delete the inviter recorded for `newUserId`, or
+     *  undefined if none (already claimed, or a non-invite/public signup). */
+    takePendingRegisterFriend(newUserId: string): string | undefined {
+      const take = db.transaction((): string | undefined => {
+        const r = db
+          .prepare('SELECT inviter_user_id FROM relay_register_pending_friend WHERE new_user_id = ?')
+          .get(newUserId) as { inviter_user_id: string } | undefined;
+        if (!r) return undefined;
+        db.prepare('DELETE FROM relay_register_pending_friend WHERE new_user_id = ?').run(newUserId);
+        return r.inviter_user_id;
+      });
+      return take();
+    },
+    /** Housekeeping: drop expired/used invites past a grace window. */
+    pruneRelayInvites(maxAgeMs: number): number {
+      return db
+        .prepare('DELETE FROM relay_invites WHERE expires_at < ? OR (used = 1 AND created_at < ?)')
+        .run(Date.now(), Date.now() - maxAgeMs).changes;
+    },
+
+    /** D6 transient blob store (metadata only — ciphertext lives on disk). The
+     *  per-file key + which message/note it belongs to never reach the relay. */
+    createRelayBlob(blobId: string, recipientUserId: string, size: number): void {
+      db.prepare(
+        'INSERT INTO relay_blobs (blob_id, recipient_user_id, size, created_at) VALUES (?, ?, ?, ?)',
+      ).run(blobId, recipientUserId, size, Date.now());
+    },
+    getRelayBlob(blobId: string): { recipientUserId: string; size: number } | undefined {
+      const r = db
+        .prepare('SELECT recipient_user_id, size FROM relay_blobs WHERE blob_id = ?')
+        .get(blobId) as { recipient_user_id: string; size: number } | undefined;
+      return r ? { recipientUserId: r.recipient_user_id, size: r.size } : undefined;
+    },
+    deleteRelayBlob(blobId: string): void {
+      db.prepare('DELETE FROM relay_blobs WHERE blob_id = ?').run(blobId);
+    },
+    /** TTL sweep: delete expired rows and return their ids so the caller can
+     *  unlink the on-disk ciphertext. */
+    pruneRelayBlobs(maxAgeMs: number): string[] {
+      const cutoff = Date.now() - maxAgeMs;
+      const sweep = db.transaction((): string[] => {
+        const rows = db
+          .prepare('SELECT blob_id FROM relay_blobs WHERE created_at < ?')
+          .all(cutoff) as { blob_id: string }[];
+        db.prepare('DELETE FROM relay_blobs WHERE created_at < ?').run(cutoff);
+        return rows.map((r) => r.blob_id);
+      });
+      return sweep();
+    },
+
+    /** D14 group-state: the current signed record (opaque string) + its version.
+     *  The relay enforces monotonic version + admin-signed; trust is client-side. */
+    getRelayGroupState(groupId: string): { record: string; version: number } | undefined {
+      return db
+        .prepare('SELECT record, version FROM relay_group_state WHERE group_id = ?')
+        .get(groupId) as { record: string; version: number } | undefined;
+    },
+    putRelayGroupState(groupId: string, record: string, version: number): void {
+      db.prepare(
+        `INSERT INTO relay_group_state (group_id, record, version, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(group_id) DO UPDATE SET record = excluded.record,
+           version = excluded.version, updated_at = excluded.updated_at`,
+      ).run(groupId, record, version, Date.now());
+    },
+    /** The requester's own per-relay directory entry (for the group member gate). */
+    getRelayDirectoryByUserId(
+      userId: string,
+    ): { identityPubkey: string; sealingPubkey: string } | undefined {
+      const r = db
+        .prepare('SELECT identity_pubkey, sealing_pubkey FROM relay_directory WHERE user_id = ?')
+        .get(userId) as { identity_pubkey: string; sealing_pubkey: string } | undefined;
+      return r ? { identityPubkey: r.identity_pubkey, sealingPubkey: r.sealing_pubkey } : undefined;
+    },
+
+    /** D6 group blobs: `hash(group token)` shared among members (any member can
+     *  upload sender-anonymously; the relay can't tell which one). */
+    setRelayGroupVerifier(groupId: string, verifier: string): void {
+      db.prepare(
+        `INSERT INTO relay_group_verifiers (group_id, verifier, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(group_id) DO UPDATE SET verifier = excluded.verifier, updated_at = excluded.updated_at`,
+      ).run(groupId, verifier, Date.now());
+    },
+    getRelayGroupVerifier(groupId: string): string | undefined {
+      const r = db
+        .prepare('SELECT verifier FROM relay_group_verifiers WHERE group_id = ?')
+        .get(groupId) as { verifier: string } | undefined;
+      return r?.verifier;
+    },
+    createRelayGroupBlob(blobId: string, groupId: string, size: number): void {
+      db.prepare(
+        'INSERT INTO relay_group_blobs (blob_id, group_id, size, created_at) VALUES (?, ?, ?, ?)',
+      ).run(blobId, groupId, size, Date.now());
+    },
+    getRelayGroupBlob(blobId: string): { groupId: string; size: number } | undefined {
+      const r = db
+        .prepare('SELECT group_id, size FROM relay_group_blobs WHERE blob_id = ?')
+        .get(blobId) as { group_id: string; size: number } | undefined;
+      return r ? { groupId: r.group_id, size: r.size } : undefined;
+    },
+    /** TTL sweep: delete expired group blobs, returning ids for file cleanup. */
+    pruneRelayGroupBlobs(maxAgeMs: number): string[] {
+      const cutoff = Date.now() - maxAgeMs;
+      const sweep = db.transaction((): string[] => {
+        const rows = db
+          .prepare('SELECT blob_id FROM relay_group_blobs WHERE created_at < ?')
+          .all(cutoff) as { blob_id: string }[];
+        db.prepare('DELETE FROM relay_group_blobs WHERE created_at < ?').run(cutoff);
+        return rows.map((r) => r.blob_id);
+      });
+      return sweep();
+    },
+
+    /** D5 directory: bind this account's handle to its per-relay keys. */
+    setRelayDirectoryEntry(userId: string, identityPubkey: string, sealingPubkey: string): void {
+      db.prepare(
+        `INSERT INTO relay_directory (user_id, identity_pubkey, sealing_pubkey, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET identity_pubkey = excluded.identity_pubkey,
+           sealing_pubkey = excluded.sealing_pubkey, updated_at = excluded.updated_at`,
+      ).run(userId, identityPubkey, sealingPubkey, Date.now());
+    },
+    /** Reverse lookup: the account owning a per-relay identity key (for group
+     *  fan-out — the group record lists members by identity key). */
+    userIdByRelayIdentity(identityPubkey: string): string | undefined {
+      const r = db
+        .prepare('SELECT user_id FROM relay_directory WHERE identity_pubkey = ?')
+        .get(identityPubkey) as { user_id: string } | undefined;
+      return r?.user_id;
+    },
+    getRelayDirectoryByHandle(
+      handle: string,
+    ): { identityPubkey: string; sealingPubkey: string } | undefined {
+      const r = db
+        .prepare(
+          `SELECT d.identity_pubkey, d.sealing_pubkey FROM relay_directory d
+           JOIN users u ON u.id = d.user_id WHERE u.handle = ? COLLATE NOCASE`,
+        )
+        .get(handle) as { identity_pubkey: string; sealing_pubkey: string } | undefined;
+      return r ? { identityPubkey: r.identity_pubkey, sealingPubkey: r.sealing_pubkey } : undefined;
+    },
+    /** Every binding, handle-sorted — the input to the epoch digest. */
+    allRelayDirectoryEntries(): { handle: string; identityPubkey: string; sealingPubkey: string }[] {
+      return (
+        db.prepare(
+          `SELECT u.handle, d.identity_pubkey, d.sealing_pubkey FROM relay_directory d
+           JOIN users u ON u.id = d.user_id ORDER BY u.handle COLLATE NOCASE`,
+        ).all() as { handle: string; identity_pubkey: string; sealing_pubkey: string }[]
+      ).map((r) => ({
+        handle: r.handle,
+        identityPubkey: r.identity_pubkey,
+        sealingPubkey: r.sealing_pubkey,
+      }));
+    },
+    appendKtRoot(
+      rootHash: string,
+      prevRootHash: string | null,
+      signature: string,
+      keyVersion: number,
+    ): number {
+      const res = db
+        .prepare(
+          'INSERT INTO relay_kt_roots (root_hash, prev_root_hash, signature, created_at, key_version) VALUES (?, ?, ?, ?, ?)',
+        )
+        .run(rootHash, prevRootHash, signature, Date.now(), keyVersion);
+      return Number(res.lastInsertRowid);
+    },
+    latestKtRoot(): { epoch: number; rootHash: string } | undefined {
+      const r = db
+        .prepare('SELECT epoch, root_hash FROM relay_kt_roots ORDER BY epoch DESC LIMIT 1')
+        .get() as { epoch: number; root_hash: string } | undefined;
+      return r ? { epoch: r.epoch, rootHash: r.root_hash } : undefined;
+    },
+    listKtRoots(sinceEpoch: number): {
+      epoch: number;
+      rootHash: string;
+      prevRootHash: string | null;
+      signature: string;
+      createdAt: number;
+      keyVersion: number;
+    }[] {
+      return (
+        db.prepare(
+          'SELECT epoch, root_hash, prev_root_hash, signature, created_at, key_version FROM relay_kt_roots WHERE epoch > ? ORDER BY epoch',
+        ).all(sinceEpoch) as {
+          epoch: number;
+          root_hash: string;
+          prev_root_hash: string | null;
+          signature: string;
+          created_at: number;
+          key_version: number;
+        }[]
+      ).map((r) => ({
+        epoch: r.epoch,
+        rootHash: r.root_hash,
+        prevRootHash: r.prev_root_hash,
+        signature: r.signature,
+        createdAt: r.created_at,
+        keyVersion: r.key_version,
+      }));
+    },
+
+    createRelayChallenge(nonce: string): void {
+      db.prepare('INSERT INTO relay_challenges (nonce, created_at) VALUES (?, ?)').run(nonce, Date.now());
+      // Opportunistic prune so the table never grows past the expiry window.
+      db.prepare('DELETE FROM relay_challenges WHERE created_at < ?').run(Date.now() - 10 * 60_000);
+    },
+    /** Single-use: deletes the nonce; true only if it existed and was fresh. */
+    consumeRelayChallenge(nonce: string, maxAgeMs: number): boolean {
+      const row = db.prepare('SELECT created_at FROM relay_challenges WHERE nonce = ?').get(nonce) as
+        | { created_at: number }
+        | undefined;
+      db.prepare('DELETE FROM relay_challenges WHERE nonce = ?').run(nonce);
+      return row !== undefined && Date.now() - row.created_at <= maxAgeMs;
+    },
 
     userCount(): number {
       return (db.prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number }).c;

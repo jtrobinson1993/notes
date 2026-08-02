@@ -1,5 +1,5 @@
 /**
- * Pure pan/zoom math for the image lightbox (`ImageLightbox.vue`).
+ * Pure pan/zoom math for the image lightbox.
  *
  * The image is laid out fit-to-viewport at scale 1 and transformed with
  * `translate(pan) scale(s)`, transform-origin center. Keeping the math here
