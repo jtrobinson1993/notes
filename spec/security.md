@@ -52,14 +52,15 @@ unauthenticated `/og` in particular would be SSRF-as-a-service, and an
 unauthenticated GIF proxy burns the operator's Klipy quota.
 `/api/relay/emote/:sig/:file` (the image) has to work as an `<img src>` and so
 cannot carry an `Authorization` header; it is instead gated on an unguessable
-**capability** — a 132-bit HMAC over the emote id, keyed by a secret derived from
-the relay's pinned identity key, compared with `timingSafeEqual`. Only the authed
-search endpoint mints those URLs, so a stranger can't turn the relay into a
-general 7TV mirror even though 7TV ids are public. A valid device token is
-accepted as an alternative so the native core can fetch an image without a search
-round-trip. The capability secret is *derived from* the identity key (never the
-key itself) and is stable across restarts, so minted URLs and the year-long
-browser cache entry survive a relay restart.
+**capability** — a 132-bit HMAC over the emote id, keyed by a relay-local secret,
+compared with `timingSafeEqual`. Only the authed search endpoint mints those
+URLs, so a stranger can't turn the relay into a general 7TV mirror even though
+7TV ids are public. A valid device token is accepted as an alternative so the
+native core can fetch an image without a search round-trip. That secret is a
+random key of its own in `relay_local_secrets`, deliberately **not** derived from
+any signing key: it must be stable across restarts *and* across an online-key
+rotation, so minted URLs and the year-long browser cache entry survive both, and
+no signing key doubles as an HMAC key.
 
 **Link previews are the SSRF surface** (`server/src/linkPreview.ts` +
 `ssrf.ts`). Guarded in two layers, both required:
@@ -173,9 +174,6 @@ guessing oracle:
 
 - `POST /api/relay/register` — 20/min (the account-creation surface).
 - `POST /api/relay/invites/check` — 30/min (non-consuming validity oracle).
-- `POST /api/relay/escrow/kdf` — 10/min, `POST /api/relay/escrow/fetch` — 5/min.
-  The escrow blobs are offline brute-force targets, so this is the tightest
-  bucket in the relay.
 - The content proxies, expressed as **fractions of the operator's ceiling** so a
   relay tuned up or down scales them with it: GIF and emote search 1/10 (60/min
   at the default), `/og` 1/20 (30/min — the SSRF surface), the emote image
@@ -332,14 +330,54 @@ different ceilings:
 - **A curious / compromised / shady operator reading what's stored** (DB, disk,
   backups, RAM, the network) sees only ciphertext and **public** keys. It cannot
   read notes or messages, and it cannot unwrap the master key: the password /
-  recovery-code / seal material that unwraps MK never reaches the relay. Escrow
-  is the same — the relay holds MK *wrapped* under secrets it never sees (see
+  recovery-code / seal material that unwraps MK never reaches the relay. Since
+  relay-held escrow was [removed](roadmap.md#escrow--removed) it holds no wrapped
+  key material at all — there is nothing on the server an offline attack could be
+  mounted against (see
   [accounts-and-crypto.md](accounts-and-crypto.md)).
 - **A malicious operator tampering _live_** can try to substitute keys mid-flow
   (e.g. swap a device's public key so a sealed payload lands on its own key).
   Active attacks of that kind are defended by the **KT log** plus **human
   verification** — with the caveat below that SAS comparison is specified but not
-  yet built.
+  yet built. The log defends nothing on its own unless the *relay's* identity is
+  anchored: the pinned root is what every KT root signature ultimately traces
+  back to, so the client refuses a relay whose fingerprint does not bind the root
+  key it serves, whose identity differs from the invite/pin it is anchored to, or
+  which cannot show a current, root-signed delegation naming the online key that
+  signed those roots ([relay.md](relay.md#pinning-the-relay-identity-as-built)).
+
+#### What a relay-server compromise costs (changed 2026-08-02)
+
+The most consequential trust boundary in the system moved, and it is worth
+stating as a before/after rather than leaving it implicit in the relay spec.
+
+| | **Before** (one relay key) | **Now** (offline root + online key) |
+|---|---|---|
+| What the attacker gets from owning the server | the key clients **pin** | the **online** signing key only |
+| Can they sign forged KT roots? | yes | yes, while they hold the server |
+| Can the operator revoke it? | **no** — you cannot revoke the anchor *with* the anchor | yes: one root-signed delegation at `version + 1`, which the attacker cannot forge |
+| What clients must do to recover | re-pin a new identity = new accounts, lost friendships | nothing; a newer valid delegation is accepted silently |
+| Net cost of a breach | the identity of every account on the relay | one signing key, and the window before rotation |
+
+The reason this is possible at all is that the two jobs the old key did have
+different custody requirements. Signing a KT root has to happen unattended on
+every directory change, so *that* key must sit on the server. Being the anchor
+requires the opposite: never being reachable from the thing it vouches for. The
+split gives each job the custody it needs — the root signs exactly one kind of
+statement, a delegation naming the current online key, and its private half is
+generated on the operator's machine and never exists on the relay
+([relay.md](relay.md#relay-identity-an-offline-root-and-an-online-signing-key)).
+
+What the split does **not** change: an attacker holding the server can still
+forge directory entries and sign roots over them for as long as they hold it, so
+this bounds *recovery*, not *exposure*. Two residuals are recorded rather than
+hidden — a revoked key still validates roots stamped with its own version, and a
+client that never saw the rotation still has the old floor
+([roadmap.md](roadmap.md#online-key-revocation-is-forward-looking-and-only-for-clients-that-saw-it)).
+And the guarantee is only as good as the operator's custody of the root key: for
+a self-hosted relay that realistically means a password manager, not a hardware
+security module, which [DEPLOY.md](../DEPLOY.md) says plainly rather than
+implying certificate-authority-grade assurance.
 
 **What changed with the native client.** The old residual limit — inherent to all
 browser-delivered E2EE — was that *the host serves the client*, so a malicious
@@ -366,16 +404,20 @@ updating this section too. In summary:
 
 - **Durable, and why it's safe:** the key directory + KT log (public keys only),
   device *public* keys, **delivery-token verifiers** (`hash(token)`, never the
-  tokens), signed group-state records, invites (token *hashes*), and **escrow
-  blobs** — MK wrapped under password/recovery secrets the relay never sees, the
-  same "can't unwrap MK" property as device linking above (the domain-separated
-  fetch auth-key can't unwrap the payload).
+  tokens), signed group-state records, invites (token *hashes*), and the relay's
+  own identity — the **public** half of its offline root plus every online
+  keypair that root has delegated to. No wrapped user key material: relay-held
+  escrow is [gone](roadmap.md#escrow--removed), and the root private key never
+  existed here.
 - **Transient:** per-device mailbox envelopes (opaque; deleted on ack, ~30-day
   TTL) and attachment blob chunks (deleted when all recipients ack, TTL-capped).
 - **Never stored:** plaintext or post-ack ciphertext, **sender identity on any
   envelope**, the friendship graph (verifiers are per-recipient, not per-edge),
-  profile contents, read state, raw tokens, and voice media (the SFU forwards
-  sealed frames and writes nothing).
+  profile contents, read state, raw tokens, voice media (the SFU forwards sealed
+  frames and writes nothing), and the relay's **root private key** — which is not
+  merely absent but has no place to be: it is generated on the operator's machine
+  and no schema column, bundle field or serving-path module can hold or mint one
+  ([relay.md](relay.md#never-stored)).
 
 **Improvements over the v1–v7 server:** sender identity is hidden
 (`/api/relay/mailbox/send` is sessionless — the sender proves knowledge of the
@@ -431,7 +473,7 @@ failed by the product, even though the cryptography behaved exactly as designed.
 
 ### v8 trust boundaries worth stating plainly
 
-Five places where the design accepts a bounded risk rather than eliminating it.
+Seven places where the design accepts a bounded risk rather than eliminating it.
 Each is deliberate; none should be discovered by surprise later.
 
 - **Sealed sender is partial against an *actively correlating* relay.** It
@@ -452,6 +494,27 @@ Each is deliberate; none should be discovered by surprise later.
   signatures mean a member serving history cannot alter what someone else said,
   but it **can omit** messages. Not fully preventable; mitigated by preferring
   the owner's or multiple devices as backfill sources.
+- **A relay reached without an invite is trust-on-first-use.** The client pins
+  the relay's identity — the fingerprint must bind the identity key the relay
+  serves, and a later change is refused with a hard alarm
+  ([relay.md](relay.md#pinning-the-relay-identity-as-built)) — but the *first*
+  connection needs an anchor from outside the relay. A friend invite carries one
+  (`relayFp`, out-of-band through the human invite channel); typing a relay
+  address or pasting an operator registration code does not. So a relay that is
+  hostile from the very first connect is pinned as itself. This matters because
+  the pinned key is the **root** of the chain every key-transparency root
+  signature is verified through — root → delegation → online key
+  ([relay.md](relay.md#relay-identity-an-offline-root-and-an-online-signing-key)).
+  Roadmap: put the fingerprint in operator codes too.
+- **Group *membership* is the relay's copy of a record the client cannot yet
+  diff.** Who may hand you a group *key* is enforced — an invite is admitted only
+  from a current friend the KT log does not contradict, and can never re-key a
+  group you are already in ([chat.md](chat.md#who-may-hand-me-a-group-key)). But
+  `group_add_member` re-signs the group-state record the relay returns, and with
+  no locally mirrored previous version it cannot see a member spliced into it.
+  A spliced identity gets fan-out ciphertext and blob reach, never the group key
+  or any content. Roadmap:
+  [mirror the record](roadmap.md#group-state-is-trusted-from-the-relay).
 - **A voice call is authorized by possession of its call id**, not by
   friendship — the relay hides the social graph and so cannot check one. The id
   is 192 random bits delivered only inside a sealed offer, and a stranger holding

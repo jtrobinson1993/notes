@@ -39,10 +39,17 @@ export default defineConfig({
     // Enable in CI once WebKit is installed (`npm run e2e:install`).
     // { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
-  // Build is run separately (CI builds before this); here we just boot the
-  // built relay — the only server there is.
+  // Build is run separately (CI builds before this); here we do exactly what an
+  // operator does — mint an identity bundle and drop it in DATA_DIR — and then
+  // boot the built relay, the only server there is. The relay refuses to start
+  // without one (no first-boot auto-mint; see spec/relay.md), and it ingests the
+  // bundle itself, so there is no install step. `--if-missing` keeps a reused
+  // E2E_DATA_DIR working: it leaves an existing bundle alone rather than minting
+  // a second root and locking the relay out of its own database mid-suite.
   webServer: {
-    command: 'node server/dist/relay-index.js',
+    command:
+      `node server/dist/relay-cli.js init-identity --if-missing --out ${join(DATA_DIR, 'relay-identity.json')} && ` +
+      'node server/dist/relay-index.js',
     url: `${ORIGIN}/api/health`,
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,

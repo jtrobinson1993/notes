@@ -4,8 +4,10 @@ import { enrollDevice as enrollRelayDevice, makeRelayApp, seedUser, type TestApp
 import {
   detectRewrite,
   detectStall,
+  keysFromDelegations,
   verifyRootChain,
   verifyRootSignature,
+  type RootSigningKeys,
   type SignedRoot,
 } from '../src/ktAudit.js';
 
@@ -29,10 +31,15 @@ async function publish(handle: string): Promise<void> {
   });
 }
 
-async function fetchAudit(): Promise<{ identityPubKey: string; roots: SignedRoot[] }> {
+/** Exactly what a third-party auditor does: take the ROOT key from /info, prove
+ *  every delegation is signed by it, and verify each root under the online key
+ *  that root's keyVersion names. Nothing here trusts an unsigned key. */
+async function fetchAudit(): Promise<{ keys: RootSigningKeys; roots: SignedRoot[] }> {
   const info = (await ctx.app.inject({ method: 'GET', url: '/api/relay/info' })).json();
   const roots = (await ctx.app.inject({ method: 'GET', url: '/api/relay/kt/roots' })).json().roots as SignedRoot[];
-  return { identityPubKey: info.identityPubKey as string, roots };
+  const keys = keysFromDelegations(info.identityPubKey as string, info.delegations as unknown[]);
+  expect(keys).not.toBeNull();
+  return { keys: keys!, roots };
 }
 
 describe('KT reference auditor', () => {
@@ -41,31 +48,31 @@ describe('KT reference auditor', () => {
     await publish('Alice#0001');
     await publish('Bravo#0002');
     await publish('Carol#0003');
-    const { identityPubKey, roots } = await fetchAudit();
+    const { keys, roots } = await fetchAudit();
     expect(roots.length).toBe(3);
-    const res = verifyRootChain(identityPubKey, roots);
+    const res = verifyRootChain(keys, roots);
     expect(res.ok).toBe(true);
     expect(res.verifiedEpochs).toBe(3);
-    for (const r of roots) expect(verifyRootSignature(identityPubKey, r)).toBe(true);
+    for (const r of roots) expect(verifyRootSignature(keys, r)).toBe(true);
   });
 
   it('rejects a forged signature', async () => {
     ctx = await makeRelayApp();
     await publish('Alice#0001');
-    const { identityPubKey, roots } = await fetchAudit();
+    const { keys, roots } = await fetchAudit();
     const tampered = { ...roots[0]!, signature: randomBytes(64).toString('base64') };
-    expect(verifyRootSignature(identityPubKey, tampered)).toBe(false);
-    expect(verifyRootChain(identityPubKey, [tampered]).ok).toBe(false);
+    expect(verifyRootSignature(keys, tampered)).toBe(false);
+    expect(verifyRootChain(keys, [tampered]).ok).toBe(false);
   });
 
   it('rejects a broken chain link (rootHash swapped mid-chain)', async () => {
     ctx = await makeRelayApp();
     await publish('Alice#0001');
     await publish('Bravo#0002');
-    const { identityPubKey, roots } = await fetchAudit();
+    const { keys, roots } = await fetchAudit();
     // Corrupt the first root's hash — the second no longer chains onto it.
     const broken = [{ ...roots[0]!, rootHash: 'AAAurl_not_the_real_hash' }, roots[1]!];
-    const res = verifyRootChain(identityPubKey, broken);
+    const res = verifyRootChain(keys, broken);
     expect(res.ok).toBe(false);
     // First root's signature no longer matches its mutated hash → fails there.
     expect(res.error).toMatch(/signature|chain/);
@@ -74,10 +81,10 @@ describe('KT reference auditor', () => {
   it('rejects a chain that does not start at the expected checkpoint', async () => {
     ctx = await makeRelayApp();
     await publish('Alice#0001');
-    const { identityPubKey, roots } = await fetchAudit();
+    const { keys, roots } = await fetchAudit();
     // Genesis chain must start from null; demanding a checkpoint it lacks fails.
-    expect(verifyRootChain(identityPubKey, roots, 'some-checkpoint-hash').ok).toBe(false);
-    expect(verifyRootChain(identityPubKey, roots, null).ok).toBe(true);
+    expect(verifyRootChain(keys, roots, 'some-checkpoint-hash').ok).toBe(false);
+    expect(verifyRootChain(keys, roots, null).ok).toBe(true);
   });
 
   it('detects a rewritten epoch in watch mode', async () => {

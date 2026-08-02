@@ -54,7 +54,11 @@ export function loadConfig(): Config {
   return {
     port,
     host: process.env.HOST ?? '0.0.0.0',
-    dataDir: process.env.DATA_DIR ?? './data',
+    // `?.trim() ||`, not `??`: an *empty* DATA_DIR (a systemd unit with
+    // `Environment=DATA_DIR=`, a compose file with an unset variable) would
+    // otherwise resolve to the process's working directory and scatter the
+    // relay's database and identity bundle wherever it happened to be started.
+    dataDir: process.env.DATA_DIR?.trim() || './data',
     appOrigin,
     originHost,
     klipyApiKey: process.env.KLIPY_API_KEY?.trim() || null,

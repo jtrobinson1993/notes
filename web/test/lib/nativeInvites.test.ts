@@ -7,10 +7,22 @@ const native = vi.hoisted(() => ({
   envelopeSeal: vi.fn(),
   settingsSet: vi.fn().mockResolvedValue(undefined),
   settingsGet: vi.fn().mockResolvedValue(null),
+  relayRegister: vi.fn(),
+  relayConnect: vi.fn(),
+  relayDirectoryPublish: vi.fn().mockResolvedValue(undefined),
+  relayRegisterVerifier: vi.fn().mockResolvedValue('DELIV'),
+  relayRegisterFriendAccept: vi.fn().mockResolvedValue(true),
+  accountSetLabel: vi.fn().mockResolvedValue(undefined),
+  isNative: false,
 }));
 vi.mock('../../src/lib/native', () => native);
 
-import { createFriendInvite, redeemFriendInvite, FRIEND_ACCEPT_KIND } from '../../src/lib/nativeInvites';
+import {
+  createFriendInvite,
+  redeemFriendInvite,
+  registerViaInvite,
+  FRIEND_ACCEPT_KIND,
+} from '../../src/lib/nativeInvites';
 import { parseInvite, inviteTokenHash, buildInvite } from '../../src/lib/invites';
 import { errorMessage } from '../../src/lib/errors';
 import { resetToasts, toasts } from '../../src/lib/toast';
@@ -87,8 +99,31 @@ describe('redeemFriendInvite', () => {
     });
     // Dropped via the one-time token + the sealed envelope, and the invite's
     // TOFU pin rides along so the core can check it against the KT log before
-    // the envelope (which carries my delivery token) is sent.
-    expect(native.relayInviteRedeem).toHaveBeenCalledWith('TOK', [9, 9, 9], 'Inviter#0001', 'IDPUB');
+    // the envelope (which carries my delivery token) is sent — together with the
+    // invite's relay fingerprint, so the core can first confirm that log belongs
+    // to the relay the invite named.
+    expect(native.relayInviteRedeem).toHaveBeenCalledWith('TOK', [9, 9, 9], 'Inviter#0001', 'IDPUB', 'FP');
+  });
+
+  it('surfaces a relay-identity mismatch as the catalogued error', async () => {
+    const invite = buildInvite({
+      relayUrl: 'https://relay.example',
+      relayFp: 'FP',
+      token: 'TOK',
+      handle: 'Inviter#0001',
+      identityPub: 'IDPUB',
+      sealingPub: 'SEALPUB',
+    });
+    native.relayMyDirectoryKeys.mockResolvedValue({ identity_pub: 'MYID', sealing_pub: 'MYSEAL' });
+    native.envelopeSeal.mockResolvedValue([9, 9, 9]);
+    // The core refuses: the invite names a relay identity this device is not
+    // connected to, so its transparency log proves nothing about the inviter.
+    native.relayInviteRedeem.mockRejectedValue('RELAY_IDENTITY_CHANGED: expected relay FP, got OTHER');
+
+    await expect(redeemFriendInvite(invite, { handle: 'Me#0002', deliveryToken: 'MYDELIV' })).rejects.toThrow(
+      errorMessage('RELAY_IDENTITY_CHANGED'),
+    );
+    expect(toasts.value.at(-1)).toMatchObject({ kind: 'error', code: 'RELAY_IDENTITY_CHANGED' });
   });
 
   it('surfaces a KT mismatch as the catalogued error and adds nobody', async () => {
@@ -116,5 +151,65 @@ describe('redeemFriendInvite', () => {
     await expect(redeemFriendInvite('garbage', { handle: 'x', deliveryToken: 'y' })).rejects.toThrow();
     expect(native.envelopeSeal).not.toHaveBeenCalled();
     expect(native.relayInviteRedeem).not.toHaveBeenCalled();
+  });
+});
+
+describe('registerViaInvite', () => {
+  const invite = buildInvite({
+    relayUrl: 'https://relay.example',
+    relayFp: 'INVITE-FP',
+    token: 'TOK',
+    handle: 'Inviter#0001',
+    identityPub: 'IDPUB',
+    sealingPub: 'SEALPUB',
+  });
+
+  it('anchors the signup on the invite\'s relay fingerprint', async () => {
+    native.relayRegister.mockResolvedValue('Me#0002');
+    native.relayMyDirectoryKeys.mockResolvedValue({ identity_pub: 'MYID', sealing_pub: 'MYSEAL' });
+    native.envelopeSeal.mockResolvedValue([1, 2, 3]);
+
+    const res = await registerViaInvite(invite, { handle: 'Me#0002', displayName: 'Me' });
+    expect(res).toEqual({ handle: 'Me#0002', inviterHandle: 'Inviter#0001' });
+    // The fingerprint from the invite — the one anchor the relay did not supply
+    // — is handed to the core, which refuses a relay that does not match it.
+    expect(native.relayRegister).toHaveBeenCalledWith(
+      'https://relay.example',
+      'TOK',
+      'Me#0002',
+      'INVITE-FP',
+    );
+  });
+
+  it('keeps the anchor on the already-enrolled recovery path', async () => {
+    native.relayRegister.mockRejectedValue(new Error('device already registered'));
+    native.settingsGet.mockResolvedValue('Me#0002');
+    native.relayConnect.mockResolvedValue(undefined);
+    native.relayMyDirectoryKeys.mockResolvedValue({ identity_pub: 'MYID', sealing_pub: 'MYSEAL' });
+    native.envelopeSeal.mockResolvedValue([1, 2, 3]);
+
+    await registerViaInvite(invite);
+    // Recovering an enrolled device must not drop back to trust-on-first-use.
+    expect(native.relayConnect).toHaveBeenCalledWith('https://relay.example', 'INVITE-FP');
+  });
+
+  it('refuses to onboard against a relay whose identity the core rejected', async () => {
+    // The core refuses before the account exists: the relay at the invite's URL
+    // is not the relay the invite named.
+    native.relayRegister.mockRejectedValue('RELAY_IDENTITY_CHANGED: expected relay INVITE-FP, got X');
+
+    await expect(registerViaInvite(invite)).rejects.toThrow(errorMessage('RELAY_IDENTITY_CHANGED'));
+    expect(toasts.value.at(-1)).toMatchObject({ kind: 'error', code: 'RELAY_IDENTITY_CHANGED' });
+    // Never treated as the recoverable "already enrolled" case.
+    expect(native.relayConnect).not.toHaveBeenCalled();
+    expect(native.settingsSet).not.toHaveBeenCalled();
+  });
+
+  it('refuses a relay whose fingerprint does not bind its key', async () => {
+    native.relayRegister.mockRejectedValue(
+      'RELAY_IDENTITY_INVALID: the relay\'s fingerprint is not the digest of the identity key it serves',
+    );
+    await expect(registerViaInvite(invite)).rejects.toThrow(errorMessage('RELAY_IDENTITY_INVALID'));
+    expect(toasts.value.at(-1)).toMatchObject({ kind: 'error', code: 'RELAY_IDENTITY_INVALID' });
   });
 });

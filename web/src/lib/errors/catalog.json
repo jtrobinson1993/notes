@@ -35,5 +35,63 @@
       "If a fresh invite from the same person fails the same way, treat the relay as untrusted: stop sending anything sensitive through it and tell the other people on it.",
       "Report it to the relay's operator (and, if it is not your relay, consider moving) — a key that disagrees with the log is exactly what this log exists to catch."
     ]
+  },
+  "GROUP_INVITE_REFUSED": {
+    "readableName": "A group invite was refused",
+    "description": "Accord received an invite to a group chat and did not act on it. Nothing was saved: no group key, no group, and no conversation. Either the invite did not come from one of your friends, the key-transparency log disagrees about that friend's key, or the invite tried to change the key of a group you are already in.",
+    "cause": "A group's messages are all encrypted under one shared key, and the only way to get that key is for a member to send it to you. That message arrives through the ordinary sealed mailbox, which anyone able to reach your mailbox — including the relay itself — can post to. So the key is only accepted from someone who is already your friend on this relay and whose identity key the transparency log does not contradict. On top of that, an invite can only ever create a group that is new to you: it can never replace the key of a group you already belong to. That last rule is the important one — a replaced key would mean everything you sent to the group afterwards was encrypted to whoever sent the invite, and nobody else. Since Accord has no group-key rotation yet, a re-key attempt has no legitimate explanation at all.",
+    "stepsToFix": [
+      "If you were expecting an invite, check that the person who sent it is on your friends list on this relay, and add them first if they are not.",
+      "Ask them to add you again once you are friends — re-sending the invite is harmless.",
+      "If the invite was for a group you are already in, do not act on it and do not ask for another: it was an attempt to take over that conversation's encryption.",
+      "In that case treat the group as compromised until you have checked with its members over a channel you trust, and tell them what you saw.",
+      "If it keeps happening, report it to the relay's operator — and if it is not your relay, consider moving, since the relay is one of the few parties that can post to your mailbox."
+    ]
+  },
+  "RELAY_IDENTITY_CHANGED": {
+    "readableName": "This relay is not the one Accord expected",
+    "description": "Accord refused to connect: the relay at this address presented a different identity key than the one saved for your account (or than the one written into the invite you used). Nothing was sent, no account details left this device, and your existing data is untouched.",
+    "cause": "Every relay has its own signing key, and its fingerprint is the short hash of that key. Accord records that fingerprint the first time it connects, and an invite carries it too, so it can be compared against the relay you actually reach. That comparison is the anchor for everything else: your account's encryption keys are derived from the relay fingerprint, and the relay's key is what signs the key-transparency log Accord checks contact keys against. If a different identity answers, the server may have been replaced, your connection may be intercepted, or the operator may have regenerated the relay's key — and Accord cannot tell those apart, so it refuses rather than quietly trusting the new one.",
+    "stepsToFix": [
+      "Do not re-enter your password or approve anything on this connection; close the app if you are on an untrusted network.",
+      "Check with the relay's operator, over a channel you trust, whether the relay's identity key really changed (a re-install or key regeneration does change it).",
+      "If the change was not intentional, treat the relay as compromised: stop using it and tell the other people on it.",
+      "If you were joining with an invite, ask for a fresh invite — the fingerprint inside it is what Accord compares against.",
+      "A genuine, operator-confirmed key change currently means starting a new account against the relay: your account's keys are derived from the old fingerprint, and Accord will not re-point them at a new identity on its own."
+    ]
+  },
+  "RELAY_IDENTITY_INVALID": {
+    "readableName": "This relay's identity doesn't check out",
+    "description": "Accord refused to connect: the fingerprint the relay published is not the fingerprint of the identity key it published alongside it, so the two do not describe the same relay. The connection was dropped before anything was sent.",
+    "cause": "A relay's fingerprint is defined as the SHA-256 hash of its identity public key, so the pair can always be checked against itself. Accord checks it on every connection because the fingerprint and the key do different jobs: the fingerprint is what you pin and what your account keys are derived from, while the key is what verifies the signatures on the key-transparency log used to confirm your contacts' encryption keys. A server that serves the genuine fingerprint next to somebody else's key would keep every pin looking correct while signing a forged log — so a pair that does not match is refused outright.",
+    "stepsToFix": [
+      "Retry once — a truncated or cached response can produce a mismatched pair.",
+      "Confirm the relay address is exactly right, including https and any port, and that you are not behind a portal or proxy that rewrites responses.",
+      "If you self-host, check the relay's identity key material is intact and that nothing in front of it (a CDN or reverse proxy) is rewriting /api/relay/info.",
+      "If it keeps failing, do not enter credentials or accept invites through this address, and report it to the relay's operator."
+    ]
+  },
+  "RELAY_DELEGATION_INVALID": {
+    "readableName": "This relay can't prove which key it signs with",
+    "description": "Accord refused to connect: the relay could not show a valid, current permission slip — signed by the relay's own trust anchor — naming the key it uses to sign its public key log. The connection was dropped before anything was sent, and nothing on this device was changed.",
+    "cause": "A relay has two keys, not one. Its root key is the anchor you pin, and its private half is kept offline, away from the server; it is used for exactly one thing, signing a short record (a “delegation”) that names the online key the server actually signs its key-transparency log with. That split is what makes a break-in survivable: an attacker who takes over the server gets the online key, and the operator revokes it by signing a new delegation the attacker cannot forge. Accord therefore refuses to use any signing key that a valid delegation does not name — otherwise the online key would just be “whatever the relay served”, and the split would protect nothing. This error means the delegation was missing, malformed, past its expiry date, or not signed by the root key you have pinned.",
+    "stepsToFix": [
+      "Retry once — a truncated or cached /api/relay/info response can produce this.",
+      "Check the relay address is exactly right, and that nothing in front of it (a proxy, CDN, or captive portal) is rewriting or caching its responses.",
+      "If you self-host, the relay's delegation has probably expired: run `npm run relay -- rotate-online-key` on your own machine with the root key, and install the new bundle. The relay warns in its logs well before the deadline.",
+      "Do not enter credentials or accept invites through this address until it connects cleanly, and tell the relay's operator what you are seeing."
+    ]
+  },
+  "RELAY_DELEGATION_ROLLBACK": {
+    "readableName": "This relay tried to re-use a signing key that was retired",
+    "description": "Accord refused to connect: the relay presented an older permission slip for its signing key than one this device has already accepted — or a different key under the same version number. Nothing was sent and nothing was saved. This is not a glitch; it is the signature of an attack, so treat the relay as compromised until the operator tells you otherwise.",
+    "cause": "The record naming a relay's online signing key carries a version number that only ever increases, and Accord remembers the highest one it has seen from each relay. That memory is the entire mechanism by which a relay operator can retire a signing key: the old record stays validly signed forever, so without a version check an attacker who stole the retired key could simply replay the old record and be trusted again — the retirement would mean nothing. Seeing the number go backwards means somebody is serving you a superseded record, which is what an attacker holding a revoked key does. The same refusal covers a relay that names a *different* key under a version number you have already accepted, which would mean its own anchor is contradicting itself.",
+    "stepsToFix": [
+      "Do not retry, do not re-enter your password, and do not accept invites through this relay right now.",
+      "If you are on public or untrusted Wi-Fi, disconnect from it — an intercepted connection can serve you an old response.",
+      "Contact the relay's operator over a channel you trust and tell them a client is being served a superseded signing-key record; they should check the server for a break-in.",
+      "Warn the other people on that relay, since anyone connecting for the first time has no earlier version to compare against and is not protected the way you were.",
+      "Wait for the operator to confirm the relay is clean before using it again — there is no safe way for you to override this from the app."
+    ]
   }
 }

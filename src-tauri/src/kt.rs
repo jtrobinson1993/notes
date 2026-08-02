@@ -24,6 +24,7 @@ use akd_core::verify::{key_history_verify, lookup_verify, HistoryVerificationPar
 use akd_core::{AkdLabel, HistoryProof, LookupProof, WhatsAppV1Configuration};
 use base64::Engine as _;
 
+use crate::delegation::DelegatedKeys;
 use crate::relay_client::{DirectoryEntry, SignedRoot};
 
 /// The relay's KT configuration — must match the sidecar (`akd-sidecar`).
@@ -86,12 +87,14 @@ pub fn verify_key_history(
     Ok(results.into_iter().map(|r| r.value.0).collect())
 }
 
-/// Verify the relay's signature over a KT epoch root, as gossiped by a contact
-/// on E2E traffic (D5). The relay signs `kt-root|{root}|{prev}` (prev = "genesis"
-/// for the first epoch) with its identity key — so a valid signature proves the
-/// root is genuinely the relay's, and a contact can't fabricate one to frame an
-/// honest relay. Only then does a `(epoch,root)` mismatch vs. our own view count
-/// as the relay's equivocation (split view).
+/// Verify the relay's signature over a KT epoch root against **one** key. The
+/// relay signs `kt-root|{root}|{prev}` (prev = "genesis" for the first epoch)
+/// with its online signing key.
+///
+/// Low-level: the key must come out of a verified delegation chain. Callers use
+/// [`signed_root_epoch`] (roots chain, exact `keyVersion`) or
+/// [`gossiped_root_is_signed`] (gossip, which carries no version) rather than
+/// this directly, so a key the relay served loose can never reach it.
 pub fn verify_signed_root(
     relay_pub_b64: &str,
     root_b64: &str,
@@ -122,16 +125,41 @@ pub fn verify_signed_root(
 ///
 /// `None` = the root was never signed by this relay → the response is a
 /// fabrication and must be rejected, not downgraded to "unverified".
-pub fn signed_root_epoch(relay_pub_b64: &str, roots: &[SignedRoot], root_b64: &str) -> Option<i64> {
+///
+/// `keys` are the online keys the **pinned root** delegated to. Each root is
+/// checked against the key its own `keyVersion` names, so an online-key rotation
+/// does not retroactively invalidate the roots the previous key signed — and a
+/// root stamped with a version no delegation covers is unsigned, full stop.
+pub fn signed_root_epoch(
+    keys: &DelegatedKeys,
+    roots: &[SignedRoot],
+    root_b64: &str,
+) -> Option<i64> {
     if root_b64.is_empty() {
         return None;
     }
     roots
         .iter()
         .find(|r| {
-            r.root == root_b64 && verify_signed_root(relay_pub_b64, &r.root, &r.prev, &r.sig).unwrap_or(false)
+            r.root == root_b64
+                && keys
+                    .key_for(r.key_version)
+                    .is_some_and(|k| verify_signed_root(k, &r.root, &r.prev, &r.sig).unwrap_or(false))
         })
         .map(|r| r.epoch)
+}
+
+/// Is a **gossiped** root genuinely this relay's? A gossip beacon carries no
+/// `keyVersion` (a friend forwards the root, prev and signature they saw), so it
+/// is checked against every key the pinned root has delegated to: a friend may
+/// legitimately have seen a root signed before the relay rotated, and a
+/// signature under any delegated key is still the relay's own.
+///
+/// The looseness costs nothing — gossip only ever *adds* evidence for split-view
+/// detection, and a signature that matches no delegated key is ignored rather
+/// than believed (a friend must not be able to frame an honest relay).
+pub fn gossiped_root_is_signed(keys: &DelegatedKeys, root: &str, prev: &str, sig: &str) -> bool {
+    keys.all_keys().any(|k| verify_signed_root(k, root, prev, sig).unwrap_or(false))
 }
 
 /// Why a contact could not be checked against the log. **Not** a failure of the
@@ -224,13 +252,20 @@ impl ContactTrust {
 /// inclusion proof is even parsed, and the proof is then verified against that
 /// signed root rather than against the root the response asked us to use.
 ///
+/// `keys` are the online keys the relay's **pinned offline root** delegated to
+/// (`delegation::verify_chain`, run at connect). Taking a `DelegatedKeys` rather
+/// than a bare key string is the point: there is no way to call this with the
+/// pinned root itself, or with whatever key the relay served alongside the
+/// roots — the compiler makes "check the signature against a delegated key" the
+/// only reachable behaviour.
+///
 /// `pinned_vrf` is the VRF public key this client has already accepted for the
 /// relay (trust-on-first-use). It is checked *before* the proof because the VRF
 /// key is what maps a handle to a leaf: with a VRF key of its choosing a relay
 /// can point `Alice#0001` at a leaf that legitimately holds the attacker's key,
 /// and the inclusion proof against the genuine signed root would still verify.
 pub fn contact_verdict(
-    relay_pub_b64: &str,
+    keys: &DelegatedKeys,
     roots: &[SignedRoot],
     pinned_vrf: Option<&str>,
     handle: &str,
@@ -240,15 +275,12 @@ pub fn contact_verdict(
     if entry.kt.as_deref() != Some("akd") || entry.vrf_public_key.is_empty() || entry.proof_json.is_empty() {
         return ContactTrust::Unverified(Unverified::NoLogBackend);
     }
-    if relay_pub_b64.is_empty() {
-        return ContactTrust::Unverified(Unverified::NoRelayKey);
-    }
     if let Some(pin) = pinned_vrf {
         if pin != entry.vrf_public_key {
             return ContactTrust::Rejected(Rejected::VrfKeyChanged);
         }
     }
-    let Some(epoch) = signed_root_epoch(relay_pub_b64, roots, &entry.root) else {
+    let Some(epoch) = signed_root_epoch(keys, roots, &entry.root) else {
         return ContactTrust::Rejected(Rejected::RootUnsigned);
     };
     match verify_lookup(&entry.vrf_public_key, &entry.root, entry.epoch, handle, &entry.proof_json) {
@@ -370,23 +402,96 @@ mod tests {
 
     use ed25519_dalek::{Signer as _, SigningKey};
 
-    /// A relay's signing key, and the signed-root chain it publishes.
+    /// A relay with the built identity shape: an **offline root** that delegates
+    /// to an **online** key, and the signed-root chain that online key publishes.
     struct FakeRelay {
-        key: SigningKey,
+        root: SigningKey,
+        /// The online keys by delegation version, in the order they were minted.
+        online: Vec<SigningKey>,
     }
 
     impl FakeRelay {
         fn new(seed: u8) -> Self {
-            FakeRelay { key: SigningKey::from_bytes(&[seed; 32]) }
+            FakeRelay {
+                root: SigningKey::from_bytes(&[seed; 32]),
+                // Deliberately a *different* key from the root: nothing here
+                // should pass because the root happened to sign it.
+                online: vec![SigningKey::from_bytes(&[seed.wrapping_add(100); 32])],
+            }
         }
-        fn pub_b64(&self) -> String {
-            enc(&self.key.verifying_key().to_bytes())
+
+        /// Rotate: mint the online key for `version` (= `online.len() + 1`).
+        fn rotate(&mut self, seed: u8) {
+            self.online.push(SigningKey::from_bytes(&[seed; 32]));
         }
-        /// Sign `root` as epoch `epoch` exactly as the relay does.
+
+        fn root_pub_b64(&self) -> String {
+            enc(&self.root.verifying_key().to_bytes())
+        }
+        fn root_fp(&self) -> String {
+            use sha2::{Digest, Sha256};
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(Sha256::digest(self.root.verifying_key().to_bytes()))
+        }
+
+        /// The verified delegation chain a client holds after connecting.
+        fn keys(&self) -> DelegatedKeys {
+            let fp = self.root_fp();
+            let chain: Vec<_> = self
+                .online
+                .iter()
+                .enumerate()
+                .map(|(i, k)| self.delegation(i as i64 + 1, k))
+                .collect();
+            let current = chain.last().unwrap().clone();
+            crate::delegation::verify_chain(&self.root_pub_b64(), &fp, &chain, &current, 0).unwrap()
+        }
+
+        fn delegation(&self, version: i64, online: &SigningKey) -> crate::delegation::Delegation {
+            let mut d = crate::delegation::Delegation {
+                version,
+                online_key: enc(&online.verifying_key().to_bytes()),
+                issued_at: 1,
+                not_after: i64::MAX,
+                signature: String::new(),
+            };
+            let payload = crate::delegation::delegation_payload(&self.root_fp(), &d);
+            d.signature = enc(&self.root.sign(payload.as_bytes()).to_bytes());
+            d
+        }
+
+        /// Sign `root` as epoch `epoch` with the CURRENT online key, exactly as
+        /// the relay does — stamped with the delegation version that signed it.
         fn sign(&self, epoch: i64, root: &str, prev: &str) -> SignedRoot {
+            self.sign_with(self.online.len() as i64, epoch, root, prev)
+        }
+
+        /// Sign with the online key of delegation `version`, stamping that
+        /// version onto the root (what a relay that has rotated serves for its
+        /// older epochs).
+        fn sign_with(&self, version: i64, epoch: i64, root: &str, prev: &str) -> SignedRoot {
+            self.sign_raw(&self.online[version as usize - 1], Some(version), epoch, root, prev)
+        }
+
+        /// Sign with an arbitrary key — for the case that matters most: a root
+        /// the relay's own OFFLINE ROOT key signed, which no delegation names.
+        fn sign_raw(
+            &self,
+            key: &SigningKey,
+            key_version: Option<i64>,
+            epoch: i64,
+            root: &str,
+            prev: &str,
+        ) -> SignedRoot {
             let prev_payload = if prev.is_empty() { "genesis" } else { prev };
-            let sig = self.key.sign(format!("kt-root|{root}|{prev_payload}").as_bytes());
-            SignedRoot { epoch, root: root.into(), prev: prev.into(), sig: enc(&sig.to_bytes()) }
+            let sig = key.sign(format!("kt-root|{root}|{prev_payload}").as_bytes());
+            SignedRoot {
+                epoch,
+                root: root.into(),
+                prev: prev.into(),
+                sig: enc(&sig.to_bytes()),
+                key_version,
+            }
         }
     }
 
@@ -426,7 +531,7 @@ mod tests {
         let roots = vec![relay.sign(5, &root, "")];
 
         let verdict = contact_verdict(
-            &relay.pub_b64(),
+            &relay.keys(),
             &roots,
             Some(&vrf),
             "Alice#0001",
@@ -445,7 +550,7 @@ mod tests {
         let roots = vec![relay.sign(1, &root, "")];
 
         let verdict = contact_verdict(
-            &relay.pub_b64(),
+            &relay.keys(),
             &roots,
             Some(&vrf),
             "Alice#0001",
@@ -474,7 +579,7 @@ mod tests {
         let roots = vec![relay.sign(1, &honest.0, "")];
         assert_eq!(
             contact_verdict(
-                &relay.pub_b64(),
+                &relay.keys(),
                 &roots,
                 Some(&vrf),
                 "Alice#0001",
@@ -490,7 +595,7 @@ mod tests {
         let roots = vec![impostor.sign(1, &evil_root, "")];
         assert_eq!(
             contact_verdict(
-                &relay.pub_b64(),
+                &relay.keys(),
                 &roots,
                 Some(&vrf),
                 "Alice#0001",
@@ -511,7 +616,7 @@ mod tests {
         let (_r2, _e2, other_proof, _v2) = published("Bob#0002", &[7u8; 32]).await;
         assert_eq!(
             contact_verdict(
-                &relay.pub_b64(),
+                &relay.keys(),
                 &roots,
                 Some(&vrf),
                 "Alice#0001",
@@ -524,7 +629,7 @@ mod tests {
         // Garbage in place of a proof is a rejection, not a crash.
         assert_eq!(
             contact_verdict(
-                &relay.pub_b64(),
+                &relay.keys(),
                 &roots,
                 Some(&vrf),
                 "Alice#0001",
@@ -538,7 +643,7 @@ mod tests {
         // the root hash is what the Merkle path commits to.
         assert_eq!(
             contact_verdict(
-                &relay.pub_b64(),
+                &relay.keys(),
                 &roots,
                 Some(&vrf),
                 "Alice#0001",
@@ -573,7 +678,7 @@ mod tests {
 
         assert_eq!(
             contact_verdict(
-                &relay.pub_b64(),
+                &relay.keys(),
                 &roots,
                 Some(&pinned),
                 "Alice#0001",
@@ -585,7 +690,7 @@ mod tests {
         // With nothing pinned yet, first use is trust-on-first-use.
         assert!(matches!(
             contact_verdict(
-                &relay.pub_b64(),
+                &relay.keys(),
                 &roots,
                 None,
                 "Alice#0001",
@@ -607,15 +712,16 @@ mod tests {
         let mut interim = entry(&root, epoch, &proof, &vrf);
         interim.kt = None;
         assert_eq!(
-            contact_verdict(&relay.pub_b64(), &roots, Some(&vrf), "Alice#0001", &[7u8; 32], &interim),
+            contact_verdict(&relay.keys(), &roots, Some(&vrf), "Alice#0001", &[7u8; 32], &interim),
             ContactTrust::Unverified(Unverified::NoLogBackend)
         );
 
-        // No relay identity key ⇒ no signature to check ⇒ unverified, not trusted.
-        assert_eq!(
-            contact_verdict("", &roots, Some(&vrf), "Alice#0001", &[7u8; 32], &entry(&root, epoch, &proof, &vrf)),
-            ContactTrust::Unverified(Unverified::NoRelayKey)
-        );
+        // "No relay key" is no longer expressible here: `contact_verdict` takes
+        // a `DelegatedKeys`, which only exists once a delegation chain has
+        // verified under the pinned root. The unverified-for-lack-of-a-key case
+        // now lives one level up (`lib.rs::verify_contact_keys` returns
+        // `NoRelayKey` when the session has no verified chain), which is exactly
+        // the point of the type: there is no "" to pass.
     }
 
     #[tokio::test]
@@ -625,15 +731,78 @@ mod tests {
         let b = enc(&[2u8; 32]);
         let roots = vec![relay.sign(1, &a, ""), relay.sign(2, &b, &a)];
 
-        assert_eq!(signed_root_epoch(&relay.pub_b64(), &roots, &a), Some(1));
-        assert_eq!(signed_root_epoch(&relay.pub_b64(), &roots, &b), Some(2));
+        assert_eq!(signed_root_epoch(&relay.keys(), &roots, &a), Some(1));
+        assert_eq!(signed_root_epoch(&relay.keys(), &roots, &b), Some(2));
         // Unknown root, empty root, and a chain from another relay: all None.
-        assert_eq!(signed_root_epoch(&relay.pub_b64(), &roots, &enc(&[3u8; 32])), None);
-        assert_eq!(signed_root_epoch(&relay.pub_b64(), &roots, ""), None);
-        assert_eq!(signed_root_epoch(&FakeRelay::new(7).pub_b64(), &roots, &a), None);
+        assert_eq!(signed_root_epoch(&relay.keys(), &roots, &enc(&[3u8; 32])), None);
+        assert_eq!(signed_root_epoch(&relay.keys(), &roots, ""), None);
+        assert_eq!(signed_root_epoch(&FakeRelay::new(7).keys(), &roots, &a), None);
         // A root listed with a corrupted signature is not a signed root.
         let tampered = vec![SignedRoot { sig: enc(&[0u8; 64]), ..relay.sign(1, &a, "") }];
-        assert_eq!(signed_root_epoch(&relay.pub_b64(), &tampered, &a), None);
+        assert_eq!(signed_root_epoch(&relay.keys(), &tampered, &a), None);
+    }
+
+    /// **The check that carries the whole identity split.** KT roots must verify
+    /// against the *delegated online* key and nothing else — not the pinned root
+    /// (which signs delegations only), and not any other key the relay serves.
+    #[tokio::test]
+    async fn a_root_signed_by_the_pinned_root_key_is_not_a_signed_root() {
+        let relay = FakeRelay::new(42);
+        let a = enc(&[1u8; 32]);
+
+        // The relay signs an epoch root with its OFFLINE ROOT key — the key the
+        // client pins, and the key that vouches for the whole chain. It is still
+        // not a key any delegation names, so the root is a fabrication.
+        let root_signed = vec![relay.sign_raw(&relay.root, Some(1), 1, &a, "")];
+        assert_eq!(signed_root_epoch(&relay.keys(), &root_signed, &a), None);
+        // …and the same root with no keyVersion at all (which falls back to the
+        // current delegated key) is refused too — the fallback is a key lookup,
+        // never a "try anything" escape hatch.
+        let unstamped = vec![relay.sign_raw(&relay.root, None, 1, &a, "")];
+        assert_eq!(signed_root_epoch(&relay.keys(), &unstamped, &a), None);
+
+        // Same for gossip: a friend forwarding a root the pinned root key signed
+        // proves nothing, so it must not feed split-view evidence.
+        let g = &root_signed[0];
+        assert!(!gossiped_root_is_signed(&relay.keys(), &g.root, &g.prev, &g.sig));
+
+        // The genuinely delegated key does validate it — so the refusals above
+        // are about *which* key, not about the signing scheme.
+        let ok = vec![relay.sign(1, &a, "")];
+        assert_eq!(signed_root_epoch(&relay.keys(), &ok, &a), Some(1));
+        assert!(gossiped_root_is_signed(&relay.keys(), &ok[0].root, &ok[0].prev, &ok[0].sig));
+    }
+
+    #[tokio::test]
+    async fn an_online_key_rotation_keeps_older_roots_verifiable() {
+        let mut relay = FakeRelay::new(42);
+        let a = enc(&[1u8; 32]);
+        let b = enc(&[2u8; 32]);
+        // Epoch 1 signed under delegation v1, then the operator rotates and
+        // epoch 2 is signed under v2. Both must still resolve.
+        let epoch1 = relay.sign(1, &a, "");
+        relay.rotate(77);
+        let epoch2 = relay.sign(2, &b, &a);
+        let roots = vec![epoch1.clone(), epoch2.clone()];
+        assert_eq!(epoch1.key_version, Some(1));
+        assert_eq!(epoch2.key_version, Some(2));
+
+        let keys = relay.keys();
+        assert_eq!(signed_root_epoch(&keys, &roots, &a), Some(1));
+        assert_eq!(signed_root_epoch(&keys, &roots, &b), Some(2));
+
+        // A root that CLAIMS a version it was not signed under is refused: the
+        // stamp is a lookup key, not a hint.
+        let lying = vec![SignedRoot { key_version: Some(2), ..epoch1.clone() }];
+        assert_eq!(signed_root_epoch(&keys, &lying, &a), None);
+        // …and a version no delegation covers is refused outright.
+        let ahead = vec![SignedRoot { key_version: Some(3), ..epoch2.clone() }];
+        assert_eq!(signed_root_epoch(&keys, &ahead, &b), None);
+
+        // Gossip of the pre-rotation root still counts (a friend may have seen
+        // it before the rotation); a client that only knew the current key would
+        // silently lose that split-view evidence.
+        assert!(gossiped_root_is_signed(&keys, &epoch1.root, &epoch1.prev, &epoch1.sig));
     }
 
     #[tokio::test]

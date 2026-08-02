@@ -2,10 +2,10 @@
 //! (spec/key-transparency.md § Contact verification; spec/testing.md § L2)
 //!
 //! The real Rust core — real vault, real `RelayClient`, the real
-//! `mailbox_drain` — driven against a relay the *test* controls byte for byte.
-//! That control is the point: the claim under test is not "the happy path
-//! works" but "a relay that lies is not believed", and a lying relay is
-//! precisely what a genuine `server/` process will never be.
+//! `mailbox_drain` — driven against a relay the *test* controls byte for byte
+//! (the shared harness in `common/`). That control is the point: the claim under
+//! test is not "the happy path works" but "a relay that lies is not believed",
+//! and a lying relay is precisely what a genuine `server/` process will never be.
 //!
 //! What each case pins down:
 //!   * a key the log published under a **signed** root → recorded, with the
@@ -15,396 +15,38 @@
 //!   * a self-consistent `(proof, root)` pair for a root the relay never signed
 //!     → refused, because the proof always agrees with the root it ships with;
 //!   * 404 and an unreachable directory → recorded UNVERIFIED, never verified,
-//!     and settled by the re-verification sweep on the next connect.
+//!     and settled by the re-verification sweep on the next connect;
+//!   * and, under it all, the **relay's own identity**: the fingerprint must
+//!     bind the key it serves, and it must match what this account pinned.
 //!
 //! The akd proofs are generated with the full `akd` crate (a dev-dependency),
 //! so the bytes the core verifies are the bytes a real sidecar would produce.
 
-use std::collections::HashMap;
-use std::io::Write as _;
-use std::net::{SocketAddr, TcpListener};
-use std::sync::{Arc, Mutex};
+mod common;
 
 use base64::Engine as _;
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 
-use akd::append_only_zks::AzksParallelismConfig;
-use akd::directory::Directory;
-use akd::ecvrf::HardCodedAkdVRF;
-use akd::storage::memory::AsyncInMemoryDatabase;
-use akd::storage::StorageManager;
-use akd::{AkdLabel, AkdValue};
-
-use app_lib::vault::{Keychain, Vault};
-use app_lib::{envelope, identity, message, relay_client::RelayClient};
-
-const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::STANDARD;
-
-const MY_HANDLE: &str = "Me#0001";
-const BOB_HANDLE: &str = "Bob#0002";
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-// ------------------------------------------------------------- fake relay ---
-
-/// How the fake relay answers `GET /api/relay/directory/:handle`.
-#[derive(Clone)]
-enum Directory404 {
-    /// A full AKD answer: `(identityPubKey, epoch, rootHash, proof, vrf)`.
-    Entry {
-        identity_pub_b64: String,
-        epoch: u64,
-        root: String,
-        proof_json: String,
-        vrf: String,
-    },
-    /// "no such handle" — the relay claims the handle is not in the log.
-    NotFound,
-    /// The directory is broken/unreachable (5xx).
-    Unavailable,
-}
-
-struct RelayState {
-    directory: Directory404,
-    /// The signed root chain served at `/api/relay/kt/roots`.
-    roots: Vec<serde_json::Value>,
-    /// Rows returned by the next mailbox fetch.
-    mailbox: Vec<serde_json::Value>,
-    /// Everything the client POSTed to `/api/relay/mailbox/send` — the
-    /// "did it seal a reply back?" evidence.
-    sends: Vec<serde_json::Value>,
-    acked: Vec<i64>,
-}
-
-struct FakeRelay {
-    base: String,
-    state: Arc<Mutex<RelayState>>,
-    stop: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl FakeRelay {
-    /// Spawn the relay on a throwaway port. `signing` is its identity key — the
-    /// one that signs KT roots and that the client pins at connect.
-    fn start(signing: SigningKey, state: RelayState) -> FakeRelay {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr: SocketAddr = listener.local_addr().unwrap();
-        let identity_pub_b64 = B64.encode(signing.verifying_key().to_bytes());
-        // The client pins this at connect and checks every root signature with it.
-        let state = Arc::new(Mutex::new(state));
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-        let server_state = Arc::clone(&state);
-        let server_stop = Arc::clone(&stop);
-        let server_identity = identity_pub_b64.clone();
-        std::thread::spawn(move || {
-            for conn in listener.incoming() {
-                if server_stop.load(std::sync::atomic::Ordering::SeqCst) {
-                    return;
-                }
-                let Ok(mut sock) = conn else { continue };
-                let _ = handle_conn(&mut sock, &server_state, &server_identity);
-            }
-        });
-
-        FakeRelay { base: format!("http://{addr}"), state, stop }
-    }
-
-    fn fingerprint(&self) -> String {
-        // Any stable string; the client only ever compares it with itself.
-        "fake-relay-fp".to_string()
-    }
-
-    fn with<R>(&self, f: impl FnOnce(&mut RelayState) -> R) -> R {
-        f(&mut self.state.lock().unwrap())
-    }
-}
-
-impl Drop for FakeRelay {
-    fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        // Unblock `incoming()` so the thread notices the flag and exits.
-        let _ = std::net::TcpStream::connect(self.base.trim_start_matches("http://"));
-    }
-}
-
-/// Minimal HTTP/1.1: read one request, answer it, close. Enough for reqwest,
-/// and it keeps the hostile-relay behaviour in plain sight rather than behind a
-/// framework.
-fn handle_conn(
-    sock: &mut std::net::TcpStream,
-    state: &Arc<Mutex<RelayState>>,
-    relay_identity_pub: &str,
-) -> std::io::Result<()> {
-    use std::io::Read as _;
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 4096];
-    let (head_end, mut body) = loop {
-        let n = sock.read(&mut chunk)?;
-        if n == 0 {
-            return Ok(());
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = find(&buf, b"\r\n\r\n") {
-            break (pos + 4, buf[pos + 4..].to_vec());
-        }
-    };
-    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
-    let mut lines = head.lines();
-    let request_line = lines.next().unwrap_or_default().to_string();
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let target = parts.next().unwrap_or_default().to_string();
-    let content_length = head
-        .lines()
-        .find_map(|l| {
-            let (k, v) = l.split_once(':')?;
-            (k.trim().eq_ignore_ascii_case("content-length")).then(|| v.trim().parse::<usize>().ok())?
-        })
-        .unwrap_or(0);
-    while body.len() < content_length {
-        let n = sock.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    let body: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-    let path = target.split('?').next().unwrap_or_default().to_string();
-
-    let (status, payload) = route(&method, &path, &body, state, relay_identity_pub);
-    let text = payload.to_string();
-    write!(
-        sock,
-        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
-        text.len()
-    )?;
-    sock.flush()
-}
-
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    hay.windows(needle.len()).position(|w| w == needle)
-}
-
-/// Percent-decode a path segment (handles carry a literal `#`).
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).to_string()
-}
-
-fn route(
-    method: &str,
-    path: &str,
-    body: &serde_json::Value,
-    state: &Arc<Mutex<RelayState>>,
-    relay_identity_pub: &str,
-) -> (u16, serde_json::Value) {
-    let ok = |v: serde_json::Value| (200u16, v);
-    match (method, path) {
-        ("GET", "/api/relay/info") => ok(serde_json::json!({
-            "identityFingerprint": "fake-relay-fp",
-            "identityPubKey": relay_identity_pub,
-        })),
-        ("POST", "/api/relay/auth/challenge") => ok(serde_json::json!({ "nonce": "nonce-1" })),
-        ("POST", "/api/relay/auth/token") => {
-            ok(serde_json::json!({ "token": "device-token", "expiresInSec": 3600 }))
-        }
-        ("GET", "/api/relay/mailbox") => {
-            let rows = state.lock().unwrap().mailbox.clone();
-            ok(serde_json::Value::Array(rows))
-        }
-        ("POST", "/api/relay/mailbox/ack") => {
-            let ids: Vec<i64> = body
-                .get("queueIds")
-                .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
-                .unwrap_or_default();
-            let mut st = state.lock().unwrap();
-            st.mailbox.retain(|r| !ids.contains(&r["queueId"].as_i64().unwrap_or(-1)));
-            let n = ids.len();
-            st.acked.extend(ids);
-            ok(serde_json::json!({ "acked": n }))
-        }
-        ("POST", "/api/relay/mailbox/send") => {
-            state.lock().unwrap().sends.push(body.clone());
-            ok(serde_json::json!({ "relayTs": now_ms() }))
-        }
-        ("GET", "/api/relay/kt/roots") => {
-            let roots = state.lock().unwrap().roots.clone();
-            ok(serde_json::json!({ "relayFp": "fake-relay-fp", "roots": roots }))
-        }
-        ("GET", p) if p.starts_with("/api/relay/directory/") => {
-            let handle = percent_decode(p.trim_start_matches("/api/relay/directory/"));
-            match state.lock().unwrap().directory.clone() {
-                Directory404::NotFound => (404, serde_json::json!({ "error": "unknown handle" })),
-                Directory404::Unavailable => (503, serde_json::json!({ "error": "directory down" })),
-                Directory404::Entry { identity_pub_b64, epoch, root, proof_json, vrf } => ok(serde_json::json!({
-                    "identityPubKey": identity_pub_b64,
-                    "sealingPubKey": "",
-                    "epoch": epoch,
-                    "rootHash": root,
-                    "proof": serde_json::from_str::<serde_json::Value>(&proof_json).unwrap(),
-                    "vrfPublicKey": vrf,
-                    "kt": "akd",
-                    "handle": handle,
-                })),
-            }
-        }
-        _ => (404, serde_json::json!({ "error": "not routed by the fake relay" })),
-    }
-}
-
-// -------------------------------------------------------------- the client --
-
-/// In-memory keychain: a test must never touch the developer's OS keychain.
-#[derive(Default)]
-struct MemKeychain(Mutex<HashMap<String, String>>);
-
-impl Keychain for MemKeychain {
-    fn set(&self, name: &str, value: &str) -> Result<(), String> {
-        self.0.lock().unwrap().insert(name.into(), value.into());
-        Ok(())
-    }
-    fn get(&self, name: &str) -> Result<String, String> {
-        self.0
-            .lock()
-            .unwrap()
-            .get(name)
-            .cloned()
-            .ok_or_else(|| "no matching entry".into())
-    }
-}
-
-/// One installed copy of the app, connected to the fake relay.
-struct Core {
-    _dir: tempfile::TempDir,
-    vault: Mutex<Vault>,
-    relay: RelayClient,
-}
-
-impl Core {
-    async fn connect(base: &str) -> Core {
-        let dir = tempfile::tempdir().unwrap();
-        let mut vault = Vault::with_keychain(dir.path().to_path_buf(), Box::<MemKeychain>::default());
-        vault.create("a long enough password").unwrap();
-        let device = vault.device_signing_key().unwrap();
-        let relay = RelayClient::default();
-        relay.connect(base, &device).await.expect("fake relay connect");
-        {
-            let store = vault.store().unwrap();
-            store.set_setting("identity.handle", MY_HANDLE).unwrap();
-        }
-        Core { _dir: dir, vault: Mutex::new(vault), relay }
-    }
-
-    fn relay_fp(&self) -> String {
-        self.relay.status().relay_fp.expect("connected")
-    }
-
-    /// My per-relay sealing key — where a friend-accept is sealed to.
-    fn sealing_pub(&self) -> [u8; 32] {
-        let vault = self.vault.lock().unwrap();
-        let fp = self.relay.status().relay_fp.unwrap();
-        identity::derive_relay_identity(vault.mk().unwrap(), &fp).unwrap().sealing_public()
-    }
-
-    fn friends(&self) -> Vec<app_lib::store::FriendSummary> {
-        let vault = self.vault.lock().unwrap();
-        vault.store().unwrap().list_friends(&self.relay.status().relay_fp.unwrap()).unwrap()
-    }
-}
-
-/// A "Bob" whose per-relay identity is derived exactly as the app derives one.
-fn bob_identity(relay_fp: &str, seed: u8) -> identity::RelayIdentity {
-    identity::derive_relay_identity(&[seed; 32], relay_fp).unwrap()
-}
-
-/// A sealed `friend-accept` from `sender` to `recipient_sealing`, as the invite
-/// redeem leg produces.
-fn friend_accept(sender: &identity::RelayIdentity, recipient_sealing: [u8; 32], handle: &str) -> Vec<u8> {
-    let payload = message::friend_payload(
-        handle,
-        "bobs-delivery-token",
-        &B64.encode(sender.sealing_public()),
-        Some("Bob"),
-    );
-    envelope::seal(&recipient_sealing, sender, message::KIND_FRIEND_ACCEPT, &payload, now_ms()).unwrap()
-}
-
-/// Publish `handle → key` in a real akd directory and return what a lookup
-/// response would carry, plus the root to sign.
-async fn publish(handle: &str, key: &[u8]) -> (String, u64, String, String) {
-    let storage = StorageManager::new_no_cache(AsyncInMemoryDatabase::new());
-    let dir = Directory::<akd::WhatsAppV1Configuration, _, _>::new(
-        storage,
-        HardCodedAkdVRF {},
-        AzksParallelismConfig::default(),
-    )
-    .await
-    .unwrap();
-    dir.publish(vec![(AkdLabel::from(handle), AkdValue(key.to_vec()))]).await.unwrap();
-    let (proof, eh) = dir.lookup(AkdLabel::from(handle)).await.unwrap();
-    let vrf = dir.get_public_key().await.unwrap();
-    (
-        B64.encode(eh.hash()),
-        eh.epoch(),
-        serde_json::to_string(&proof).unwrap(),
-        B64.encode(vrf.as_bytes()),
-    )
-}
-
-/// A signed root row exactly as `/api/relay/kt/roots` serves it.
-fn signed_root(key: &SigningKey, epoch: i64, root: &str) -> serde_json::Value {
-    let sig = key.sign(format!("kt-root|{root}|genesis").as_bytes());
-    serde_json::json!({
-        "epoch": epoch,
-        "rootHash": root,
-        "prevRootHash": null,
-        "signature": B64.encode(sig.to_bytes()),
-        "timestamp": now_ms(),
-    })
-}
-
-fn mailbox_row(queue_id: i64, envelope: &[u8]) -> serde_json::Value {
-    serde_json::json!({ "queueId": queue_id, "relayTs": now_ms(), "envelope": B64.encode(envelope) })
-}
-
-/// Collects the hard KT alarms the core raises.
-#[derive(Default)]
-struct Alarms(Mutex<Vec<String>>);
-
-impl Alarms {
-    fn sink(&self) -> impl Fn(&str, i64) + Send + Sync + '_ {
-        move |reason: &str, _epoch: i64| self.0.lock().unwrap().push(reason.to_string())
-    }
-    fn seen(&self) -> Vec<String> {
-        self.0.lock().unwrap().clone()
-    }
-}
+use common::{
+    bob_identity, fingerprint_of, friend_accept, mailbox_row, publish, pub_b64, signed_root, Alarms,
+    Core, Directory404, FakeRelay, RelayState, B64, BOB_HANDLE,
+};
 
 // ------------------------------------------------------------------ tests ---
 
+/// What the relay's transparency log publishes for Bob's handle.
+enum Logged {
+    /// Bob's real key — the honest case.
+    Bobs,
+    /// Somebody else's key — the relay contradicts the accept it delivered.
+    Foreign(Vec<u8>),
+    /// No entry at all (404).
+    Absent,
+}
+
 /// Build the whole scene: a relay, a connected core, and Bob's accept queued.
-/// `logged_key` is what the relay's transparency log publishes for Bob's
-/// handle; `sign_root` says whether the relay signs the root it serves.
-async fn scene(logged_key: Option<Vec<u8>>, sign_root: bool) -> (FakeRelay, Core, SigningKey) {
+/// `sign_root` says whether the relay signs the root it serves.
+async fn scene(logged: Logged, sign_root: bool) -> (FakeRelay, Core, SigningKey) {
     let relay_key = SigningKey::from_bytes(&[42u8; 32]);
     // Boot with an empty directory; the entry needs the relay fingerprint, which
     // only exists once the relay is up.
@@ -425,6 +67,11 @@ async fn scene(logged_key: Option<Vec<u8>>, sign_root: bool) -> (FakeRelay, Core
     let bob = bob_identity(&fp, 9);
     let envelope = friend_accept(&bob, core.sealing_pub(), BOB_HANDLE);
 
+    let logged_key = match logged {
+        Logged::Bobs => Some(bob.signing_public().to_vec()),
+        Logged::Foreign(k) => Some(k),
+        Logged::Absent => None,
+    };
     if let Some(key) = logged_key {
         let (root, epoch, proof_json, vrf) = publish(BOB_HANDLE, &key).await;
         relay.with(|st| {
@@ -446,8 +93,7 @@ async fn scene(logged_key: Option<Vec<u8>>, sign_root: bool) -> (FakeRelay, Core
 
 #[tokio::test]
 async fn a_log_verified_contact_is_recorded_with_the_signed_epoch() {
-    let bob_key = bob_identity("fake-relay-fp", 9).signing_public().to_vec();
-    let (relay, core, _k) = scene(Some(bob_key.clone()), true).await;
+    let (relay, core, _k) = scene(Logged::Bobs, true).await;
     let alarms = Alarms::default();
 
     let report = app_lib::mailbox_drain(&core.vault, &core.relay, &alarms.sink()).await.unwrap();
@@ -468,7 +114,7 @@ async fn a_log_verified_contact_is_recorded_with_the_signed_epoch() {
 async fn a_contact_key_the_log_contradicts_persists_nothing_and_seals_nothing_back() {
     // The relay hands us an accept from a key it controls, while the log
     // publishes a different key for that handle — the MITM it exists to catch.
-    let (relay, core, _k) = scene(Some(vec![3u8; 32]), true).await;
+    let (relay, core, _k) = scene(Logged::Foreign(vec![3u8; 32]), true).await;
     let alarms = Alarms::default();
 
     let report = app_lib::mailbox_drain(&core.vault, &core.relay, &alarms.sink()).await.unwrap();
@@ -491,8 +137,7 @@ async fn a_self_consistent_proof_under_an_unsigned_root_is_refused() {
     // The relay's own (proof, root) pair is internally valid and names the key
     // it wants us to trust — but it never signed that root. Believing the
     // response's root would make the whole check circular.
-    let bob_key = bob_identity("fake-relay-fp", 9).signing_public().to_vec();
-    let (relay, core, relay_key) = scene(Some(bob_key), false).await;
+    let (relay, core, relay_key) = scene(Logged::Bobs, false).await;
     // The relay does publish a root chain — just not one containing this root.
     relay.with(|st| st.roots = vec![signed_root(&relay_key, 4, &B64.encode([1u8; 32]))]);
     let alarms = Alarms::default();
@@ -510,7 +155,7 @@ async fn a_handle_absent_from_the_log_is_unverified_but_not_blocked() {
     // 404 is indistinguishable from a publish that has not landed yet, and a
     // relay can always produce it — so it must not block. It must also never
     // count as a match.
-    let (relay, core, _k) = scene(None, false).await;
+    let (relay, core, _k) = scene(Logged::Absent, false).await;
     let alarms = Alarms::default();
 
     let report = app_lib::mailbox_drain(&core.vault, &core.relay, &alarms.sink()).await.unwrap();
@@ -526,8 +171,7 @@ async fn a_handle_absent_from_the_log_is_unverified_but_not_blocked() {
 
 #[tokio::test]
 async fn an_unreachable_directory_degrades_to_unverified_and_re_verifies_later() {
-    let bob_key = bob_identity("fake-relay-fp", 9).signing_public().to_vec();
-    let (relay, core, relay_key) = scene(Some(bob_key.clone()), true).await;
+    let (relay, core, relay_key) = scene(Logged::Bobs, true).await;
     // Keep the *entry* the relay would serve, but make the directory fail — the
     // offline / broken-directory case.
     let saved = relay.with(|st| {
@@ -576,5 +220,314 @@ async fn an_unreachable_directory_degrades_to_unverified_and_re_verifies_later()
         .unwrap();
     assert_eq!(sweep.rejected, 1);
     assert_eq!(core.friends()[0].kt_verified_epoch, None);
+    assert_eq!(alarms.seen(), vec!["contact-key-mismatch".to_string()]);
+}
+
+// ------------------------------------------- the relay's own identity (D4) ---
+//
+// Everything above verifies *contact* keys against the relay's signed log. That
+// is circular unless the relay itself is anchored: the same relay serves the
+// identity key those root signatures are checked against. These cases pin the
+// anchor.
+
+#[tokio::test]
+async fn a_fingerprint_that_does_not_bind_the_served_key_is_refused() {
+    let relay = FakeRelay::bare(SigningKey::from_bytes(&[42u8; 32]));
+    let honest_fp = relay.fingerprint();
+    // The pinned/served identity key is the relay's OFFLINE ROOT — the online
+    // key it delegates to is a different key entirely, and is never pinned.
+    let honest_key = relay.root_pub_b64();
+    assert_ne!(honest_key, pub_b64(42));
+    let alarms = Alarms::default();
+
+    // (a) A fingerprint that is simply not the digest of the key served with it.
+    relay.serve_info("some-other-fingerprint", &honest_key);
+    let core = Core::install();
+    let err = core.connect_to(&relay.base, None, &alarms).await.unwrap_err();
+    assert!(err.starts_with("RELAY_IDENTITY_INVALID"), "{err}");
+
+    // (b) THE ATTACK: the *genuine* fingerprint — satisfying any pin, keeping
+    // the account's derived identity and contact ids stable — served next to a
+    // foreign identity key. That key is what every KT root signature is checked
+    // against, so a relay that got away with this would sign its own forged
+    // directory and every contact verdict would come back Verified. Pinning the
+    // fingerprint alone cannot see it; the binding can.
+    relay.serve_info(&honest_fp, &pub_b64(99));
+    let err = core.connect_to(&relay.base, Some(&honest_fp), &alarms).await.unwrap_err();
+    assert!(err.starts_with("RELAY_IDENTITY_INVALID"), "{err}");
+
+    // Both refusals are hard alarms, and neither left a session or a pin behind.
+    assert_eq!(alarms.seen(), vec!["relay-identity-changed".to_string(); 2]);
+    assert!(core.relay.session_info().is_none());
+
+    // The honest relay still connects afterwards (the refusals poisoned nothing).
+    relay.serve_info(&honest_fp, &honest_key);
+    core.connect_to(&relay.base, None, &alarms).await.unwrap();
+    assert_eq!(core.relay_fp(), honest_fp);
+}
+
+#[tokio::test]
+async fn first_contact_pins_and_a_later_identity_change_is_refused_and_alarms() {
+    let relay = FakeRelay::bare(SigningKey::from_bytes(&[42u8; 32]));
+    let honest_fp = relay.fingerprint();
+    let alarms = Alarms::default();
+    let core = Core::install();
+
+    // First contact: nothing to compare against, so the identity is pinned.
+    core.connect_to(&relay.base, None, &alarms).await.unwrap();
+    // A second connect to the same identity is ordinary.
+    core.connect_to(&relay.base, None, &alarms).await.unwrap();
+    assert!(alarms.seen().is_empty());
+    assert_eq!(core.relay_fp(), honest_fp);
+
+    // Now the relay presents a different identity — internally consistent, so
+    // only the pin can catch it.
+    let impostor = pub_b64(7);
+    relay.serve_info(&fingerprint_of(&impostor), &impostor);
+    let err = core.connect_to(&relay.base, None, &alarms).await.unwrap_err();
+    assert!(err.starts_with("RELAY_IDENTITY_CHANGED"), "{err}");
+    assert_eq!(alarms.seen(), vec!["relay-identity-changed".to_string()]);
+    // Not silently re-pinned: the live session still names the pinned relay…
+    assert_eq!(core.relay_fp(), honest_fp);
+    // …and the impostor is refused again on every retry.
+    assert!(core
+        .connect_to(&relay.base, None, &alarms)
+        .await
+        .unwrap_err()
+        .starts_with("RELAY_IDENTITY_CHANGED"));
+}
+
+#[tokio::test]
+async fn an_invite_fingerprint_outranks_the_relay_and_is_checked_at_redeem() {
+    let relay = FakeRelay::bare(SigningKey::from_bytes(&[42u8; 32]));
+    let honest_fp = relay.fingerprint();
+    let alarms = Alarms::default();
+    let core = Core::install();
+
+    // An invite naming a relay identity this address does not serve: refused at
+    // first contact, before the trust-on-first-use pin can be taken. This is the
+    // case a pin cannot cover — the very first connection.
+    let wrong_fp = fingerprint_of(&pub_b64(7));
+    let err = core.connect_to(&relay.base, Some(&wrong_fp), &alarms).await.unwrap_err();
+    assert!(err.starts_with("RELAY_IDENTITY_CHANGED"), "{err}");
+    assert_eq!(alarms.seen(), vec!["relay-identity-changed".to_string()]);
+    assert!(core.relay.session_info().is_none());
+
+    // The same invite with the relay's real fingerprint connects and pins it.
+    core.connect_to(&relay.base, Some(&honest_fp), &alarms).await.unwrap();
+
+    // Redeeming an invite for some *other* relay is refused even though this
+    // session is perfectly healthy: the invite's log is not this relay's log.
+    let err = app_lib::require_invite_relay(&core.relay, &wrong_fp, &alarms.sink()).unwrap_err();
+    assert!(err.starts_with("RELAY_IDENTITY_CHANGED"), "{err}");
+    // …and an invite for this relay passes.
+    app_lib::require_invite_relay(&core.relay, &honest_fp, &alarms.sink()).unwrap();
+}
+
+#[tokio::test]
+async fn a_pinned_account_refuses_an_invite_that_names_a_different_relay() {
+    let relay = FakeRelay::bare(SigningKey::from_bytes(&[42u8; 32]));
+    let alarms = Alarms::default();
+    let core = Core::install();
+    core.connect_to(&relay.base, None, &alarms).await.unwrap();
+
+    // Hold both anchors and they disagree: one of the two channels is lying, so
+    // the connect is refused rather than resolved in either's favour.
+    let err = core
+        .connect_to(&relay.base, Some(&fingerprint_of(&pub_b64(7))), &alarms)
+        .await
+        .unwrap_err();
+    assert!(err.starts_with("RELAY_IDENTITY_CHANGED"), "{err}");
+    assert_eq!(alarms.seen(), vec!["relay-identity-changed".to_string()]);
+}
+
+// ------------------------------------- the delegation: root → online key (D4) ---
+//
+// The pinned identity is an OFFLINE ROOT whose private half never touches the
+// relay; it signs one kind of statement, a delegation naming the ONLINE key that
+// signs KT roots. These cases pin the third and fourth links of the chain: the
+// delegation must verify under the pin and must never go backwards, and the KT
+// roots must verify under the key it names — not under the pin, and not under
+// anything else the relay served.
+
+/// The happy chain, stated end to end: the key that validates KT roots came out
+/// of a delegation, and it is *not* the key the client pinned.
+#[tokio::test]
+async fn a_valid_chain_connects_and_verifies_contacts_under_the_delegated_key() {
+    let (relay, core, relay_key) = scene(Logged::Bobs, true).await;
+    let alarms = Alarms::default();
+
+    // What the client pinned is the ROOT; what signed the roots is the online key.
+    assert_eq!(core.relay_fp(), fingerprint_of(&relay.root_pub_b64()));
+    assert_ne!(relay.root_pub_b64(), B64.encode(relay_key.verifying_key().to_bytes()));
+    let delegated = relay.current_delegation()["onlineKey"].as_str().unwrap().to_string();
+    assert_eq!(delegated, B64.encode(relay_key.verifying_key().to_bytes()));
+
+    let report = app_lib::mailbox_drain(&core.vault, &core.relay, &alarms.sink()).await.unwrap();
+    assert_eq!(report.friends, 1);
+    assert_eq!(core.friends()[0].kt_verified_epoch, Some(17));
+    assert!(alarms.seen().is_empty());
+}
+
+/// A delegation signed by *some other* root — the forgery a breached relay
+/// would need in order to name a key of its own. The pin is what refuses it.
+#[tokio::test]
+async fn a_delegation_signed_by_the_wrong_key_is_refused() {
+    let relay = FakeRelay::bare(SigningKey::from_bytes(&[42u8; 32]));
+    let alarms = Alarms::default();
+    let core = Core::install();
+
+    // Signed with an attacker root, but naming the relay's genuine fingerprint
+    // and its genuine online key — everything except the signer is honest.
+    let attacker_root = SigningKey::from_bytes(&[13u8; 32]);
+    let forged = common::delegation_json(
+        &attacker_root,
+        &relay.fingerprint(),
+        1,
+        &SigningKey::from_bytes(&[42u8; 32]),
+    );
+    relay.serve_delegation(forged.clone(), vec![forged]);
+
+    let err = core.connect_to(&relay.base, None, &alarms).await.unwrap_err();
+    assert!(err.starts_with("RELAY_DELEGATION_INVALID"), "{err}");
+    assert_eq!(alarms.seen(), vec!["relay-delegation-invalid".to_string()]);
+    // Nothing was pinned and no session was left behind: fail closed.
+    assert!(core.relay.session_info().is_none());
+}
+
+/// One byte changed in an otherwise genuine delegation. Every field is inside
+/// the signed bytes, so re-pointing it at another online key breaks it.
+#[tokio::test]
+async fn a_tampered_delegation_is_refused() {
+    let relay = FakeRelay::bare(SigningKey::from_bytes(&[42u8; 32]));
+    let alarms = Alarms::default();
+    let core = Core::install();
+
+    let mut tampered = relay.current_delegation();
+    tampered["onlineKey"] = serde_json::json!(pub_b64(66));
+    relay.serve_delegation(tampered.clone(), vec![tampered]);
+
+    let err = core.connect_to(&relay.base, None, &alarms).await.unwrap_err();
+    assert!(err.starts_with("RELAY_DELEGATION_INVALID"), "{err}");
+    assert_eq!(alarms.seen(), vec!["relay-delegation-invalid".to_string()]);
+    assert!(core.relay.session_info().is_none());
+
+    // A relay that serves no delegation at all is refused the same way: the
+    // pinned root then vouches for no signing key, so nothing it signs counts.
+    relay.serve_delegation(serde_json::Value::Null, vec![]);
+    let err = core.connect_to(&relay.base, None, &alarms).await.unwrap_err();
+    assert!(err.starts_with("RELAY_DELEGATION_INVALID"), "{err}");
+}
+
+/// **Anti-rollback.** After an operator rotates, the superseded delegation is
+/// still genuinely root-signed — forever. Replaying it is how an attacker who
+/// kept the revoked online key gets believed again, and only the version
+/// high-water mark this client persisted can refuse it.
+#[tokio::test]
+async fn a_rolled_back_delegation_version_is_refused_and_alarms() {
+    let relay = FakeRelay::bare(SigningKey::from_bytes(&[42u8; 32]));
+    let alarms = Alarms::default();
+    let core = Core::install();
+
+    let v1 = relay.current_delegation();
+    core.connect_to(&relay.base, None, &alarms).await.unwrap();
+
+    // The operator rotates to a fresh online key (v2) — the revocation.
+    let v2_key = SigningKey::from_bytes(&[77u8; 32]);
+    relay.rotate_online_key(2, &v2_key);
+    core.connect_to(&relay.base, None, &alarms).await.unwrap();
+    assert!(alarms.seen().is_empty());
+
+    // THE ATTACK: serve v1 again. Its signature is perfect; its key is revoked.
+    relay.serve_delegation(v1.clone(), vec![v1.clone()]);
+    let err = core.connect_to(&relay.base, None, &alarms).await.unwrap_err();
+    assert!(err.starts_with("RELAY_DELEGATION_ROLLBACK"), "{err}");
+    assert_eq!(alarms.seen(), vec!["relay-delegation-rollback".to_string()]);
+
+    // Equivocation at the version we already hold: a *different* online key
+    // presented as "v2". Also a rollback — only our memory of v2 can see it.
+    let fake_v2 = relay.mint_delegation(2, &SigningKey::from_bytes(&[88u8; 32]));
+    relay.serve_delegation(fake_v2.clone(), vec![v1, fake_v2]);
+    let err = core.connect_to(&relay.base, None, &alarms).await.unwrap_err();
+    assert!(err.starts_with("RELAY_DELEGATION_ROLLBACK"), "{err}");
+
+    // The honest relay still connects: the refusals poisoned no state.
+    relay.serve_delegation(
+        relay.mint_delegation(2, &v2_key),
+        vec![relay.mint_delegation(1, &SigningKey::from_bytes(&[42u8; 32])), relay.mint_delegation(2, &v2_key)],
+    );
+    core.connect_to(&relay.base, None, &alarms).await.unwrap();
+}
+
+/// The whole point of the split: rotating the online key is a **legitimate,
+/// silent** operation for a pinned client. Nothing re-pins, nothing alarms, and
+/// contact verification keeps working under the new key.
+#[tokio::test]
+async fn a_legitimate_online_key_rotation_is_accepted_silently() {
+    let (relay, core, _old_key) = scene(Logged::Bobs, true).await;
+    let alarms = Alarms::default();
+    let pinned = core.relay_fp();
+
+    // Drain once under v1 so Bob is a recorded, verified contact.
+    app_lib::mailbox_drain(&core.vault, &core.relay, &alarms.sink()).await.unwrap();
+    assert_eq!(core.friends()[0].kt_verified_epoch, Some(17));
+
+    // The operator rotates. The relay re-signs its current root with the new
+    // online key and stamps it v2 (what the next directory change publishes).
+    let v2_key = SigningKey::from_bytes(&[77u8; 32]);
+    relay.rotate_online_key(2, &v2_key);
+    let root = match relay.with(|st| st.directory.clone()) {
+        Directory404::Entry { root, .. } => root,
+        _ => unreachable!("the scene published an entry"),
+    };
+    relay.with(|st| st.roots = vec![common::signed_root_v(&v2_key, 2, 21, &root)]);
+
+    // Reconnect: accepted, no alarm, and the pin is untouched — a rotation is
+    // not an identity change.
+    core.connect_to(&relay.base, None, &alarms).await.unwrap();
+    assert!(alarms.seen().is_empty());
+    assert_eq!(core.relay_fp(), pinned);
+
+    // …and the sweep re-verifies Bob under the NEW key's signature.
+    let contact_id = core.friends()[0].contact_id.clone();
+    {
+        let vault = core.vault.lock().unwrap();
+        vault.store().unwrap().kt_clear_contact_verified(&contact_id, &pinned).unwrap();
+    }
+    let sweep = app_lib::verify_recorded_contacts(&core.vault, &core.relay, &alarms.sink())
+        .await
+        .unwrap();
+    assert_eq!((sweep.verified, sweep.rejected), (1, 0));
+    assert_eq!(core.friends()[0].kt_verified_epoch, Some(21));
+    assert!(alarms.seen().is_empty());
+}
+
+/// **The check that carries the security.** A KT root signed by the pinned ROOT
+/// key — the very key the client anchored on — is still not a signed root,
+/// because no delegation names it. If this passed, the split would buy nothing:
+/// the online key would be "whatever verifies", and a breached relay would just
+/// sign with something the client already trusts.
+#[tokio::test]
+async fn kt_roots_signed_by_the_pinned_root_key_do_not_verify() {
+    let (relay, core, _online) = scene(Logged::Bobs, true).await;
+    let alarms = Alarms::default();
+
+    // Re-sign the very same root with the relay's OFFLINE ROOT key, stamped as
+    // the current delegation version so nothing else about it looks odd.
+    let root = match relay.with(|st| st.directory.clone()) {
+        Directory404::Entry { root, .. } => root,
+        _ => unreachable!("the scene published an entry"),
+    };
+    let root_key = common::root_key_for(&SigningKey::from_bytes(&[42u8; 32]));
+    assert_eq!(B64.encode(root_key.verifying_key().to_bytes()), relay.root_pub_b64());
+    relay.with(|st| st.roots = vec![common::signed_root_v(&root_key, 1, 17, &root)]);
+
+    let report = app_lib::mailbox_drain(&core.vault, &core.relay, &alarms.sink()).await.unwrap();
+
+    // The root is a fabrication → the contact is rejected, nothing persisted,
+    // nothing sealed back, hard alarm.
+    assert_eq!(report.kt_rejected, 1);
+    assert!(core.friends().is_empty());
+    assert_eq!(relay.with(|st| st.sends.len()), 0);
     assert_eq!(alarms.seen(), vec!["contact-key-mismatch".to_string()]);
 }

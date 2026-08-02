@@ -43,7 +43,11 @@ app is the **native webview's**
 ([security.md](security.md#the-native-webviews-csp)). It is
 **operator-controlled** via the relay CLI (`npm run relay -- create-invite |
 list-devices | revoke-device | status | prune`), which acts directly on the
-database: there is no in-app admin account and no admin route.
+database: there is no in-app admin account and no admin route. The two identity
+commands (`init-identity`, `rotate-online-key`) are the exception — they
+deliberately run on the **operator's own machine** and never open the database at
+all. A relay **will not start** until an identity bundle has been installed — see
+[*Relay identity*](#relay-identity-an-offline-root-and-an-online-signing-key).
 
 ## State inventory
 
@@ -60,7 +64,10 @@ database: there is no in-app admin account and no admin route.
 | Invites | `relay_invites`, `relay_registration_invites` | one-time friend invites and operator registration invites (token **hash**, expiry, used-by) | Invite-only reach (D4b) |
 | Pending friend bindings | `relay_register_pending_friend` | one-shot `new account → inviter`, consumed by the first authed call | Completes the D4b handshake for invite signups |
 | Push subscriptions | `push_subscriptions` | Web Push `(endpoint, p256dh, auth)` per **account** | Content-free wake for an offline device (D7) |
-| Relay identity | `relay_identity` | the relay's own Ed25519 keypair (pinned by clients via invite fingerprint) | Signs KT roots and "moved-to" records (D4c); also keys the emote capability |
+| Relay trust anchor | `relay_root` | the **public** half of the relay's offline root key — one row, and **no private-key column** ([below](#relay-identity-an-offline-root-and-an-online-signing-key)) | What clients pin; verifies every delegation |
+| Online signing keys | `relay_online_keys` | every online keypair the root has delegated to, by monotonic `version`, with the root-signed delegation; superseded rows keep the public half and lose the private one | Signs KT roots; old public halves still verify old roots |
+| Identity bundle | `DATA_DIR/relay-identity.json` | the file the operator copies in: root **public** key + online keypair + delegation. Ingested at boot, idempotently, and left in place ([below](#setup-the-identity-is-generated-off-the-relay-and-shipped-as-a-bundle)) | How an identity gets onto a relay without ever generating one there |
+| Relay-local secrets | `relay_local_secrets` | named random HMAC keys that are not an identity (today: the emote capability key) | Emote URLs must survive an online-key rotation |
 | Emote image cache | `DATA_DIR/emoji-cache` | 7TV WebP bytes, ≤4000 files, ≤1 MiB each, oldest evicted | Serves emotes from our own origin so no client ever hits 7TV's CDN |
 
 **Legacy schema still on disk.** `db.ts` continues to *create* the v1 tables
@@ -90,6 +97,15 @@ frames, D7), and anything from the content proxies except cached emote bytes —
 GIF queries, previewed URLs and emote searches are proxied and logged nowhere
 (the failure logs deliberately record the error, never the query).
 
+**And, structurally: the relay's ROOT private key.** Not "not stored today" — it
+never exists on the relay at any point. It is generated on the operator's
+machine, printed once, and kept out of the bundle the relay ingests; `relay_root`
+has no column it could occupy, `parseIdentityBundle` refuses a bundle carrying a
+field named like one, and no module on the serving path imports a function that
+can mint a delegation ([below](#relay-identity-an-offline-root-and-an-online-signing-key)).
+That is what makes a full compromise of this server survivable rather than
+terminal.
+
 ## Auth (D4/D4b)
 
 Two layers, per D4: the **device token** authenticates *fetching* (mailbox reads,
@@ -101,7 +117,8 @@ correlation is documented there).
 - `POST /api/relay/auth/challenge` → `{ nonce }` (32 random bytes, single-use,
   max age 2 minutes).
 - `POST /api/relay/auth/token` `{ pubKey, nonce, signature }` where the signature
-  covers `nonce|relayIdentityFingerprint` (binds the proof to *this* relay — no
+  covers `nonce|relayIdentityFingerprint` — the **root** fingerprint, so it is
+  unchanged by an online-key rotation (binds the proof to *this* relay — no
   cross-relay replay, D4b) → `{ deviceId, token, expiresInSec }`. The nonce is
   consumed **before** the signature check, so a failed attempt still burns it.
 - The token is a **stateless HMAC** `v1.<deviceId>.<exp>.<mac>` over a
@@ -118,6 +135,333 @@ correlation is documented there).
   relay-held escrow — the former cold-start route — has been
   [removed](roadmap.md#escrow--removed). **So there is no route onto a second
   device at all**: the CLI can list and revoke devices, and nothing can add one.
+
+## Relay identity: an offline root and an online signing key
+
+**The problem this solves.** The relay signs a key-transparency (KT) root every
+time its directory changes, so *some* private key must live on the server. Until
+2026-08-02 that was the same single key clients pinned, which made a server
+breach terminal: the attacker signs forged KT roots with the very key every
+client trusts, and the operator cannot revoke the anchor *using* the anchor.
+There was also no legitimate way to rotate — a changed fingerprint is (correctly)
+refused by every pin.
+
+The fix is the certificate-authority shape: a **root** whose private half never
+touches the relay, and an **online** key it delegates to.
+
+| | Root | Online |
+|---|---|---|
+| Lives | operator's password manager, off the server | `relay_online_keys` on the relay |
+| Signs | exactly one kind of statement: a **delegation** | KT roots (everything the relay signs) |
+| Clients | **pin** it (`identityFingerprint`, invites' `relayFp`) | trust it only via a valid delegation |
+| Breach | not reachable from the server | costs the online key; revoked by a new delegation |
+
+A relay breach now costs an online key the operator revokes with one command,
+instead of the identity of every account on the relay.
+
+### The delegation record
+
+A root-signed statement naming the current online key. Served in `/info` as:
+
+```json
+{ "version": 2, "onlineKey": "<raw Ed25519, standard base64>",
+  "issuedAt": 1785649144381, "notAfter": 1817185144381,
+  "signature": "<Ed25519 by the ROOT, standard base64>" }
+```
+
+The **signed bytes** are a pipe-delimited string, not the JSON (no
+canonicalization to get wrong — the same convention as `kt-root|{root}|{prev}`):
+
+```
+accord-relay-delegation|v1|{rootFingerprint}|{onlineKey}|{version}|{issuedAt}|{notAfter}
+```
+
+UTF-8, no trailing newline, Ed25519 (pure). `rootFingerprint` is
+`base64url(sha256(raw root pubkey))`; `onlineKey` is the raw key in **standard**
+base64; the three numbers are decimal integers (timestamps in milliseconds).
+`server/src/relayIdentity.ts` is the single implementation.
+
+Three properties are deliberate:
+
+- **`accord-relay-delegation|v1` is a domain separator no other relay signature
+  shares.** KT roots sign `kt-root|…`, device auth signs `{nonce}|{fingerprint}`.
+  A signature made in one context can never be read as a statement in another.
+- **The root fingerprint is inside the signed bytes**, so a delegation is bound
+  to the root that issued it and cannot be replayed onto another relay.
+- **`version` is a monotonic anti-rollback counter** (only ever increases). The
+  relay refuses to install a version that does not exceed every already-signed
+  one, and clients must refuse a delegation older than the highest they have
+  seen. Without that, an attacker who kept a revoked online key replays its
+  still-validly-signed old delegation to put itself back in charge.
+
+`notAfter` is a real deadline: clients refuse an expired delegation. The default
+lifetime is 365 days (`--days` to change it), the relay warns in its log from 30
+days out, and `relay -- status` shows the remaining time. **The tradeoff, stated
+plainly:** an operator who loses the root private key keeps a working relay until
+the delegation expires and then cannot renew it — every account must re-register
+elsewhere. The alternative (delegations that never expire) means a delegation an
+operator has lost control of is honored forever, which is exactly the failure the
+split exists to bound. Expiry wins; losing the root key is documented as
+unrecoverable in [DEPLOY.md](../DEPLOY.md).
+
+### Rotation, and why old KT roots still verify
+
+`rotate-online-key` runs **on the operator's machine**, like `init-identity`: it
+mints a fresh keypair at `version + 1`, signs the delegation with the root key
+supplied on stdin, and writes a new bundle. Installing it is the same "copy the
+file, restart" as the first one. When the relay ingests it, it **NULLs the
+private half of every superseded row** in the same transaction, so a later breach
+cannot steal a key the relay no longer needs. The pinned fingerprint does not
+move — a rotation must not look like a relay substitution.
+
+Roots signed before a rotation would fail under the new key, so each row of
+`relay_kt_roots` records the `key_version` that signed it, `/info` serves the
+whole `delegations` array (ascending, all root-signed), and a verifier checks
+each root against the delegation its `keyVersion` names
+(`ktAudit.ts::keysFromDelegations`). A root naming a version no delegation covers
+does not verify.
+
+### Setup: the identity is generated off the relay, and shipped as a bundle
+
+**The decision that shapes this feature: identity generation never runs on the
+relay.** An earlier iteration ran `init-identity` on the server and printed the
+root key there. That is strictly better than auto-minting, but it still puts the
+root private key in a server process's memory and in that box's terminal
+scrollback — and it made the *convenient* path the one where the anchor touched
+the server, which is how defaults decide what people actually do. So the command
+was moved off the relay entirely, and the artifact it produces became the
+interface between the two machines.
+
+`init-identity` is **pure key generation**: no database, no `DATA_DIR`, no
+network, no relay. An operator runs it on a laptop that has never seen the relay.
+
+```sh
+npm run relay -- init-identity          # writes ./relay-identity.json
+```
+
+It mints the root and the first online keypair, signs delegation v1, writes the
+**bundle** below, and prints the ROOT PRIVATE KEY once — to the terminal, never
+to a file.
+
+```json
+{ "format": "accord-relay-identity", "formatVersion": 1,
+  "rootPubKey": "<raw Ed25519 root PUBLIC key, standard base64>",
+  "rootFingerprint": "<base64url(sha256(rootPubKey))>",
+  "onlineKey": { "pubkey": "<raw, base64>", "privkey": "<pkcs8 DER, base64>" },
+  "delegation": { "version": 1, "onlineKey": "…", "issuedAt": …, "notAfter": …,
+                  "signature": "…" } }
+```
+
+The bundle is **everything the relay may hold, and nothing else**. There is no
+root-private-key field, and `parseIdentityBundle` *refuses* a bundle carrying one
+under any of the obvious names — the invariant is enforced at the door, not left
+to convention. It is written mode `0600` (it holds the online private key) and is
+gitignored.
+
+**Deploying is: copy the file, start the relay. There is no second command.**
+The relay reads `DATA_DIR/relay-identity.json` (or `RELAY_IDENTITY_FILE`) at
+boot, verifies it, and installs it. Re-reading the same bundle on every restart
+is a no-op, and dropping a rotated bundle in the same place installs the new
+delegation on the next restart.
+
+**The bundle is left in place after ingest, deliberately.** Deleting it would buy
+no confidentiality — it holds no secret the database does not already hold, since
+the online private key must live on the relay for KT roots to be signed at all,
+and the root private key was never in it — while breaking two things operators
+really do: re-create the container against the same volume, and mount the bundle
+read-only. Deleting it is safe once the relay is up; keeping it is also safe.
+
+What the relay does with a bundle it will not accept:
+
+| Situation | Behavior |
+|---|---|
+| No bundle, no installed identity | **refuses to boot**, naming the command and the exact path it looked at |
+| Bundle's delegation not signed by the bundle's root, or tampered | refuses to boot |
+| Bundle's online private key isn't the delegated key | refuses to boot |
+| Bundle rooted at a **different** key than the installed one | refuses to boot — that is a relay substitution, and the anchor may not silently move. A genuinely new relay uses a fresh `DATA_DIR` |
+| A **different** delegation at a version already installed | refuses to boot — the root would be equivocating |
+| Delegation **older** than the installed one | logs a warning and ignores it (anti-rollback); the relay keeps serving the newer one |
+| Same delegation already installed | no-op (the ordinary restart) |
+
+`init-identity` refuses to overwrite an existing bundle file, because that would
+mint a *new root* — the fingerprint every client has pinned. `--force` is the
+explicit opt-in; `--if-missing` makes it a quiet no-op and exists for test
+harnesses (`playwright.config.ts`, the L2 relay harness), not production.
+
+Rotation is the same shape:
+
+```sh
+npm run relay -- rotate-online-key --in relay-identity.json < root-key.txt
+```
+
+It reads the bundle being replaced (which gives it both the current version and
+the root public key to check the supplied private key against — a wrong key fails
+here rather than producing a bundle the relay would reject), mints the next
+online keypair, signs `version + 1`, and writes the new bundle. An operator who
+no longer has the old bundle passes `--current-version N` instead, read off
+`GET /api/relay/info`. It refuses a version that does not move forward.
+
+The root key is read from **stdin or `ACCORD_RELAY_ROOT_KEY`, never a flag** —
+argv is visible to every process on the box and lands in shell history — and is
+used to sign one delegation and dropped.
+
+**The property to check by inspection:** after setup, nothing on the relay's disk
+can mint a delegation. `relay_root` has exactly three columns (`id`, `pubkey`,
+`created_at`) and no column the root private key could go in;
+`server/test/relayIdentity.test.ts` asserts that against the live schema and
+scans every byte under `DATA_DIR` — database, WAL, and the bundle file — for the
+key in both text and raw form, after a rotation as well as after setup.
+
+**Operators without a checkout** (deploying from the published image) get the
+same single route, because `npm run relay` resolves through
+`server/bin/relay.mjs`: TypeScript source via tsx in a checkout, the built
+`server/dist` in the image, where `src/` and devDependencies are pruned away.
+
+```sh
+docker run --rm -v "$PWD:/out" ghcr.io/jtrobinson1993/notes \
+  npm run relay -- init-identity --out /out/relay-identity.json
+```
+
+## Pinning the relay identity (as built)
+
+The relay publishes its identity at `GET /api/relay/info` as
+`{ identityFingerprint, identityPubKey, delegation, delegations }`.
+**The first two are not independent:** `identityFingerprint` is
+`base64url(sha256(raw root key))` (`relayAuth.ts::fingerprintB64url`) while
+`identityPubKey` is the raw Ed25519 **root** key in **standard** base64 — the
+encodings are asymmetric and the client checks them rather than assuming. The
+fingerprint is what the account's per-relay identity is derived from
+([accounts-and-crypto.md](accounts-and-crypto.md)) and what invites carry.
+
+Since the split above, `identityPubKey` is the **root** key: it verifies
+delegations and nothing else. **KT root signatures verify against
+`delegation.onlineKey`**, after the delegation itself has been verified against
+the pinned root.
+
+Three checks run in the Rust core, in this order
+(`relay_client::verified_identity` + `delegation.rs` + `lib.rs::connect_to_relay`).
+None substitutes for another, and **the order is part of the design**: a relay
+whose fingerprint is not the one we are anchored to is refused as an impostor
+before its delegation is looked at, so an attacker cannot turn a substituted
+relay into a milder "malformed delegation" complaint.
+
+1. **Binding — always, on every connect and register, no exceptions.**
+   `relay_fingerprint(identityPubKey)` must equal `identityFingerprint`, or the
+   connection is refused before a single authenticated byte
+   (`RELAY_IDENTITY_INVALID`). Without this a hostile relay serves the *genuine*
+   fingerprint — so every pin still matches and the account keeps its derived
+   identity and contact ids — alongside an **attacker** identity key, and then
+   signs its own forged directory with the key the client happily verifies roots
+   against. Every `contact_verdict` would come back `Verified`. Pinning the
+   fingerprint alone cannot see this; only the binding can.
+
+2. **Pinning — the identity must be the one we are anchored to.** The anchor, in
+   order of authority:
+   - an **invite's `relayFp`**, when the flow has one. It reached the user
+     out-of-band through the human invite channel, so it is the only anchor the
+     relay did not supply. It is passed through `registerViaInvite` →
+     `relay_register` and checked *before* the account is created, and again at
+     `relay_invite_redeem` (an invite for a different relay is refused, because a
+     transparency log only proves something about the relay it belongs to).
+   - the **stored pin** — `relay.identity.<baseUrl>` in the vault (per account),
+     written on first successful contact and compared on every connect
+     afterwards. On an account that predates the setting, the single existing
+     `relays` row supplies the anchor instead, so an upgrade does not re-TOFU.
+   - **nothing**, on genuine first contact: the identity is pinned then.
+
+   A disagreement is a hard failure — refuse the connection, raise the hard
+   `kt:alarm` (`relay-identity-changed`, same banner as a KT equivocation), and
+   surface `RELAY_IDENTITY_CHANGED`. **Never a silent re-pin**, and never
+   swallowed by the reconnect path's best-effort silence.
+3. **Delegation — the pinned root must vouch for the key that signs the log**
+   (`src-tauri/src/delegation.rs`). Once the root is anchored it is a
+   trustworthy verifier, so the client walks the published chain with it:
+   - every member of `delegations` must verify under the pinned root, and their
+     `version`s must be **strictly increasing in the order served** (two records
+     at one version would be the root equivocating about which key is in force);
+   - `delegation` must be the last/highest member of that chain, so a relay
+     cannot advertise a fresh delegation while serving roots under a chain that
+     never mentions it;
+   - it must not be past `notAfter`;
+   - its `version` must be **≥ the highest this account has already accepted**,
+     and if it is *equal*, it must name the same `onlineKey`.
+
+   The result is a `DelegatedKeys` — a version→key map, and the **only** value
+   in the client a KT-root signing key can be obtained from. That is a type-level
+   guarantee, not a convention: `kt::signed_root_epoch`,
+   `kt::gossiped_root_is_signed` and `kt::contact_verdict` take a
+   `DelegatedKeys`, so there is no way to reach them with the pinned root itself
+   or with a key the relay served loose. `relay_client::kt_signing_keys()`
+   deliberately replaced the old `relay_identity_pub()` accessor rather than
+   sitting beside it.
+
+   Failures are hard, with their own alarm reasons and catalogued codes:
+   `RELAY_DELEGATION_INVALID` / `relay-delegation-invalid` for a missing,
+   malformed, forged, tampered, mis-chained or expired delegation, and
+   `RELAY_DELEGATION_ROLLBACK` / `relay-delegation-rollback` for a version that
+   went backwards or equivocated. They are kept apart because they mean different
+   things to the user: the first reads as a misconfiguration and often is, the
+   second is an attack in progress.
+
+   **Where the high-water mark lives:** in the pin itself. `RelayPin`
+   (`lib.rs`, setting `relay.identity.<baseUrl>` in the **per-account vault**)
+   carries `delegation_version` + `delegation_online_key` next to `fp` and
+   `identity_pub`, because it is the same kind of fact — something about this
+   relay that only ever gets stricter. It is read by `relay_anchor` *before* the
+   connect and written by `pin_relay_identity` *after* a successful one, with
+   `max()`, so a refused connection never advances it and a rotation can never be
+   talked back down. Nothing the relay says can raise it; only an accepted
+   connect can.
+
+`store::upsert_relay` is the backstop behind that: the `relays` row's
+`identity_fp` and `our_identity_pub` are **write-once** (only `url` may change, a
+relay moving host). It used to `DO UPDATE SET identity_fp = excluded.identity_fp`
+— i.e. the local record of *who this relay is* was an echo of the last connect. A
+mismatch now errors (`StoreError::RelayIdentityChanged`) and leaves the row
+untouched, so an account whose pin somehow never got written still fails closed
+on the next drain or send.
+
+**The residual, stated plainly: TOFU is not the same as anchored.**
+`registerOnRelay(relayUrl, code?)` — a public relay, or an operator-seeded one
+where the operator hands out a bare registration code — carries **no
+fingerprint**, so its first contact is trust-on-first-use. A TOFU-pinned relay is
+protected against *later* substitution; it is **not** protected against a relay
+that is hostile from the very first connection, which can simply present a
+consistent identity of its own. Closing that means the fingerprint travelling
+with the registration code (the invite flow already does this) — see
+[roadmap.md](roadmap.md#operator-registration-codes-carry-no-relay-fingerprint).
+
+**What rotation does and does not cover.** Rotating the **online** key is a
+normal, one-command operation that pinned clients accept without a re-pin
+(above) — no alarm, no re-verification, nothing the user sees. Only a bad
+delegation signature, a rolled-back version, or a changed **root** is an alarm.
+Rotating the **anchor** — the root itself — still has no path: a changed
+fingerprint is refused, correctly, and the signed "moved-to" record that would
+carry an anchor change or a host move
+([roadmap.md](roadmap.md#multi-relay--cross-relay-contact-continuity-d4c)) is
+unbuilt. So a lost root private key, or a relay that must move host, still means
+new accounts.
+
+**Residual: revocation is forward-looking, not retroactive.** A revoked online
+key still validates roots *stamped with its own superseded version*, because the
+client resolves each root against the delegation its `keyVersion` names — which
+is exactly what keeps pre-rotation epochs verifiable, and what the reference
+auditor does (`ktAudit.ts::keysFromDelegations`). So an attacker who kept a
+stolen v1 key can still produce a root that a client accepts as v1-signed. What
+this costs them is real, though: they no longer hold the server, so they must
+also be a network attacker able to defeat TLS to deliver it, and the rollback
+check stops them re-installing v1 as *current*. Closing the remainder means
+requiring `keyVersion == current`, which would make every root published before
+a rotation unverifiable until the next directory change — a live availability
+break in exchange for a defence-in-depth gain. **Not taken; flagged as the open
+tradeoff.** If it is ever taken, the relay must re-sign and re-publish its
+current root on boot after a rotation.
+
+A second residual sits next to it: the high-water mark is *this client's* memory,
+so an account that has not connected since the rotation still has a floor of v1
+and would accept the genuine v1 delegation. Ordinary revocation freshness,
+bounded today only by `notAfter`. Both are tracked in
+[roadmap.md](roadmap.md#online-key-revocation-is-forward-looking-and-only-for-clients-that-saw-it).
 
 ## Registration (account creation)
 
@@ -138,10 +482,18 @@ opens it):
     (below).
 
 - `GET /api/relay/info` → `{ name, identityFingerprint, identityPubKey,
-  apiVersion, registrationMode }`. Public and unauthenticated: it is the
-  pinned-identity handshake surface (UI-4 shows the name, the full public key
-  lets anyone verify KT root signatures), and `registrationMode` tells onboarding
-  whether to demand an invite before showing the signup form.
+  delegation, delegations, apiVersion: 2, registrationMode }`. Public and
+  unauthenticated: it is the pinned-identity handshake surface (UI-4 shows the
+  name), and it carries the whole trust chain in one round trip —
+  `identityPubKey` is the pinned **root** key, `delegation` is the current
+  root-signed delegation naming the online key that verifies KT root signatures,
+  and `delegations` is every delegation this root has issued (ascending), which a
+  verifier needs for roots published before a rotation.
+  `registrationMode` tells onboarding whether to demand an invite before showing
+  the signup form. The client checks the fingerprint against the key, the
+  delegation against the key, the delegation's version against the highest it has
+  seen, and the fingerprint against its anchor before going any further — see
+  [*Pinning the relay identity*](#pinning-the-relay-identity-as-built).
 - `POST /api/relay/register` `{ pubKey, name?, inviteToken?, handle? }` — creates
   the user (role `member`), enrolls `pubKey` as its first device, and returns
   `{ userId, deviceId, handle, token, expiresInSec }` (a device token, so the
@@ -293,9 +645,13 @@ member (a device token would leak the sender within the group).
 - `GET /api/relay/directory/:handle/history` → the key-history proof used by
   self-audit. **AKD backend only**; the interim Merkle KT cannot prove history and
   answers 404.
-- `GET /api/relay/kt/roots?since=epoch` → signed epoch roots (consistency
-  checking); also aliased at `GET /.well-known/accord/kt-roots` for third-party
-  auditors. See [key-transparency.md](key-transparency.md).
+- `GET /api/relay/kt/roots?since=epoch` → `{ relayFp, delegations, roots }`,
+  where each root carries `{ epoch, rootHash, prevRootHash, signature, timestamp,
+  keyVersion }`. `keyVersion` names the delegated online key that signed it, and
+  `delegations` rides along so an auditor can verify the whole chain from this
+  response plus the pinned root key. Also aliased at
+  `GET /.well-known/accord/kt-roots` for third-party auditors. See
+  [key-transparency.md](key-transparency.md).
 - Clients self-audit their own binding on connect and gossip latest seen roots
   over a dedicated envelope kind (D5); mismatch ⇒ hard key-integrity alarm.
 - A relay changing URL publishes a **signed `moved-to` record**, verified against
@@ -346,7 +702,9 @@ shared out-of-band (QR / link) and never seen by the relay.
   `{ expiresAt }`. The **client** generates the token and sends only its hash, so
   the relay never holds a redeemable value. The self-describing invite payload
   (relay hint + relay key fingerprint + token) is assembled client-side. TTL
-  defaults to 7 days, capped at 14.
+  defaults to 7 days, capped at 14. That fingerprint is **used**, not decorative:
+  it anchors the invitee's first connection to the relay and is re-checked at
+  redeem ([above](#pinning-the-relay-identity-as-built)).
 - `POST /api/relay/invites/redeem` `{ token, envelope }` — **capability only, no
   device token**: requiring the invitee's device token would let the relay link
   "X redeemed Y's invite" = a social-graph edge, defeating sealed-sender (D6).
@@ -457,10 +815,12 @@ can offer the whole catalogue instead of a snapshot.
 `<img src>`, and an `<img>` cannot send an `Authorization` header. So instead of
 the device token it is gated on an **unguessable capability in the path**: `sig`
 is the first 22 base64url chars (~132 bits) of
-`HMAC(capSecret, "emote:"+id)`, where `capSecret = HMAC(relay identity privkey,
-"accord:emote-capability:v1")` — derived, never the identity key itself, and
-stable across restarts so minted URLs and year-long browser cache entries survive
-a reboot. Comparison is `timingSafeEqual`. **Only the authed search endpoint mints
+`HMAC(capSecret, "emote:"+id)`, where `capSecret = HMAC(relay_local_secrets
+['emote-capability'], "accord:emote-capability:v1")` — its own random 32-byte
+secret, minted on first use and stable across restarts so minted URLs and
+year-long browser cache entries survive a reboot. It is deliberately **not**
+derived from a signing key: rotating the online key must not silently 403 every
+cached emote URL, and a signing key should not double as an HMAC key. Comparison is `timingSafeEqual`. **Only the authed search endpoint mints
 those URLs**, and a device token is accepted as an alternative credential so the
 native core can fetch an image without a search round-trip.
 

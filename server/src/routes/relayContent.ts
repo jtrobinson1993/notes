@@ -27,7 +27,7 @@ import type { FastifyInstance } from 'fastify';
 import type { EmoteSearchResponse, EmoteSearchResult } from '@notes/shared';
 import type { Config } from '../config.js';
 import type { DB } from '../db.js';
-import { deviceFromAuthHeader, generateRelayIdentity } from '../relayAuth.js';
+import { deviceFromAuthHeader } from '../relayAuth.js';
 import { fetchLinkPreview, OG_MAX_URL } from '../linkPreview.js';
 import {
   klipyCustomerId,
@@ -54,11 +54,12 @@ function bucket(max: number, divisor: number): { rateLimit: { max: number; timeW
 }
 
 export function relayContentRoutes(app: FastifyInstance, db: DB, config: Config): void {
-  // Stable across restarts (the identity key is persisted), so minted emote
-  // URLs stay valid and the browser's year-long cache entry isn't invalidated
-  // by a relay restart. Derived, never the identity key itself.
-  const identity = db.ensureRelayIdentity(generateRelayIdentity);
-  const capSecret = createHmac('sha256', Buffer.from(identity.privkey, 'base64'))
+  // Stable across restarts (the secret is persisted), so minted emote URLs stay
+  // valid and the browser's year-long cache entry isn't invalidated by a relay
+  // restart. Its own random secret rather than a derivation of the relay's
+  // signing key: rotating the online key must not silently 403 every cached
+  // emote URL, and a signing key should not double as an HMAC key.
+  const capSecret = createHmac('sha256', db.relayLocalSecret('emote-capability'))
     .update('accord:emote-capability:v1')
     .digest();
 

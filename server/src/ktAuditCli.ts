@@ -17,7 +17,9 @@
 import {
   detectRewrite,
   detectStall,
+  keysFromDelegations,
   verifyRootChain,
+  type RootSigningKeys,
   type SignedRoot,
 } from './ktAudit.js';
 
@@ -48,15 +50,31 @@ function parseArgs(argv: string[]): Args {
   };
 }
 
-async function fetchLog(base: string): Promise<{ identityPubKey: string; roots: SignedRoot[] }> {
-  const info = (await (await fetch(`${base}/api/relay/info`)).json()) as { identityPubKey: string };
+/**
+ * `identityPubKey` is the relay's ROOT key (the one clients pin); the keys that
+ * actually sign roots are named by root-signed delegations. `keys` is null when
+ * that chain doesn't verify — which is itself an audit failure, not a fetch
+ * problem, so it is reported rather than thrown.
+ */
+async function fetchLog(base: string): Promise<{ keys: RootSigningKeys | null; roots: SignedRoot[] }> {
+  const info = (await (await fetch(`${base}/api/relay/info`)).json()) as {
+    identityPubKey: string;
+    delegations?: unknown[];
+  };
   const rootsBody = (await (await fetch(`${base}/api/relay/kt/roots`)).json()) as { roots: SignedRoot[] };
-  return { identityPubKey: info.identityPubKey, roots: rootsBody.roots };
+  return {
+    keys: keysFromDelegations(info.identityPubKey, info.delegations ?? []),
+    roots: rootsBody.roots,
+  };
 }
 
 /** One verification pass; returns false on any failure so callers can exit. */
-function report(identityPubKey: string, roots: SignedRoot[], maxGapMs: number): boolean {
-  const chain = verifyRootChain(identityPubKey, roots);
+function report(keys: RootSigningKeys | null, roots: SignedRoot[], maxGapMs: number): boolean {
+  if (!keys) {
+    console.error("✗ the relay's delegation chain does not verify against its own root key");
+    return false;
+  }
+  const chain = verifyRootChain(keys, roots);
   const latestTs = roots.reduce<number | undefined>((m, r) => Math.max(m ?? 0, r.timestamp ?? 0) || m, undefined);
   const stalled = detectStall(latestTs, Date.now(), maxGapMs);
   if (!chain.ok) {
@@ -73,14 +91,14 @@ function report(identityPubKey: string, roots: SignedRoot[], maxGapMs: number): 
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
-  const { identityPubKey, roots } = await fetchLog(args.base);
+  const { keys, roots } = await fetchLog(args.base);
 
   if (!args.watch) {
-    process.exit(report(identityPubKey, roots, args.maxGapMs) ? 0 : 1);
+    process.exit(report(keys, roots, args.maxGapMs) ? 0 : 1);
   }
 
   const seen = new Map<number, string>(roots.map((r) => [r.epoch, r.rootHash]));
-  report(identityPubKey, roots, args.maxGapMs);
+  report(keys, roots, args.maxGapMs);
   console.log(`watching ${args.base} every ${args.intervalMs / 1000}s …`);
   setInterval(() => {
     void (async () => {
@@ -92,7 +110,7 @@ async function main(): Promise<void> {
           return;
         }
         for (const r of fresh.roots) seen.set(r.epoch, r.rootHash);
-        report(fresh.identityPubKey, fresh.roots, args.maxGapMs);
+        report(fresh.keys, fresh.roots, args.maxGapMs);
       } catch (e) {
         console.error(`poll failed: ${(e as Error).message}`);
       }

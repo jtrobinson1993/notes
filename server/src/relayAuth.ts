@@ -10,7 +10,6 @@
 import {
   createHmac,
   createPublicKey,
-  generateKeyPairSync,
   randomBytes,
   timingSafeEqual,
   verify as edVerify,
@@ -48,15 +47,9 @@ export function fingerprintB64url(rawPubkey: Buffer): string {
   return createHash('sha256').update(rawPubkey).digest('base64url');
 }
 
-/** Fresh relay identity for first boot; stored durably by the DB layer. */
-export function generateRelayIdentity(): { pubkey: string; privkey: string } {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  return {
-    pubkey: spki.subarray(spki.length - 32).toString('base64'),
-    privkey: (privateKey.export({ format: 'der', type: 'pkcs8' }) as Buffer).toString('base64'),
-  };
-}
+// A relay identity is NOT minted here (and no longer on first boot): it is an
+// offline root delegating to an online key, installed by the operator with
+// `npm run relay -- init-identity`. See relayIdentity.ts.
 
 export function issueDeviceToken(
   deviceId: string,

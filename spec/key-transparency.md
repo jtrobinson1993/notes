@@ -113,14 +113,69 @@ hostile relay just answers with a self-consistent `(proof, root)` pair for a key
 it chose. So `kt::contact_verdict` resolves the root **before** it parses the
 proof:
 
-1. `kt::signed_root_epoch(relay_pub, roots, root)` finds the response's
-   `rootHash` in the relay's `GET /api/relay/kt/roots` chain and verifies the
-   relay's Ed25519 signature over `kt-root|{root}|{prev}` — the *same* check the
-   gossip path already applies to a friend-supplied root, against the relay
-   identity key pinned at connect. A root that is not in that signed chain is a
-   fabrication.
+1. `kt::signed_root_epoch(keys, roots, root)` finds the response's `rootHash` in
+   the relay's `GET /api/relay/kt/roots` chain and verifies the relay's Ed25519
+   signature over `kt-root|{root}|{prev}` — the *same* check the gossip path
+   already applies to a friend-supplied root, against the **delegated online
+   key** established at connect (below). A root that is not in that signed chain
+   is a fabrication.
 2. Only then does `verify_lookup` run, against that root.
 3. The verified value is compared with the key we were handed.
+
+### The relay identity key is the anchor under the anchor
+
+Resolving the root against the relay's signature only means something if the
+**key** doing the verifying is genuinely the relay's. Every fact the client needs
+comes from the relay itself (`GET /api/relay/info`), so they are established
+before any of the above runs, and they are checked independently — see
+[relay.md § Pinning the relay identity](relay.md#pinning-the-relay-identity-as-built):
+
+- `identityFingerprint` must be `base64url(sha256(identityPubKey))`. A relay free
+  to serve an honest fingerprint next to a foreign key would satisfy every pin,
+  keep the account's derived identity and contact ids stable, and still sign a
+  forged directory with the key root signatures are checked against — making
+  every verdict here `Verified` while the relay chooses the keys. This check is
+  unconditional on every connect and register.
+- That fingerprint must equal the one this account is anchored to: an invite's
+  `relayFp` where there is one, otherwise the pin stored on first contact. A
+  change is refused with the same hard alarm tier as an equivocation
+  (`relay-identity-changed`).
+- **KT roots are not signed by the pinned key.** Since the relay identity split
+  ([relay.md](relay.md#relay-identity-an-offline-root-and-an-online-signing-key)),
+  `identityPubKey` is an **offline root** that signs one thing: a delegation
+  naming the online key. So the chain a verifier walks is *pinned root →
+  delegation → online key → root signature*. The delegation must verify under the
+  pinned key, must not be expired, and must not carry a `version` lower than the
+  highest already seen for this relay — otherwise an attacker holding a revoked
+  online key replays its old, genuinely-signed delegation to be believed again.
+  Each signed root names the `keyVersion` that signed it, so roots published
+  before a rotation still verify (`ktAudit.ts::keysFromDelegations`, mirrored in
+  the client by `delegation::DelegatedKeys::key_for`).
+  This is what makes a relay breach survivable: the attacker gets the online key,
+  and the operator revokes it with a delegation the attacker cannot forge.
+
+  In the client this is enforced by types rather than by discipline:
+  `signed_root_epoch`, `gossiped_root_is_signed` and `contact_verdict` all take a
+  `delegation::DelegatedKeys`, which only `delegation::verify_chain` can build
+  and only from delegations that verified under the pin. There is no overload
+  that accepts a bare key, so "check this root against whatever the relay served"
+  is not expressible. A root stamped with a version no delegation covers, or
+  signed by the pinned root key itself, resolves to no key at all and counts as
+  unsigned — `src-tauri/tests/kt_contact_verify.rs::kt_roots_signed_by_the_pinned_root_key_do_not_verify`
+  is the regression test for exactly that.
+
+  **Gossip is the one looser case, deliberately.** A `kt-gossip` beacon carries
+  no `keyVersion`, so `gossiped_root_is_signed` accepts a signature under *any*
+  key the pinned root delegated to — a friend may have seen a root published
+  before the relay rotated, and requiring the current key would silently discard
+  that split-view evidence. It costs nothing: gossip only ever adds evidence, and
+  a signature matching no delegated key is ignored rather than believed (a friend
+  must not be able to frame an honest relay).
+
+The residual is the first connection to a relay reached with **no invite**
+(`registerOnRelay`): that is trust-on-first-use, exactly like the VRF pin below,
+and it converts a sustained attack into a one-shot at first contact rather than
+eliminating it.
 
 Two consequences worth stating plainly:
 
@@ -147,7 +202,8 @@ token and all networking live there:
 
 | Moment | Command | What is checked |
 |---|---|---|
-| Redeeming an invite | `relay_invite_redeem` | the invite's TOFU pin (`handle` + `identityPub`) **before** the sealed friend-accept is sent |
+| Connecting / signing up | `relay_connect`, `relay_register` | the relay's own identity: fingerprint binds its key, and both match the invite's `relayFp` or the stored pin |
+| Redeeming an invite | `relay_invite_redeem` | the invite's `relayFp` against the connected relay, then its TOFU pin (`handle` + `identityPub`) — both **before** the sealed friend-accept is sent |
 | Invite signup's follow-up leg | `relay_register_friend_accept` | the same pin, before delivery |
 | Inbound `friend-accept` / `friend-confirm` | `relay_mailbox_drain` | the *verified envelope sender's* key against the handle in the payload, **before** `record_friend` and before the reciprocal confirm is sealed |
 | Relay connect | `kt_verify_contacts` | every contact still recorded without a proof |
@@ -228,9 +284,11 @@ than a napi binding into Node.
   **unbuilt** ([roadmap.md](roadmap.md)).
 - **Labels are VRF-blinded** — auditors and other users can verify the tree
   without learning which handles exist (privacy-preserving directory).
-- **Signed root** per epoch: `{epoch, rootHash, prevRootHash, timestamp}`
-  signed by the **relay identity key** (the same key pinned via invite
-  fingerprints, D4b).
+- **Signed root** per epoch: `{epoch, rootHash, prevRootHash, timestamp,
+  keyVersion}` signed by the relay's **delegated online key**, with `keyVersion`
+  naming the delegation that key came from. The pinned anchor (an invite's
+  `relayFp`, D4b) is the *root*, one link further out — see *The relay identity
+  key is the anchor under the anchor* above.
 
 ## Proof types & client behavior
 
@@ -246,9 +304,13 @@ than a napi binding into Node.
   `kt-gossip` envelope; the recipient verifies the relay's signature over it and
   records it. A *different* root at an epoch already seen = **split view** — the
   relay is showing different logs to different users.
-- **Alarms:** the *hard* tier — failed self-audit, gossip split-view, or a
-  contact key the log contradicts — raises `kt:alarm`, which `KtAlarm.vue`
-  renders as a prominent, non-dismissable banner. It does **not** yet halt
+- **Alarms:** the *hard* tier — failed self-audit, gossip split-view, a contact
+  key the log contradicts, or a relay whose own identity chain fails
+  (`relay-identity-changed`, `relay-delegation-invalid`,
+  `relay-delegation-rollback`) — raises `kt:alarm`, which `KtAlarm.vue`
+  renders as a prominent, non-dismissable banner. Note what is **not** an alarm:
+  a *changed online key under a valid, newer delegation* is a legitimate
+  rotation and passes silently. It does **not** yet halt
   sending to affected contacts; that is an open roadmap item
   ([roadmap.md](roadmap.md#the-hard-kt-alarm-warns-but-does-not-block)). The
   *soft* tier (a contact's key changed with valid proofs → badge + inline
@@ -260,12 +322,34 @@ than a napi binding into Node.
 `/api/relay/kt/roots`) →
 
 ```json
-{ "relayFp": "…", "roots": [ { "epoch": 41, "rootHash": "…",
-  "prevRootHash": "…", "timestamp": 1789… , "signature": "…" } ] }
+{ "relayFp": "…",
+  "delegations": [ { "version": 1, "onlineKey": "…", "issuedAt": 1785…,
+                     "notAfter": 1817…, "signature": "…" } ],
+  "roots": [ { "epoch": 41, "rootHash": "…", "prevRootHash": "…",
+               "timestamp": 1789…, "signature": "…", "keyVersion": 1 } ] }
 ```
 
 Anyone can fetch and verify the full chain for free — this is the auditor
-surface.
+surface. Two fields exist because of the
+[relay identity split](relay.md#relay-identity-an-offline-root-and-an-online-signing-key):
+**`delegations`** rides along (the full ascending chain, each signed by the
+offline root) so one response plus the pinned root key is enough to verify
+everything here without a second fetch, and each root's **`keyVersion`** names
+the delegated online key that signed it, so a root published before a rotation
+still verifies instead of failing under the current key. A root whose
+`keyVersion` no delegation covers resolves to no key and counts as unsigned.
+`relayFp` is the **root** fingerprint, unchanged by rotation.
+
+**What a bare fetch does and doesn't prove.** These fields let a third party
+verify the log is internally consistent and was not rewritten. They cannot, on
+their own, prove it is *this relay's* log: an auditor that takes the root key
+from the same server it is auditing is checking a document against its own
+letterhead. The bundled CLI does exactly that today — it reads `identityPubKey`
+and `delegations` from `/info` and pins nothing — so it detects a rewritten or
+mis-signed history, not a wholesale substitution. Closing that gap needs the
+auditor to be given the fingerprint out of band, which is the same anchoring
+problem clients solve with an invite's `relayFp`
+([relay.md](relay.md#pinning-the-relay-identity-as-built)).
 
 ## Reference auditor
 
@@ -311,8 +395,15 @@ inherits them rather than closing them:
 - **The VRF pin is trust-on-first-use.** A relay hostile from a client's very
   first lookup could pin its own VRF key on that client and thereafter aim any
   handle at any leaf. Pinning converts a *sustained* attack into a one-shot at
-  first contact, the same posture as the relay fingerprint; the durable fix is
-  the relay committing to its VRF key in the signed root chain.
+  first contact, the same posture as the relay fingerprint on an invite-less
+  signup; the durable fix is the relay committing to its VRF key in the signed
+  root chain.
+- **The relay fingerprint is anchored, but only as well as the channel it came
+  through.** An invite carries it out-of-band, so an invited user is anchored
+  from their very first connection. Someone who typed a relay address (or pasted
+  an operator registration code, which carries no fingerprint) is TOFU — see
+  [relay.md](relay.md#pinning-the-relay-identity-as-built) and the roadmap item
+  for putting the fingerprint into operator codes too.
 - **"Not in the log" is not proof of anything.** A relay can withhold an entry
   (404) or stall, and contact verification then records the contact unverified
   rather than blocking (see *The 404 case*). What it cannot do is publish a

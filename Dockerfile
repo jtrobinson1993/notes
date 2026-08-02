@@ -23,6 +23,10 @@ COPY --from=build /app/shared/package.json ./shared/
 COPY --from=build /app/shared/dist ./shared/dist
 COPY --from=build /app/server/package.json ./server/
 COPY --from=build /app/server/dist ./server/dist
+# The operator CLI launcher, so `docker run --rm <image> npm run relay -- …`
+# works without a checkout — that is how an operator mints the relay identity
+# bundle when they deploy from the image (README "The relay identity").
+COPY --from=build /app/server/bin ./server/bin
 RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME /data

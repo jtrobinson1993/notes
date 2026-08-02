@@ -99,8 +99,27 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Boot it and probe the relay
         run: |
+          # A relay refuses to start without an operator-installed identity (an
+          # offline root delegating to the online signing key, spec/relay.md), so
+          # the probe walks the documented operator flow end to end — including
+          # the claim that `npm run relay` works inside the published image,
+          # which is the route an operator with no checkout uses:
+          #   1. mint the bundle "on the operator's machine" (a throwaway
+          #      container writing to a mounted directory — no relay database),
+          #   2. copy it into the relay's data volume,
+          #   3. start the relay, which ingests it at boot with no setup command.
+          docker volume create notes-ci-data
+          # 0777 because the image runs as `node` (uid 1000) while the runner is
+          # uid 1001; the documented command needs no such thing on a normal
+          # single-user machine.
+          mkdir -m 0777 -p "$PWD/ci-identity"
+          docker run --rm -v "$PWD/ci-identity:/out" notes:ci \
+            npm run relay -- init-identity --out /out/relay-identity.json
+          test -f "$PWD/ci-identity/relay-identity.json"
+          docker run --rm -v notes-ci-data:/data -v "$PWD/ci-identity:/in" notes:ci \
+            cp /in/relay-identity.json /data/relay-identity.json
           docker run -d --name notes-ci -e APP_ORIGIN=http://localhost:3000 \
-            -p 3000:3000 notes:ci
+            -v notes-ci-data:/data -p 3000:3000 notes:ci
           for i in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/health || true)
             if [ "$code" = "200" ]; then echo "healthy (HTTP $code)"; exit 0; fi
@@ -111,7 +130,10 @@ jobs:
           exit 1
       - name: Tear down
         if: always()
-        run: docker rm -f notes-ci || true
+        run: |
+          docker rm -f notes-ci || true
+          docker volume rm notes-ci-data || true
+          rm -rf ci-identity
 
   rust-core:
     name: Rust core (cargo test)

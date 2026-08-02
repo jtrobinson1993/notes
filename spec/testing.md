@@ -14,10 +14,10 @@ the backend ([native-app.md](native-app.md), [local-store.md](local-store.md),
 
 | Suite | Command | Size |
 | --- | --- | --- |
-| Vitest — projects `crypto`, `server`, `web` | `npm test` (root) | 724 tests across 106 files |
-| Rust core — unit (L1) | `cargo test` in `src-tauri/` | 104 tests |
+| Vitest — projects `crypto`, `server`, `web` | `npm test` (root) | 787 tests across 109 files |
+| Rust core — unit (L1) | `cargo test` in `src-tauri/` | 119 tests |
 | Rust core ↔ real relay (L2) | same `cargo test` (`tests/relay_integration.rs`) | 2 tests |
-| Rust core ↔ a **hostile** relay (L2b) | same `cargo test` (`tests/kt_contact_verify.rs`) | 5 tests |
+| Rust core ↔ a **hostile** relay (L2b) | same `cargo test` (`tests/kt_contact_verify.rs` 15, `tests/group_invite_authz.rs` 6) | 21 tests |
 | AKD sidecar | `cargo test` in `akd-sidecar/` | 10 tests |
 | Playwright — relay over HTTP | `npm run e2e` | `e2e/voice.spec.ts` + `e2e/onboarding.spec.ts` |
 | Playwright — the UI over a faked IPC (L3) | `npm run e2e:ui` | 17 tests across 4 files in `e2e/ui/` |
@@ -69,7 +69,7 @@ yet"; the work itself stays in [roadmap.md](roadmap.md).
 
 ### L1 — Rust core unit tests (`cargo test`) · **built**
 
-96 tests inside `src-tauri/src/`, module by module. This is where the security
+119 tests inside `src-tauri/src/`, module by module. This is where the security
 core is proven, and it is deliberately the largest and cheapest layer:
 
 - **Keys** (`keys.rs`) — wrap/unwrap round-trip with domain separation, group
@@ -88,18 +88,23 @@ core is proven, and it is deliberately the largest and cheapest layer:
 - **Envelope** (`envelope.rs`) — seal/open verifies the sender; a wrong
   recipient cannot open; tampered ciphertext, wrong group key and unknown
   versions are rejected.
-- **Protocol / message disposition** (`message.rs`, 19 tests) — encode/decode
+- **Protocol / message disposition** (`message.rs`, 20 tests) — encode/decode
   round-trip, decode rejects unknown versions and missing required fields, and
   the disposition matrix: a valid message ingests with a *verified* sender,
   version skew and unknown kinds buffer, unrecoverable items are discarded.
   Per-kind cases cover friend accept/confirm (terminal) and garbage, edit /
   delete / react carrying the verified actor, group add-member bumping the
-  version, group invites carrying the group key, call offers, and KT gossip.
-- **Store** (`store.rs`, 15 tests) — SQLCipher create/migrate/reopen, wrong key
+  version (and refusing to sign a relay-supplied record that is for another
+  group or does not name us an admin), group invites carrying the group key **and
+  the verified inviter** (a payload that also *claims* one is ignored), call
+  offers, and KT gossip.
+- **Store** (`store.rs`, 17 tests) — SQLCipher create/migrate/reopen, wrong key
   rejected, migrations idempotent on reopen, message + note FTS (including the
   note body projection), idempotent import batches, message paging/edit/delete,
   attachment rows through eviction, unread + activity ordering, reactions,
-  group-key upsert, friend addressing, and KT state incl. split-view detection.
+  the **write-once group key** (a second insert changes nothing, and the schema
+  trigger aborts a direct UPDATE), the write-once relay identity, friend
+  addressing, and KT state incl. split-view detection.
 - **Blobs and attachments** (`blobs.rs`, `attachment.rs`) — atomic idempotent
   overwrite, **path-traversal ids rejected**, per-file distinct keys, the cache
   serving ciphertext without the relay, and self-correction when a row's file
@@ -109,7 +114,11 @@ core is proven, and it is deliberately the largest and cheapest layer:
 - **Transport** (`relay_client.rs`, `relay_live.rs`, `voice_live.rs`) — the
   challenge signature binds the relay fingerprint, token refresh margin, WS URL
   scheme mapping (non-HTTP bases rejected *before* connecting), capped monotonic
-  backoff, and frame classification/forwarding.
+  backoff, and frame classification/forwarding. `verified_identity` is covered
+  link by link: the fingerprint must bind the served root key, **the pin is
+  checked before the delegation** (so a substituted relay is reported as an
+  impostor, not as a malformed record), and a missing / forged / tampered /
+  expired / rolled-back delegation refuses the relay.
 - **KT** (`kt.rs`) — signed-root verification against the relay's scheme, lookup
   proofs accepted / bad roots rejected, key history, and self-audit flagging
   only a key this device never minted. Plus the **contact verdict** built from
@@ -117,7 +126,19 @@ core is proven, and it is deliberately the largest and cheapest layer:
   rejected, a *self-consistent proof under an attacker-chosen or
   differently-signed root* is rejected, a forged proof is rejected, a swapped
   VRF key is rejected while first use pins, and an interim-KT relay yields
-  "unverified" rather than either verdict.
+  "unverified" rather than either verdict. Since the relay identity split, the
+  root-resolving cases run through a `DelegatedKeys`: a root signed by the
+  **pinned root key** is not a signed root, a root claiming a `keyVersion` it was
+  not signed under is not a signed root, and an online-key rotation leaves the
+  pre-rotation epochs verifiable under the version that signed them.
+- **Relay delegation** (`delegation.rs`) — the signed-byte layout matches the
+  server's `relayIdentity.ts` exactly; a malformed record is refused before any
+  signature check; every field is covered by the signature; a chain is refused
+  when a member is signed by the wrong root, when versions are not strictly
+  increasing, when the advertised current delegation is not the newest member, or
+  when it has expired; and the anti-rollback check refuses an older version and a
+  *different* key at a version already accepted, while allowing a rotation
+  forward.
 
 ### L2 — Rust integration: two cores against a real relay · **built**
 
@@ -132,7 +153,15 @@ server-side only.
 **It runs the shipped engine, not a re-implementation.** The relay is booted as
 `node server/dist/relay-index.js` (built first with `npm run build -w shared &&
 -w server`) on a free port with a throwaway `DATA_DIR` and
-`RELAY_REGISTRATION_MODE=public`; the test waits for `/api/health` and kills the
+`RELAY_REGISTRATION_MODE=public`. Before that, the harness does exactly what an
+operator does: `node server/dist/relay-cli.js init-identity --out
+<DATA_DIR>/relay-identity.json` mints an identity bundle into the throwaway data
+dir, and the relay ingests it at boot. A relay refuses to start without one
+([relay.md](relay.md#setup-the-identity-is-generated-off-the-relay-and-shipped-as-a-bundle)),
+and the harness goes through the real command and the real bundle path rather
+than seeding a key behind the CLI's back — the root private key the command
+prints is captured by the test process and discarded, so the data dir only ever
+holds the root's public half. The test waits for `/api/health` and kills the
 child on drop, so a panicking run still leaves nothing behind. Both accounts are
 created through the production `POST /api/relay/register` — there is no
 test-auth seam here either. The only substitutions are that temp data dir and an
@@ -163,6 +192,13 @@ What it asserts that nothing else can:
   (idempotent by id) rather than duplicating.
 - **Read state advances.** An inbound message is unread, my own never is, and
   marking read clears it — including in the one-pass sidebar activity query.
+- **The identity split is real end to end.** Onboarding asserts that what the
+  client pinned (`identity.identity_pub`, the offline root) is **not** the key
+  that will verify KT root signatures (`kt_keys.current().online_key`), against
+  the shipped relay rather than a fake. Nothing else in the suite proves the
+  server's `relayIdentity.ts` and the client's `delegation.rs` agree on the
+  signed-byte layout — a one-character drift in either domain separator would
+  pass every unit test on both sides and fail here.
 
 Two seams made this possible without contorting the test, and both are small:
 the core's modules are `pub` (nothing else links this crate as a library), and
@@ -180,16 +216,63 @@ prints `SKIP (L2, real relay): <reason>` to stderr (visible with
 `cargo test -- --nocapture`) and passes, so an offline machine isn't blocked.
 `ACCORD_L2_REQUIRE=1` turns every skip into a failure, and CI sets it.
 
-#### L2b — the core against a *hostile* relay (`tests/kt_contact_verify.rs`)
+#### L2b — the core against a *hostile* relay
 
 The same layer, inverted. `relay_integration.rs` proves the core works with an
 honest relay; **key transparency is a claim about a dishonest one**, and a real
-`server/` process will never lie on demand. So this file spawns a ~200-line
-HTTP relay the test controls byte for byte, connects a real `Vault` +
-`RelayClient` to it, and drives the real `app_lib::mailbox_drain` /
+`server/` process will never lie on demand. So `tests/common/mod.rs` spawns a
+~200-line HTTP relay the test controls byte for byte, connects a real `Vault` +
+`RelayClient` to it, and the cases drive the real `app_lib::mailbox_drain` /
 `app_lib::verify_recorded_contacts`. The akd proofs are generated with the full
 `akd` crate (already a dev-dependency), so the bytes being verified are the ones
-a real sidecar produces. Five cases:
+a real sidecar produces. Two files share that harness:
+`kt_contact_verify.rs` (identities and keys) and `group_invite_authz.rs`
+(authority over group keys).
+
+Ten of the fifteen cases are about the relay's **own** identity, because
+verifying contact keys against the relay's signed log is circular unless that
+anchor holds (`connect_to_relay`,
+[relay.md](relay.md#pinning-the-relay-identity-as-built)). The fake relay owns
+both halves of the split identity — it holds the **offline root** private key,
+which a real relay never does, and that is precisely what lets it mint the
+forged, tampered and rolled-back delegations only an attacker would produce.
+`identityPubKey` is the root key; the key that signs KT roots is the one its
+delegation names (see
+[relay.md](relay.md#relay-identity-an-offline-root-and-an-online-signing-key)).
+
+Four cases cover the pin:
+
+- a fingerprint that is not the digest of the key served with it → refused;
+- **the genuine fingerprint served with a foreign key** → refused. This is the
+  attack a pin cannot catch: every pin still matches, the account's derived
+  identity is unchanged, and the swapped root would then vouch for a key of the
+  attacker's choosing;
+- an identity that **changes** after first contact → refused, hard alarm, and
+  *not* silently re-pinned (the live session still names the pinned relay);
+- an **invite naming a different relay** → refused at first contact (before any
+  trust-on-first-use pin can be taken) and again at redeem, while the matching
+  invite connects and pins.
+
+Six cover the delegation link — *pinned root → delegation → online key → root
+signature*:
+
+- the **valid chain** end to end: the client pins the root, the KT roots verify
+  under a *different*, delegated key, and contacts verify;
+- a delegation signed by **another root** (the forgery a breached server needs)
+  → refused, `relay-delegation-invalid`, no session left behind;
+- a **tampered** delegation (one field re-pointed at another online key), and a
+  relay serving **no** delegation at all → refused the same way;
+- a **rolled-back** version, and a *different* key presented at a version already
+  accepted → refused, `relay-delegation-rollback`, with the honest relay still
+  connecting afterwards (the refusals poison nothing);
+- a **legitimate rotation** to version + 1 → accepted **silently**: no alarm, no
+  re-pin, and the reconnect sweep re-verifies contacts under the new key;
+- a KT root signed by the **pinned root key itself**, stamped with the current
+  delegation version → **not** a signed root, so the contact is rejected. This is
+  the case that carries the whole split: if a key the client already trusts could
+  sign KT roots, splitting the identity would have bought nothing.
+
+The other five are the contact-key path:
 
 - a key the log published under a **signed** root → recorded, carrying the
   *signed* epoch;
@@ -202,9 +285,39 @@ a real sidecar produces. Five cases:
 - an unreachable directory → unverified, then the reconnect sweep verifies it,
   and a later contradiction is caught by the same sweep.
 
+Every case here connects through `app_lib::connect_to_relay` rather than
+`RelayClient::connect`, so the pinning the app performs is on the path of all
+nine, not just the four that assert about it.
+
 The adversarial *decisions* (forged proof, swapped VRF key, wrong relay signing
 key) are unit-tested in `kt.rs` against real akd directories; this file exists
 for the wiring — ordering, persistence, and what leaves the device.
+
+##### Who may hand me a group key (`tests/group_invite_authz.rs`)
+
+Six cases on the same harness, because a `group-invite` is an ordinary mailbox
+envelope and *anyone* who can enqueue one — the relay included — used to be
+obeyed by it ([chat.md](chat.md#who-may-hand-me-a-group-key)). Each starts from a
+core with a log-verified friend already recorded, so "refused" is never just
+"this account has no friends":
+
+- an invite from a **non-friend** → refused; no key, no group row, no
+  conversation, and no alarm (a stranger's invite is not evidence about any
+  published key, and alarming would let anyone with mailbox reach spam a
+  non-dismissable banner);
+- an invite from a **verified friend for a new group** → joined, key stored,
+  conversation created;
+- an invite for a group the core is **already in** → the stored key is unchanged
+  and a `group-rekey-refused` alarm fires, both from a stranger *and* from the
+  verified friend who runs the group. Membership is not authority to rotate;
+- an **identical** re-invite (add-member is idempotent and re-sends the same key)
+  → silent no-op: no join, no refusal, no alarm;
+- **two conflicting invites for one new group in a single batch** → the first
+  wins on INSERT, the second is refused and alarms (the "already a member?" check
+  runs before anything is written, so both reach the write, and only INSERT-only
+  semantics separate them);
+- an invite from a friend the log now **contradicts** → refused, nothing stored,
+  `contact-key-mismatch`.
 
 Still out of L2's reach, deliberately: group fan-out, attachments, and
 the invite *string* assembly (`web/src/lib/invites.ts` is TypeScript — L2
@@ -486,14 +599,20 @@ harness below) and no canvas, so `imageOptimize` is not unit-tested there.
 
 ## The relay Playwright suite
 
-`npm run e2e` boots the **built relay** (`node server/dist/relay-index.js`) on a
-throwaway `DATA_DIR` and drives it over real HTTP. Both specs are API-level —
-there is no SPA to navigate:
+`npm run e2e` mints a relay identity bundle into the throwaway `DATA_DIR`
+(`node server/dist/relay-cli.js init-identity --if-missing --out
+<DATA_DIR>/relay-identity.json`, since the relay refuses to boot without one and
+ingests the bundle itself — `--if-missing` so a reused `E2E_DATA_DIR` isn't
+re-rooted mid-suite) and then boots the **built relay**
+(`node server/dist/relay-index.js`) on a throwaway `DATA_DIR`, driving it over
+real HTTP. Both specs are API-level — there is no SPA to navigate:
 
 - `onboarding.spec.ts` — `/api/health`, and the pinned-identity handshake:
   `/api/relay/info` must report a fingerprint that is genuinely the SHA-256 of
-  the advertised identity key (not an unrelated or empty string), and it must be
-  stable across calls so the client's pin cannot drift mid-session.
+  the advertised identity key (not an unrelated or empty string), stable across
+  calls so the client's pin cannot drift mid-session, plus a live, unexpired
+  delegation whose `onlineKey` is a *different* 32-byte key from the pinned one —
+  otherwise the root/online split has bought nothing.
 - `voice.spec.ts` — two independent peers get device tokens through the real
   flow and join the same SFU room against a **real mediasoup worker**: opus is
   in the router capabilities, the second peer sees the first as an

@@ -147,6 +147,29 @@ impl Relay {
         let log = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
         let errlog = log.try_clone().map_err(|e| e.to_string())?;
 
+        // The relay refuses to start without an operator-installed identity —
+        // an offline root delegating to the online signing key (spec/relay.md).
+        // There is no first-boot auto-mint any more, so the harness does exactly
+        // what an operator does: mint an identity bundle and drop it in
+        // DATA_DIR. The relay ingests it at boot, so there is no install step.
+        // The root private key `init-identity` prints is captured here and
+        // discarded with this process — the throwaway DATA_DIR only ever holds
+        // the root's PUBLIC half.
+        let init = Command::new("node")
+            .arg("server/dist/relay-cli.js")
+            .arg("init-identity")
+            .arg("--out")
+            .arg(data_dir.path().join("relay-identity.json"))
+            .current_dir(repo_root())
+            .output()
+            .map_err(|e| format!("could not run the relay CLI: {e}"))?;
+        if !init.status.success() {
+            return Err(format!(
+                "relay init-identity failed:\n{}",
+                String::from_utf8_lossy(&init.stderr)
+            ));
+        }
+
         let child = Command::new("node")
             .arg("server/dist/relay-index.js")
             .current_dir(repo_root())
@@ -285,8 +308,26 @@ impl Core {
         let device = vault.device_signing_key().unwrap();
         let relay = RelayClient::default();
 
-        let handle = relay.register(base, &device, None, None).await.unwrap();
+        // No invite here (the L3 harness registers by address), so the relay
+        // identity is trust-on-first-use — but its fingerprint must still bind
+        // to the ROOT key it serves, and the delegation naming its online key
+        // must verify under that root, which is what `register` checks. No floor
+        // either: this account has never seen a delegation from this relay.
+        let registration = relay.register(base, &device, None, None, None, None).await.unwrap();
+        let handle = registration.handle;
         let relay_fp = relay.status().relay_fp.expect("registered ⇒ pinned relay");
+        assert_eq!(relay_fp, registration.identity.fingerprint);
+        assert_eq!(
+            relay_fp,
+            app_lib::relay_client::relay_fingerprint(&registration.identity.identity_pub).unwrap(),
+        );
+        // The whole identity split, end to end against the REAL relay: what the
+        // client pinned is the offline root, and the key that will verify every
+        // KT root signature came out of a delegation signed by it — a different
+        // key, which is the only reason a server breach is now survivable.
+        let delegated = &registration.identity.kt_keys.current().online_key;
+        assert_ne!(delegated, &registration.identity.identity_pub);
+        assert!(registration.identity.kt_keys.current().version >= 1);
 
         let (identity_pub, sealing_pub, delivery_token, verifier) = {
             let store = vault.store().unwrap();

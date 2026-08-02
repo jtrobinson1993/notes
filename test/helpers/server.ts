@@ -7,6 +7,8 @@ import { generateKeyPairSync, sign as edSign } from 'node:crypto';
 import { openDb, type DB } from '../../server/src/db.js';
 import { buildRelayApp } from '../../server/src/relay-app.js';
 import { fingerprintB64url } from '../../server/src/relayAuth.js';
+import { installIdentityBundle } from '../../server/src/relayIdentity.js';
+import { initIdentity } from '../../server/src/relayIdentityAdmin.js';
 import type { Config } from '../../server/src/config.js';
 
 export const TEST_ORIGIN = 'http://localhost:3000';
@@ -41,6 +43,13 @@ export interface TestDb {
 export function makeDb(): TestDb {
   const dir = mkdtempSync(join(tmpdir(), 'notes-test-'));
   const db = openDb(dir);
+  // Every real relay has an operator-installed identity before it serves a byte
+  // (there is no first-boot auto-mint), so give the test one the same way a real
+  // one gets it: mint a bundle offline, install the bundle. The root private key
+  // `initIdentity` returns is discarded here, exactly as on a real relay. A
+  // suite that wants a relay *without* an identity uses openDb directly — see
+  // server/test/relayIdentity.test.ts.
+  installIdentityBundle(db, initIdentity().bundle);
   return {
     db,
     dir,

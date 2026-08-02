@@ -1,4 +1,5 @@
 import Database, { type Database as SqliteDatabase } from 'better-sqlite3';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Role, WrappedKey, UserInfo, CredentialInfo, InviteInfo, NoteRecord } from '@notes/shared';
@@ -57,6 +58,19 @@ export interface FriendRow {
   user_id: string;
   friend_id: string;
   created_at: number;
+}
+
+/** One row of `relay_online_keys` — an online signing key the relay's offline
+ *  root has delegated to. See spec/relay.md. */
+export interface StoredOnlineKey {
+  version: number;
+  pubkey: string;
+  /** pkcs8 DER, base64. NULL once superseded (wiped at rotation). */
+  privkey: string | null;
+  issuedAt: number;
+  notAfter: number;
+  /** Base64 Ed25519 signature by the ROOT key over the delegation payload. */
+  signature: string;
 }
 
 export interface ConversationRow {
@@ -447,10 +461,41 @@ CREATE TABLE IF NOT EXISTS relay_challenges (
   nonce TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS relay_identity (
+-- The relay's trust anchor: the ROOT public key clients pin. There is
+-- deliberately NO private-key column here, and there must never be one — the
+-- root private half lives in the operator's password manager, off the server,
+-- so a server breach cannot mint a delegation (spec/relay.md § "Relay identity:
+-- an offline root and an online signing key"). server/test/relayIdentity.test.ts
+-- asserts the whole schema has no column that could hold it.
+CREATE TABLE IF NOT EXISTS relay_root (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   pubkey TEXT NOT NULL,
-  privkey TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+-- Every online signing key the root has ever delegated to, newest = MAX(version).
+-- Each row IS a delegation: the root-signed statement arrives in the identity
+-- bundle, so a row can only exist because the operator's offline root vouched
+-- for it. The version column is the monotonic anti-rollback counter — it only
+-- ever increases (enforced in installRelayIdentity), so a superseded and
+-- possibly stolen online key cannot be reinstated by replaying its old bundle.
+-- Older rows keep their public half (KT roots they signed must stay verifiable)
+-- but have privkey NULLed at rotation, so a later break-in cannot steal a key
+-- the relay no longer needs.
+CREATE TABLE IF NOT EXISTS relay_online_keys (
+  version INTEGER PRIMARY KEY,
+  pubkey TEXT NOT NULL,
+  privkey TEXT,
+  issued_at INTEGER NOT NULL,
+  not_after INTEGER NOT NULL,
+  signature TEXT NOT NULL,
+  installed_at INTEGER NOT NULL
+);
+-- Relay-local HMAC secrets that are NOT an identity (today: the emote capability
+-- key). Kept apart from the identity so rotating the online signing key doesn't
+-- invalidate every minted emote URL, and so no signing key doubles as an HMAC key.
+CREATE TABLE IF NOT EXISTS relay_local_secrets (
+  name TEXT PRIMARY KEY,
+  secret TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS relay_verifiers (
@@ -472,12 +517,16 @@ CREATE TABLE IF NOT EXISTS relay_directory (
   sealing_pubkey TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+-- key_version names the delegated online key that signed this root, so a root
+-- published before a rotation still verifies (against that version's delegation)
+-- instead of failing under the current key.
 CREATE TABLE IF NOT EXISTS relay_kt_roots (
   epoch INTEGER PRIMARY KEY AUTOINCREMENT,
   root_hash TEXT NOT NULL,
   prev_root_hash TEXT,
   signature TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  key_version INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS relay_invites (
   token_hash TEXT PRIMARY KEY,
@@ -543,6 +592,40 @@ CREATE TABLE IF NOT EXISTS relay_group_blobs (
   // they are dropped on boot. Safe to run forever: a relay that never had the
   // table is unaffected.
   db.exec('DROP TABLE IF EXISTS relay_escrow');
+
+  // Idempotent migration: retire the single-key relay identity.
+  //
+  // `relay_identity` held ONE keypair that both signed KT roots (so its private
+  // half had to live on the server) and was what clients pinned. That made a
+  // server breach unrecoverable — the attacker signs whatever they like and the
+  // operator cannot revoke the anchor with the anchor. It is replaced by an
+  // offline root + a delegated online key (spec/relay.md). The old private key
+  // cannot be carried into the new hierarchy (its whole problem is that it is on
+  // the server), so the table is dropped rather than migrated, and the relay
+  // refuses to boot until the operator installs an identity bundle minted with
+  // `npm run relay -- init-identity` on their own machine.
+  //
+  // Existing KT roots go with it: they are signed by a key no client will ever
+  // verify against again, so leaving them would publish a chain that fails every
+  // audit. The log restarts from genesis. This only ever affects a developer's
+  // local database — the relay has never been deployed.
+  const hadLegacyIdentity = !!db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'relay_identity'")
+    .get();
+  if (hadLegacyIdentity) {
+    db.exec('DROP TABLE relay_identity');
+    db.exec('DELETE FROM relay_kt_roots');
+  }
+  // Idempotent migration: tag KT roots with the online key version that signed them.
+  const ktRootCols = db.prepare('PRAGMA table_info(relay_kt_roots)').all() as { name: string }[];
+  if (!ktRootCols.some((c) => c.name === 'key_version')) {
+    db.exec('ALTER TABLE relay_kt_roots ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1');
+  }
+  // Idempotent cleanup: an online key with no delegation is not a thing any
+  // more (they only ever arrive inside a root-signed bundle). Such a row could
+  // only be a leftover from a pre-release schema on a developer's box, and it
+  // would be an unvouched-for signing key sitting in the identity table.
+  db.exec('DELETE FROM relay_online_keys WHERE signature IS NULL');
 
   // Idempotent migration: add users.display_name / name_color if missing.
   const userCols = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -731,22 +814,116 @@ CREATE TABLE IF NOT EXISTS relay_group_blobs (
 
     // ---- v8 relay (spec/relay.md) ----
 
-    /** Load-or-create the relay's pinned identity keypair (first boot mints it). */
-    ensureRelayIdentity(generate: () => { pubkey: string; privkey: string }): {
-      pubkey: string;
-      privkey: string;
-    } {
-      const row = db.prepare('SELECT pubkey, privkey FROM relay_identity WHERE id = 1').get() as
-        | { pubkey: string; privkey: string }
+    /** The pinned trust anchor: the relay's ROOT public key (raw Ed25519,
+     *  standard base64), or undefined on a relay that has never been
+     *  initialized. The private half is not here and never will be. */
+    getRelayRootPubkey(): string | undefined {
+      const row = db.prepare('SELECT pubkey FROM relay_root WHERE id = 1').get() as
+        | { pubkey: string }
         | undefined;
-      if (row) return row;
-      const fresh = generate();
-      db.prepare('INSERT INTO relay_identity (id, pubkey, privkey, created_at) VALUES (1, ?, ?, ?)').run(
-        fresh.pubkey,
-        fresh.privkey,
+      return row?.pubkey;
+    },
+    /** Every delegated online key, ascending by version. The last one is
+     *  current; the earlier ones keep KT roots they signed verifiable. */
+    listRelayOnlineKeys(): StoredOnlineKey[] {
+      return (
+        db
+          .prepare(
+            'SELECT version, pubkey, privkey, issued_at, not_after, signature FROM relay_online_keys ORDER BY version',
+          )
+          .all() as {
+          version: number;
+          pubkey: string;
+          privkey: string | null;
+          issued_at: number;
+          not_after: number;
+          signature: string;
+        }[]
+      ).map((r) => ({
+        version: r.version,
+        pubkey: r.pubkey,
+        privkey: r.privkey,
+        issuedAt: r.issued_at,
+        notAfter: r.not_after,
+        signature: r.signature,
+      }));
+    },
+    /**
+     * Install an identity bundle's root + delegated online key, in one
+     * transaction, and report what it did. The caller has already verified the
+     * bundle cryptographically (relayIdentity.parseIdentityBundle) and checked
+     * the root matches; this decides how it lands against what is already here.
+     *
+     * **Anti-rollback lives here**, in the same transaction as the write, so it
+     * cannot be raced: a delegation must strictly exceed every version already
+     * installed. Re-installing the exact delegation already at that version is
+     * the idempotent restart case and is a no-op; a *different* delegation at a
+     * version already used means the root signed two contradictory statements
+     * (or the file was tampered with), and is refused rather than resolved.
+     *
+     * Superseded private keys are wiped in the same transaction — the relay
+     * only ever needs the newest one, so an attacker who breaks in later cannot
+     * steal a key it no longer has a use for.
+     */
+    installRelayIdentity(bundle: {
+      rootPubKey: string;
+      onlineKey: { pubkey: string; privkey: string };
+      delegation: { version: number; onlineKey: string; issuedAt: number; notAfter: number; signature: string };
+    }): 'installed' | 'unchanged' | 'stale' {
+      return db.transaction(() => {
+        const d = bundle.delegation;
+        const root = db.prepare('SELECT pubkey FROM relay_root WHERE id = 1').get() as
+          | { pubkey: string }
+          | undefined;
+        if (!root) {
+          db.prepare('INSERT INTO relay_root (id, pubkey, created_at) VALUES (1, ?, ?)').run(
+            bundle.rootPubKey,
+            Date.now(),
+          );
+        } else if (root.pubkey !== bundle.rootPubKey) {
+          // Belt and braces: relayIdentity.installIdentityBundle refuses this
+          // with a fuller explanation, but the invariant is enforced here too so
+          // no caller can bypass it.
+          throw new Error('identity bundle is rooted at a different key than the one installed');
+        }
+
+        const existing = db.prepare('SELECT pubkey, signature FROM relay_online_keys WHERE version = ?').get(
+          d.version,
+        ) as { pubkey: string; signature: string } | undefined;
+        if (existing) {
+          if (existing.pubkey === d.onlineKey && existing.signature === d.signature) return 'unchanged';
+          throw new Error(
+            `a DIFFERENT delegation is already installed at version ${d.version} — two root-signed ` +
+              'statements at the same version cannot both be honored; refusing',
+          );
+        }
+        const max = (db.prepare('SELECT MAX(version) AS v FROM relay_online_keys').get() as {
+          v: number | null;
+        }).v;
+        if (max !== null && d.version < max) return 'stale';
+
+        db.prepare(
+          'INSERT INTO relay_online_keys (version, pubkey, privkey, issued_at, not_after, signature, installed_at) ' +
+            'VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ).run(d.version, d.onlineKey, bundle.onlineKey.privkey, d.issuedAt, d.notAfter, d.signature, Date.now());
+        db.prepare('UPDATE relay_online_keys SET privkey = NULL WHERE version < ?').run(d.version);
+        return 'installed';
+      })();
+    },
+    /** A relay-local HMAC secret by name, minted on first use. Not an identity:
+     *  nothing a client pins or verifies depends on it. */
+    relayLocalSecret(name: string): Buffer {
+      const row = db.prepare('SELECT secret FROM relay_local_secrets WHERE name = ?').get(name) as
+        | { secret: string }
+        | undefined;
+      if (row) return Buffer.from(row.secret, 'base64');
+      const secret = randomBytes(32);
+      db.prepare('INSERT INTO relay_local_secrets (name, secret, created_at) VALUES (?, ?, ?)').run(
+        name,
+        secret.toString('base64'),
         Date.now(),
       );
-      return fresh;
+      return secret;
     },
     /** Enroll a device key. Returns the id, or null if the key belongs to another user. */
     enrollRelayDevice(userId: string, id: string, pubkey: string, name: string | null): string | null {
@@ -1106,10 +1283,17 @@ CREATE TABLE IF NOT EXISTS relay_group_blobs (
         sealingPubkey: r.sealing_pubkey,
       }));
     },
-    appendKtRoot(rootHash: string, prevRootHash: string | null, signature: string): number {
+    appendKtRoot(
+      rootHash: string,
+      prevRootHash: string | null,
+      signature: string,
+      keyVersion: number,
+    ): number {
       const res = db
-        .prepare('INSERT INTO relay_kt_roots (root_hash, prev_root_hash, signature, created_at) VALUES (?, ?, ?, ?)')
-        .run(rootHash, prevRootHash, signature, Date.now());
+        .prepare(
+          'INSERT INTO relay_kt_roots (root_hash, prev_root_hash, signature, created_at, key_version) VALUES (?, ?, ?, ?, ?)',
+        )
+        .run(rootHash, prevRootHash, signature, Date.now(), keyVersion);
       return Number(res.lastInsertRowid);
     },
     latestKtRoot(): { epoch: number; rootHash: string } | undefined {
@@ -1124,16 +1308,18 @@ CREATE TABLE IF NOT EXISTS relay_group_blobs (
       prevRootHash: string | null;
       signature: string;
       createdAt: number;
+      keyVersion: number;
     }[] {
       return (
         db.prepare(
-          'SELECT epoch, root_hash, prev_root_hash, signature, created_at FROM relay_kt_roots WHERE epoch > ? ORDER BY epoch',
+          'SELECT epoch, root_hash, prev_root_hash, signature, created_at, key_version FROM relay_kt_roots WHERE epoch > ? ORDER BY epoch',
         ).all(sinceEpoch) as {
           epoch: number;
           root_hash: string;
           prev_root_hash: string | null;
           signature: string;
           created_at: number;
+          key_version: number;
         }[]
       ).map((r) => ({
         epoch: r.epoch,
@@ -1141,6 +1327,7 @@ CREATE TABLE IF NOT EXISTS relay_group_blobs (
         prevRootHash: r.prev_root_hash,
         signature: r.signature,
         createdAt: r.created_at,
+        keyVersion: r.key_version,
       }));
     },
 

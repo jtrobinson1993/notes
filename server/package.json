@@ -11,7 +11,7 @@
     "relay:dev": "tsx watch src/relay-index.ts",
     "relay:start": "node dist/relay-index.js",
     "kt-audit": "tsx src/ktAuditCli.ts",
-    "relay": "tsx src/relay-cli.ts"
+    "relay": "node bin/relay.mjs"
   },
   "dependencies": {
     "@fastify/rate-limit": "^10.3.0",

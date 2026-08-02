@@ -20,6 +20,13 @@ pub enum StoreError {
     Db(#[from] rusqlite::Error),
     #[error("wrong key or corrupt database")]
     BadKey,
+    /// A relay row already exists for this id with a different identity — the
+    /// pinned relay identity (or the account identity derived from it) does not
+    /// match what is stored. Never overwritten; the caller fails closed. Carries
+    /// the catalogued IPC code because this string can reach the user (a send or
+    /// a drain that hits it), and it means the same thing there as at connect.
+    #[error("RELAY_IDENTITY_CHANGED: the relay's identity does not match the one recorded for this account")]
+    RelayIdentityChanged,
 }
 
 /// Schema migrations, applied in order; `PRAGMA user_version` = number applied.
@@ -223,6 +230,20 @@ const MIGRATIONS: &[&str] = &[
     // new key is proven, which is why `record_friend` clears it on a key change.
     "ALTER TABLE contact_relays ADD COLUMN kt_verified_epoch INTEGER;
      ALTER TABLE contact_relays ADD COLUMN kt_verified_at INTEGER;",
+    // v14 — a group's key is immutable at the schema level (chat.md § Groups).
+    // `insert_group` already refuses to overwrite one, but the property is worth
+    // more than a convention in one accessor: a group key silently replaced by
+    // an inbound invite re-keys the conversation to an attacker, so the store
+    // itself refuses the UPDATE rather than trusting every future caller. When a
+    // real rotation flow lands (roadmap § Groups — membership lifecycle) it must
+    // arrive with a migration that replaces this trigger with one gating on the
+    // signed group-state record, not by quietly dropping it.
+    "CREATE TRIGGER groups_key_is_immutable
+       BEFORE UPDATE OF group_key ON groups
+       WHEN NEW.group_key IS NOT OLD.group_key
+     BEGIN
+       SELECT RAISE(ABORT, 'group_key is immutable — re-keying needs a signed group-state record');
+     END;",
 ];
 
 #[derive(serde::Deserialize)]
@@ -606,6 +627,17 @@ impl Store {
 
     /// Persist (idempotently) a relay this device is a member of, so friend and
     /// conversation rows can reference it (D4/local-store).
+    ///
+    /// **The identity columns are write-once.** `identity_fp` is the relay's
+    /// pinned fingerprint and `our_identity_pub` is the account identity derived
+    /// *from* it, so neither can legitimately change for a given relay id — only
+    /// `url` can (a relay moving host). It used to `DO UPDATE SET identity_fp =
+    /// excluded.identity_fp`, which meant the row silently re-recorded whatever
+    /// the last connect saw: the local store agreed with an impostor instead of
+    /// contradicting it. Now a disagreement is an error and the row is left
+    /// exactly as it was; the caller (`relay_connect`) fails the connection
+    /// closed and alarms. This is defence in depth *behind* the connect-time pin,
+    /// not a substitute for it.
     pub fn upsert_relay(
         &self,
         relay_id: &str,
@@ -613,12 +645,28 @@ impl Store {
         identity_fp: &str,
         our_identity_pub: &[u8],
     ) -> Result<(), StoreError> {
+        let existing: Option<(String, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT identity_fp, our_identity_pub FROM relays WHERE id = ?1",
+                [relay_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((fp, ours)) = existing {
+            if fp != identity_fp {
+                return Err(StoreError::RelayIdentityChanged);
+            }
+            if ours != our_identity_pub {
+                return Err(StoreError::RelayIdentityChanged);
+            }
+            self.conn
+                .execute("UPDATE relays SET url = ?2 WHERE id = ?1", (relay_id, url))?;
+            return Ok(());
+        }
         self.conn.execute(
             "INSERT INTO relays(id, url, identity_fp, our_identity_pub, joined_at)
-               VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(id) DO UPDATE SET url = excluded.url,
-               identity_fp = excluded.identity_fp,
-               our_identity_pub = excluded.our_identity_pub",
+               VALUES (?1, ?2, ?3, ?4, ?5)",
             (relay_id, url, identity_fp, our_identity_pub, now_ms()),
         )?;
         Ok(())
@@ -911,16 +959,29 @@ impl Store {
         Ok(())
     }
 
-    /// Store (or refresh) a group's shared key + name (D14). The group key
-    /// encrypts content and derives the group token.
-    pub fn upsert_group(&self, group_id: &str, group_key: &[u8], name: Option<&str>) -> Result<(), StoreError> {
-        self.conn.execute(
+    /// Record a group's shared key + name (D14) — **INSERT-only**. Returns
+    /// `true` if a new group row was created, `false` if the group was already
+    /// known (in which case *nothing* changed).
+    ///
+    /// This used to be an upsert with `DO UPDATE SET group_key =
+    /// excluded.group_key`, which is a complete E2EE break for groups: an
+    /// inbound `group-invite` is an ordinary mailbox envelope, so anyone able to
+    /// enqueue one — the relay, for any group id it hosts, or any current member
+    /// — could replace the key of a group I was already in, and every message I
+    /// sent afterwards would be sealed under *their* key. A bare invite is not
+    /// authority to re-key; only the signed group-state record could be, and no
+    /// rotation flow exists (chat.md § Groups). So the key is write-once and a
+    /// second invite for a known group is a no-op the caller reports on.
+    ///
+    /// The name follows the same rule: there is no rename flow, so letting a
+    /// re-invite rewrite it would only hand a member a griefing lever.
+    pub fn insert_group(&self, group_id: &str, group_key: &[u8], name: Option<&str>) -> Result<bool, StoreError> {
+        let n = self.conn.execute(
             "INSERT INTO groups(group_id, group_key, name, created_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(group_id) DO UPDATE SET group_key = excluded.group_key,
-               name = COALESCE(excluded.name, groups.name)",
+             ON CONFLICT(group_id) DO NOTHING",
             (group_id, group_key, name, now_ms()),
         )?;
-        Ok(())
+        Ok(n > 0)
     }
 
     /// A group's shared key, or None if I'm not a member (no key stored).
@@ -1481,6 +1542,18 @@ impl Store {
         Ok(rows)
     }
 
+    /// Every relay this account has a row for, as `(id, identity_fp)`. The id
+    /// *is* the pinned fingerprint today, but both are returned so a caller
+    /// comparing identities never has to rely on that coincidence. Used at
+    /// connect to anchor an account that predates the explicit pin setting.
+    pub fn relay_identities(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT id, identity_fp FROM relays ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO settings(key, value) VALUES (?1, ?2)
@@ -1828,6 +1901,47 @@ mod tests {
         assert!(store.attachment_meta("nope").unwrap().is_none());
     }
 
+    /// The relay row's identity columns are write-once: a second call with a
+    /// different fingerprint (or a different derived account key) must be
+    /// refused, not silently applied. The old code did
+    /// `DO UPDATE SET identity_fp = excluded.identity_fp`, which turned the
+    /// local record of "who this relay is" into an echo of the latest connect.
+    #[test]
+    fn upsert_relay_never_overwrites_the_recorded_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("vault.db"), &[13u8; 32]).unwrap();
+        store.upsert_relay("r1", "https://r.example", "fp-1", &[1u8; 32]).unwrap();
+
+        // Same identity → idempotent, and the URL may move (relay re-hosted).
+        store.upsert_relay("r1", "https://moved.example", "fp-1", &[1u8; 32]).unwrap();
+
+        let read = |col: &str| -> (String, Vec<u8>) {
+            store
+                .conn
+                .query_row(
+                    &format!("SELECT {col}, our_identity_pub FROM relays WHERE id='r1'"),
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(read("url").0, "https://moved.example");
+
+        // A different fingerprint for the same relay id is an error…
+        assert!(matches!(
+            store.upsert_relay("r1", "https://r.example", "fp-2", &[1u8; 32]),
+            Err(StoreError::RelayIdentityChanged)
+        ));
+        // …as is a different derived account identity under the same fingerprint.
+        assert!(matches!(
+            store.upsert_relay("r1", "https://r.example", "fp-1", &[2u8; 32]),
+            Err(StoreError::RelayIdentityChanged)
+        ));
+        // …and nothing was written by either attempt.
+        assert_eq!(read("identity_fp"), ("fp-1".to_string(), vec![1u8; 32]));
+        assert_eq!(read("url").0, "https://moved.example");
+    }
+
     #[test]
     fn conversation_unread_tracks_inbound_after_read_marker() {
         let dir = tempfile::tempdir().unwrap();
@@ -1944,21 +2058,39 @@ mod tests {
     }
 
     #[test]
-    fn group_key_upsert_get_list() {
+    fn a_group_key_is_write_once() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("vault.db"), &[14u8; 32]).unwrap();
         assert!(store.group_key("g1").unwrap().is_none());
 
-        store.upsert_group("g1", &[5u8; 32], Some("Team")).unwrap();
+        assert!(store.insert_group("g1", &[5u8; 32], Some("Team")).unwrap());
         assert_eq!(store.group_key("g1").unwrap(), Some(vec![5u8; 32]));
 
-        // Re-key keeps the name when the update omits it.
-        store.upsert_group("g1", &[6u8; 32], None).unwrap();
-        assert_eq!(store.group_key("g1").unwrap(), Some(vec![6u8; 32]));
+        // A second invite for a group I'm already in changes NOTHING — not the
+        // key (the E2EE break), and not the name (no rename flow exists, so a
+        // writable name is only a griefing lever).
+        assert!(!store.insert_group("g1", &[6u8; 32], Some("Pwned")).unwrap());
+        assert_eq!(store.group_key("g1").unwrap(), Some(vec![5u8; 32]));
         let groups = store.list_groups().unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].group_id, "g1");
         assert_eq!(groups[0].name.as_deref(), Some("Team"));
+
+        // Belt and braces: the schema itself refuses the UPDATE, so a future
+        // accessor cannot reintroduce the hole by writing the column directly.
+        let err = store
+            .conn
+            .execute("UPDATE groups SET group_key = ?1 WHERE group_id = 'g1'", [&[6u8; 32][..]])
+            .unwrap_err();
+        assert!(err.to_string().contains("group_key is immutable"), "{err}");
+        assert_eq!(store.group_key("g1").unwrap(), Some(vec![5u8; 32]));
+
+        // Rewriting the same bytes is not a change, so it is allowed (an
+        // idempotent no-op UPDATE must not blow up).
+        store
+            .conn
+            .execute("UPDATE groups SET group_key = ?1 WHERE group_id = 'g1'", [&[5u8; 32][..]])
+            .unwrap();
     }
 
     #[test]

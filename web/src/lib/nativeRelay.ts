@@ -24,6 +24,7 @@ import {
   type DrainReport,
 } from './native';
 import { toastError } from './toast';
+import { toastCoreError } from './nativeErrors';
 
 /** Device-only setting: the relay URL to reconnect to on a later boot. In the
  *  native shell `window.location.origin` is `tauri://…`, not the relay, so the
@@ -94,6 +95,11 @@ export async function drainMailbox(): Promise<void> {
       // hard KT alarm; toast the catalogued code too, so the user gets the
       // explanation and a lookup URL rather than only a banner.
       if ((report.kt_rejected ?? 0) > 0) toastError('KT_CONTACT_KEY_MISMATCH');
+      // A group-invite the core would not act on. Silence here would be wrong
+      // in both directions: a friend who added you would look like they never
+      // did, and a re-key attempt on a group you're in — the serious case —
+      // would leave only a banner with no explanation to look up.
+      if ((report.group_invites_rejected ?? 0) > 0) toastError('GROUP_INVITE_REFUSED');
       if (report.ingested > 0) for (const l of ingestedListeners) l(report);
     } while (rerun);
   } catch {
@@ -140,7 +146,16 @@ export async function reconnectRelay(): Promise<void> {
     if (!status.connected) {
       const url = await settingsGet(RELAY_URL_KEY);
       if (!url) return; // never connected a relay on this device yet
-      await relayConnect(url);
+      try {
+        await relayConnect(url);
+      } catch (e) {
+        // The core holds this relay to the identity pinned on the first
+        // connect. A refusal there is the whole point of that pin, so it must
+        // not join the "offline / relay down" silence below: toast it and leave
+        // delivery off. Anything else falls through to that silence.
+        if (toastCoreError(e)) return;
+        throw e;
+      }
     }
     // Self-heal: (re)publish our directory entry + sealed-sender verifier
     // (idempotent). Onboarding does this too, but a partial onboarding — e.g. a

@@ -358,6 +358,15 @@ function fakeCoreScript(seed: FakeSeed): void {
       throw 'not connected to a relay';
     }
   }
+  /** The relay identity anchor (spec/relay.md § Pinning the relay identity):
+   *  a caller-supplied fingerprint — an invite's `relayFp`, or the pin — must be
+   *  the relay we are. Mirrors the core so a UI that stops passing it fails
+   *  here rather than silently losing the anchor. */
+  function requireRelayFp(expected: string | null | undefined): void {
+    if (expected && expected !== seed.relayFp) {
+      throw `RELAY_IDENTITY_CHANGED: expected relay ${expected}, got ${seed.relayFp}`;
+    }
+  }
   function friendOf(contactId: string): Friend {
     const f = state.friends.find((x) => x.contact_id === contactId);
     if (!f) throw 'not a friend on this relay';
@@ -503,12 +512,14 @@ function fakeCoreScript(seed: FakeSeed): void {
       relay_fp: state.relay.fp,
     }),
     relay_connect: (a) => {
+      requireRelayFp(arg<string | null>(a, 'expectRelayFp', 'expect_relay_fp'));
       state.relay.connected = true;
       state.relay.baseUrl = arg<string>(a, 'url', 'url');
       state.relay.fp = seed.relayFp;
       return null;
     },
     relay_register: (a) => {
+      requireRelayFp(arg<string | null>(a, 'expectRelayFp', 'expect_relay_fp'));
       store();
       state.relay.connected = true;
       state.relay.baseUrl = arg<string>(a, 'url', 'url');
@@ -549,9 +560,10 @@ function fakeCoreScript(seed: FakeSeed): void {
     // Redeeming only drops a sealed friend-accept through the one-shot
     // capability; the friendship lands when the inviter's confirm drains back
     // (simulate that with `deliverFriend`).
-    relay_invite_redeem: () => {
+    relay_invite_redeem: (a) => {
       store();
       relay();
+      requireRelayFp(arg<string | null>(a, 'relayFp', 'relay_fp'));
       return Date.now();
     },
     envelope_seal: () => {
@@ -609,7 +621,16 @@ function fakeCoreScript(seed: FakeSeed): void {
       }
       const acked = state.mailbox.length;
       state.mailbox = [];
-      return { ingested, acked, buffered: 0, friends, calls: [], kt_rejected: 0 };
+      return {
+        ingested,
+        acked,
+        buffered: 0,
+        friends,
+        calls: [],
+        kt_rejected: 0,
+        groups_joined: 0,
+        group_invites_rejected: 0,
+      };
     },
 
     // ---- friends ----

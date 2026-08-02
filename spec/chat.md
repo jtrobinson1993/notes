@@ -333,7 +333,12 @@ Built today:
 - `group_add_member` — fetch the current record, append the friend's identity key
   as `member`, bump `version`, re-sign, PUT; then hand them the group key in a
   **DM-sealed `group-invite`** envelope. Their drain stores the key and creates
-  the conversation, which is what makes them a member locally.
+  the conversation, which is what makes them a member locally. The record comes
+  back from the *relay* and this command signs it, so two things are checked
+  before it will (`message::group_record_add_member`): the record must be for
+  this `groupId`, and it must name **me** an owner/admin. What that does not
+  catch is a relay splicing an extra member into the record it returns — see
+  [roadmap.md](roadmap.md#group-state-is-trusted-from-the-relay).
 - `relay_send_group_message` / `relay_group_edit_message` /
   `relay_group_delete_message` / `relay_group_react` — one group-sealed envelope
   per action, authorized by the **group token** (derived from the group key), fanned
@@ -342,6 +347,49 @@ Built today:
   and rejected: an offline owner would block every membership change, and losing
   the owner would freeze the group. Offline admin races resolve by relay
   ordering.
+
+### Who may hand me a group key
+
+A `group-invite` is an ordinary sealed-sender mailbox envelope. Opening one
+proves that *somebody* signed it and nothing else — anyone who can enqueue into
+my mailbox can send one, and that includes the **relay**, for any group id it
+hosts. So the drain admits an invite only under three rules, all fail-closed
+(`admit_group_invites` in `lib.rs`):
+
+1. **It can never re-key a group I am already in.** If a key is already stored
+   for that `groupId`, the invite is refused and the stored key is kept.
+   *Identical* bytes are a benign duplicate — add-member is idempotent and
+   re-sends the same key — and are a silent no-op; *different* bytes raise a hard
+   `kt:alarm` (`group-rekey-refused`), because there is no legitimate flow that
+   produces one. This is the half that mattered: `upsert_group` used to be
+   `ON CONFLICT … DO UPDATE SET group_key = excluded.group_key`, so a single
+   injected envelope re-keyed the conversation and every message the victim sent
+   afterwards was sealed under the attacker's key. The key is now write-once in
+   the accessor **and** in the schema (a `BEFORE UPDATE OF group_key` trigger),
+   so the property does not depend on every future caller remembering it.
+2. **It must come from a current friend on this relay.** The inviter is the
+   *verified envelope sender* — `GroupInviteData` carries it; it used to be
+   discarded, which left the invite unattributable — matched against
+   `contact_relays` with `is_friend = 1`. This is what keeps friends-of-friends
+   the only route into a group: a stranger cannot mint membership, and neither
+   can the relay.
+3. **The transparency log must not contradict that friend's key.** The same
+   verdict policy as everywhere else (`verify_contact_keys`): a contradiction is
+   refused and alarms; an *unprovable* key (relay offline, handle absent from the
+   log, interim-KT relay) is **accepted**. Requiring `Verified` was rejected
+   deliberately — it would stop groups working whenever the directory is
+   unreachable, while adding nothing: the friendship itself was admitted under
+   exactly this policy, and rule 1 means the worst a wrongly-admitted invite can
+   do is create a *new* conversation, never touch an existing one.
+
+Invites are admitted **after** the drain's main store block, so a friend recorded
+in the same drain is already visible: an inviter holds my delivery token from the
+moment I redeem their invite, so their `friend-confirm` and their `group-invite`
+can legitimately arrive in the same fetch.
+
+A refused invite is still **acked** (it is permanently unusable; re-draining
+would only re-refuse) and reported as `group_invites_rejected`, which the webview
+toasts as `GROUP_INVITE_REFUSED`.
 
 **Not built:** member **removal** (and therefore group-key rotation), role
 changes after creation, channels inside a group, and leaving a group. A member
@@ -537,6 +585,10 @@ Real and enforced today:
   `(me, verified sender)`; a group message under the group whose key opened it.
 - **Author-gated mutation.** Edits and deletes apply only when the verified
   sender is the target's recorded author.
+- **Group keys are friend-gated and write-once.** A `group-invite` is accepted
+  only from a current friend the log does not contradict, and can only ever
+  create a group new to this account — never replace the key of one it is
+  already in ([above](#who-may-hand-me-a-group-key)).
 - **Fail-closed decode.** Undecryptable/forged/garbage is dropped, version skew
   is buffered — one bad inject cannot wedge the queue, and an app update cannot
   lose mail.
@@ -560,7 +612,16 @@ Known gaps, stated plainly rather than implied away:
   [roadmap.md](roadmap.md#an-inbound-friend-accept-is-trusted-from-any-sender).
 - **Unfriend does not revoke reach** (above): the profile-key rotation fan-out is
   unbuilt.
-- **No group-key rotation**, so a member cannot be removed.
+- **No group-key rotation**, so a member cannot be removed. It is also why the
+  invite path can be flatly INSERT-only with nothing to trade away: there is no
+  legitimate re-key to break. When rotation is built it must arrive through the
+  **signed group-state record**, not through a `group-invite`.
+- **The group-state record is trusted from the relay** when adding a member: the
+  client checks it is this group's record and names it an admin, but has no
+  local mirror to notice a spliced-in member. The spliced identity never gets the
+  group key (that only travels in a DM-sealed invite), so it buys fan-out
+  ciphertext and blob reach, not content. See
+  [roadmap.md](roadmap.md#group-state-is-trusted-from-the-relay).
 - The relay is trusted for ordering/delivery; see
   [security.md](security.md).
 

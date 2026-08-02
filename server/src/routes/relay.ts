@@ -8,7 +8,7 @@
 // list-devices | revoke-device`).
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { createHash, createPrivateKey, randomBytes, sign as edSign, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, sign as edSign, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
@@ -25,11 +25,11 @@ import { directoryRoot, inclusionProof, leafHash } from '../ktMerkle.js';
 import {
   deviceFromAuthHeader,
   fingerprintB64url,
-  generateRelayIdentity,
   issueDeviceToken,
   verifyDeviceSignature,
   verifyDeviceToken,
 } from '../relayAuth.js';
+import { loadRelayIdentity } from '../relayIdentity.js';
 
 /** Owner/admin identity pubkeys from a parsed group record — the set whose
  *  signature the relay accepts for an update (D14). */
@@ -92,8 +92,13 @@ export function relayRoutes(
   ktSidecar?: KtSidecar,
   push?: Push,
 ): void {
-  const identity = db.ensureRelayIdentity(generateRelayIdentity);
-  const relayFp = fingerprintB64url(Buffer.from(identity.pubkey, 'base64'));
+  // Throws (refusing to build the app) on a relay with no installed identity —
+  // there is no first-boot auto-mint. See relayIdentity.ts for why.
+  const identity = loadRelayIdentity(db);
+  // What clients pin: the ROOT fingerprint. Stable across an online-key
+  // rotation, which is the entire point of the split — a rotation must not look
+  // like a relay substitution.
+  const relayFp = identity.rootFingerprint;
 
   /** Resolve a bearer token to a live, non-revoked device id (or null). */
   function deviceIdForToken(token: string | null): string | null {
@@ -161,12 +166,27 @@ export function relayRoutes(
   }
 
   // Public: the pinned-identity handshake surface (UI-4 shows the name).
-  // The full public key rides along so anyone can verify KT root signatures.
+  //
+  // Everything a client needs to walk the whole chain in one round trip:
+  //   identityFingerprint  b64url(sha256(identityPubKey)) — THE ROOT's fingerprint,
+  //                        the value clients pin and invites carry.
+  //   identityPubKey       the ROOT public key. The binding check
+  //                        (fingerprint == sha256(key)) is unchanged; what
+  //                        changed is which key it commits to.
+  //   delegation           the current root-signed delegation naming the online
+  //                        key that signs KT roots. Verify it against
+  //                        identityPubKey, refuse an older `version` than the
+  //                        highest already seen, and refuse it past `notAfter`.
+  //   delegations          every delegation this root has issued, ascending —
+  //                        a KT root carries the `keyVersion` that signed it, so
+  //                        roots published before a rotation still verify.
   app.get('/api/relay/info', async () => ({
     name: 'Accord relay',
     identityFingerprint: relayFp,
-    identityPubKey: identity.pubkey,
-    apiVersion: 1,
+    identityPubKey: identity.rootPubKey,
+    delegation: identity.delegation,
+    delegations: identity.delegations,
+    apiVersion: 2,
     // Onboarding needs to know whether registration requires an invite. Once the
     // relay has an admin, 'invite' mode means new accounts need a minted invite;
     // 'public' means anyone may register. (A brand-new relay reports its mode but
@@ -180,11 +200,9 @@ export function relayRoutes(
   // inclusion proofs and VRF-blinded labels (full AKD lineage) land before
   // the published KT spec is declared final — see key-transparency.md.
 
-  const signingKey = createPrivateKey({
-    key: Buffer.from(identity.privkey, 'base64'),
-    format: 'der',
-    type: 'pkcs8',
-  });
+  // The ONLINE key — delegated, revocable, and the only private key on this
+  // server. The root that vouches for it is offline.
+  const signingKey = identity.onlineSigningKey;
 
   /** Sign + chain a new root hash into the relay's KT log (both KT backends
    *  publish signed, hash-chained roots; only the *root value* + proof shape
@@ -194,7 +212,9 @@ export function relayRoutes(
     if (prev && prev.rootHash === rootHash) return prev.epoch; // no change, no epoch
     const payload = `kt-root|${rootHash}|${prev?.rootHash ?? 'genesis'}`;
     const signature = edSign(null, Buffer.from(payload), signingKey).toString('base64');
-    return db.appendKtRoot(rootHash, prev?.rootHash ?? null, signature);
+    // Stamped with the delegation version, so a verifier knows which delegated
+    // key to check this root against after a rotation.
+    return db.appendKtRoot(rootHash, prev?.rootHash ?? null, signature, identity.onlineKeyVersion);
   }
 
   function publishEpoch(): number {
@@ -281,12 +301,16 @@ export function relayRoutes(
     const since = Number((request.query as { since?: string }).since ?? 0) || 0;
     return {
       relayFp,
+      // The delegation chain rides along so an auditor can verify roots from
+      // this one response plus the pinned root key from /info.
+      delegations: identity.delegations,
       roots: db.listKtRoots(since).map((r) => ({
         epoch: r.epoch,
         rootHash: r.rootHash,
         prevRootHash: r.prevRootHash,
         signature: r.signature,
         timestamp: r.createdAt,
+        keyVersion: r.keyVersion,
       })),
     };
   };

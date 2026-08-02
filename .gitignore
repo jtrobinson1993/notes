@@ -24,3 +24,15 @@ web/dev/out/
 # v8 relay runtime data (local dev)
 relay-data/
 data-v8-test/
+
+# Relay identity bundles (`npm run relay -- init-identity` writes one into the
+# operator's cwd). It carries the relay's ONLINE private key — the key that
+# signs the key-transparency log — so it must never be committed. The ROOT
+# private key is never written to a file at all; it lives in a password manager.
+relay-identity.json
+*.relay-identity.json
+# And, belt-and-braces, the filename DEPLOY.md warns operators *not* to create:
+# nothing writes the root private key to disk, but an operator who pipes it from
+# a file must not have that file end up in a commit.
+root-key.txt
+*.root-key.txt

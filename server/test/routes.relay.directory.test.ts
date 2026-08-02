@@ -75,10 +75,12 @@ describe('directory + KT roots (D5)', () => {
     expect(list[0].prevRootHash).toBeNull();
     expect(list[1].prevRootHash).toBe(list[0].rootHash);
 
-    // Signatures verify against the relay identity key from /info.
+    // Signatures verify against the DELEGATED ONLINE key — not the root key in
+    // identityPubKey, which signs delegations and nothing else.
     const info = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
+    const delegation = info.json().delegation as { onlineKey: string };
     const relayPub = createPublicKey({
-      key: Buffer.concat([SPKI_PREFIX, Buffer.from(info.json().identityPubKey as string, 'base64')]),
+      key: Buffer.concat([SPKI_PREFIX, Buffer.from(delegation.onlineKey, 'base64')]),
       format: 'der',
       type: 'spki',
     });

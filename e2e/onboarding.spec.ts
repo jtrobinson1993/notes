@@ -20,19 +20,31 @@ test('relay info reports a pinned identity fingerprint and its registration mode
     name: string;
     identityFingerprint: string;
     identityPubKey: string;
+    delegation: { version: number; onlineKey: string; notAfter: number; signature: string };
+    delegations: { version: number }[];
     apiVersion: number;
     registrationMode: string;
   };
 
-  expect(info.apiVersion).toBe(1);
+  expect(info.apiVersion).toBe(2);
   expect(typeof info.name).toBe('string');
 
   // The fingerprint is what the client pins, so it must actually be the digest
-  // of the advertised identity key — not an unrelated (or empty) string.
+  // of the advertised identity key — not an unrelated (or empty) string. That
+  // key is the relay's offline ROOT (spec/relay.md): it signs delegations and
+  // nothing else.
   const pubKey = Buffer.from(info.identityPubKey, 'base64');
   expect(pubKey).toHaveLength(32);
   const expected = createHash('sha256').update(pubKey).digest('base64url');
   expect(info.identityFingerprint).toBe(expected);
+
+  // The delegation names the online key that actually signs KT roots, and it is
+  // a different key from the pinned one — otherwise the split bought nothing.
+  expect(info.delegation.version).toBeGreaterThanOrEqual(1);
+  expect(Buffer.from(info.delegation.onlineKey, 'base64')).toHaveLength(32);
+  expect(info.delegation.onlineKey).not.toBe(info.identityPubKey);
+  expect(info.delegation.notAfter).toBeGreaterThan(Date.now());
+  expect(info.delegations.at(-1)?.version).toBe(info.delegation.version);
 
   // This run boots the relay open (see playwright.config.ts) so the specs can
   // create throwaway accounts through the real signup endpoint.

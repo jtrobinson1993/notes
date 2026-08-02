@@ -43,7 +43,7 @@ describe('relay info + enrollment', () => {
     const b = await ctx.app.inject({ method: 'GET', url: '/api/relay/info' });
     expect(a.statusCode).toBe(200);
     expect(a.json().identityFingerprint).toBe(b.json().identityFingerprint);
-    expect(a.json().apiVersion).toBe(1);
+    expect(a.json().apiVersion).toBe(2);
   });
 
   it('no longer exposes a session-gated enrollment surface', async () => {

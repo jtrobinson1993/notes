@@ -12,8 +12,12 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { isNative, ktSelfAudit, ktVerifyContacts, type KtAuditReport } from './native';
 
 export interface KtAlarm {
-  /** "self-audit-failed" (foreign key), "split-view" (inconsistent roots), or
-   *  "contact-key-mismatch" (the log publishes a different key for a contact). */
+  /** "self-audit-failed" (foreign key), "split-view" (inconsistent roots),
+   *  "contact-key-mismatch" (the log publishes a different key for a contact),
+   *  "relay-identity-changed" (the relay is not the one this account pinned
+   *  — its identity key is what every root signature is checked against), or
+   *  "group-rekey-refused" (an inbound group-invite tried to replace the key of
+   *  a group this account is already in; the stored key was kept). */
   reason: string;
 }
 

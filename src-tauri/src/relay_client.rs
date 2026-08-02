@@ -45,6 +45,12 @@ pub struct SignedRoot {
     pub root: String,
     pub prev: String,
     pub sig: String,
+    /// Which delegated online key signed this root. Roots published before an
+    /// online-key rotation keep the version that signed them, so they still
+    /// verify afterwards. `None` = the relay served no version, which resolves
+    /// to the *current* delegated key (a relay that never rotated) — never to
+    /// "any key" (`delegation::DelegatedKeys::key_for`).
+    pub key_version: Option<i64>,
 }
 
 /// A handle's directory entry plus the KT material needed to verify it: the
@@ -128,11 +134,185 @@ async fn download_resumable(url: &str, bearer: &str) -> Result<Vec<u8>, String> 
 
 struct Session {
     base_url: String,
-    relay_fp: String,
-    /// base64 relay identity (Ed25519) public key — verifies KT root signatures.
-    identity_pub: String,
+    identity: RelayIdentity,
     token: String,
     expires_at: Instant,
+}
+
+/// The relay's own identity, as `GET /api/relay/info` advertises it — and only
+/// ever after [`verified_identity`] has walked the whole chain: the fingerprint
+/// binds the root key, the root key is the one we are anchored to, and the
+/// delegation chain verifies under it.
+///
+/// The first two are **not** two independent facts: `fingerprint` is defined as
+/// `base64url(sha256(raw root key))` (the server's
+/// `relayAuth.ts::fingerprintB64url`), so exactly one of them can be chosen
+/// freely. Keeping them together in one verified value is what stops a caller
+/// pinning one while trusting the other — and `kt_keys` rides along for the same
+/// reason: the key that verifies KT roots must not be separable from the pinned
+/// root that vouches for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelayIdentity {
+    /// `base64url(sha256(root pubkey))`, no padding — what invites carry and
+    /// what clients pin.
+    pub fingerprint: String,
+    /// The Ed25519 **root** key, **standard base64** exactly as the relay serves
+    /// it. Since the identity split it signs exactly one kind of statement, a
+    /// delegation; it verifies **no** KT root signature (see `delegation.rs`).
+    pub identity_pub: String,
+    /// The online signing keys the pinned root vouches for. **This**, not
+    /// `identity_pub`, is what every KT root signature is checked against.
+    pub kt_keys: crate::delegation::DelegatedKeys,
+}
+
+/// What a successful signup yields: the server-assigned handle plus the relay
+/// identity the account is now derived from and pinned to.
+pub struct Registration {
+    pub handle: String,
+    pub identity: RelayIdentity,
+}
+
+/// `base64url(sha256(raw pubkey))` for a **standard-base64** Ed25519 key — the
+/// client-side twin of the server's `fingerprintB64url`.
+///
+/// The encoding is asymmetric on purpose and is checked, not assumed: the key
+/// arrives standard-base64 (padded, `+/`), the fingerprint base64url without
+/// padding. Anything else is a relay we refuse to talk to rather than a variant
+/// to be lenient about — leniency here would mean two spellings of the same
+/// pin.
+pub fn relay_fingerprint(identity_pub_b64: &str) -> Result<String, String> {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(identity_pub_b64)
+        .map_err(|_| "relay identity key is not standard base64".to_string())?;
+    if raw.len() != 32 {
+        return Err("relay identity key must be 32 bytes".into());
+    }
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(&raw)))
+}
+
+/// Error prefixes the webview turns into catalogued, user-facing errors. They
+/// are part of the IPC contract (`web/src/lib/nativeErrors.ts`).
+pub const ERR_IDENTITY_INVALID: &str = "RELAY_IDENTITY_INVALID";
+pub const ERR_IDENTITY_MISMATCH: &str = "RELAY_IDENTITY_CHANGED";
+
+/// Wall clock in milliseconds — only ever used to reject an **expired**
+/// delegation, so a client whose clock is behind is lenient, never permissive
+/// about anything else.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// **The identity chain — walked on every connect and every register, no
+/// exceptions, failing closed at each link.**
+///
+/// 1. **Binding.** The advertised fingerprint really is the digest of the root
+///    key served with it.
+/// 2. **Pin.** That fingerprint is the one this account is anchored to (an
+///    invite's `relayFp`, else the stored pin; `None` is genuine first contact).
+/// 3. **Delegation.** The served delegation chain verifies under *that pinned
+///    root key*, is strictly increasing, is unexpired, and is not a rollback of
+///    a version this account already accepted.
+///
+/// The order is the design, not an accident: a relay whose fingerprint is not
+/// the one we are anchored to is refused as an impostor before its delegation is
+/// examined at all, so an attacker cannot turn a substituted relay into a merely
+/// "malformed delegation" complaint.
+///
+/// Every link is load-bearing and none substitutes for another:
+///
+/// * Without the binding, a relay can serve the **genuine** fingerprint — so
+///   every pin still matches, the account's derived per-relay identity and its
+///   contact ids stay stable — next to an **attacker** root key, then delegate
+///   from it to a key it holds and sign its own forged directory. Every contact
+///   verdict comes back Verified. Pinning alone never sees it.
+/// * Without the pin, the binding is self-consistent but self-asserted: a
+///   hostile relay generates a fresh root, publishes its own fingerprint, and
+///   the whole chain verifies perfectly. Only an anchor from outside the relay
+///   (a prior pin, or an invite's `relayFp`) makes the identity mean anything.
+/// * Without the delegation check, the online key is just "whatever the relay
+///   served next to the roots", and the split into an offline root buys nothing:
+///   a breached server would name its own key and sign forged KT roots with it.
+fn verified_identity(
+    info: &InfoResponse,
+    expect_fp: Option<&str>,
+    floor: Option<&crate::delegation::DelegationFloor>,
+) -> Result<RelayIdentity, String> {
+    verified_identity_at(info, expect_fp, floor, now_ms())
+}
+
+fn verified_identity_at(
+    info: &InfoResponse,
+    expect_fp: Option<&str>,
+    floor: Option<&crate::delegation::DelegationFloor>,
+    now_ms: i64,
+) -> Result<RelayIdentity, String> {
+    use crate::delegation as del;
+
+    if info.identity_pub_key.is_empty() {
+        return Err(format!(
+            "{ERR_IDENTITY_INVALID}: the relay served no identity key"
+        ));
+    }
+    let derived = relay_fingerprint(&info.identity_pub_key)
+        .map_err(|e| format!("{ERR_IDENTITY_INVALID}: {e}"))?;
+    if derived != info.identity_fingerprint {
+        return Err(format!(
+            "{ERR_IDENTITY_INVALID}: the relay's fingerprint ({}) is not the digest of the identity key it serves ({derived})",
+            info.identity_fingerprint
+        ));
+    }
+    if let Some(expected) = expect_fp {
+        if expected != derived {
+            return Err(format!(
+                "{ERR_IDENTITY_MISMATCH}: expected relay {expected}, got {derived}"
+            ));
+        }
+    }
+
+    // From here the root key is anchored, so it is a trustworthy verifier.
+    let current = info
+        .delegation
+        .as_ref()
+        .and_then(del::parse_delegation)
+        .ok_or_else(|| {
+            format!(
+                "{}: the relay served no usable delegation naming its online signing key",
+                del::ERR_DELEGATION_INVALID
+            )
+        })?;
+    // `delegations` is the published history; a relay that has never rotated may
+    // serve only the current one. A member we cannot even parse is refused
+    // rather than skipped — silently dropping it would let a relay hide a
+    // version from the anti-rollback check.
+    let chain: Vec<del::Delegation> = if info.delegations.is_empty() {
+        vec![current.clone()]
+    } else {
+        info.delegations
+            .iter()
+            .map(|v| {
+                del::parse_delegation(v).ok_or_else(|| {
+                    format!(
+                        "{}: the relay published a malformed delegation in its chain",
+                        del::ERR_DELEGATION_INVALID
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?
+    };
+    let kt_keys =
+        del::verify_chain(&info.identity_pub_key, &derived, &chain, &current, now_ms)?;
+    del::check_rollback(floor.unwrap_or(&del::DelegationFloor::default()), &current)?;
+
+    Ok(RelayIdentity {
+        fingerprint: derived,
+        identity_pub: info.identity_pub_key.clone(),
+        kt_keys,
+    })
 }
 
 #[derive(Default)]
@@ -141,12 +321,24 @@ pub struct RelayClient {
     live_started: std::sync::atomic::AtomicBool,
 }
 
+/// `GET /api/relay/info`, entirely untrusted. The delegation records stay raw
+/// `Value`s on purpose: typing them here would turn a relay serving
+/// `"version": "2"` into a JSON decode error ("bad relay info") instead of the
+/// catalogued `RELAY_DELEGATION_INVALID` a user can look up.
 #[derive(serde::Deserialize)]
 struct InfoResponse {
     #[serde(rename = "identityFingerprint")]
     identity_fingerprint: String,
+    /// The **root** public key since the identity split.
     #[serde(rename = "identityPubKey", default)]
     identity_pub_key: String,
+    /// The delegation in force.
+    #[serde(default)]
+    delegation: Option<serde_json::Value>,
+    /// Every delegation this root has issued, ascending — so roots signed before
+    /// a rotation still resolve to the key that signed them.
+    #[serde(default)]
+    delegations: Vec<serde_json::Value>,
 }
 
 #[derive(serde::Deserialize)]
@@ -246,9 +438,25 @@ pub struct RelayStatus {
 }
 
 impl RelayClient {
-    /// Full handshake: pin the relay's fingerprint, prove the device key,
-    /// store the bearer token.
-    pub async fn connect(&self, base_url: &str, signing: &SigningKey) -> Result<(), String> {
+    /// Full handshake: check the relay's identity, prove the device key, store
+    /// the bearer token. Returns the **verified** identity so the caller can pin
+    /// it (first contact) or confirm its pin.
+    ///
+    /// `expect_fp` is an anchor from outside the relay — the fingerprint pinned
+    /// on a previous connect, or the one carried out-of-band by an invite. `None`
+    /// is trust-on-first-use and must only be passed when there genuinely is no
+    /// anchor yet; the binding check (`verified_identity`) runs either way.
+    ///
+    /// `floor` is this account's anti-rollback high-water mark for the relay
+    /// (`lib.rs::relay_anchor` reads it from the stored pin). `None` means we
+    /// have never accepted a delegation from this relay.
+    pub async fn connect(
+        &self,
+        base_url: &str,
+        signing: &SigningKey,
+        expect_fp: Option<&str>,
+        floor: Option<&crate::delegation::DelegationFloor>,
+    ) -> Result<RelayIdentity, String> {
         let http = reqwest::Client::new();
         let base = base_url.trim_end_matches('/');
 
@@ -261,15 +469,18 @@ impl RelayClient {
             .await
             .map_err(|e| format!("bad relay info: {e}"))?;
 
-        let (token, expires_at) = Self::fetch_token(&http, base, &info.identity_fingerprint, signing).await?;
+        // Before a single authenticated byte: is this the relay we think it is,
+        // and does its online signing key trace back to the root we pinned?
+        let identity = verified_identity(&info, expect_fp, floor)?;
+
+        let (token, expires_at) = Self::fetch_token(&http, base, &identity.fingerprint, signing).await?;
         *self.session.lock().unwrap() = Some(Session {
             base_url: base.to_string(),
-            relay_fp: info.identity_fingerprint,
-            identity_pub: info.identity_pub_key,
+            identity: identity.clone(),
             token,
             expires_at,
         });
-        Ok(())
+        Ok(identity)
     }
 
     /// Bootstrap this device's account: create it and enroll the device in one
@@ -277,14 +488,17 @@ impl RelayClient {
     /// `connect` is unnecessary — we're authed immediately). `invite_token` is
     /// required on an invite-only relay. `handle` is the Word#1234 the user picked
     /// from the client-generated candidates (the relay validates + claims it).
-    /// Returns the server-assigned handle.
+    /// `expect_fp` is the invite's `relayFp` where one exists (see `connect`).
+    /// Returns the server-assigned handle and the verified relay identity.
     pub async fn register(
         &self,
         base_url: &str,
         signing: &SigningKey,
         invite_token: Option<&str>,
         handle: Option<&str>,
-    ) -> Result<String, String> {
+        expect_fp: Option<&str>,
+        floor: Option<&crate::delegation::DelegationFloor>,
+    ) -> Result<Registration, String> {
         let http = reqwest::Client::new();
         let base = base_url.trim_end_matches('/').to_string();
 
@@ -296,6 +510,10 @@ impl RelayClient {
             .json()
             .await
             .map_err(|e| format!("bad relay info: {e}"))?;
+
+        // Checked before the account is created: a signup is the moment the
+        // account's whole identity gets derived from this fingerprint.
+        let identity = verified_identity(&info, expect_fp, floor)?;
 
         let mut body = serde_json::json!({
             "pubKey": device_public_key_b64(signing),
@@ -338,12 +556,11 @@ impl RelayClient {
 
         *self.session.lock().unwrap() = Some(Session {
             base_url: base,
-            relay_fp: info.identity_fingerprint,
-            identity_pub: info.identity_pub_key,
+            identity: identity.clone(),
             token: reg.token,
             expires_at: Instant::now() + Duration::from_secs(reg.expires_in_sec),
         });
-        Ok(reg.handle)
+        Ok(Registration { handle: reg.handle, identity })
     }
 
     /// The account's first authed leg of the D4b handshake (invite signups only):
@@ -430,13 +647,26 @@ impl RelayClient {
     /// `(base_url, relay_fp)` of the live session, or None if not connected.
     pub fn session_info(&self) -> Option<(String, String)> {
         let guard = self.session.lock().unwrap();
-        guard.as_ref().map(|s| (s.base_url.clone(), s.relay_fp.clone()))
+        guard.as_ref().map(|s| (s.base_url.clone(), s.identity.fingerprint.clone()))
     }
 
-    /// base64 relay identity public key (verifies KT root signatures), if known.
-    pub fn relay_identity_pub(&self) -> Option<String> {
+    /// The live session's **verified** relay identity, or None if not connected.
+    pub fn identity(&self) -> Option<RelayIdentity> {
         let guard = self.session.lock().unwrap();
-        guard.as_ref().map(|s| s.identity_pub.clone()).filter(|k| !k.is_empty())
+        guard.as_ref().map(|s| s.identity.clone())
+    }
+
+    /// **The keys every KT root signature is checked against**: the online keys
+    /// the live session's *verified* delegation chain vouches for.
+    ///
+    /// This deliberately does not expose the pinned root key. Since the identity
+    /// split the root signs delegations and nothing else, so a caller that got
+    /// hold of it could only ever produce false negatives — or, worse, a future
+    /// caller could check a KT root against it and undo the split. The only way
+    /// to a signing key is through a chain that verified under the pin.
+    pub fn kt_signing_keys(&self) -> Option<crate::delegation::DelegatedKeys> {
+        let guard = self.session.lock().unwrap();
+        guard.as_ref().map(|s| s.identity.kt_keys.clone())
     }
 
     /// Begin the live-delivery task at most once per process (idempotent).
@@ -453,7 +683,7 @@ impl RelayClient {
             (
                 token_needs_refresh(s.expires_at, Instant::now()),
                 s.base_url.clone(),
-                s.relay_fp.clone(),
+                s.identity.fingerprint.clone(),
             )
         };
         if needs_refresh {
@@ -1022,7 +1252,8 @@ impl RelayClient {
 
     /// The relay's signed KT epoch roots since `since` (0 = all). Unauthenticated
     /// (KT roots are public). Signatures are **not** checked here — that is
-    /// `kt::signed_root_epoch`'s job, against the pinned relay identity key.
+    /// `kt::signed_root_epoch`'s job, against the online key the pinned root
+    /// delegated to for each root's `keyVersion`.
     pub async fn kt_roots(&self, since: i64) -> Result<Vec<SignedRoot>, String> {
         let base = self.base_url()?;
         let res = reqwest::Client::new()
@@ -1042,6 +1273,7 @@ impl RelayClient {
                 root: r.get("rootHash").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
                 prev: r.get("prevRootHash").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
                 sig: r.get("signature").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+                key_version: r.get("keyVersion").and_then(|v| v.as_i64()),
             })
             .collect())
     }
@@ -1201,7 +1433,7 @@ impl RelayClient {
             Some(s) => RelayStatus {
                 connected: true,
                 base_url: Some(s.base_url.clone()),
-                relay_fp: Some(s.relay_fp.clone()),
+                relay_fp: Some(s.identity.fingerprint.clone()),
             },
             None => RelayStatus {
                 connected: false,
@@ -1267,6 +1499,205 @@ mod tests {
         // Ids and names the client would refuse to render are dropped up front.
         assert!(emote_url_path(&good, id, "not a name").is_none());
         assert!(emote_url_path("/api/relay/emote/sig/x.webp", "x", "ok").is_none());
+    }
+
+    /// The exact encodings the relay uses (`server/src/relayAuth.ts`): the key
+    /// standard base64, the fingerprint base64url of its SHA-256. Anything else
+    /// is refused rather than normalised.
+    #[test]
+    fn the_fingerprint_is_the_digest_of_the_standard_base64_key() {
+        use base64::Engine as _;
+        let key = SigningKey::from_bytes(&[7u8; 32]).verifying_key().to_bytes();
+        let std_b64 = base64::engine::general_purpose::STANDARD.encode(key);
+        let fp = relay_fingerprint(&std_b64).unwrap();
+        // base64url, unpadded — the alphabet the server's `digest('base64url')`
+        // produces.
+        assert!(!fp.contains('+') && !fp.contains('/') && !fp.contains('='));
+        assert_eq!(fp.len(), 43);
+        // Not a coincidence of length: it really is sha256 of the raw key.
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            fp,
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(key))
+        );
+        // Junk and wrong-length keys have no fingerprint at all.
+        assert!(relay_fingerprint("not base64!!").is_err());
+        assert!(relay_fingerprint(&base64::engine::general_purpose::STANDARD.encode([1u8; 16])).is_err());
+    }
+
+    const NOW: i64 = 1_000_000;
+
+    /// A root-signed delegation, as `relayIdentityAdmin.ts` mints one, as JSON.
+    fn delegation_json(
+        root: &SigningKey,
+        root_fp: &str,
+        version: i64,
+        online_seed: u8,
+    ) -> serde_json::Value {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let online_key =
+            b64.encode(SigningKey::from_bytes(&[online_seed; 32]).verifying_key().to_bytes());
+        let mut d = crate::delegation::Delegation {
+            version,
+            online_key: online_key.clone(),
+            issued_at: NOW - 1_000,
+            not_after: NOW + 1_000_000,
+            signature: String::new(),
+        };
+        let payload = crate::delegation::delegation_payload(root_fp, &d);
+        d.signature = b64.encode(root.sign(payload.as_bytes()).to_bytes());
+        serde_json::json!({
+            "version": d.version,
+            "onlineKey": d.online_key,
+            "issuedAt": d.issued_at,
+            "notAfter": d.not_after,
+            "signature": d.signature,
+        })
+    }
+
+    /// `/info` with a valid single-delegation chain under `root`.
+    fn info_with(root: &SigningKey, fp: &str, pub_b64: &str, version: i64, online: u8) -> InfoResponse {
+        let d = delegation_json(root, fp, version, online);
+        InfoResponse {
+            identity_fingerprint: fp.into(),
+            identity_pub_key: pub_b64.into(),
+            delegation: Some(d.clone()),
+            delegations: vec![d],
+        }
+    }
+
+    /// The binding/pin checks only — the delegation is always the honest one, so
+    /// these cases isolate the two links that come before it.
+    fn info(fp: &str, pub_b64: &str) -> InfoResponse {
+        // Signed by the key the *served* pub key claims to be, so the delegation
+        // is only ever the failing link when a case makes it so.
+        let root = SigningKey::from_bytes(&[7u8; 32]);
+        info_with(&root, fp, pub_b64, 1, 33)
+    }
+
+    fn verify(info: &InfoResponse, expect_fp: Option<&str>) -> Result<RelayIdentity, String> {
+        verified_identity_at(info, expect_fp, None, NOW)
+    }
+
+    #[test]
+    fn a_fingerprint_that_does_not_bind_its_key_is_refused() {
+        use base64::Engine as _;
+        let root = SigningKey::from_bytes(&[7u8; 32]);
+        let good = root.verifying_key().to_bytes();
+        let good_b64 = base64::engine::general_purpose::STANDARD.encode(good);
+        let good_fp = relay_fingerprint(&good_b64).unwrap();
+
+        // The honest pair verifies (and is returned canonically).
+        let id = verify(&info_with(&root, &good_fp, &good_b64, 1, 33), None).unwrap();
+        assert_eq!(id.fingerprint, good_fp);
+        assert_eq!(id.identity_pub, good_b64);
+        // …and what it hands out for KT is the DELEGATED key, not the root.
+        assert_ne!(id.kt_keys.current().online_key, good_b64);
+
+        // THE ATTACK: the genuine fingerprint — so every pin still matches and
+        // the account's derived identity is unchanged — served alongside the
+        // attacker's key, which is what the delegation would then be checked
+        // against.
+        let attacker = SigningKey::from_bytes(&[9u8; 32]).verifying_key().to_bytes();
+        let attacker_b64 = base64::engine::general_purpose::STANDARD.encode(attacker);
+        let err = verify(&info(&good_fp, &attacker_b64), Some(&good_fp)).unwrap_err();
+        assert!(err.starts_with(ERR_IDENTITY_INVALID), "{err}");
+
+        // A relay serving no key at all is refused too (fail closed, not TOFU).
+        assert!(verify(&info(&good_fp, ""), None)
+            .unwrap_err()
+            .starts_with(ERR_IDENTITY_INVALID));
+
+        // A key that binds, but is not the one we pinned.
+        let other_fp = relay_fingerprint(&attacker_b64).unwrap();
+        let err = verify(&info(&other_fp, &attacker_b64), Some(&good_fp)).unwrap_err();
+        assert!(err.starts_with(ERR_IDENTITY_MISMATCH), "{err}");
+
+        // …and with no anchor, that same relay is accepted (TOFU is the
+        // documented, weaker case — see `connect`), provided its own delegation
+        // checks out under its own root.
+        let attacker_root = SigningKey::from_bytes(&[9u8; 32]);
+        assert!(verify(&info_with(&attacker_root, &other_fp, &attacker_b64, 1, 33), None).is_ok());
+    }
+
+    #[test]
+    fn the_pin_is_checked_before_the_delegation() {
+        // Ordering matters: a relay that is not the one we anchored to must be
+        // refused as an impostor, not reported as "malformed delegation" — an
+        // attacker must not get to choose which failure the user sees.
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let impostor_root = SigningKey::from_bytes(&[9u8; 32]);
+        let impostor_b64 = b64.encode(impostor_root.verifying_key().to_bytes());
+        let impostor_fp = relay_fingerprint(&impostor_b64).unwrap();
+        let mut info = info_with(&impostor_root, &impostor_fp, &impostor_b64, 1, 33);
+        info.delegation = Some(serde_json::json!({ "version": "junk" }));
+        info.delegations = vec![];
+
+        let pinned = relay_fingerprint(&b64.encode(
+            SigningKey::from_bytes(&[7u8; 32]).verifying_key().to_bytes(),
+        ))
+        .unwrap();
+        let err = verify(&info, Some(&pinned)).unwrap_err();
+        assert!(err.starts_with(ERR_IDENTITY_MISMATCH), "{err}");
+    }
+
+    #[test]
+    fn a_delegation_that_does_not_check_out_refuses_the_relay() {
+        use crate::delegation::{DelegationFloor, ERR_DELEGATION_INVALID, ERR_DELEGATION_ROLLBACK};
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let root = SigningKey::from_bytes(&[7u8; 32]);
+        let root_b64 = b64.encode(root.verifying_key().to_bytes());
+        let fp = relay_fingerprint(&root_b64).unwrap();
+
+        // No delegation at all: the pinned root vouches for no signing key, so
+        // there is nothing to check KT roots against. Refused, not degraded.
+        let mut none = info_with(&root, &fp, &root_b64, 1, 33);
+        none.delegation = None;
+        none.delegations = vec![];
+        assert!(verify(&none, None).unwrap_err().starts_with(ERR_DELEGATION_INVALID));
+
+        // Signed by somebody else's root — the breached-relay forgery.
+        let forger = SigningKey::from_bytes(&[9u8; 32]);
+        let mut forged = info_with(&root, &fp, &root_b64, 1, 33);
+        let bad = delegation_json(&forger, &fp, 1, 44);
+        forged.delegation = Some(bad.clone());
+        forged.delegations = vec![bad];
+        assert!(verify(&forged, None).unwrap_err().starts_with(ERR_DELEGATION_INVALID));
+
+        // A single tampered byte in an otherwise genuine delegation.
+        let mut tampered = info_with(&root, &fp, &root_b64, 1, 33);
+        let mut d = tampered.delegation.clone().unwrap();
+        d["onlineKey"] = serde_json::json!(b64.encode(
+            SigningKey::from_bytes(&[44u8; 32]).verifying_key().to_bytes()
+        ));
+        tampered.delegation = Some(d.clone());
+        tampered.delegations = vec![d];
+        assert!(verify(&tampered, None).unwrap_err().starts_with(ERR_DELEGATION_INVALID));
+
+        // Expired: `notAfter` is a real deadline, so a relay that lost its root
+        // key stops being trusted rather than coasting.
+        let good = info_with(&root, &fp, &root_b64, 1, 33);
+        let err = verified_identity_at(&good, None, None, NOW + 10_000_000).unwrap_err();
+        assert!(err.contains("expired"), "{err}");
+
+        // ROLLBACK: v1 is genuinely root-signed forever, and it names the key an
+        // operator revoked by issuing v2. Only the stored floor refuses it.
+        let floor = DelegationFloor {
+            min_version: 2,
+            online_key: Some(b64.encode(
+                SigningKey::from_bytes(&[44u8; 32]).verifying_key().to_bytes(),
+            )),
+        };
+        let err = verified_identity_at(&good, None, Some(&floor), NOW).unwrap_err();
+        assert!(err.starts_with(ERR_DELEGATION_ROLLBACK), "{err}");
+
+        // A legitimate rotation forward is accepted, and hands out the new key.
+        let v3 = info_with(&root, &fp, &root_b64, 3, 55);
+        let id = verified_identity_at(&v3, None, Some(&floor), NOW).unwrap();
+        assert_eq!(id.kt_keys.current().version, 3);
     }
 
     #[test]

@@ -21,8 +21,7 @@ import {
 } from './native';
 import { buildInvite, generateInviteToken, inviteTokenHash, parseInvite } from './invites';
 import { rememberRelayUrl } from './nativeRelay';
-import { errorMessage } from './errors';
-import { toastError } from './toast';
+import { coreErrorCode, rethrowCoreError, toastCoreError } from './nativeErrors';
 
 /** True if a register was refused because this device is already enrolled (a
  *  prior onboarding attempt got past the register step). Recoverable. */
@@ -30,26 +29,14 @@ function isAlreadyRegistered(e: unknown): boolean {
   return /already registered/i.test(String(e));
 }
 
-/** The core fails an invite closed when the relay's key-transparency log
- *  publishes a different identity key for the inviter's handle — i.e. the
- *  invite is not from who it claims. Surface it as the catalogued error rather
- *  than a raw core string: this is the MITM case, and the user needs the
- *  explanation, not the internals. */
-const KT_MISMATCH = 'KT_CONTACT_KEY_MISMATCH';
-
-function isKtMismatch(e: unknown): boolean {
-  return String(e).includes(KT_MISMATCH);
-}
-
-/** Re-raise a KT mismatch as a catalogued, user-readable failure (and toast it,
- *  since it can also happen inside best-effort onboarding steps that would
- *  otherwise swallow it). Any other error passes through untouched. */
-function rethrowKt(e: unknown): never {
-  if (isKtMismatch(e)) {
-    toastError(KT_MISMATCH);
-    throw new Error(errorMessage(KT_MISMATCH));
-  }
-  throw e;
+/** The core fails closed on two kinds of impostor, and neither is a hiccup to
+ *  retry past: the relay's key-transparency log publishes a different identity
+ *  key for the inviter's handle (`KT_CONTACT_KEY_MISMATCH` — the invite is not
+ *  from who it claims), or the relay itself is not the one the invite/pin names
+ *  (`RELAY_IDENTITY_*`). Both are surfaced as catalogued errors rather than raw
+ *  core strings: the user needs the explanation, not the internals. */
+function isImpostor(e: unknown): boolean {
+  return coreErrorCode(e) !== null;
 }
 
 /**
@@ -59,12 +46,22 @@ function rethrowKt(e: unknown): never {
  * and reading our stored handle — an already-registered device must never
  * dead-end on the onboarding wall.
  */
-async function ensureAccount(relayUrl: string, token?: string, handleChoice?: string): Promise<string> {
+async function ensureAccount(
+  relayUrl: string,
+  token?: string,
+  handleChoice?: string,
+  relayFp?: string,
+): Promise<string> {
   try {
-    return await relayRegister(relayUrl, token, handleChoice);
+    return await relayRegister(relayUrl, token, handleChoice, relayFp);
   } catch (e) {
+    // An impostor relay must not be retried past — and it is not the
+    // "already enrolled" case, whatever the message order.
+    if (isImpostor(e)) rethrowCoreError(e);
     if (!isAlreadyRegistered(e)) throw e;
-    await relayConnect(relayUrl); // the device is enrolled → authenticate with it
+    // The device is enrolled → authenticate with it, still holding the relay to
+    // the invite's fingerprint.
+    await relayConnect(relayUrl, relayFp).catch(rethrowCoreError);
     const handle = await settingsGet(MY_HANDLE_KEY);
     if (!handle) throw e; // nothing stored to recover with — surface the original
     return handle;
@@ -130,7 +127,9 @@ export async function registerViaInvite(
   identity?: SignupIdentity,
 ): Promise<{ handle: string; inviterHandle: string }> {
   const inv = parseInvite(inviteStr);
-  const handle = await ensureAccount(inv.relayUrl, inv.token, identity?.handle);
+  // `inv.relayFp` is the anchor: it came through the human invite channel, so
+  // it is the only thing about the relay that the relay did not tell us.
+  const handle = await ensureAccount(inv.relayUrl, inv.token, identity?.handle, inv.relayFp);
   await persistIdentity(handle, identity?.displayName);
   await rememberRelayUrl(inv.relayUrl); // so a later cold start reconnects
   // Publish + friend handshake are best-effort: the account already exists, so a
@@ -144,11 +143,13 @@ export async function registerViaInvite(
     // before delivering this (it carries our delivery token).
     await relayRegisterFriendAccept(envelope, inv.handle, inv.identityPub);
   } catch (e) {
-    // A KT mismatch is NOT a hiccup to retry past — the invite is not from who
-    // it claims. The account exists either way, so we surface it and let the
-    // user land in the app without that "friend".
-    if (isKtMismatch(e)) toastError(KT_MISMATCH);
-    else console.warn('post-registration setup / friend handshake incomplete (retry on connect):', e);
+    // A KT / relay-identity mismatch is NOT a hiccup to retry past — the invite
+    // is not from who it claims, or the relay is not the one it named. The
+    // account exists either way, so we surface it and let the user land in the
+    // app without that "friend".
+    if (!toastCoreError(e)) {
+      console.warn('post-registration setup / friend handshake incomplete (retry on connect):', e);
+    }
   }
   return { handle, inviterHandle: inv.handle };
 }
@@ -225,9 +226,16 @@ export async function redeemFriendInvite(
   // Include my sealing key so the inviter can reciprocate (seal a friend-confirm
   // back to me); the whole payload is signed by the envelope.
   const envelope = await sealFriendAccept(inv.sealingPub, me);
-  // The core checks the invite's pinned identity key against the relay's
-  // transparency log and refuses to send on a mismatch — fail closed before the
-  // delivery token inside the envelope can reach an impostor.
-  const relayTs = await relayInviteRedeem(inv.token, envelope, inv.handle, inv.identityPub).catch(rethrowKt);
+  // The core checks the invite's relay fingerprint against the connected relay,
+  // then the invite's pinned identity key against that relay's transparency log,
+  // and refuses to send on either mismatch — fail closed before the delivery
+  // token inside the envelope can reach an impostor.
+  const relayTs = await relayInviteRedeem(
+    inv.token,
+    envelope,
+    inv.handle,
+    inv.identityPub,
+    inv.relayFp,
+  ).catch(rethrowCoreError);
   return { inviterHandle: inv.handle, relayTs };
 }

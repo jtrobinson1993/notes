@@ -45,6 +45,43 @@ describe('KtAlarm', () => {
     expect(banner.text()).toContain('inconsistent key-transparency logs');
   });
 
+  it('shows the group re-key message on that alarm', async () => {
+    const w = mount(KtAlarm);
+    await flushPromises();
+    kt.cb?.({ reason: 'group-rekey-refused' });
+    await flushPromises();
+    const banner = w.find('[data-testid="kt-alarm"]');
+    expect(banner.exists()).toBe(true);
+    // It must say the key was KEPT — the user's first question is whether the
+    // attacker can now read the group.
+    expect(banner.text()).toContain('replace the encryption key of a group');
+    expect(banner.text()).toContain('kept your existing key');
+  });
+
+  it('explains a delegation the relay could not prove', async () => {
+    const w = mount(KtAlarm);
+    await flushPromises();
+    kt.cb?.({ reason: 'relay-delegation-invalid' });
+    await flushPromises();
+    const banner = w.find('[data-testid="kt-alarm"]');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('key it signs its key-transparency log with');
+    // It must not fall through to the self-audit wording, which would tell the
+    // user their own handle was bound to a foreign key — a different accusation.
+    expect(banner.text()).not.toContain('identity key you never created');
+  });
+
+  it('names the rollback for what it is, not as a misconfiguration', async () => {
+    const w = mount(KtAlarm);
+    await flushPromises();
+    kt.cb?.({ reason: 'relay-delegation-rollback' });
+    await flushPromises();
+    const banner = w.find('[data-testid="kt-alarm"]');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('older record of its signing key');
+    expect(banner.text()).toContain('retired key');
+  });
+
   it('shows the foreign-key message for a self-audit failure', async () => {
     const w = mount(KtAlarm);
     await flushPromises();

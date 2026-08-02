@@ -92,6 +92,22 @@ settings(key, value)
 --     -- unverified until the new key is proven). See key-transparency.md.
 --     -- The relay's VRF public key is pinned alongside, in settings under
 --     -- `kt.vrfPub.<relayFp>` (no migration — it is a plain setting).
+--     -- So is the relay identity pin itself: `relay.identity.<baseUrl>` holds
+--     -- JSON `{ fp, identity_pub, delegation_version, delegation_online_key }`
+--     -- — the pinned offline ROOT plus the anti-rollback high-water mark for
+--     -- its delegation chain. `delegation_version` only ever increases (a
+--     -- superseded delegation stays validly signed forever, so replaying one is
+--     -- how a revoked online key gets trusted again). Settings, not a table,
+--     -- deliberately: it is per-account state with no relational shape, and it
+--     -- lives inside the encrypted vault. See relay.md § Pinning the relay
+--     -- identity.
+-- v14 TRIGGER groups_key_is_immutable  -- BEFORE UPDATE OF group_key, ABORT on
+--     -- a change. A group key is write-once: `insert_group` is INSERT-only and
+--     -- the schema enforces the same thing, so a future accessor cannot
+--     -- reintroduce the re-key hole an inbound group-invite used to exploit
+--     -- (chat.md § Who may hand me a group key). Real rotation, when it lands,
+--     -- must replace this trigger with one gated on the signed group-state
+--     -- record — not quietly drop it.
 ```
 
 Attachment ciphertext lives on the filesystem under `dataDir/blobs` (two-level

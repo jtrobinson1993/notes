@@ -127,6 +127,23 @@ describe('nativeRelay live delivery', () => {
     expect(toasts.value).toEqual([]);
   });
 
+  // A refused group-invite is equally silent otherwise: no group appears, and
+  // the sharp case (an attempt to re-key a group you're already in) would
+  // otherwise be a banner with nothing to look up.
+  it('toasts the catalogued error when the core refused a group invite', async () => {
+    resetToasts();
+    native.relayMailboxDrain.mockResolvedValue({ ...report(0), group_invites_rejected: 1 });
+    await drainMailbox();
+    expect(toasts.value.at(-1)).toMatchObject({ kind: 'error', code: 'GROUP_INVITE_REFUSED' });
+  });
+
+  it('says nothing when a group invite was accepted', async () => {
+    resetToasts();
+    native.relayMailboxDrain.mockResolvedValue({ ...report(0), groups_joined: 1 });
+    await drainMailbox();
+    expect(toasts.value).toEqual([]);
+  });
+
   it('stopRelayDelivery unsubscribes', async () => {
     native.relayMailboxDrain.mockResolvedValue(report(0));
     await startRelayDelivery();
@@ -180,6 +197,40 @@ describe('nativeRelay reconnect-on-boot', () => {
 
     await expect(reconnectRelay()).resolves.toBeUndefined();
     expect(evt.listen).not.toHaveBeenCalled(); // delivery not started
+  });
+
+  it('surfaces a refused relay identity instead of swallowing it', async () => {
+    resetToasts();
+    native.relayStatus.mockResolvedValue({ connected: false, base_url: null, relay_fp: null });
+    native.settingsGet.mockResolvedValue('https://relay.example');
+    // The core refused: the relay is not the identity pinned for this account.
+    // Silence here would hide exactly what the pin exists to detect, so this
+    // must NOT join the "offline / relay down" swallow above.
+    native.relayConnect.mockRejectedValue('RELAY_IDENTITY_CHANGED: expected relay A, got B');
+
+    await expect(reconnectRelay()).resolves.toBeUndefined();
+    expect(toasts.value.at(-1)).toMatchObject({ kind: 'error', code: 'RELAY_IDENTITY_CHANGED' });
+    expect(evt.listen).not.toHaveBeenCalled(); // delivery stays off
+  });
+
+  it('surfaces a rolled-back relay delegation instead of swallowing it', async () => {
+    resetToasts();
+    native.relayStatus.mockResolvedValue({ connected: false, base_url: null, relay_fp: null });
+    native.settingsGet.mockResolvedValue('https://relay.example');
+    // The reconnect on unlock is where a replayed, superseded signing-key
+    // record first shows up — somebody holding a key the operator retired,
+    // trying to be trusted again. It must land as loudly as a changed identity,
+    // not in the "offline / relay down" silence.
+    native.relayConnect.mockRejectedValue(
+      'RELAY_DELEGATION_ROLLBACK: the relay served delegation v1, older than v2',
+    );
+
+    await expect(reconnectRelay()).resolves.toBeUndefined();
+    expect(toasts.value.at(-1)).toMatchObject({
+      kind: 'error',
+      code: 'RELAY_DELEGATION_ROLLBACK',
+    });
+    expect(evt.listen).not.toHaveBeenCalled(); // delivery stays off
   });
 
   it('rememberRelayUrl persists the url', async () => {

@@ -88,12 +88,22 @@ struct CallOfferPayload {
     media_key: String,
 }
 
-/// A verified group invite: store `group_key` for `group_id` so I become a
-/// member locally.
+/// A verified group invite: a candidate `group_key` for `group_id`.
+///
+/// "Verified" here means only that the envelope's inner signature checked out —
+/// i.e. whoever holds `inviter_id`'s secret key wrote this payload. That is NOT
+/// authority to hand me a group key: `inviter_id` is carried precisely so the
+/// drain can require it to be a **current friend on this relay whose key the
+/// transparency log does not contradict** before anything is stored. It used to
+/// be discarded, which left the invite unattributable — anyone who could enqueue
+/// into my mailbox (including the relay) could mint group membership, and,
+/// worse, silently re-key a group I was already in.
 pub struct GroupInviteData {
     pub group_id: String,
     pub group_key: Vec<u8>,
     pub name: Option<String>,
+    /// b64 Ed25519 of the VERIFIED envelope sender — never a payload field.
+    pub inviter_id: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -187,13 +197,44 @@ struct FriendPayload {
 /// (D14). Idempotent on the member (no duplicate), but always advances the
 /// version so the signed update is accepted (anti-rollback). Returns the new
 /// record JSON string to sign + PUT.
-pub fn group_record_add_member(record: &str, identity_pub_b64: &str) -> Result<String, MessageError> {
+///
+/// `record` arrives from the **relay**, and the caller is about to sign it, so
+/// two things are checked before it will:
+///   - it is the record for `group_id` — signing an authority record for some
+///     *other* group would hand the relay my signature over a document I never
+///     inspected; and
+///   - `me` is in it as `owner`/`admin` — I have no standing to re-sign a record
+///     that does not name me an admin (the relay rejects such a PUT anyway, so
+///     this only fails earlier and louder).
+///
+/// What it deliberately does **not** claim to catch: a relay that returns a
+/// record with an *extra* member spliced in. Detecting that needs a locally
+/// mirrored, version-monotonic copy of the record, which does not exist yet —
+/// see roadmap § Group state is trusted from the relay. The spliced member never
+/// gets the group key (that only travels in a DM-sealed invite), so the exposure
+/// is fan-out ciphertext and blob reach, not content.
+pub fn group_record_add_member(
+    record: &str,
+    group_id: &str,
+    me: &str,
+    identity_pub_b64: &str,
+) -> Result<String, MessageError> {
     let mut v: serde_json::Value = serde_json::from_str(record).map_err(|_| MessageError::Malformed)?;
+    if v.get("groupId").and_then(|x| x.as_str()) != Some(group_id) {
+        return Err(MessageError::UntrustedRecord("record is for a different group"));
+    }
     let version = v.get("version").and_then(|x| x.as_i64()).ok_or(MessageError::Malformed)?;
     let members = v
         .get_mut("members")
         .and_then(|m| m.as_array_mut())
         .ok_or(MessageError::Malformed)?;
+    let i_may_sign = members.iter().any(|m| {
+        m.get("identityPubKey").and_then(|k| k.as_str()) == Some(me)
+            && matches!(m.get("role").and_then(|r| r.as_str()), Some("owner") | Some("admin"))
+    });
+    if !i_may_sign {
+        return Err(MessageError::UntrustedRecord("this record does not name you an admin"));
+    }
     let exists = members
         .iter()
         .any(|m| m.get("identityPubKey").and_then(|k| k.as_str()) == Some(identity_pub_b64));
@@ -252,6 +293,9 @@ pub enum MessageError {
     UnknownVersion(u32),
     #[error("malformed message payload")]
     Malformed,
+    /// A relay-supplied group-state record we refuse to sign as-is (D14).
+    #[error("group state record refused: {0}")]
+    UntrustedRecord(&'static str),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -380,8 +424,11 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
                 )),
                 // Authenticated sender, unknown payload version → wait for update.
                 Err(MessageError::UnknownVersion(_)) => Disposition::Buffer,
-                // Authenticated sender, unrecoverable garbage → drop.
-                Err(MessageError::Malformed) => Disposition::Discard,
+                // Authenticated sender, unrecoverable garbage → drop. Listed
+                // explicitly rather than `_`, so a future error variant that
+                // deserves buffering has to be classified here, not silently
+                // discarded.
+                Err(MessageError::Malformed | MessageError::UntrustedRecord(_)) => Disposition::Discard,
             },
             KIND_FRIEND_ACCEPT | KIND_FRIEND_CONFIRM => {
                 let reciprocate = opened.kind == KIND_FRIEND_ACCEPT;
@@ -423,6 +470,7 @@ pub fn disposition(open_result: Result<Opened, EnvelopeError>, relay_ts: i64) ->
                             group_id: p.group_id,
                             group_key: key,
                             name: p.name,
+                            inviter_id: opened.sender_identity_pub,
                         })),
                         _ => Disposition::Discard,
                     }
@@ -510,6 +558,14 @@ pub struct DrainReport {
     /// verification). Nothing was recorded and nothing was sealed back.
     #[serde(default)]
     pub kt_rejected: usize,
+    /// Groups joined from an admitted `group-invite` (chat.md § Groups).
+    #[serde(default)]
+    pub groups_joined: usize,
+    /// `group-invite` envelopes refused: not from a current friend, from a
+    /// friend the transparency log contradicts, or an attempt to re-key a group
+    /// I am already in. Nothing was written for any of them.
+    #[serde(default)]
+    pub group_invites_rejected: usize,
 }
 
 #[cfg(test)]
@@ -803,7 +859,7 @@ mod tests {
             "members": [{ "identityPubKey": "OWNER", "role": "owner" }],
         })
         .to_string();
-        let out = group_record_add_member(&rec, "NEWB").unwrap();
+        let out = group_record_add_member(&rec, "g1", "OWNER", "NEWB").unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["version"], 4);
         let members = v["members"].as_array().unwrap();
@@ -811,18 +867,65 @@ mod tests {
         assert!(members.iter().any(|m| m["identityPubKey"] == "NEWB" && m["role"] == "member"));
 
         // Re-adding an existing member doesn't duplicate but still bumps version.
-        let again = group_record_add_member(&out, "NEWB").unwrap();
+        let again = group_record_add_member(&out, "g1", "OWNER", "NEWB").unwrap();
         let v2: serde_json::Value = serde_json::from_str(&again).unwrap();
         assert_eq!(v2["version"], 5);
         assert_eq!(v2["members"].as_array().unwrap().len(), 2);
     }
 
     #[test]
-    fn group_invite_carries_the_group_key() {
+    fn a_relay_supplied_group_record_is_not_signed_blindly() {
+        // The record comes from the relay and the caller signs whatever comes
+        // back, so the two things a signature over it would concede are checked.
+        let rec = serde_json::json!({
+            "groupId": "g1", "version": 3,
+            "members": [
+                { "identityPubKey": "OWNER", "role": "owner" },
+                { "identityPubKey": "PLAIN", "role": "member" },
+            ],
+        })
+        .to_string();
+
+        // Some *other* group's record — signing it would hand the relay my
+        // signature over an authority document I never asked to see.
+        assert_eq!(
+            group_record_add_member(&rec, "g2", "OWNER", "NEWB"),
+            Err(MessageError::UntrustedRecord("record is for a different group"))
+        );
+
+        // A record that does not name me an admin: I have no standing to re-sign
+        // it (and the relay would reject the PUT anyway).
+        assert_eq!(
+            group_record_add_member(&rec, "g1", "PLAIN", "NEWB"),
+            Err(MessageError::UntrustedRecord("this record does not name you an admin"))
+        );
+        assert_eq!(
+            group_record_add_member(&rec, "g1", "STRANGER", "NEWB"),
+            Err(MessageError::UntrustedRecord("this record does not name you an admin"))
+        );
+
+        // An admin (not just the owner) may add.
+        let rec = serde_json::json!({
+            "groupId": "g1", "version": 3,
+            "members": [
+                { "identityPubKey": "OWNER", "role": "owner" },
+                { "identityPubKey": "ADMIN", "role": "admin" },
+            ],
+        })
+        .to_string();
+        assert!(group_record_add_member(&rec, "g1", "ADMIN", "NEWB").is_ok());
+    }
+
+    #[test]
+    fn group_invite_carries_the_group_key_and_the_verified_inviter() {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD;
+        // A payload that also *claims* an inviter: the claim must be ignored in
+        // favour of the signed envelope sender, or the authorization check the
+        // drain does on `inviter_id` would be attacker-chosen.
         let payload = serde_json::to_vec(&serde_json::json!({
             "groupId": "grp:abc", "groupKey": b64.encode([4u8; 32]), "name": "Team",
+            "inviterId": b64.encode([7u8; 32]),
         }))
         .unwrap();
         let opened = Opened {
@@ -836,6 +939,7 @@ mod tests {
                 assert_eq!(g.group_id, "grp:abc");
                 assert_eq!(g.group_key, vec![4u8; 32]);
                 assert_eq!(g.name.as_deref(), Some("Team"));
+                assert_eq!(g.inviter_id, b64.encode([1u8; 32]));
             }
             _ => panic!("expected GroupInvite"),
         }

@@ -53,6 +53,117 @@ rather than duplicated here:
   [*Profiles — storage and updates*](#profiles--storage-and-updates). Until they
   do, Settings must stop reporting "Profile saved." for data it discards.
 
+### A pinned relay has no legitimate way to change its **root** identity
+
+*Created 2026-07-30 by the relay-identity pin itself, and narrowed 2026-08-02 by
+the root/online split. Needs a decision, not just code.* Rotating the **online**
+signing key is now a solved, one-command operation that pinned clients accept
+silently ([relay.md](relay.md#relay-identity-an-offline-root-and-an-online-signing-key)),
+so a server breach no longer strands anyone. What remains is the **root**:
+clients pin it per account and **refuse the connection** when the served
+fingerprint differs ([relay.md](relay.md#pinning-the-relay-identity-as-built)).
+That is exactly right against a hostile relay — and it means an honest operator
+who must move the relay to a host whose identity is minted fresh has no way to
+say so. The signed `moved-to` record that would carry such a change (D4c) is
+unbuilt, so today the only recovery is "everyone makes a new account", which also
+loses every friendship, since a contact id is derived from the per-relay
+identity.
+
+**Losing the root key is a strictly worse case, and no signed record fixes it.**
+Every option below requires signing something with the old root, so an operator
+who no longer has it has nothing to sign with. That relay keeps working until its
+delegation expires and then stops being trusted, by design
+([relay.md](relay.md#the-delegation-record)) — the only mitigation is custody,
+which is why DEPLOY.md treats the key like a vault recovery kit rather than a
+config value.
+
+The sharp edge is that the *move* failure is correct behaviour, so it will not
+look like a bug when it happens — it will look like the app refusing to connect,
+at the worst possible moment. Options, and this is the decision:
+
+- **Build the signed moved-to record** (part of
+  [D4c](#multi-relay--cross-relay-contact-continuity-d4c)): the old root signs a
+  statement naming the new key/host, clients verify it against the pin they
+  already hold and re-pin. **Be precise about what this does and does not fix.**
+  It solves an operator *moving* — a new host, a new address, a planned identity
+  change made while the old root key is still under the operator's control. It
+  does **not** solve key *compromise*, and it never can: a moved-to record is
+  only as trustworthy as the key that signs it, so one signed by a stolen root is
+  byte-for-byte indistinguishable from a legitimate one, and honoring it hands
+  every account to the thief. What makes compromise survivable is the
+  [root/online split](relay.md#relay-identity-an-offline-root-and-an-online-signing-key)
+  — the key that signs continuously is not the key clients pin — and that is
+  already built. Moved-to is also indistinguishable from a *coerced* rotation
+  unless it is published in the transparency log
+  ([below](#delegations-and-relay-identity-changes-are-not-in-the-transparency-log)).
+- **An explicit, user-confirmed re-pin** ("this relay's identity changed — accept
+  only if your operator told you to"). Cheap, and honest about what it is, but it
+  trains users to click through exactly the warning that matters most.
+- **Accept it for now** and document that a relay's identity is permanent for the
+  life of its accounts, making key custody an operator responsibility with a
+  loud note in [DEPLOY.md](../DEPLOY.md).
+
+Recommendation: accept it for launch (a small, invite-only deployment can
+coordinate out of band) but write it into DEPLOY.md rather than leaving it to be
+discovered, and treat the moved-to record as the real fix rather than the
+confirm-dialog.
+
+### Online-key revocation is forward-looking, and only for clients that saw it
+
+*Created 2026-08-02 alongside the client half of the root/online split. Two
+residuals, both real, neither blocking — recorded because each is a decision, not
+an oversight ([relay.md](relay.md#pinning-the-relay-identity-as-built)).*
+
+1. **A revoked key still validates roots stamped with its own version.** Each KT
+   root carries the `keyVersion` that signed it and is checked against the key
+   that delegation names, which is what keeps pre-rotation epochs verifiable and
+   what the reference auditor does. So an attacker who kept a stolen v1 key can
+   still produce a root a client accepts as v1-signed — they just cannot
+   reinstate v1 as *current*, and (having lost the server) must also beat TLS to
+   deliver it. Closing it means requiring `keyVersion == current`, which makes
+   every root published before a rotation unverifiable until the next directory
+   change. If that is ever taken, the relay must re-sign and re-publish its
+   current root on boot after a rotation, or contact verification stalls.
+2. **A client that never saw the rotation is not protected by the rollback
+   check.** The high-water mark is *this client's* memory: an account that last
+   connected before the operator rotated has a floor of v1, so an attacker
+   holding the revoked v1 key can serve the genuine v1 delegation and be
+   accepted. This is the ordinary revocation-freshness problem, bounded today
+   only by the delegation's `notAfter`. The cheap improvement is to let the
+   `kt-gossip` beacon carry the delegation version a friend last saw, so peers
+   raise each other's floor without contacting the relay — a payload change on
+   both sides, worth doing when gossip is next touched.
+
+### Delegations and relay-identity changes are not in the transparency log
+
+*Created 2026-08-02 with the root/online split.* A delegation is served beside
+the log (`/info`, and the `delegations` array on the roots endpoint) but is not
+**in** it: nothing commits it to a KT root, `kt-gossip` carries only
+`{epoch, root, prev, sig}` with no delegation version, and the reference auditor
+reads the chain from `/info` rather than from the append-only history. So the
+machinery that already catches a relay showing two different *directories* —
+gossip equivocation and the auditor's rewrite detection — does not cover it
+showing two different *delegation chains*.
+
+Concretely, a relay (or an attacker who obtained the root key) can serve
+rotation v2 to one victim and keep serving v1 to everyone else, and no honest
+participant learns of the discrepancy: each client sees a chain that verifies
+under the pin it holds, and neither client has anything to gossip about it. The
+anti-rollback floor stops a *downgrade* per client, not a **split view** across
+clients. The same hole would swallow a `moved-to` record
+([above](#a-pinned-relay-has-no-legitimate-way-to-change-its-root-identity)),
+which is why that item cannot be built without this one — a signed identity
+change shown to a single victim is exactly the coerced-rotation case.
+
+The fix is to make identity changes log entries rather than side-channel facts:
+append a delegation (or moved-to) to the KT log as a signed, hash-chained event
+so it inherits append-only history, third-party auditing and gossip split-view
+detection, and have `kt-gossip` carry the delegation version so peers cross-check
+each other's view of *who may sign* as well as *what was signed*. Deferred
+because it is a log-format change, and the interim per-epoch Merkle snapshot
+should not grow a second event type it will have to shed when the AKD history
+tree lands ([key-transparency.md](key-transparency.md)).
+
 ### Real-device voice validation
 
 Voice is functionally complete and green in unit + relay e2e, but has **never
@@ -150,6 +261,13 @@ relevant area spec. They are listed here because fixing them is outstanding work
   comparing `edited_at`. Fine for single-author edits, which is all that exists;
   [local-store.md](local-store.md#crdts--mutable-state) describes the intended
   rule.
+- **The KT auditor pins nothing.** `ktAuditCli.ts` takes `identityPubKey` and the
+  delegation chain from the `/info` of the very relay it is auditing, so it
+  verifies internal consistency and rewrites but cannot tell a substituted relay
+  from the real one — it is checking a document against its own letterhead. It
+  should accept an expected root fingerprint (`--relay-fp`, the value an invite
+  carries) and refuse to audit anything else. Small, and it is what makes a
+  third-party auditor's "✓" mean something.
 - **The KT auditor's stall alarm is a false positive by construction.** It
   alarms after 24 h with no new epoch, but the relay only publishes on a
   directory change. Either add a heartbeat epoch (the relay signs and appends a
@@ -217,40 +335,29 @@ directly or via the relay's `/og`-style proxy — the latter would also hide the
 reader's IP from the image host, which the click-to-load gate currently only
 *warns* about.
 
-### Relay identity is never pinned
+### Operator registration codes carry no relay fingerprint
 
-`invites.ts` documents `relayFp` as "Pinned relay identity fingerprint (the
-invitee verifies the relay)" and the field is written into every invite by
-`nativeInvites.ts` — but **it is never read back for comparison**.
-`RelayClient::connect` takes whatever `/api/relay/info` returns and uses it as
-the session fingerprint; there is no stored pin and no TOFU check across
-connects.
+Relay identity pinning is **built** — the fingerprint must bind the key the relay
+serves, an invite's `relayFp` anchors the first connection, and the pin is
+compared on every connect after
+([relay.md](relay.md#pinning-the-relay-identity-as-built)). One anchor is still
+missing.
 
-Consequences: a substituted relay identity is undetectable, and redeeming an
-invite against an impostor at the invite's URL is undetectable. Worse, the
-per-relay identity is *derived* from that fingerprint
-([accounts-and-crypto.md](accounts-and-crypto.md#per-relay-derived-identities-identityrs)),
-so a swapped key silently re-derives the user's identity keys — the user appears
-as a different person rather than failing.
+An **operator registration code** (`npm run relay -- create-invite`, redeemed by
+`registerOnRelay(relayUrl, code)`) is a bare token: the user is handed a URL and
+a code, with nothing to compare the relay's identity against, so their first
+connection is trust-on-first-use. That protects them against later substitution
+but not against a relay that is hostile from the start — the operator's channel
+is exactly as human as the friend-invite channel, so it can carry the same
+anchor.
 
-Needed: store the fingerprint on first connect (per account, in the vault),
-compare on every subsequent connect, and compare the invite's `relayFp` against
-`/api/relay/info` before redeeming. A mismatch is a hard stop with an error-catalogue
-code, not a toast the user can dismiss. The signed "relay moved to <newURL>"
-record (see *Multi-relay* below) is the legitimate way to change either.
-
-### No key is ever verified against the transparency log
-
-`src-tauri/src/kt.rs::verify_lookup` is implemented and unit-tested but **called
-from nowhere**. Only `verify_key_history` (self-audit) and `verify_signed_root`
-(gossip) are wired. Contact keys come exclusively from the invite payload as a
-TOFU pin — there is no directory-lookup path in the client at all.
-
-So KT currently proves *the relay is not equivocating about my own key* and
-*roots are consistent across gossip peers*; it does not yet prove that the key
-you are talking to is the one the log published for that handle. Wiring
-`verify_lookup` into contact establishment (and into any future re-key) is what
-closes the loop. See [key-transparency.md](key-transparency.md#client-verification-native-as-built).
+Needed: make the CLI mint a **self-describing code** (relay URL + fingerprint +
+token, the same shape as a friend invite minus the inviter's keys), have the
+signup screen parse it, and pass the fingerprint into `relay_register` — the
+parameter already exists and is enforced. Small, but it is a wire-format change
+to the code the CLI prints and the paste box accepts, plus a fallback for bare
+codes already in circulation, so it is not a one-liner. The operator's own first
+account stays unanchored regardless: they *are* the relay.
 
 ### The hard KT alarm warns but does not block
 
@@ -276,7 +383,9 @@ unconditionally for `friend-accept` / `friend-confirm`, and for an *accept* the
 drain seals **my handle and my delivery token** back to the sender's supplied
 sealing key. Nothing correlates the envelope with an invite I actually minted:
 the invite payload carries `identityPub` explicitly as a TOFU pin, but it is
-parsed and discarded, never compared against the sender.
+parsed and discarded, never compared against the sender. (The invite's *relay*
+fingerprint is no longer in that boat — it is checked at connect and at redeem;
+see [relay.md](relay.md#pinning-the-relay-identity-as-built).)
 
 Consequences: anyone who can enqueue into my mailbox — an existing friend, a
 live-invite holder, or the relay, which owns the queue — can insert themselves
@@ -453,6 +562,36 @@ policy engine and its UI do not. Specified:
 
 The emoji cache above should share this screen and this eviction machinery
 rather than growing its own.
+
+### Group state is trusted from the relay
+
+Who may hand you a **group key** is settled: a `group-invite` is admitted only
+from a current friend the transparency log does not contradict, and it can never
+re-key a group you are already in
+([chat.md](chat.md#who-may-hand-me-a-group-key)). What is *not* settled is the
+membership record those keys are fanned out against.
+
+`group_add_member` does `group_state_get` → append → sign → `group_state_put`.
+The record it signs comes from the relay. It is now checked for the two things a
+signature over it would concede outright — it must be **this** group's record and
+it must name **me** an owner/admin — but nothing compares it against a previous
+version, so a hostile relay can return a record with an **extra member spliced
+in** and get an honest admin to sign it. The relay then legitimately fans group
+envelopes to that identity and lets it download group blobs.
+
+The damage is bounded: the spliced member never receives the group key, which
+only ever travels in a DM-sealed `group-invite` from a real member, so it gets
+**ciphertext and membership metadata, not content**. It is still a hole, and it
+is the same hole in the other direction — a relay can silently *drop* a member
+from the record and cut them off.
+
+Closing it needs a locally mirrored, version-monotonic copy of the record: the
+columns already exist (`conversations.group_state_json`,
+`.group_state_version` — see [local-store.md](local-store.md)) and nothing
+writes them. Then every fetched record is checked to be signed by an admin of the
+copy you already hold, at a strictly higher version, with the member delta
+attributable to that admin. That is also the machinery **group-key rotation**
+will need, so build the two together rather than twice.
 
 ### Groups — membership lifecycle
 
@@ -841,9 +980,29 @@ never loses history; this only restores the live channel.
 friend-to-friend and **never posted to a relay**, so relays still cannot
 correlate you across servers — only your friend's client knows. It requires the
 relay-independent message id (already built) for cross-path dedup. The same
-signed-pointer principle covers a relay **changing its URL** (the relay signs a
-"moved to <newURL>" record against its pinned key) — which only becomes
-meaningful once the fingerprint is actually pinned (see above).
+signed-pointer principle covers a relay **changing its URL**: the relay signs a
+"moved to <newURL>" record with the **root** key clients pin, and clients verify
+it against the pin they already hold.
+
+**What moved-to is for, stated exactly, because this has been muddled before.**
+It is the **planned-change** mechanism: a new address, a new host, or a
+deliberate change of the root key itself — all of which require the operator to
+still hold the *old* root key to sign the pointer with. Those are the cases that
+strand people today, since a changed fingerprint (or a client left pointing at a
+dead URL) is correctly refused, and none of them is built.
+
+It is emphatically **not** the answer to a key compromise, and no signed pointer
+ever can be: a moved-to record is only as good as the key that signs it, so one
+signed with a stolen root is byte-for-byte indistinguishable from a legitimate
+one, and honoring it hands the attacker every account. It is no answer to a
+*lost* root key either — there would be nothing left to sign with. Key compromise
+is handled instead, and already, by the
+[root/online split](relay.md#relay-identity-an-offline-root-and-an-online-signing-key):
+the key that signs continuously is not the key clients pin, so **rotating the
+online key is a solved, one-command operation** that pinned clients accept
+silently. Moved-to must also be published in the transparency log to be worth
+anything against coercion — see
+[*Delegations and relay-identity changes are not in the transparency log*](#delegations-and-relay-identity-changes-are-not-in-the-transparency-log).
 
 Federation stays out: no relay-to-relay, and cross-relay groups remain a
 non-goal. This is 1:1 only.

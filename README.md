@@ -45,7 +45,12 @@ runs the app. See [the spec](spec/README.md) for the design and the reasoning.
   they hold your delivery token, which you hand out by accepting an **invite**
   (`accord://friend?i=…`, minted in-app and shared out of band) — so there is no
   cold-contact path and the relay never stores a friend graph. A group chat is
-  the only way to talk to someone who isn't a friend.
+  the only way to talk to someone who isn't a friend — and being added to one
+  only works if the person adding you is **already your friend**, since the
+  group's key arrives as ordinary mail that anyone (including the relay) could
+  otherwise post. An invite can only ever create a group that is new to you: it
+  can never replace the key of a group you're already in, and an attempt to do
+  so is refused and raises a non-dismissable alarm.
 - **Voice.** 1:1 calls from a DM, relayed through the mediasoup SFU embedded in
   the relay (no peer-to-peer, so no participant learns another's IP). Audio
   frames are end-to-end encrypted and the SFU forwards media it cannot decode.
@@ -105,11 +110,63 @@ web app, no accounts UI — and is administered by a CLI, not a browser.
 
 Works anywhere Docker runs: Debian/Linux, Windows (Docker Desktop / WSL2), macOS.
 
+Setup runs on **two machines, and which command runs where is the whole
+security property**:
+
+| | **Your own machine** | **The server** |
+|---|---|---|
+| Runs | `init-identity`, and later `rotate-online-key` | the relay itself, and every other CLI command |
+| Holds | the **root private key**, in your password manager | the online keypair and the root's *public* key |
+
+Exactly one thing crosses between them: the `relay-identity.json` you copy up.
+Nothing comes back, and the root private key never moves.
+
+#### Step 1 — mint the identity **on your own machine**
+
+```sh
+npm run relay -- init-identity        # writes ./relay-identity.json, prints a root key ONCE
+```
+
+No checkout on your laptop? The published image runs the same command, with no
+server and no database involved:
+
+```sh
+docker run --rm -v "$PWD:/out" ghcr.io/jtrobinson1993/notes \
+  npm run relay -- init-identity --out /out/relay-identity.json
+```
+
+It produces two things, and they go to **different places**:
+
+- **`relay-identity.json`** — the root *public* key, the online keypair and the
+  signed delegation. This is the file you copy to the server, and the only one.
+- **The root private key**, printed to your terminal once. **Put it in your
+  password manager before you do anything else** — a secure note in 1Password /
+  Bitwarden / `pass`, backed up the way you back up that vault. It is written to
+  no file, not even the bundle, so nothing can ever print it again.
+
+> [!WARNING]
+> **Do not run `init-identity` on the server, and never copy the root private
+> key there.** Nothing will complain if you do: you get a relay that works
+> perfectly and a security property that is silently gone, because the key every
+> client pins is now in that machine's shell history, terminal scrollback and
+> memory — exactly where a break-in reaches. The relay never needs it. Mint the
+> identity somewhere the relay cannot be broken into.
+
+#### Step 2 — deploy, on the server
+
 ```sh
 git clone https://github.com/jtrobinson1993/notes.git && cd notes
 cp .env.example .env        # set APP_ORIGIN to the relay's public URL, then:
+docker compose up -d --no-start                         # creates the /data volume
+docker compose cp relay-identity.json notes:/data/relay-identity.json
 docker compose up -d
 ```
+
+**Neither step is optional** — a relay with no identity refuses to start and
+prints the command to run and the path it looked at. But there is **no setup
+command to run on the server**: it ingests the bundle at boot, and later restarts
+are no-ops. See [*The relay identity*](#the-relay-identity) below for rotation
+and for what losing the root key costs.
 
 Compose runs the relay behind **Caddy**, which gets HTTPS certificates
 automatically, alongside the optional `akd-sidecar` (see
@@ -121,6 +178,10 @@ Or a single container without compose (you supply your own TLS):
 
 ```sh
 docker build -t notes .
+docker volume create notes-data
+# copy the relay-identity.json you minted above into the volume:
+docker run --rm -v notes-data:/data -v "$PWD:/in" notes \
+  cp /in/relay-identity.json /data/relay-identity.json
 docker run -d --name notes --restart unless-stopped \
   -p 3000:3000 \
   -e APP_ORIGIN=https://relay.example.com \
@@ -169,20 +230,103 @@ URL strands existing installs.
 All state lives in `DATA_DIR` — back up that one directory. It holds ciphertext,
 public keys and hashes only.
 
+### The relay identity
+
+A relay has two Ed25519 keys, and the split is the point:
+
+- a **root** key — its private half never touches the server. It signs exactly
+  one kind of statement: a *delegation* naming the current online key. Its public
+  half is what clients pin and what invites carry.
+- an **online** key — lives on the relay and signs the key-transparency log,
+  continuously, because that has to happen without you.
+
+If the server is broken into, the attacker gets the online key, and you revoke it
+with one command. If the two were the same key (as they were before), a break-in
+would be unrecoverable: the attacker could sign a forged key directory with the
+very key every client trusts, and you could not revoke the anchor using the
+anchor.
+
+**So the identity is generated on your machine, never on the relay.**
+`init-identity` needs no database, no `DATA_DIR` and no server — run it on a
+laptop that has never touched the relay:
+
+```sh
+npm run relay -- init-identity        # from a checkout
+# no checkout? the image runs the same command:
+docker run --rm -v "$PWD:/out" ghcr.io/jtrobinson1993/notes \
+  npm run relay -- init-identity --out /out/relay-identity.json
+```
+
+It writes **`relay-identity.json`** — the root *public* key, the online keypair,
+and the signed delegation — and prints the **root private key once**.
+
+**Store that key in a password manager** — a secure note in 1Password, Bitwarden,
+`pass`, or whatever you already trust with a vault, and back it up the same way.
+It is not written to any file, not even the bundle, so nothing can print it
+again. It must never be copied onto the relay, pasted into `.env`, or handed to
+CI: anything the relay can read, a break-in can read.
+
+Then deploy: copy `relay-identity.json` into the relay's `DATA_DIR` and start the
+relay. **There is no setup command to run on the server** — it reads the bundle
+at boot, installs it, and does nothing on subsequent restarts. Leaving the file
+in place is fine and expected (it holds no secret the relay's database doesn't
+already hold).
+
+```sh
+docker compose cp relay-identity.json notes:/data/relay-identity.json
+# or plain: scp relay-identity.json you@relay:/srv/accord-data/
+```
+
+You need the root key only to rotate the online key — after a suspected break-in,
+or to renew the delegation before it expires (default lifetime one year; the
+relay warns in its log from 30 days out and `status` shows the time left). Same
+shape: run it on your machine, copy the new bundle over, restart.
+
+```sh
+# in the checkout, with the bundle you are replacing; pipe the key in from
+# wherever you stored it, so it never lands in a file or your shell history:
+pass show accord/relay-root | npm run relay -- rotate-online-key --in relay-identity.json
+# or: ACCORD_RELAY_ROOT_KEY="$(pass accord/relay-root)" npm run relay -- rotate-online-key
+```
+
+The key is read from stdin or `ACCORD_RELAY_ROOT_KEY` — never a flag, since argv
+is visible to every process on the box — and is used to sign one delegation and
+dropped. Rotation does **not** change the fingerprint clients pin, so nobody has
+to re-register and no one sees a warning: clients accept a newer, root-signed
+delegation silently. Both the relay and every client refuse a delegation that
+doesn't move the version forward, so a stolen old key cannot be replayed back
+into service — clients remember the highest version they have accepted from each
+relay, which is what makes the retirement stick even against somebody who
+intercepts the connection.
+
+**Losing the root key is not recoverable, and it is worth being concrete about
+what that costs.** You keep a working relay until the delegation expires (a year
+by default) — but in the meantime you cannot rotate, so if the server is *also*
+broken into there is no way to revoke the stolen online key, and no way to renew
+before the deadline. The only way back is a new relay identity, which every
+client refuses as a substitution: recovery means every user re-pinning, and since
+each account's per-relay identity — the key its friends address it by — is
+derived from that fingerprint, in practice that means **new accounts and lost
+friendships**. Back the key up like a vault recovery kit — it is not in
+`DATA_DIR`, so your server backups do not contain it.
+
 ### The operator CLI
 
-Operator tasks are `npm run relay -- <command>`, which acts directly on
+Day-to-day operator tasks are `npm run relay -- <command>`, which acts directly on
 `DATA_DIR` — no running server required. Use an **absolute** `DATA_DIR` so the
 CLI and the relay always agree on which database they mean (or set it in `.env`,
 which both read).
 
 ```sh
-DATA_DIR=/srv/accord-data npm run relay -- create-invite [--days N]  # one-time signup code
-DATA_DIR=/srv/accord-data npm run relay -- list-devices              # enrolled devices
-DATA_DIR=/srv/accord-data npm run relay -- revoke-device <id>        # revoke a device
-DATA_DIR=/srv/accord-data npm run relay -- status                    # accounts / devices / mode
-DATA_DIR=/srv/accord-data npm run relay -- prune                     # drop expired/used invites
+DATA_DIR=/srv/accord-data npm run relay -- create-invite [--days N]   # one-time signup code
+DATA_DIR=/srv/accord-data npm run relay -- list-devices               # enrolled devices
+DATA_DIR=/srv/accord-data npm run relay -- revoke-device <id>         # revoke a device
+DATA_DIR=/srv/accord-data npm run relay -- status                     # identity / accounts / devices / mode
+DATA_DIR=/srv/accord-data npm run relay -- prune                      # drop expired/used invites
 ```
+
+(`init-identity` and `rotate-online-key` are the two that *don't* — they run on
+your own machine and ignore `DATA_DIR` entirely. See above.)
 
 Under compose the same commands run inside the container:
 
@@ -234,8 +378,9 @@ reason to set the token.
 
 Anyone can audit a relay's log from its public endpoints — `GET
 /api/relay/kt/roots` (also at `/.well-known/accord/kt-roots`) — with the
-reference auditor, which verifies the root signatures and hash chain and alarms
-on a rewritten epoch or a stalled log:
+reference auditor. It checks the relay's delegation chain against its root key,
+then every epoch root against the online key that root's version names, plus the
+hash chain, and alarms on a rewritten epoch or a stalled log:
 
 ```sh
 npm run kt-audit -- https://relay.example.com --watch
@@ -268,6 +413,23 @@ An operator auditing its own log proves nothing, so the recommendation is that
 - **Per-relay identity.** Ed25519 signing + X25519 sealing keys are derived from
   MK and the relay's identity fingerprint, so two relays cannot correlate you by
   key, and the same account on a new device re-derives the same identity.
+- **The relay itself is pinned.** Its published fingerprint must be the hash of
+  the **root** key it serves, and it must match what your account is anchored to:
+  the fingerprint inside the invite you joined with, or the one recorded on your
+  first connection. A relay that presents a different identity is refused, with
+  the same alarm as a key-transparency failure, rather than quietly re-trusted.
+  Joining by typed address or operator code has no out-of-band fingerprint to
+  check against, so that first connection is trust-on-first-use — an invite does
+  not have that gap.
+- **…and it has to prove which key signs its log.** The pinned root does not sign
+  the key-transparency log itself; it signs a short record naming the *online*
+  key that does ([above](#the-relay-identity)). Accord verifies that record
+  against the pinned root before it will check a single contact key, refuses one
+  that is expired or signed by anything else, and remembers its version number so
+  a relay can never go back to a signing key the operator retired. An operator
+  rotating that key is silent and needs nothing from you; a rotation you did not
+  expect, or a record that will not verify, stops the connection and raises the
+  banner.
 - **Sealed sender.** A message is sealed to the recipient's X25519 key and posted
   with a **delivery token** — a capability derived from the recipient's profile
   key that only their friends hold. The relay checks a hash of the token,

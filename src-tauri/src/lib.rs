@@ -7,6 +7,7 @@
 pub mod accounts;
 pub mod attachment;
 pub mod blobs;
+pub mod delegation;
 pub mod emoji;
 pub mod envelope;
 pub mod identity;
@@ -119,6 +120,308 @@ fn settings_set(key: String, value: String, vault: VaultState) -> Result<(), Str
     store.set_setting(&key, &value).map_err(|e| e.to_string())
 }
 
+// ---- relay identity pinning (spec/relay.md § Pinning the relay identity) ----
+
+/// Hard alarm reason: the relay's identity is not the one this account is
+/// anchored to. Same tier as a KT equivocation — the relay identity key is what
+/// every KT root signature is checked against, so a substituted one invalidates
+/// the entire transparency story.
+const ALARM_RELAY_IDENTITY: &str = "relay-identity-changed";
+
+/// Hard alarm reason: the relay could not show a current, root-signed delegation
+/// naming its online signing key. Without one, nothing the relay signed means
+/// anything — the pinned root vouches for no key at all.
+const ALARM_RELAY_DELEGATION: &str = "relay-delegation-invalid";
+
+/// Hard alarm reason: the relay served an **older** delegation than one this
+/// account already accepted (or a different online key at the same version).
+/// A superseded delegation is genuinely root-signed forever, so replaying one is
+/// how an attacker who kept a revoked online key gets believed again. Its own
+/// reason string because it is not a broken relay — it is an attack in progress.
+const ALARM_RELAY_ROLLBACK: &str = "relay-delegation-rollback";
+
+/// Where an account's pinned relay identity lives: the vault store is
+/// per-account, and the key is the relay's base URL (an account can in principle
+/// know more than one relay).
+///
+/// Normalised — trailing slash dropped, lowercased — so a differently-spelled
+/// URL for the same relay cannot slip past the pin into a fresh
+/// trust-on-first-use. Over-merging is the safe direction here: two URLs sharing
+/// a pin means more anchoring, not less.
+fn relay_pin_key(base_url: &str) -> String {
+    format!("relay.identity.{}", base_url.trim_end_matches('/').to_lowercase())
+}
+
+/// The pinned identity, as stored in that setting.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RelayPin {
+    fp: String,
+    /// The **root** key the fingerprint binds. Redundant with `fp` by
+    /// construction (the connect-time binding check enforces it), stored anyway
+    /// so a pin is self-describing and comparable without a network round-trip.
+    #[serde(default)]
+    identity_pub: String,
+    /// **The anti-rollback high-water mark**: the highest delegation `version`
+    /// this account has ever accepted from this relay. It only ever increases.
+    /// Without it, an attacker holding a revoked online key replays the old,
+    /// still-validly-root-signed delegation that named it and is trusted again —
+    /// so a rotation would revoke nothing.
+    #[serde(default)]
+    delegation_version: i64,
+    /// The online key `delegation_version` named. A *different* key at the same
+    /// version is the root equivocating about which key is in force, which only
+    /// a client that remembers can see.
+    #[serde(default)]
+    delegation_online_key: String,
+}
+
+/// What we will hold this relay to, and where that came from.
+struct RelayAnchor {
+    /// The fingerprint the relay must present, or None on genuine first contact.
+    expected: Option<String>,
+    /// Whether a pin setting already exists (so a successful connect knows
+    /// whether it is writing a first pin or confirming one).
+    pinned: bool,
+    /// The delegation version floor this relay must meet or beat.
+    floor: delegation::DelegationFloor,
+}
+
+/// Resolve the anchor for `base_url`: the invite's fingerprint if we have one,
+/// otherwise this account's stored pin, otherwise the relay row an older account
+/// already has. Returns `Err` when they disagree, or when the pin cannot be read
+/// at all — a pin we cannot check is a pin we cannot enforce, so a locked vault
+/// fails the connect closed rather than proceeding unanchored.
+fn relay_anchor(
+    vault: &Mutex<Vault>,
+    base_url: &str,
+    invite_fp: Option<&str>,
+) -> Result<RelayAnchor, String> {
+    let vault = vault.lock().unwrap();
+    let store = vault
+        .store()
+        .map_err(|_| "cannot check the relay's identity while the vault is locked".to_string())?;
+    let pin: Option<RelayPin> = store
+        .get_setting(&relay_pin_key(base_url))
+        .map_err(|e| e.to_string())?
+        .and_then(|v| serde_json::from_str(&v).ok());
+    // An account that predates the pin setting still recorded the relay it
+    // belongs to (its whole identity is derived from that fingerprint), so use
+    // that as the anchor rather than re-TOFUing on upgrade. Only when there is
+    // exactly one — this account belongs to exactly one relay today, and a
+    // multi-relay account (D4c) would need the row matched by URL.
+    let recorded = match &pin {
+        Some(_) => None,
+        None => match store.relay_identities().map_err(|e| e.to_string())?.as_slice() {
+            [(_, fp)] => Some(fp.clone()),
+            _ => None,
+        },
+    };
+    let stored = pin.as_ref().map(|p| p.fp.clone()).or(recorded);
+    let expected = match (invite_fp, stored) {
+        // The invite is authoritative — but if we already hold a pin they must
+        // agree, or one of the two channels is lying.
+        (Some(inv), Some(known)) if inv != known => {
+            return Err(format!(
+                "{}: the invite names relay {inv}, but this account is pinned to {known}",
+                relay_client::ERR_IDENTITY_MISMATCH
+            ))
+        }
+        (Some(inv), _) => Some(inv.to_string()),
+        (None, known) => known,
+    };
+    // The rollback floor comes only from a pin this account wrote: it is a
+    // memory of what we accepted, and nothing the relay says can raise it.
+    let floor = pin
+        .as_ref()
+        .filter(|p| p.delegation_version > 0)
+        .map(|p| delegation::DelegationFloor {
+            min_version: p.delegation_version,
+            online_key: (!p.delegation_online_key.is_empty())
+                .then(|| p.delegation_online_key.clone()),
+        })
+        .unwrap_or_default();
+    Ok(RelayAnchor { expected, pinned: pin.is_some(), floor })
+}
+
+/// Record the verified identity on first contact, or confirm it against the
+/// existing pin, and **raise the delegation high-water mark**. Never re-pins
+/// silently: a disagreement on the root is an error.
+///
+/// The high-water mark is the one part of a pin that legitimately moves, and it
+/// moves in one direction only (`max`) — an accepted rotation raises it, and a
+/// later connect can then never be talked back down to the revoked key. It is
+/// written *after* a successful connect, so a refused connection never advances
+/// it and a failed handshake never strands the account above a version the relay
+/// can still serve.
+fn pin_relay_identity(
+    vault: &Mutex<Vault>,
+    base_url: &str,
+    identity: &relay_client::RelayIdentity,
+    anchor: &RelayAnchor,
+) -> Result<(), String> {
+    let vault = vault.lock().unwrap();
+    let store = vault
+        .store()
+        .map_err(|_| "cannot pin the relay's identity while the vault is locked".to_string())?;
+    let key = relay_pin_key(base_url);
+    let mut floor_version = anchor.floor.min_version;
+    if anchor.pinned {
+        let stored: Option<RelayPin> = store
+            .get_setting(&key)
+            .map_err(|e| e.to_string())?
+            .and_then(|v| serde_json::from_str(&v).ok());
+        if let Some(p) = stored {
+            // `connect` already refused a fingerprint that isn't `expected`;
+            // this also holds the *key* to the pin, so a relay cannot keep the
+            // pinned fingerprint while swapping the key it is derived from.
+            if p.fp != identity.fingerprint
+                || (!p.identity_pub.is_empty() && p.identity_pub != identity.identity_pub)
+            {
+                return Err(format!(
+                    "{}: this relay's identity is not the one pinned for this account",
+                    relay_client::ERR_IDENTITY_MISMATCH
+                ));
+            }
+            // Re-read rather than trusting the anchor snapshot: another connect
+            // may have raised it since, and the mark must never go down.
+            floor_version = floor_version.max(p.delegation_version);
+        }
+    }
+    let current = identity.kt_keys.current();
+    if current.version < floor_version {
+        // Only reachable if a concurrent connect raised the mark between
+        // `relay_anchor` and here (the connect itself already refused anything
+        // below the anchor's floor). Leave the stricter record alone rather than
+        // writing a `(version, key)` pair that disagrees with itself.
+        return Ok(());
+    }
+    let pin = RelayPin {
+        fp: identity.fingerprint.clone(),
+        identity_pub: identity.identity_pub.clone(),
+        delegation_version: current.version,
+        delegation_online_key: current.online_key.clone(),
+    };
+    store
+        .set_setting(&key, &serde_json::to_string(&pin).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+}
+
+/// Raise the hard alarm for an identity failure and pass the error through
+/// unchanged (the webview maps its code to a catalogued message).
+///
+/// Every link of the chain lands here — a substituted root, a fingerprint that
+/// does not bind its key, a delegation that will not verify, and a rolled-back
+/// delegation version — because they all mean the same thing to the user: the
+/// key-transparency log this app checks contacts against cannot be trusted.
+fn alarm_on_identity_error(err: String, on_kt_alarm: KtAlarmSink<'_>) -> String {
+    let reason = if err.starts_with(relay_client::ERR_IDENTITY_MISMATCH)
+        || err.starts_with(relay_client::ERR_IDENTITY_INVALID)
+    {
+        Some(ALARM_RELAY_IDENTITY)
+    } else if err.starts_with(delegation::ERR_DELEGATION_ROLLBACK) {
+        Some(ALARM_RELAY_ROLLBACK)
+    } else if err.starts_with(delegation::ERR_DELEGATION_INVALID) {
+        Some(ALARM_RELAY_DELEGATION)
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        log::error!("relay identity refused: {err}");
+        on_kt_alarm(reason, 0);
+    }
+    err
+}
+
+/// **Connect to a relay, holding it to this account's anchor.** The core half of
+/// the `relay_connect` command — separated so the L2 tests can drive it against
+/// a byte-controlled relay (`tests/kt_contact_verify.rs`) without a Tauri app.
+///
+/// Order matters: resolve the anchor, refuse anything that disagrees *before*
+/// the authenticated handshake, and only pin after the relay's identity has
+/// checked out. Every refusal raises the hard alarm through `on_kt_alarm`.
+pub async fn connect_to_relay(
+    vault: &Mutex<Vault>,
+    relay: &relay_client::RelayClient,
+    url: &str,
+    invite_fp: Option<&str>,
+    signing: &ed25519_dalek::SigningKey,
+    on_kt_alarm: KtAlarmSink<'_>,
+) -> Result<(), String> {
+    let anchor =
+        relay_anchor(vault, url, invite_fp).map_err(|e| alarm_on_identity_error(e, on_kt_alarm))?;
+    let identity = relay
+        .connect(url, signing, anchor.expected.as_deref(), Some(&anchor.floor))
+        .await
+        .map_err(|e| alarm_on_identity_error(e, on_kt_alarm))?;
+    pin_relay_identity(vault, url, &identity, &anchor)
+        .map_err(|e| alarm_on_identity_error(e, on_kt_alarm))
+}
+
+/// The same anchoring around signup (`relay_register`'s core half). Returns the
+/// server-assigned handle.
+pub async fn register_on_relay(
+    vault: &Mutex<Vault>,
+    relay: &relay_client::RelayClient,
+    url: &str,
+    invite_token: Option<&str>,
+    handle_choice: Option<&str>,
+    invite_fp: Option<&str>,
+    signing: &ed25519_dalek::SigningKey,
+    on_kt_alarm: KtAlarmSink<'_>,
+) -> Result<String, String> {
+    let anchor =
+        relay_anchor(vault, url, invite_fp).map_err(|e| alarm_on_identity_error(e, on_kt_alarm))?;
+    let registration = relay
+        .register(
+            url,
+            signing,
+            invite_token,
+            handle_choice,
+            anchor.expected.as_deref(),
+            Some(&anchor.floor),
+        )
+        .await
+        .map_err(|e| alarm_on_identity_error(e, on_kt_alarm))?;
+    pin_relay_identity(vault, url, &registration.identity, &anchor)
+        .map_err(|e| alarm_on_identity_error(e, on_kt_alarm))?;
+    Ok(registration.handle)
+}
+
+/// **The invite's relay must be the relay we are talking to.** An invite's
+/// `relayFp` arrived out-of-band through the human invite channel, so it is the
+/// authority; the connected session's fingerprint is not, whatever pinned it.
+/// Checking a contact key against a transparency log proves nothing if the log
+/// belongs to some other relay, so this gates that check rather than following
+/// it. Separated from the command for the L2 tests.
+pub fn require_invite_relay(
+    relay: &relay_client::RelayClient,
+    invite_fp: &str,
+    on_kt_alarm: KtAlarmSink<'_>,
+) -> Result<(), String> {
+    let (_base, session_fp) = relay.session_info().ok_or("not connected to a relay")?;
+    if invite_fp != session_fp {
+        return Err(alarm_on_identity_error(
+            format!(
+                "{}: the invite is for relay {invite_fp}, but this device is connected to {session_fp}",
+                relay_client::ERR_IDENTITY_MISMATCH
+            ),
+            on_kt_alarm,
+        ));
+    }
+    Ok(())
+}
+
+/// The webview's alarm sink: emits `kt:alarm` for the non-dismissable banner.
+fn app_kt_alarm(app: &tauri::AppHandle) -> impl Fn(&str, i64) + Send + Sync + '_ {
+    move |reason: &str, epoch: i64| {
+        use tauri::Emitter as _;
+        let _ = app.emit(
+            "kt:alarm",
+            KtAuditReport { ok: false, reason: Some(reason.to_string()), epoch },
+        );
+    }
+}
+
 // ---- relay auth (D4/D4b client half) ----
 
 #[tauri::command]
@@ -128,9 +431,17 @@ fn device_public_key(vault: VaultState) -> Result<String, String> {
     Ok(relay_client::device_public_key_b64(&key))
 }
 
+/// Connect to a relay, **checking its identity against our anchor first**.
+///
+/// `expect_relay_fp` is an invite's `relayFp` where the caller has one: it
+/// travelled the human invite channel, so it is the one anchor the relay did not
+/// supply, and it outranks the stored pin. With no invite the stored pin (or, on
+/// an account that predates it, the recorded relay row) is the anchor; with
+/// neither, this is first contact and the identity is pinned trust-on-first-use.
 #[tauri::command]
 async fn relay_connect(
     url: String,
+    expect_relay_fp: Option<String>,
     app: tauri::AppHandle,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
@@ -141,7 +452,15 @@ async fn relay_connect(
         let vault = vault.lock().unwrap();
         vault.device_signing_key().map_err(|e| e.to_string())?
     };
-    relay.connect(&url, &signing).await?;
+    connect_to_relay(
+        &vault,
+        &relay,
+        &url,
+        expect_relay_fp.as_deref(),
+        &signing,
+        &app_kt_alarm(&app),
+    )
+    .await?;
     // Start the live-delivery link once: it holds a WS and emits `relay:mail`
     // nudges so the webview drains its mailbox without polling (best-effort;
     // REST fetch stays authoritative).
@@ -172,11 +491,19 @@ async fn relay_connect(
 /// required on an invite-only relay, except for the first account. Persists the
 /// server-assigned handle and brings up the live-delivery + voice links, exactly
 /// like `relay_connect`. Returns the handle.
+///
+/// `expect_relay_fp` is the invite's `relayFp` (see `relay_connect`). Signup is
+/// where it matters most: the whole account identity is derived from the relay
+/// fingerprint, so an unanchored signup against an impostor produces a
+/// consistent-looking account belonging to the wrong relay. A signup with no
+/// invite (`registerOnRelay`) has no anchor and stays trust-on-first-use —
+/// see spec/relay.md § Pinning the relay identity.
 #[tauri::command]
 async fn relay_register(
     url: String,
     invite_token: Option<String>,
     handle_choice: Option<String>,
+    expect_relay_fp: Option<String>,
     app: tauri::AppHandle,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
@@ -186,9 +513,17 @@ async fn relay_register(
         let vault = vault.lock().unwrap();
         vault.device_signing_key().map_err(|e| e.to_string())?
     };
-    let handle = relay
-        .register(&url, &signing, invite_token.as_deref(), handle_choice.as_deref())
-        .await?;
+    let handle = register_on_relay(
+        &vault,
+        &relay,
+        &url,
+        invite_token.as_deref(),
+        handle_choice.as_deref(),
+        expect_relay_fp.as_deref(),
+        &signing,
+        &app_kt_alarm(&app),
+    )
+    .await?;
     // Persist my handle so the rest of the app (KT self-audit, invite creation,
     // friend reciprocation) can name me without another round-trip.
     {
@@ -320,9 +655,11 @@ pub async fn verify_contact_keys(
     let Some((_base, relay_fp)) = relay.session_info() else {
         return unverified(Unverified::RelayUnreachable);
     };
-    // Root signatures are checked against the relay identity key pinned at
-    // connect — the same key the gossip path uses.
-    let Some(relay_pub) = relay.relay_identity_pub() else {
+    // Root signatures are checked against the ONLINE key the pinned offline root
+    // delegated to — established and verified at connect (`verified_identity` →
+    // `delegation::verify_chain`), never against the pinned root itself and
+    // never against a key the relay served alongside the roots.
+    let Some(kt_keys) = relay.kt_signing_keys() else {
         return unverified(Unverified::NoRelayKey);
     };
     // The VRF public key is pinned per relay on first use. It decides which leaf
@@ -352,7 +689,7 @@ pub async fn verify_contact_keys(
         let verdict = match relay.directory_lookup(&c.handle).await {
             Ok(Some(entry)) => {
                 let v = kt::contact_verdict(
-                    &relay_pub,
+                    &kt_keys,
                     &roots,
                     pinned_vrf.as_deref(),
                     &c.handle,
@@ -434,15 +771,7 @@ async fn require_contact_key_ok(
         return Err("bad contact identity key".into());
     }
     let checks = [ContactKeyCheck { handle: handle.to_string(), identity_pub }];
-    let app = app.clone();
-    let sink = move |reason: &str, epoch: i64| {
-        use tauri::Emitter as _;
-        let _ = app.emit(
-            "kt:alarm",
-            KtAuditReport { ok: false, reason: Some(reason.to_string()), epoch },
-        );
-    };
-    let verdicts = verify_contact_keys(vault, relay, &checks, &sink).await;
+    let verdicts = verify_contact_keys(vault, relay, &checks, &app_kt_alarm(app)).await;
     match verdicts.first().and_then(|v| v.rejected()) {
         // The catalogued code the webview turns into a user-facing error.
         Some(r) => Err(format!("KT_CONTACT_KEY_MISMATCH: {}", r.as_str())),
@@ -485,11 +814,11 @@ async fn kt_self_audit(
     // *relay* epoch of that signed root is what the client records — the akd
     // epoch in the proof is the sidecar's own counter and does not line up with
     // the signed root chain that gossip and the auditor speak in.
-    let relay_pub = relay
-        .relay_identity_pub()
-        .ok_or("no relay identity key — cannot verify the KT root signature")?;
+    let kt_keys = relay
+        .kt_signing_keys()
+        .ok_or("no delegated relay signing key — cannot verify the KT root signature")?;
     let roots = relay.kt_roots(0).await?;
-    let epoch = kt::signed_root_epoch(&relay_pub, &roots, &hist.root)
+    let epoch = kt::signed_root_epoch(&kt_keys, &roots, &hist.root)
         .ok_or("KT root is not signed by this relay")?;
     // Same reasoning as contact verification: an unpinned VRF key lets the relay
     // choose which leaf a handle resolves to.
@@ -560,15 +889,7 @@ async fn kt_verify_contacts(
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<KtContactSweep, String> {
-    let sink_app = app.clone();
-    let sink = move |reason: &str, epoch: i64| {
-        use tauri::Emitter as _;
-        let _ = sink_app.emit(
-            "kt:alarm",
-            KtAuditReport { ok: false, reason: Some(reason.to_string()), epoch },
-        );
-    };
-    verify_recorded_contacts(&vault, &relay, &sink).await
+    verify_recorded_contacts(&vault, &relay, &app_kt_alarm(&app)).await
 }
 
 /// The sweep itself, free of Tauri state so the **real** one can be driven by
@@ -739,14 +1060,7 @@ async fn relay_mailbox_drain(
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<message::DrainReport, String> {
-    mailbox_drain(&vault, &relay, &move |reason: &str, epoch: i64| {
-        use tauri::Emitter as _;
-        let _ = app.emit(
-            "kt:alarm",
-            KtAuditReport { ok: false, reason: Some(reason.to_string()), epoch },
-        );
-    })
-    .await
+    mailbox_drain(&vault, &relay, &app_kt_alarm(&app)).await
 }
 
 /// Where the drain reports a hard KT alarm (`reason`, `epoch`). In the app this
@@ -996,30 +1310,30 @@ pub async fn mailbox_drain(
                     .map_err(|e| e.to_string())?;
             }
         }
-        // Group invites (D14): a friend handed me a group key → I'm a member.
-        for g in &group_invites {
-            store
-                .upsert_group(&g.group_id, &g.group_key, g.name.as_deref())
-                .map_err(|e| e.to_string())?;
-            store
-                .ensure_conversation(&g.group_id, "group", &relay_fp)
-                .map_err(|e| e.to_string())?;
-        }
         (ingested, my_handle, my_display_name)
     };
 
-    // KT gossip (D5): verify each friend's gossiped root against the pinned relay
-    // key, then record it — a *different* root at an epoch we've seen means the
-    // relay showed two logs (split view), a hard alarm. A bad signature is
-    // ignored (a friend can't frame an honest relay).
+    // Group invites (D14) — deliberately AFTER the store block above, so a
+    // friend recorded in this very drain is already visible: the inviter can
+    // legitimately send their friend-confirm and a group-invite back to back
+    // (they hold my delivery token from the moment I redeemed their invite),
+    // and both land in the same fetch.
+    let groups = admit_group_invites(vault, relay, &relay_fp, group_invites, on_kt_alarm).await;
+
+    // KT gossip (D5): verify each friend's gossiped root against the online keys
+    // the pinned root delegated to, then record it — a *different* root at an
+    // epoch we've seen means the relay showed two logs (split view), a hard
+    // alarm. A gossip carries no key version, so any delegated key counts (a
+    // friend may have seen a root signed before the relay rotated). A signature
+    // under none of them is ignored — a friend can't frame an honest relay.
     if !kt_gossips.is_empty() {
-        if let Some(relay_pub) = relay.relay_identity_pub() {
+        if let Some(kt_keys) = relay.kt_signing_keys() {
             let mut split_epoch: Option<i64> = None;
             {
                 let vault = vault.lock().unwrap();
                 let store = vault.store().map_err(|e| e.to_string())?;
                 for g in &kt_gossips {
-                    if let Ok(true) = kt::verify_signed_root(&relay_pub, &g.root, &g.prev, &g.sig) {
+                    if kt::gossiped_root_is_signed(&kt_keys, &g.root, &g.prev, &g.sig) {
                         if let Ok(store::KtObserve::SplitView { .. }) =
                             store.kt_observe_root(&relay_fp, g.epoch, &g.root)
                         {
@@ -1079,7 +1393,226 @@ pub async fn mailbox_drain(
         friends: friend_count,
         calls: call_rings,
         kt_rejected,
+        groups_joined: groups.joined,
+        group_invites_rejected: groups.rejected,
     })
+}
+
+/// A `group-invite` tried to replace the key of a group I am already in. Not a
+/// key-transparency failure in the AKD sense, but the same class of event and
+/// the same response: a hard, non-dismissable alarm, because the only thing it
+/// can mean is that someone with mailbox reach is trying to make me seal my
+/// future group messages under a key they hold.
+const ALARM_GROUP_REKEY: &str = "group-rekey-refused";
+
+/// What a drain's `group-invite` envelopes did.
+#[derive(Default)]
+struct GroupAdmission {
+    /// Invites that created a new local group (I am now a member).
+    joined: usize,
+    /// Invites refused outright: not from a current friend, from a friend the
+    /// transparency log contradicts, or an attempt to re-key a known group.
+    /// Nothing was written for any of them.
+    rejected: usize,
+}
+
+/// Constant-time byte equality. Used to compare a locally-held group key with
+/// an attacker-supplied one, so a prefix match is not observable in how long
+/// the drain takes.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// **Who may hand me a group key (D14).** A `group-invite` is an ordinary
+/// mailbox envelope, so opening one proves only that *somebody* wrote it with
+/// the secret key inside it. Three rules turn that into authority, and all
+/// three fail closed:
+///
+/// 1. **Never a re-key.** If I already hold a key for the group id, the invite
+///    is refused. Identical bytes are a benign duplicate (an admin can re-add a
+///    member, and add-member re-sends the same key) and are a silent no-op;
+///    *different* bytes are an attempted takeover of the conversation and raise
+///    a hard alarm. A legitimate rotation would have to arrive through the
+///    signed group-state record — and no rotation flow exists yet (chat.md
+///    § Groups), so this closes nothing that works today.
+/// 2. **From a current friend on this relay.** The inviter is the VERIFIED
+///    envelope sender, matched against `contact_relays` for this relay with
+///    `is_friend = 1`. That is what makes friends-of-friends the only route into
+///    a group: a stranger — or the relay itself, which can enqueue anything —
+///    cannot mint membership.
+/// 3. **Whose key the transparency log does not contradict.** The same verdict
+///    policy as every other contact-key check (`verify_contact_keys`): a
+///    contradiction is refused and alarms; an *unprovable* key (relay offline,
+///    handle not in the log, a relay running interim KT) is accepted, because
+///    requiring `Verified` would make groups stop working whenever the directory
+///    is unreachable while adding nothing — the friendship itself was admitted
+///    under exactly this policy, and rule 1 means the worst a wrongly-admitted
+///    invite can do is create a *new* conversation I can leave, never touch an
+///    existing one.
+async fn admit_group_invites(
+    vault: &Mutex<Vault>,
+    relay: &relay_client::RelayClient,
+    relay_fp: &str,
+    invites: Vec<message::GroupInviteData>,
+    on_kt_alarm: KtAlarmSink<'_>,
+) -> GroupAdmission {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut out = GroupAdmission::default();
+    if invites.is_empty() {
+        return out;
+    }
+
+    // Phase 1 — everything the local store can decide, under one lock and
+    // before any await (the vault mutex must not cross one).
+    let mut candidates: Vec<(message::GroupInviteData, ContactKeyCheck)> = Vec::new();
+    let mut rekey_attempt = false;
+    {
+        let vault = vault.lock().unwrap();
+        let store = match vault.store() {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("group-invite: store unavailable ({e}) — {} left unapplied", invites.len());
+                out.rejected += invites.len();
+                return out;
+            }
+        };
+        for g in invites {
+            // Rule 1 — a bare invite may never re-key a group I'm already in.
+            match store.group_key(&g.group_id) {
+                Ok(Some(existing)) => {
+                    if ct_eq(&existing, &g.group_key) {
+                        log::debug!("group-invite: already in {} (same key) — no-op", g.group_id);
+                    } else {
+                        log::error!(
+                            "group-invite: REFUSED an attempt to re-key {} — the stored key is unchanged",
+                            g.group_id
+                        );
+                        rekey_attempt = true;
+                        out.rejected += 1;
+                    }
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    log::warn!("group-invite: could not read the stored key for {} ({e})", g.group_id);
+                    out.rejected += 1;
+                    continue;
+                }
+            }
+            // Rule 2 — the verified sender must be a current friend here.
+            let friend = match store.friend_addressing(&g.inviter_id, relay_fp) {
+                Ok(Some(f)) => f,
+                Ok(None) => {
+                    log::error!(
+                        "group-invite: REFUSED {} — the sender is not a friend on this relay",
+                        g.group_id
+                    );
+                    out.rejected += 1;
+                    continue;
+                }
+                Err(e) => {
+                    log::warn!("group-invite: friend lookup failed for {} ({e})", g.group_id);
+                    out.rejected += 1;
+                    continue;
+                }
+            };
+            // The contact id *is* the base64 identity key, but the row is what
+            // the KT check will be run against, so require them to agree rather
+            // than assume it.
+            if b64.encode(&friend.identity_pub) != g.inviter_id {
+                log::error!("group-invite: REFUSED {} — sender key does not match the friend row", g.group_id);
+                out.rejected += 1;
+                continue;
+            }
+            let check =
+                ContactKeyCheck { handle: friend.handle.clone(), identity_pub: friend.identity_pub };
+            candidates.push((g, check));
+        }
+    }
+    if candidates.is_empty() {
+        if rekey_attempt {
+            on_kt_alarm(ALARM_GROUP_REKEY, 0);
+        }
+        return out;
+    }
+
+    // Phase 2 — rule 3, against the relay's signed log. Raises its own hard
+    // alarm on a contradiction.
+    let checks: Vec<ContactKeyCheck> = candidates
+        .iter()
+        .map(|(_, c)| ContactKeyCheck { handle: c.handle.clone(), identity_pub: c.identity_pub.clone() })
+        .collect();
+    let verdicts = verify_contact_keys(vault, relay, &checks, on_kt_alarm).await;
+    // One verdict per check is the contract; a mismatch would make `zip` drop
+    // candidates silently, so refuse the lot instead of guessing.
+    if verdicts.len() != candidates.len() {
+        log::error!("group-invite: {} checks returned {} verdicts — refusing all", checks.len(), verdicts.len());
+        out.rejected += candidates.len();
+        if rekey_attempt {
+            on_kt_alarm(ALARM_GROUP_REKEY, 0);
+        }
+        return out;
+    }
+
+    // Phase 3 — persist what survived.
+    {
+        let vault_guard = vault.lock().unwrap();
+        let store = match vault_guard.store() {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("group-invite: store unavailable ({e}) — nothing joined");
+                out.rejected += candidates.len();
+                drop(vault_guard);
+                if rekey_attempt {
+                    on_kt_alarm(ALARM_GROUP_REKEY, 0);
+                }
+                return out;
+            }
+        };
+        for ((g, check), verdict) in candidates.into_iter().zip(verdicts.iter()) {
+            if let Some(r) = verdict.rejected() {
+                log::error!(
+                    "group-invite: REFUSED {} — the log contradicts {}'s key ({})",
+                    g.group_id,
+                    check.handle,
+                    r.as_str()
+                );
+                out.rejected += 1;
+                continue;
+            }
+            match store.insert_group(&g.group_id, &g.group_key, g.name.as_deref()) {
+                Ok(true) => {
+                    if let Err(e) = store.ensure_conversation(&g.group_id, "group", relay_fp) {
+                        log::warn!("group-invite: joined {} but no conversation row ({e})", g.group_id);
+                    }
+                    out.joined += 1;
+                }
+                // INSERT-only, so `false` means the group appeared between phase
+                // 1 and now: two invites for the same new id in one batch. The
+                // second is still never allowed to re-key — and if it carried a
+                // *different* key, that race was itself a takeover attempt.
+                Ok(false) => {
+                    out.rejected += 1;
+                    if !matches!(store.group_key(&g.group_id), Ok(Some(k)) if ct_eq(&k, &g.group_key)) {
+                        log::error!(
+                            "group-invite: REFUSED a second, conflicting key for {} in one batch",
+                            g.group_id
+                        );
+                        rekey_attempt = true;
+                    }
+                }
+                Err(e) => {
+                    log::warn!("group-invite: could not store {} ({e})", g.group_id);
+                    out.rejected += 1;
+                }
+            }
+        }
+    }
+    if rekey_attempt {
+        on_kt_alarm(ALARM_GROUP_REKEY, 0);
+    }
+    out
 }
 
 /// Mint a friend invite (D4b): the client hashes its own random token and this
@@ -1106,16 +1639,25 @@ async fn relay_invite_mint(
 /// inviter, so the check has to gate the *send*: if the log publishes a
 /// different key for that handle, the invite is not from who it claims and the
 /// redeem fails closed.
+///
+/// `relay_fp` is the invite's own `relayFp`, and it gates everything above:
+/// checking a contact key against a transparency log is meaningless if the log
+/// belongs to a different relay than the invite named. The invite's fingerprint
+/// reached us out-of-band, so it — not the connected session — is the
+/// authority; a disagreement is refused before the envelope (which carries my
+/// delivery token) is sent.
 #[tauri::command]
 async fn relay_invite_redeem(
     token: String,
     envelope: Vec<u8>,
     handle: String,
     identity_pub: String,
+    relay_fp: String,
     app: tauri::AppHandle,
     vault: VaultState<'_>,
     relay: tauri::State<'_, relay_client::RelayClient>,
 ) -> Result<i64, String> {
+    require_invite_relay(&relay, &relay_fp, &app_kt_alarm(&app))?;
     require_contact_key_ok(&app, &vault, &relay, &handle, &identity_pub).await?;
     relay.invite_redeem(&token, envelope).await
 }
@@ -1287,9 +1829,15 @@ async fn group_create(
         store
             .upsert_relay(&relay_fp, &base_url, &relay_fp, &ident.signing_public())
             .map_err(|e| e.to_string())?;
-        store
-            .upsert_group(&group_id, group_key.as_ref(), Some(&name))
-            .map_err(|e| e.to_string())?;
+        // The id is 128 fresh random bits, so a collision here is not a
+        // duplicate-create — it is a bug or a corrupted store, and silently
+        // keeping the old key would leave the group unusable. Fail loudly.
+        if !store
+            .insert_group(&group_id, group_key.as_ref(), Some(&name))
+            .map_err(|e| e.to_string())?
+        {
+            return Err("a group with this id already exists locally".into());
+        }
         store
             .ensure_conversation(&group_id, "group", &relay_fp)
             .map_err(|e| e.to_string())?;
@@ -1607,11 +2155,15 @@ async fn group_add_member(
         (signing, ident, group_key, group_name, addressing)
     };
 
-    // 1. Add the friend to the signed group-state record.
+    // 1. Add the friend to the signed group-state record. The record comes from
+    // the relay and I am about to sign it, so it is checked first — it must be
+    // *this* group's record and it must name me an admin.
     let (record, _version) = relay.group_state_get(&signing, &group_id).await?;
+    let my_identity_b64 = b64.encode(ident.signing_public());
     let friend_identity_b64 = b64.encode(&addressing.identity_pub);
     let new_record =
-        message::group_record_add_member(&record, &friend_identity_b64).map_err(|e| e.to_string())?;
+        message::group_record_add_member(&record, &group_id, &my_identity_b64, &friend_identity_b64)
+            .map_err(|e| e.to_string())?;
     let admin_sig = b64.encode(ident.signing.sign(new_record.as_bytes()).to_bytes());
     relay.group_state_put(&signing, &group_id, &new_record, &admin_sig).await?;
 

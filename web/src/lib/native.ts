@@ -93,21 +93,38 @@ export function devicePublicKey(): Promise<string> {
   return invoke<string>('device_public_key');
 }
 
-/** Handshake with a relay: pin its fingerprint, prove the device key, hold a
- *  silently-refreshing bearer token in the core. */
-export function relayConnect(url: string): Promise<void> {
-  return invoke('relay_connect', { url });
+/** Handshake with a relay: check its identity, prove the device key, hold a
+ *  silently-refreshing bearer token in the core.
+ *
+ *  `expectRelayFp` is an invite's `relayFp` when the caller has one — it reached
+ *  the user out-of-band, so it is the one anchor the relay did not supply and it
+ *  outranks the stored pin. Without it the core uses the fingerprint pinned on a
+ *  previous connect, and pins trust-on-first-use if there is none. A relay whose
+ *  identity disagrees with either is refused (`RELAY_IDENTITY_CHANGED`). */
+export function relayConnect(url: string, expectRelayFp?: string): Promise<void> {
+  return invoke('relay_connect', { url, expectRelayFp: expectRelayFp ?? null });
 }
 
 /** Create this device's account on a relay and enroll the device in one call,
  *  leaving the core authenticated (no separate `relayConnect` needed). Pass the
  *  bare invite `token` on an invite-only relay (omit for public/first account).
- *  Resolves with the server-assigned handle. */
-export function relayRegister(url: string, inviteToken?: string, handle?: string): Promise<string> {
+ *  Resolves with the server-assigned handle.
+ *
+ *  `expectRelayFp` is the invite's `relayFp` (see `relayConnect`). Signup is
+ *  where the anchor matters most — the account's own keys are derived from the
+ *  relay fingerprint — so an invite signup always passes it; a bare-address
+ *  signup has none and is trust-on-first-use. */
+export function relayRegister(
+  url: string,
+  inviteToken?: string,
+  handle?: string,
+  expectRelayFp?: string,
+): Promise<string> {
   return invoke<string>('relay_register', {
     url,
     inviteToken: inviteToken ?? null,
     handleChoice: handle ?? null,
+    expectRelayFp: expectRelayFp ?? null,
   });
 }
 
@@ -141,14 +158,20 @@ export function relayInviteMint(tokenHash: string, expiresInSec?: number): Promi
  *  `handle` + `identityPub` are the invite's TOFU pin: the core checks them
  *  against the relay's transparency log and refuses to send if the log
  *  publishes a different key for that handle (the accept carries our delivery
- *  token, so the check has to gate the send). */
+ *  token, so the check has to gate the send).
+ *
+ *  `relayFp` is the invite's relay fingerprint, and it gates that check: a
+ *  transparency log only means something if it belongs to the relay the invite
+ *  named. The core refuses the redeem if it disagrees with the connected
+ *  session (`RELAY_IDENTITY_CHANGED`). */
 export function relayInviteRedeem(
   token: string,
   envelope: number[],
   handle: string,
   identityPub: string,
+  relayFp: string,
 ): Promise<number> {
-  return invoke<number>('relay_invite_redeem', { token, envelope, handle, identityPub });
+  return invoke<number>('relay_invite_redeem', { token, envelope, handle, identityPub, relayFp });
 }
 
 /** This account's per-relay directory keys (base64) for assembling an invite. */
@@ -465,6 +488,13 @@ export interface DrainReport {
    *  publishes a different key for that handle (D5). Nothing was recorded and
    *  nothing was sealed back; a hard `kt:alarm` was raised. */
   kt_rejected?: number;
+  /** Groups joined from an admitted `group-invite` (chat.md § Groups). */
+  groups_joined?: number;
+  /** `group-invite` envelopes the core refused: not from a current friend, from
+   *  a friend the transparency log contradicts, or an attempt to re-key a group
+   *  this account is already in. Nothing was written for any of them; a re-key
+   *  attempt also raised a hard `kt:alarm`. */
+  group_invites_rejected?: number;
 }
 
 /** An incoming voice call ring surfaced by the drain (v8 voice). */
