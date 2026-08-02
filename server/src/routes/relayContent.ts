@@ -49,8 +49,18 @@ import {
 const CAP_LEN = 22;
 const DEFAULT_EMOTE_LIMIT = 60;
 
-function bucket(max: number, divisor: number): { rateLimit: { max: number; timeWindow: string } } {
-  return { rateLimit: { max: Math.max(1, Math.ceil(max / divisor)), timeWindow: '1 minute' } };
+/** One route's share of the operator's ceiling.
+ *
+ *  Returns the limit itself, and the callers below nest it as
+ *  `{ config: { rateLimit: … } }` at the route. That nesting is written out at
+ *  each `app.get` rather than folded in here on purpose: CodeQL's
+ *  js/missing-rate-limiting matches `config.rateLimit` by *local* dataflow from
+ *  the route's options argument, which does not step through a function return.
+ *  With the `rateLimit` key produced inside this helper, every one of these
+ *  routes read as unlimited to the analyzer even though it was limited. Same
+ *  object at runtime either way. */
+function bucket(max: number, divisor: number): { max: number; timeWindow: string } {
+  return { max: Math.max(1, Math.ceil(max / divisor)), timeWindow: '1 minute' };
 }
 
 export function relayContentRoutes(app: FastifyInstance, db: DB, config: Config): void {
@@ -82,10 +92,10 @@ export function relayContentRoutes(app: FastifyInstance, db: DB, config: Config)
   // OUTBOUND request, so the abuse ceiling has to be lower than "any API call".
   // Expressed as a fraction of the operator's ceiling so a relay tuned up/down
   // scales these with it (same pattern as the legacy auth ceremony).
-  const gifRate = { config: bucket(config.rateLimitMax, 10) }; // 60/min at the default 600
-  const ogRate = { config: bucket(config.rateLimitMax, 20) }; // 30/min — the SSRF surface
-  const emoteSearchRate = { config: bucket(config.rateLimitMax, 10) };
-  const emoteImageRate = { config: bucket(config.rateLimitMax, 1) };
+  const gifRate = { config: { rateLimit: bucket(config.rateLimitMax, 10) } }; // 60/min at the default 600
+  const ogRate = { config: { rateLimit: bucket(config.rateLimitMax, 20) } }; // 30/min — the SSRF surface
+  const emoteSearchRate = { config: { rateLimit: bucket(config.rateLimitMax, 10) } };
+  const emoteImageRate = { config: { rateLimit: bucket(config.rateLimitMax, 1) } };
 
   // ---- GIF search (Klipy) ----
 

@@ -182,6 +182,26 @@ guessing oracle:
 Over-limit requests get `429`. Tests raise the ceiling out of the way
 (`rateLimitMax` in the app builder) so request-heavy suites aren't throttled.
 
+**Every route states its own bucket, even when that bucket is just the global
+ceiling.** The remaining relay routes carry a `DEFAULT_RATE` option that restates
+`rateLimitMax` verbatim — the same number the global limiter already applied, so
+it changed no behaviour. Two reasons it is written out rather than left implicit:
+
+- *Readable.* "Is this endpoint limited, and how much?" is answerable from the
+  route, not from remembering a plugin registration in `relay-app.ts`.
+- *Checkable.* CodeQL's `js/missing-rate-limiting` models per-route config and
+  the `@fastify/rate-limit` import, but **not** `register(plugin, { global:
+  true })`, so 13 genuinely-limited routes were reported as unlimited. The fix
+  was to state the limit where the analyzer (and a reader) looks, not to silence
+  the rule.
+
+For the same reason the per-route helper returns the limit and the caller writes
+the `{ config: { rateLimit: … } }` nesting inline: the analyzer matches that
+nesting by *local* dataflow from the route's options argument and does not step
+through a function return, so folding the `rateLimit` key inside a helper made
+the content proxies read as unlimited despite being the most tightly limited
+routes on the relay.
+
 ## Hardening headers and the webview CSP
 
 **On the relay** (`server/src/security-headers.ts`, wired in `buildRelayApp`),

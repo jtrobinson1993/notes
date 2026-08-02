@@ -100,6 +100,24 @@ export function relayRoutes(
   // like a relay substitution.
   const relayFp = identity.rootFingerprint;
 
+  /** The operator's ceiling, restated as an explicit per-route bucket.
+   *
+   *  relay-app.ts registers `@fastify/rate-limit` with `global: true`, so these
+   *  routes were already limited and this changes no number and no behaviour —
+   *  `max` is the same value the global limiter uses. What it changes is that
+   *  the limit is now stated where the route is, so "is this endpoint limited?"
+   *  is answerable by reading the route instead of remembering a plugin
+   *  registration in another file. A static analyzer has the same problem a
+   *  reader does: CodeQL's js/missing-rate-limiting models per-route config and
+   *  the plugin import, but *not* `register(plugin, { global: true })`, so it
+   *  read every bare route here as unlimited.
+   *
+   *  Routes needing a tighter bucket than the ceiling override it (see
+   *  REGISTER_RATE, the invite check, and the blob bucket). */
+  const DEFAULT_RATE = {
+    config: { rateLimit: { max: config?.rateLimitMax ?? 600, timeWindow: '1 minute' } },
+  };
+
   /** Resolve a bearer token to a live, non-revoked device id (or null). */
   function deviceIdForToken(token: string | null): string | null {
     const deviceId = token ? verifyDeviceToken(token) : null;
@@ -224,7 +242,7 @@ export function relayRoutes(
   }
 
   // Register this account's per-relay public keys (device-token authed).
-  app.put('/api/relay/directory', async (request, reply) => {
+  app.put('/api/relay/directory', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const b = request.body as { identityPubKey?: string; sealingPubKey?: string } | null;
@@ -384,7 +402,7 @@ export function relayRoutes(
   // friend-accept to whoever invited us (stashed at registration). One-shot —
   // the pending record is claimed and deleted, so this can't be replayed to spam
   // the inviter. No pending inviter (public signup, or already claimed) → no-op.
-  app.post('/api/relay/register/friend-accept', async (request, reply) => {
+  app.post('/api/relay/register/friend-accept', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const b = request.body as { envelope?: string } | null;
@@ -411,7 +429,7 @@ export function relayRoutes(
   // only the handle→key mapping changes, so we refresh the KT root. Friends
   // address me by identity key + delivery token, so a handle change never breaks
   // the friend graph; only what non-contacts see by handle changes.
-  app.post('/api/relay/handle', async (request, reply) => {
+  app.post('/api/relay/handle', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const b = request.body as { handle?: string } | null;
@@ -442,7 +460,7 @@ export function relayRoutes(
 
   // Recipient registers hash(delivery token). Device-token authed: only the
   // account's own devices may rotate its verifier.
-  app.put('/api/relay/verifier', async (request, reply) => {
+  app.put('/api/relay/verifier', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const b = request.body as { verifier?: string } | null;
@@ -494,7 +512,7 @@ export function relayRoutes(
 
   // Register a web-push subscription for the device's account (device-token
   // authed). The push only ever carries `{type:'mail'}`, so this leaks nothing.
-  app.post('/api/relay/push/subscribe', async (request, reply) => {
+  app.post('/api/relay/push/subscribe', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const b = request.body as { endpoint?: string; p256dh?: string; auth?: string } | null;
@@ -505,7 +523,7 @@ export function relayRoutes(
     return { ok: true };
   });
 
-  app.post('/api/relay/push/unsubscribe', async (request, reply) => {
+  app.post('/api/relay/push/unsubscribe', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const b = request.body as { endpoint?: string } | null;
@@ -514,7 +532,7 @@ export function relayRoutes(
     return { ok: true };
   });
 
-  app.get('/api/relay/mailbox', async (request, reply) => {
+  app.get('/api/relay/mailbox', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const rows = db.fetchRelayMailbox(device.id, MAILBOX_FETCH_LIMIT);
@@ -525,7 +543,7 @@ export function relayRoutes(
     }));
   });
 
-  app.post('/api/relay/mailbox/ack', async (request, reply) => {
+  app.post('/api/relay/mailbox/ack', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const b = request.body as { queueIds?: number[] } | null;
@@ -550,7 +568,7 @@ export function relayRoutes(
 
   // Mint (device token): store hash(token) + expiry for one of the caller's
   // own future friends.
-  app.post('/api/relay/invites', async (request, reply) => {
+  app.post('/api/relay/invites', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const b = request.body as { tokenHash?: string; expiresInSec?: number } | null;
@@ -821,7 +839,7 @@ export function relayRoutes(
   // (a genesis for an unknown id just creates that group).
   const MAX_GROUP_RECORD = 64 * 1024;
 
-  app.put('/api/relay/groups/:id/state', async (request, reply) => {
+  app.put('/api/relay/groups/:id/state', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const { id } = request.params as { id: string };
@@ -863,7 +881,7 @@ export function relayRoutes(
     return { version };
   });
 
-  app.get('/api/relay/groups/:id/state', async (request, reply) => {
+  app.get('/api/relay/groups/:id/state', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const { id } = request.params as { id: string };
@@ -891,7 +909,7 @@ export function relayRoutes(
   // Group blob-upload verifier = hash(group token) shared among members. Any
   // current member may set it (they all derive the same value from the group
   // key); non-members can't touch it (403).
-  app.put('/api/relay/groups/:id/verifier', async (request, reply) => {
+  app.put('/api/relay/groups/:id/verifier', DEFAULT_RATE, async (request, reply) => {
     const device = requireDevice(request, reply);
     if (!device) return;
     const { id } = request.params as { id: string };
@@ -949,7 +967,7 @@ export function relayRoutes(
     return { nonce };
   });
 
-  app.post('/api/relay/auth/token', async (request, reply) => {
+  app.post('/api/relay/auth/token', DEFAULT_RATE, async (request, reply) => {
     const b = request.body as { pubKey?: string; nonce?: string; signature?: string } | null;
     const raw = b?.pubKey ? rawKey(b.pubKey) : null;
     if (!raw || !b?.nonce || !b?.signature) {

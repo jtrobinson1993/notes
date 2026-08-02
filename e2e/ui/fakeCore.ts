@@ -321,9 +321,29 @@ function fakeCoreScript(seed: FakeSeed): void {
     saved = null;
   }
   const state: State = saved ? (JSON.parse(saved) as State) : initial();
+  // A reload restores everything except the two credential fields, which are
+  // re-seeded rather than read back — see `save()` below for why they are not
+  // in the stored blob at all.
+  if (saved) {
+    state.password = seed.password;
+    state.recoveryCode = seed.recoveryCode;
+  }
+
+  /** Persist enough that the fake survives a reload — minus the credentials.
+   *
+   *  `password` and `recoveryCode` are the unlock secrets this fake checks
+   *  against, and writing them to sessionStorage is storing a credential in
+   *  clear text (CodeQL js/clear-text-storage-of-sensitive-data). They are
+   *  fake, but the pattern is the thing that gets copied, and a test fixture is
+   *  a bad place to demonstrate persisting a password. Nothing needs them
+   *  across a reload: they come from the per-test `seed`, and the specs that do
+   *  reload (vault-gate's post-signup coherence check, app-shell's message
+   *  persistence) assert the vault is already unlocked rather than unlocking
+   *  again. */
   function save(): void {
     try {
-      sessionStorage.setItem(STORE_KEY, JSON.stringify(state));
+      const { password: _pw, recoveryCode: _rc, ...persisted } = state;
+      sessionStorage.setItem(STORE_KEY, JSON.stringify(persisted));
     } catch {
       /* in-memory only */
     }
